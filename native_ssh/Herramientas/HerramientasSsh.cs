@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -103,6 +104,58 @@ namespace NativeSsh.Herramientas
             string clave = gestor.ParsearDestino(destino).Clave;
             bool isHecho = gestor.ReiniciarShell(destino);
             return new ResultadoAccion(clave, isHecho, isHecho ? "El próximo comando usará un shell nuevo." : "No había sesión con ese destino.");
+        }
+
+        [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON.")]
+        public async Task<string> LeerArchivoAsync(
+            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
+            [Description("Línea inicial (1-indexed, por defecto 1).")] int lineaInicio = 1,
+            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas.")] int? lineaFin = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(ruta))
+                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
+
+            int inicio = Math.Max(1, lineaInicio);
+            int fin = lineaFin ?? (inicio + 799);
+            if (fin < inicio)
+                throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
+
+            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            string comando = $"""
+                (
+                if [ ! -e {rutaEscapada} ]; then
+                  echo "Error: el archivo no existe: {ruta}" >&2
+                  exit 1
+                fi
+                if [ -d {rutaEscapada} ]; then
+                  echo "Error: la ruta es un directorio: {ruta}" >&2
+                  exit 1
+                fi
+                sed -n '{inicio},{fin}p' {rutaEscapada}
+                )
+                """.ReplaceLineEndings("\n");
+
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
+            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+
+            StringBuilder sb = new();
+            long desde = 0;
+            while (true)
+            {
+                PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desde, opciones.MaxBytesPorRespuesta, peticion.Estado.IsFinal());
+                _ = sb.Append(pagina.Texto);
+                if (!pagina.HasMas)
+                    break;
+                desde = pagina.Siguiente;
+            }
+
+            string textoCompleto = sb.ToString();
+            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
+                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoCompleto.Trim())
+                : textoCompleto;
         }
 
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)

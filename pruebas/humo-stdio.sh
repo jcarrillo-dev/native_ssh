@@ -63,7 +63,7 @@ comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize")
 enviar("notifications/initialized", notificacion=True)
 
 herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
-comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_input", "ssh_output", "ssh_reset_shell", "ssh_status"], f"tools/list: {herramientas}")
+comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_input", "ssh_output", "ssh_read_file", "ssh_reset_shell", "ssh_status"], f"tools/list: {herramientas}")
 
 es_error, texto = llamar("ssh_exec", {"destino": destino, "comando": "export NS_HUMO=1; echo hola"})
 datos = json.loads(texto)
@@ -71,6 +71,11 @@ comprobar(not es_error and datos["estado"] == "Completado" and datos["salida"] =
 
 _, texto = llamar("ssh_exec", {"destino": destino, "comando": "echo $NS_HUMO"})
 comprobar(json.loads(texto)["salida"] == "1\n", "variables persistentes")
+
+llamar("ssh_exec", {"destino": destino, "comando": "printf 'linea1\\nlinea2\\nlinea3\\nlinea4\\n' > /tmp/ns_humo_test.txt"})
+es_error, contenido = llamar("ssh_read_file", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 3})
+comprobar(not es_error and contenido == "linea2\nlinea3\n", f"ssh_read_file: {contenido}")
+llamar("ssh_exec", {"destino": destino, "comando": "rm -f /tmp/ns_humo_test.txt"})
 
 _, texto = llamar("ssh_exec", {"destino": destino, "comando": "sleep 30", "esperarSegundos": 0})
 id_lento = json.loads(texto)["id"]

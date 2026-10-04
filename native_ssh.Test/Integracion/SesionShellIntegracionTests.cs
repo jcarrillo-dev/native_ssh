@@ -1,6 +1,8 @@
 using FluentAssertions;
 using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
+using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
 using NativeSsh.Ssh;
 
@@ -227,6 +229,53 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = error.Message.Should().Contain("NO coincide");
+        }
+
+        [Fact]
+        public async Task LeerArchivo_RangoLineasYArchivoInexistente()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.GetTempFileName();
+            try
+            {
+                string[] lineas = ["Línea 1", "Línea 2", "Línea 3", "Línea 4", "Línea 5"];
+                await File.WriteAllLinesAsync(archivoTemporal, lineas);
+
+                // Act 1: Leer líneas 2 a 4
+                string contenido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal, lineaInicio: 2, lineaFin: 4);
+
+                // Assert 1: Devuelve exactamente las líneas 2 a 4 con saltos de línea reales
+                _ = contenido.Should().Be("Línea 2\nLínea 3\nLínea 4\n");
+
+                // Act 2: Pedir un archivo que no existe
+                string rutaInexistente = Path.Combine(Path.GetTempPath(), $"no_existe_{Guid.NewGuid():N}.txt");
+                NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(sshd.Destino.Clave, rutaInexistente)).Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert 2: Lanza la excepción con el mensaje de error del archivo inexistente
+                _ = error.Message.Should().Contain($"Error: el archivo no existe: {rutaInexistente}");
+
+                // Act 3: Pedir un directorio
+                NativeSshException errorDir = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(sshd.Destino.Clave, "/tmp")).Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert 3: Lanza la excepción indicando que es un directorio
+                _ = errorDir.Message.Should().Contain("Error: la ruta es un directorio: /tmp");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
+            }
         }
     }
 }

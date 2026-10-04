@@ -86,7 +86,7 @@ comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize po
 enviar("notifications/initialized", notificacion=True)
 
 herramientas = enviar("tools/list")["result"]["tools"]
-comprobar(len(herramientas) == 7, "tools/list por HTTP")
+comprobar(len(herramientas) == 8, "tools/list por HTTP")
 
 resultado = enviar("tools/call", {"name": "ssh_exec", "arguments": {"destino": destino, "comando": "echo hola-http"}})["result"]
 datos = json.loads(resultado["content"][0]["text"])

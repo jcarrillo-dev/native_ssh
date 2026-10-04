@@ -22,13 +22,16 @@ namespace NativeSsh.Test.Herramientas
             _herramientas = new HerramientasSsh(_gestor, opciones);
         }
 
-        private static RespuestaFalsa Guion(string comando) => comando switch
-        {
-            "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
-            "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
-            "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
-            _ => new($"eco:{comando}\n", 2)
-        };
+        private static RespuestaFalsa Guion(string comando) =>
+            comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
+            comando.Contains("sed -n") ? new("linea 1\nlinea 2\nlinea 3\n", 0) :
+            comando switch
+            {
+                "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
+                "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
+                "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
+                _ => new($"eco:{comando}\n", 2)
+            };
 
         public ValueTask DisposeAsync() => _gestor.DisposeAsync();
 
@@ -157,6 +160,42 @@ namespace NativeSsh.Test.Herramientas
             _ = json.Should().Contain("\"codigoSalida\":2");
             _ = json.Should().NotContain("aviso");
             _ = json.Should().NotContain("segundosSinSalida");
+        }
+
+        [Fact]
+        public async Task ReadFile_LecturaExitosa_DevuelveTextoPlano()
+        {
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+
+            // Assert
+            _ = texto.Should().Be("linea 1\nlinea 2\nlinea 3\n");
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task ReadFile_RutaVacia_LanzaExcepcion(string ruta)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", ruta)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("vacía");
+        }
+
+        [Fact]
+        public async Task ReadFile_FinMenorQueInicio_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", lineaInicio: 10, lineaFin: 5)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("no puede ser menor");
+        }
+
+        [Fact]
+        public async Task ReadFile_FalloCodigoDistintoDeCero_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "error.txt")).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Be("Error: el archivo no existe: error.txt");
         }
     }
 }
