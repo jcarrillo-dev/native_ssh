@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>NativeSsh.Benchmarks</RootNamespace>
+    <Optimize>true</Optimize>
+    <TieredCompilation>false</TieredCompilation>
+    <OptimizationPreference>Speed</OptimizationPreference>
+    <!-- NETSDK1151: el job NativeAOT es autocontenido y referencia el ejecutable native_ssh, que se usa como librería -->
+    <ValidateExecutableReferencesMatchSelfContained>false</ValidateExecutableReferencesMatchSelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\native_ssh\native_ssh.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="native_ssh.Benchmarks/native_ssh.Benchmarks.csproj" />
+  <Project Path="native_ssh.Test/native_ssh.Test.csproj" />
+  <Project Path="native_ssh/native_ssh.csproj" />
+</Solution>

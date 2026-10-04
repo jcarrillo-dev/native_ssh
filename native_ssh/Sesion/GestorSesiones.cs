@@ -1,0 +1,122 @@
+using NativeSsh.Comun;
+
+namespace NativeSsh.Sesion
+{
+    // Punto de entrada del núcleo: una SesionShell por destino, creada bajo demanda.
+    public sealed class GestorSesiones(
+        IFabricaConexion fabrica,
+        LimitadorConexiones limitador,
+        RegistroPeticiones registro,
+        OpcionesNativeSsh opciones,
+        TimeProvider reloj,
+        ILoggerFactory loggerFactory) : IAsyncDisposable
+    {
+        public static readonly TimeSpan TimeoutMinimo = TimeSpan.FromSeconds(1);
+        public static readonly TimeSpan TimeoutMaximo = TimeSpan.FromHours(1);
+
+        private readonly Lock _candado = new();
+        private readonly Dictionary<string, SesionShell> _sesiones = new(StringComparer.Ordinal);
+        private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
+        private bool _isDispuesto;
+
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout)
+        {
+            if (string.IsNullOrWhiteSpace(comando))
+                throw new NativeSshException("El comando está vacío.");
+
+            DestinoSsh destino = ParsearDestino(destinoTexto);
+            SesionShell sesion = ObtenerOCrear(destino);
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj);
+            registro.Registrar(peticion);
+            sesion.Encolar(peticion);
+            return peticion;
+        }
+
+        public Peticion BuscarPeticion(string id) =>
+            registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
+
+        public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter)
+        {
+            SesionShell? sesion;
+            lock (_candado)
+                _ = _sesiones.TryGetValue(peticion.Destino.Clave, out sesion);
+
+            return sesion is not null && sesion.EnviarEntrada(peticion, texto, isEnviarEnter);
+        }
+
+        public IReadOnlyList<SesionShell> ListarSesiones()
+        {
+            lock (_candado)
+                return [.. _sesiones.Values];
+        }
+
+        public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
+
+        public async Task<bool> DesconectarAsync(string destinoTexto)
+        {
+            DestinoSsh destino = ParsearDestino(destinoTexto);
+            SesionShell? sesion;
+            lock (_candado)
+            {
+                if (_sesiones.Remove(destino.Clave, out sesion))
+                    _logger.Desconectando(destino.Clave);
+            }
+
+            if (sesion is null)
+                return false;
+
+            await sesion.DisposeAsync().ConfigureAwait(false);
+            return true;
+        }
+
+        public bool ReiniciarShell(string destinoTexto)
+        {
+            DestinoSsh destino = ParsearDestino(destinoTexto);
+            SesionShell? sesion;
+            lock (_candado)
+                _ = _sesiones.TryGetValue(destino.Clave, out sesion);
+
+            sesion?.SolicitarReset();
+            return sesion is not null;
+        }
+
+        public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)
+                ? throw new NativeSshException($"Destino '{destinoTexto}' no válido. Formato: usuario@servidor[:puerto], o [ipv6]:puerto.")
+                : destino;
+
+        public async ValueTask DisposeAsync()
+        {
+            SesionShell[] sesiones;
+            lock (_candado)
+            {
+                if (_isDispuesto)
+                    return;
+
+                _isDispuesto = true;
+                sesiones = [.. _sesiones.Values];
+                _sesiones.Clear();
+            }
+
+            foreach (SesionShell sesion in sesiones)
+                await sesion.DisposeAsync().ConfigureAwait(false);
+        }
+
+        private SesionShell ObtenerOCrear(DestinoSsh destino)
+        {
+            lock (_candado)
+            {
+                ObjectDisposedException.ThrowIf(_isDispuesto, this);
+                if (!_sesiones.TryGetValue(destino.Clave, out SesionShell? sesion))
+                {
+                    sesion = new SesionShell(destino, fabrica, limitador, opciones, _logger);
+                    _sesiones[destino.Clave] = sesion;
+                }
+
+                return sesion;
+            }
+        }
+
+        private static TimeSpan Ajustar(TimeSpan timeout) =>
+            timeout < TimeoutMinimo ? TimeoutMinimo : timeout > TimeoutMaximo ? TimeoutMaximo : timeout;
+    }
+}

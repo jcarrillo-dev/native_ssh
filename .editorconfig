@@ -1,0 +1,49 @@
+root = true
+
+[*]
+end_of_line = crlf
+charset = utf-8
+
+# Los scripts de bash se rompen con CRLF.
+[*.sh]
+end_of_line = lf
+
+[*.cs]
+# Regla permanente para promover todas las sugerencias de analizadores y estilo a advertencias
+dotnet_analyzer_diagnostic.severity = warning
+dotnet_compiler_diagnostic.severity = warning
+
+# Preferencia de no usar llaves en bloques de una sola línea (evitar llaves innecesarias)
+csharp_prefer_braces = false:warning
+
+# Preferencia de tipos explícitos (evitando var)
+csharp_style_var_for_built_in_types = false:warning
+csharp_style_var_for_declared_types = false:warning
+csharp_style_var_when_type_is_apparent = false:warning
+
+# Forzar cuerpos de expresión (expression-bodied) en todos los casos posibles
+csharp_style_expression_bodied_methods = true:warning
+csharp_style_expression_bodied_constructors = true:warning
+csharp_style_expression_bodied_operators = true:warning
+csharp_style_expression_bodied_properties = true:warning
+csharp_style_expression_bodied_indexers = true:warning
+csharp_style_expression_bodied_accessors = true:warning
+csharp_style_expression_bodied_lambdas = true:warning
+csharp_style_expression_bodied_local_functions = true:warning
+
+# Convención de la casa: los enums llevan el sufijo Enum
+dotnet_diagnostic.CA1711.severity = none
+
+# Namespaces de bloque
+csharp_style_namespace_declarations = block_scoped:warning
+
+# Desactivar reglas no deseadas en pruebas para evitar falsos positivos
+[native_ssh.Test/**.cs]
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA1852.severity = none
+
+# BenchmarkDotNet exige métodos [Benchmark] de instancia y los nombres con guion bajo son su convención de reporte
+[native_ssh.Benchmarks/**.cs]
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1822.severity = none
