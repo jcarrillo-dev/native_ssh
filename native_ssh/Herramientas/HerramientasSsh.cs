@@ -278,10 +278,10 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Mucho más rápido y eficiente en tokens que grep.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Mucho más rápido y eficiente en tokens que grep.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
-            [Description("Texto o patrón regex a buscar.")] string patron,
+            [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
             [Description("Directorio o ruta donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json').")] string? extension = null,
             [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
@@ -292,10 +292,29 @@ namespace NativeSsh.Herramientas
 
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
-            string rutaEscapada = "'" + rutaEfectiva.Replace("'", "'\\''") + "'";
-            string patronEscapado = "'" + patron.Replace("'", "'\\''") + "'";
+            string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
 
-            string includeFlag = string.Empty;
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
+
+            ExigirCompletada(peticion);
+
+            string salida = ReconstruirSalidaCompleta(peticion, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.").Trim();
+            return InterpretarBusqueda(peticion.CodigoSalida, salida, patron, rutaEfectiva, limite);
+        }
+
+        private const string PrefijoMotor = "__NS_MOTOR:";
+        private const string ExclusionDirectorios = ".git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj";
+        private const string ExclusionArchivos = "'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'";
+
+        // Motor de búsqueda elegido en el servidor: rg si está instalado (regex de Rust), si no grep -P (PCRE) si el grep
+        // lo admite, y como último recurso grep -E (ERE). Los tres con las mismas exclusiones, filtro de extensión y límite.
+        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó.
+        internal static string ConstruirComandoBusqueda(string patron, string rutaEfectiva, string? extension, int limite)
+        {
+            string rutaEscapada = Escapar(rutaEfectiva);
+            string patronEscapado = Escapar(patron);
+            string filtroRg = string.Empty;
+            string filtroGrep = string.Empty;
             if (!string.IsNullOrWhiteSpace(extension))
             {
                 string extensionLimpia = extension.Trim();
@@ -304,54 +323,75 @@ namespace NativeSsh.Herramientas
                     : extensionLimpia.StartsWith('.')
                         ? "*" + extensionLimpia
                         : "*." + extensionLimpia;
-                string filtroEscapado = "'" + filtro.Replace("'", "'\\''") + "'";
-                includeFlag = $"--include={filtroEscapado} \\\n  ";
+                string filtroEscapado = Escapar(filtro);
+                filtroRg = $"-g {filtroEscapado} ";
+                filtroGrep = $"--include={filtroEscapado} ";
             }
 
-            string comando = $$"""
+            string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
+            string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
+            return $$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                grep -rnIs \
-                  {{includeFlag}}--exclude-dir={.git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj} \
-                  --exclude={'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'} \
-                  -m {{limite}} \
-                  -E -e {{patronEscapado}} \
-                  -- {{rutaEscapada}} 2>&1 | head -n {{limite + 1}}
-                # Código de grep, no de head; 141 (SIGPIPE) = head ya tenía suficientes líneas.
-                rc=${PIPESTATUS[0]}
+                # Código del motor, no de head; 141 (SIGPIPE) = head ya tenía suficientes líneas.
+                if command -v rg >/dev/null 2>&1; then
+                  printf '{{PrefijoMotor}}rg\n'
+                  rg --no-config --line-number --no-heading --with-filename --color never --no-messages --no-ignore --hidden \
+                    {{exclusionesRg}} {{filtroRg}}-m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                  rc=${PIPESTATUS[0]}
+                elif printf '1\n' | grep -qP '\d' 2>/dev/null; then
+                  printf '{{PrefijoMotor}}grep -P\n'
+                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -P -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                  rc=${PIPESTATUS[0]}
+                else
+                  printf '{{PrefijoMotor}}grep -E\n'
+                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                  rc=${PIPESTATUS[0]}
+                fi
                 [ "$rc" -eq 141 ] && rc=0
                 exit "$rc"
                 )
                 """.ReplaceLineEndings("\n");
-
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
-
-            ExigirCompletada(peticion);
-
-            string salida = ReconstruirSalidaCompleta(peticion, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.").Trim();
-            if ((peticion.CodigoSalida == 1 || (peticion.CodigoSalida == 2 && !salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))) && string.IsNullOrEmpty(salida))
-                return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.";
-
-            if (peticion.CodigoSalida == 2 && salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))
-                throw new NativeSshException(salida);
-
-            if (peticion.CodigoSalida is not (0 or 2))
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error en búsqueda (código {peticion.CodigoSalida})." : salida);
-
-            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            if (lineas.Length > limite)
-            {
-                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
-            }
-            return lineas.Length == limite
-                ? $"{salida}\n\n[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]"
-                : salida;
         }
+
+        // Códigos de rg y grep: 0 = coincidencias, 1 = ninguna, 2 = error (con -s/--no-messages, archivos ilegibles o regex inválida).
+        private static string InterpretarBusqueda(int codigo, string salida, string patron, string rutaEfectiva, int limite)
+        {
+            string motor = "desconocido";
+            string resultados = salida;
+            if (salida.StartsWith(PrefijoMotor, StringComparison.Ordinal))
+            {
+                int finLinea = salida.IndexOf('\n', StringComparison.Ordinal);
+                motor = (finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea]).Trim();
+                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..].Trim();
+            }
+
+            string pie = $"[motor: {motor}]";
+            bool isVacio = string.IsNullOrEmpty(resultados);
+            bool isErrorMotor = resultados.StartsWith("grep:", StringComparison.OrdinalIgnoreCase) || resultados.StartsWith("rg:", StringComparison.OrdinalIgnoreCase);
+            if (codigo == 2 && isErrorMotor)
+                throw new NativeSshException($"{resultados}\n{pie}");
+
+            if (codigo is 1 or 2 && isVacio)
+                return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.\n\n{pie}";
+
+            if (codigo is not (0 or 2))
+                throw new NativeSshException(isVacio ? $"Error en búsqueda (código {codigo})." : resultados);
+
+            string[] lineas = resultados.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
+            return lineas.Length > limite
+                ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{pie}"
+                : lineas.Length == limite
+                    ? $"{resultados}\n\n{avisoLimite}\n{pie}"
+                    : $"{resultados}\n\n{pie}";
+        }
+
+        private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
         [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'.")]

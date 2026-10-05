@@ -89,27 +89,29 @@ namespace NativeSsh.Test.Herramientas
                         ? new("/var/www/proyecto\n", 0)
                         : new("/tmp/trabajo\n", 0);
 
+        // El script elige el motor en el servidor y lo anuncia en la primera línea; el falso simula 'grep -P'.
         private static RespuestaFalsa SimularBusqueda(string comando)
         {
-            if (!comando.Contains("-E -e"))
+            if (!comando.Contains("-P -e"))
                 return new("grep: error falta flag -e\n", 2);
 
             if (comando.Contains("ruta_inexistente"))
                 return new("Error: la ruta de búsqueda no existe: ruta_inexistente\n", 1);
 
+            const string Motor = "__NS_MOTOR:grep -P\n";
             if (comando.Contains("error_fatal"))
-                return new("grep: error de sintaxis en expresión regular\n", 2);
+                return new(Motor + "grep: error de sintaxis en expresión regular\n", 2);
 
             if (comando.Contains("sin_coincidencias"))
-                return new("", 1);
+                return new(Motor, 1);
 
             if (comando.Contains("muchas_coincidencias"))
             {
                 string muchas = string.Concat(Enumerable.Range(1, 5).Select(i => $"archivo.txt:{i}:coincidencia {i}\n"));
-                return new(muchas, 0);
+                return new(Motor + muchas, 0);
             }
 
-            return new("archivo.txt:1:coincidencia encontrada\n", 0);
+            return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 0);
         }
 
         private static RespuestaFalsa SimularListDir(string comando) =>
@@ -669,7 +671,7 @@ namespace NativeSsh.Test.Herramientas
             string resultado = await _herramientas.BuscarAsync("servidor", "sin_coincidencias");
 
             // Assert
-            _ = resultado.Should().Be("No se encontraron coincidencias para el patrón: 'sin_coincidencias' en '.'.");
+            _ = resultado.Should().Be("No se encontraron coincidencias para el patrón: 'sin_coincidencias' en '.'.\n\n[motor: grep -P]");
         }
 
         [Fact]
@@ -679,7 +681,7 @@ namespace NativeSsh.Test.Herramientas
             string resultado = await _herramientas.BuscarAsync("servidor", "algo");
 
             // Assert
-            _ = resultado.Should().Be("archivo.txt:1:coincidencia encontrada");
+            _ = resultado.Should().Be("archivo.txt:1:coincidencia encontrada\n\n[motor: grep -P]");
         }
 
         [Fact]
@@ -692,6 +694,28 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.Should().Contain("[Límite alcanzado: se muestran 3 coincidencias.");
             _ = resultado.Should().Contain("coincidencia 3");
             _ = resultado.Should().NotContain("coincidencia 4");
+            _ = resultado.Should().EndWith("Refina el patrón o subdirectorio para acotar la búsqueda.]\n[motor: grep -P]");
+        }
+
+        [Fact]
+        public async Task Search_EligeRgLuegoGrepPYComoUltimoRecursoGrepE()
+        {
+            // Act
+            _ = await _herramientas.BuscarAsync("servidor", "patron", extension: "py", maxResultados: 7);
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("grep -rnI", StringComparison.Ordinal));
+            int rg = comando.IndexOf("command -v rg", StringComparison.Ordinal);
+            int grepP = comando.IndexOf("grep -qP", StringComparison.Ordinal);
+            int grepE = comando.IndexOf("-E -e 'patron'", StringComparison.Ordinal);
+            _ = rg.Should().BeGreaterThan(0);
+            _ = grepP.Should().BeGreaterThan(rg);
+            _ = grepE.Should().BeGreaterThan(grepP);
+            _ = comando.Should().Contain("rg --no-config");
+            _ = comando.Should().Contain("-g '*.py'");
+            _ = comando.Should().Contain("-g '!{.git,node_modules,");
+            _ = comando.Should().Contain("-P -e 'patron'");
+            _ = comando.Should().Contain("__NS_MOTOR:rg");
         }
 
         [Fact]
@@ -701,8 +725,8 @@ namespace NativeSsh.Test.Herramientas
             string resultado = await _herramientas.BuscarAsync("servidor", "--version");
 
             // Assert
-            _ = resultado.Should().Be("archivo.txt:1:coincidencia encontrada");
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-E -e '--version'"));
+            _ = resultado.Should().StartWith("archivo.txt:1:coincidencia encontrada");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-P -e '--version'") && c.Contains("-E -e '--version'") && c.Contains("rg --no-config") && c.Contains("-e '--version'"));
         }
 
         [Fact]
@@ -719,6 +743,8 @@ namespace NativeSsh.Test.Herramientas
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync("servidor", "error_fatal")).Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Contain("error de sintaxis");
+            _ = error.Message.Should().Contain("[motor: grep -P]");
+            _ = error.Message.Should().NotContain("__NS_");
         }
 
         [Theory]

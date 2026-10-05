@@ -602,7 +602,7 @@ namespace NativeSsh.Test.Integracion
                 string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "patron_inexistente_xyz_123", dirTemporal);
 
                 // Assert
-                _ = res.Should().Be($"No se encontraron coincidencias para el patrón: 'patron_inexistente_xyz_123' en '{dirTemporal}'.");
+                _ = res.Should().StartWith($"No se encontraron coincidencias para el patrón: 'patron_inexistente_xyz_123' en '{dirTemporal}'.\n\n[motor: ");
             }
             finally
             {
@@ -776,8 +776,9 @@ namespace NativeSsh.Test.Integracion
                     herramientas.BuscarAsync(sshd.Destino.Clave, "[unclosed", dirTemporal))
                     .Should().ThrowAsync<NativeSshException>()).Which;
 
-                _ = error.Message.Should().Contain("grep:");
-                _ = error.Message.Should().Contain("[");
+                _ = error.Message.Should().ContainAny("grep:", "rg:");
+                _ = error.Message.Should().Contain("[unclosed");
+                _ = error.Message.Should().Contain("[motor: ");
             }
             finally
             {

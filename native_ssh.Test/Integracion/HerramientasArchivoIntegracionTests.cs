@@ -151,6 +151,21 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public async Task Buscar_PatronPcre_EncuentraDigitosEIndicaElMotor()
+        {
+            // Arrange: con grep -E, '\d+' no encuentra nada (en ERE '\d' no es un dígito).
+            await File.WriteAllTextAsync(Ruta("numeros.txt"), "valor 123\ntexto\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string resultado = await herramientas.BuscarAsync(Destino, @"\d+", _directorio);
+
+            // Assert
+            _ = resultado.Should().StartWith($"{Ruta("numeros.txt")}:1:valor 123\n\n[motor: ");
+            _ = resultado.Should().ContainAny("[motor: rg]", "[motor: grep -P]");
+        }
+
+        [Fact]
         public async Task LeerArchivo_InicioNegativo_DevuelveLasUltimasLineasConLaMismaCabecera()
         {
             // Arrange
