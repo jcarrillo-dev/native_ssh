@@ -106,9 +106,31 @@ namespace NativeSsh.Herramientas
             _ => " No se recibió del servidor la confirmación de cómo se colocó el contenido: no se puede asegurar que la escritura fuera atómica."
         };
 
-        // Error de una escritura que terminó con un código distinto de 0: el que dio el script (sin los anuncios) y, si se
-        // restauró el original, lo que no se le pudo devolver.
-        public string MensajeError(string porDefecto) => (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
+        // Error de una escritura que terminó con un código distinto de 0. Si el script confirmó cómo terminó (su anuncio final)
+        // o falló antes de anunciar nada, es el error que dio (sin los anuncios) y, si se restauró el original, lo que no se
+        // le pudo devolver. Si no, el script murió a mitad (SIGKILL del OOM killer, kill -9) o no tiene trampa de salida
+        // (anexar): qué pasó con el archivo según lo último anunciado, lo que queda en el servidor, el código, el id de la
+        // petición y lo que el script llegó a escribir.
+        public string MensajeError(string porDefecto, string ruta, int codigo, string idPeticion)
+        {
+            bool hasAnuncios = Fase is not null || Temporal is not null || Copia is not null;
+            if (IsFinalConfirmado || !hasAnuncios)
+                return (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
+
+            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)} sin que el script confirmara cómo terminó (petición {idPeticion}, su salida completa con ssh_output). ");
+            _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: true)).Append(Restos);
+            if (Texto.Length > 0)
+                _ = mensaje.Append(" Salida del script: ").Append(Texto);
+            return mensaje.ToString();
+        }
+
+        // Un código de salida de 128 + N es el de un proceso que terminó la señal N.
+        private static string DescribirSenal(int codigo) => codigo switch
+        {
+            137 => " (SIGKILL: p. ej. el OOM killer o un kill -9)",
+            > 128 and < 128 + 65 => $" (la señal {codigo - 128})",
+            _ => string.Empty
+        };
 
         // Error de una escritura que no terminó: estado y id de la petición, qué pasó con el archivo y qué queda en el servidor.
         // isEjecutada: la petición llegó a ejecutarse (no se canceló en la cola).
@@ -119,7 +141,7 @@ namespace NativeSsh.Herramientas
                 _ = mensaje.Append($"No se llegó a ejecutar: '{ruta}' no se ha modificado.");
             else
             {
-                _ = mensaje.Append(DescribirArchivo(ruta)).Append(Restos);
+                _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: false)).Append(Restos);
                 if (!IsFinalConfirmado)
                     _ = mensaje.Append(" El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.");
             }
@@ -133,15 +155,19 @@ namespace NativeSsh.Herramientas
 
         private bool IsFinalConfirmado => Limpieza != LimpiezaEscrituraEnum.Desconocida;
 
-        private string DescribirArchivo(string ruta) => Fase switch
+        // isScriptTerminado: el script ya no corre (terminó con un código), en lugar de quedar en marcha tras la interrupción.
+        private string DescribirArchivo(string ruta, bool isScriptTerminado) => Fase switch
         {
             null => IsFinalConfirmado ? $"No se llegó a modificar '{ruta}'." : $"No consta ninguna modificación de '{ruta}'.",
             "colocando" => $"Se interrumpió durante el renombrado atómico del contenido nuevo: '{ruta}' tiene su contenido anterior (o no existe, si era nuevo) o el nuevo completo, nunca una mezcla.",
             "colocado" => $"'{ruta}' ya tiene el contenido nuevo completo (renombrado atómico).",
             "creando" => $"'{ruta}', que no existía, puede haber quedado creado con solo una parte del contenido nuevo.",
             "creado" => $"'{ruta}' ya se creó con el contenido nuevo completo.",
-            // Interrumpido escribiendo o restaurando, el script sigue (ignora ya las señales) hasta restaurar o rendirse.
-            "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).",
+            // Interrumpido escribiendo o restaurando, el script sigue (ignora ya las señales) hasta restaurar o rendirse; si
+            // terminó sin confirmarlo, murió a mitad y la copia sigue en su sitio.
+            "escribiendo" or "restaurando" => isScriptTerminado
+                ? $"'{ruta}' puede haber quedado a medio escribir y el script ya no lo restaurará: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo)."
+                : $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
             "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",

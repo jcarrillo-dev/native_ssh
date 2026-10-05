@@ -62,6 +62,43 @@ namespace NativeSsh.Test.Integracion
                 .And.NotContain("__NS_");
         }
 
+        // SIGKILL al bash del script (el OOM killer o un kill -9) con la escritura en el sitio a medias: no hay trampa que
+        // restaure ni anuncio final, y la petición termina con el código 137 sin un error propio del script. El error debe
+        // decir que el archivo puede haber quedado a medio escribir, dónde están la copia del original y el contenido nuevo
+        // (que siguen ahí), el código y el id de la petición.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task EscrituraEnElSitio_ScriptMuertoConSigkillAMitad_ElErrorDaElEstadoLasRutasYElId(bool isReplace)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            await SustituirComandoAsync(herramientas, "cat", CatFalso(EsperaInterrumpible()));
+
+            // Act
+            Task<ResultadoEscritura> escritura = isReplace
+                ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original completo", "nuevo contenido")
+                : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            string cat = Bash($"pgrep -f -- '{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.' | head -n 1");
+            _ = Bash($"kill -KILL \"$(ps -o ppid= -p {cat})\"");
+            NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = Bash($"kill -INT {cat} 2>/dev/null; true");
+
+            // Assert
+            string copia = Directory.GetFiles(carpeta, ".f.txt.orig.*").Should().ContainSingle().Which;
+            string nuevo = Directory.GetFiles(carpeta, ".f.txt.tmp.*").Should().ContainSingle().Which;
+            _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
+            _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nue");
+            _ = error.Message.Should().MatchRegex("terminó con el código 137 .*petición [0-9a-f]{32}")
+                .And.Contain($"'{archivo}' puede haber quedado a medio escribir y el script ya no lo restaurará")
+                .And.Contain($"'{copia}'")
+                .And.Contain($"'{nuevo}'")
+                .And.NotContain("__NS_");
+        }
+
         // La lectura previa de ssh_replace_file_content (un 'base64' falso que se queda esperando al codificar) no termina:
         // por el timeout, porque la sesión se cierra (ssh_disconnect) o por el token. La sesión finaliza la petición antes
         // de que venza la espera de la herramienta, y el error debe decir igualmente que el archivo no se modificó y dar el

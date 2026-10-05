@@ -135,7 +135,7 @@ namespace NativeSsh.Test.Herramientas
             string exito = InformeEscritura.Leer(anuncios + Anuncios("fase escrito setuid,setgid,capacidades", "limpio"), Id).AvisoExito();
             string sinComprobar = InformeEscritura.Leer(anuncios + Anuncios("fase escrito capacidades?", "limpio"), Id).AvisoExito();
             string todoDevuelto = InformeEscritura.Leer(anuncios + Anuncios("fase escrito -", "limpio"), Id).AvisoExito();
-            string error = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado setuid") + "Error: falló.\n", Id).MensajeError("x");
+            string error = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado setuid", "limpio") + "Error: falló.\n", Id).MensajeError("x", "f", 1, Id);
             string interrupcion = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado capacidades", "limpio"), Id).MensajeInterrupcion("f", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
 
             // Assert
@@ -147,6 +147,7 @@ namespace NativeSsh.Test.Herramientas
             _ = interrupcion.Should().EndWith("Se restauró el contenido original de 'f'. ATENCIÓN: el núcleo borró al escribir las capacidades del archivo (security.capability) y no se pudieron devolver: hace falta sudo=true y setfattr o setcap. Para devolverlas, con privilegios: «setfattr -n security.capability -v 0x0100000200 <archivo>».");
         }
 
+        // Si el script confirmó cómo terminó (su anuncio final) o falló antes de anunciar nada, el error es el suyo.
         [Fact]
         public void MensajeError_EsElTextoDelScriptSinLosAnuncios()
         {
@@ -154,8 +155,45 @@ namespace NativeSsh.Test.Herramientas
             InformeEscritura informe = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo", "fase restaurando", "fase restaurado") + "Error: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.\n" + Anuncios("limpio"), Id);
 
             // Assert
-            _ = informe.MensajeError("por defecto").Should().Be("Error: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.");
-            _ = InformeEscritura.Leer(Anuncios("limpio"), Id).MensajeError("por defecto").Should().Be("por defecto");
+            _ = informe.MensajeError("por defecto", "f.txt", 1, Id).Should().Be("Error: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.");
+            _ = InformeEscritura.Leer(Anuncios("limpio"), Id).MensajeError("por defecto", "f.txt", 1, Id).Should().Be("por defecto");
+            _ = InformeEscritura.Leer("Error: la ruta es un directorio: f.txt\n", Id).MensajeError("por defecto", "f.txt", 1, Id).Should().Be("Error: la ruta es un directorio: f.txt");
+        }
+
+        public static TheoryData<string, string> FallosSinConfirmar => new()
+        {
+            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo", $"'/srv/app/f.txt' puede haber quedado a medio escribir y el script ya no lo restaurará: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo)." },
+            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase restaurando", $"'/srv/app/f.txt' puede haber quedado a medio escribir y el script ya no lo restaurará: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo)." },
+            { $"tmp {Base64(Temporal)}", $"No consta ninguna modificación de '/srv/app/f.txt'. Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor el temporal '{Temporal}'." },
+            { "fase anexando", "Al final de '/srv/app/f.txt' puede haberse anexado solo una parte del contenido." },
+        };
+
+        // Un código distinto de 0 sin el anuncio final, con algo ya anunciado: el script murió a mitad (SIGKILL del OOM killer,
+        // kill -9) y no dejó su propio error, o no tiene trampa de salida (anexar). El mensaje dice el estado según lo último
+        // anunciado, las rutas y el id.
+        [Theory]
+        [MemberData(nameof(FallosSinConfirmar))]
+        public void MensajeError_SinElAnuncioFinalDelScript_DiceElEstadoSegunLoAnunciadoYElId(string anuncios, string esperado)
+        {
+            // Arrange
+            string salida = Anuncios(anuncios.Split('\n'));
+
+            // Act
+            string mensaje = InformeEscritura.Leer(salida, Id).MensajeError("Fallo al escribir (código 137).", "/srv/app/f.txt", 137, Id);
+
+            // Assert
+            _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' terminó con el código 137 (SIGKILL: p. ej. el OOM killer o un kill -9) sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). {esperado}");
+        }
+
+        // Lo que el script llegó a escribir en su salida (sin los anuncios) se añade al final.
+        [Fact]
+        public void MensajeError_SinElAnuncioFinalConSalidaDelScript_LaAnade()
+        {
+            // Act
+            string mensaje = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo") + "cat: error de escritura\n", Id).MensajeError("x", "f.txt", 1, Id);
+
+            // Assert
+            _ = mensaje.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). 'f.txt' puede haber quedado a medio escribir").And.EndWith(" Salida del script: cat: error de escritura");
         }
     }
 }

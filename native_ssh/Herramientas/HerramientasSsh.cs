@@ -322,7 +322,7 @@ namespace NativeSsh.Herramientas
 
             (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, cancellationToken).ConfigureAwait(false);
             return peticion.CodigoSalida != 0
-                ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})."))
+                ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
                     ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
                     : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
@@ -954,7 +954,7 @@ namespace NativeSsh.Herramientas
 
             (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
             return peticionEscritura.CodigoSalida != 0
-                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})."))
+                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
                 : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
         }
 
