@@ -460,7 +460,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<OperationCanceledException>()).Which;
 
             // Assert
-            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a modificar 'nuevo.txt'\\. Cancelada antes de empezar\\.$");
+            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a ejecutar: 'nuevo.txt' no se ha modificado\\. Cancelada antes de empezar\\.$");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
             _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }

@@ -1813,7 +1813,8 @@ namespace NativeSsh.Herramientas
             if (estado == EstadoPeticionEnum.Completado && !isCancelada)
                 return (peticion, informe);
 
-            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso);
+            // Una petición cancelada en la cola nunca empezó a ejecutarse (no tiene instante de inicio).
+            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: peticion.TiempoEjecucion > TimeSpan.Zero);
             throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
         }
 

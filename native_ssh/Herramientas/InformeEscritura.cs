@@ -29,7 +29,10 @@ namespace NativeSsh.Herramientas
     //   o capacidades? (no se pudo comprobar), separados por comas, o '-';
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
-    // según lo último que el script llegó a anunciar, y nada más. Texto: la salida sin los anuncios.
+    // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
+    // "limpio" o "restos") confirma que el script terminó y que todo lo anterior llegó; sin él (la salida se cortó al
+    // cerrarse el canal o perderse la conexión, o el script sigue en marcha) el script pudo seguir después, y el error lo
+    // dice. Texto: la salida sin los anuncios.
     internal sealed record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
@@ -108,10 +111,19 @@ namespace NativeSsh.Herramientas
         public string MensajeError(string porDefecto) => (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
         // Error de una escritura que no terminó: estado y id de la petición, qué pasó con el archivo y qué queda en el servidor.
-        public string MensajeInterrupcion(string ruta, EstadoPeticionEnum estado, string idPeticion, string? aviso)
+        // isEjecutada: la petición llegó a ejecutarse (no se canceló en la cola).
+        public string MensajeInterrupcion(string ruta, EstadoPeticionEnum estado, string idPeticion, string? aviso, bool isEjecutada)
         {
             StringBuilder mensaje = new($"La escritura en '{ruta}' no terminó (estado: {estado}; petición {idPeticion}, su salida completa con ssh_output). ");
-            _ = mensaje.Append(DescribirArchivo(ruta)).Append(Restos);
+            if (!isEjecutada)
+                _ = mensaje.Append($"No se llegó a ejecutar: '{ruta}' no se ha modificado.");
+            else
+            {
+                _ = mensaje.Append(DescribirArchivo(ruta)).Append(Restos);
+                if (!IsFinalConfirmado)
+                    _ = mensaje.Append(" El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.");
+            }
+
             if (aviso is { Length: > 0 })
                 _ = mensaje.Append(' ').Append(aviso);
             if (Fase is null && Texto.Length > 0)
@@ -119,14 +131,16 @@ namespace NativeSsh.Herramientas
             return mensaje.ToString();
         }
 
+        private bool IsFinalConfirmado => Limpieza != LimpiezaEscrituraEnum.Desconocida;
+
         private string DescribirArchivo(string ruta) => Fase switch
         {
-            null => $"No se llegó a modificar '{ruta}'.",
+            null => IsFinalConfirmado ? $"No se llegó a modificar '{ruta}'." : $"No consta ninguna modificación de '{ruta}'.",
             "colocando" => $"Se interrumpió durante el renombrado atómico del contenido nuevo: '{ruta}' tiene su contenido anterior (o no existe, si era nuevo) o el nuevo completo, nunca una mezcla.",
             "colocado" => $"'{ruta}' ya tiene el contenido nuevo completo (renombrado atómico).",
             "creando" => $"'{ruta}', que no existía, puede haber quedado creado con solo una parte del contenido nuevo.",
             "creado" => $"'{ruta}' ya se creó con el contenido nuevo completo.",
-            "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
+            "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir. La copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}': el script solo los borra después de dejar el archivo restaurado por completo (para recuperar el original, copia la primera sobre el archivo).",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
             "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",

@@ -65,46 +65,61 @@ namespace NativeSsh.Test.Herramientas
             _ = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado", "limpio"), Id).AvisoExito().Should().BeEmpty();
         }
 
+        private const string NoConfirmado = " El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.";
+        private const string AMedioEscribir = $"'/srv/app/f.txt' puede haber quedado a medio escribir. La copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}': el script solo los borra después de dejar el archivo restaurado por completo (para recuperar el original, copia la primera sobre el archivo).";
+
         public static TheoryData<string, string> Interrupciones => new()
         {
-            { "", "No se llegó a modificar '/srv/app/f.txt'." },
             { $"tmp {Base64(Temporal)}\nlimpio", "No se llegó a modificar '/srv/app/f.txt'." },
-            { $"tmp {Base64(Temporal)}", $"No se llegó a modificar '/srv/app/f.txt'. Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor el temporal '{Temporal}'." },
-            { $"tmp {Base64(Temporal)}\nfase colocando", $"Se interrumpió durante el renombrado atómico del contenido nuevo: '/srv/app/f.txt' tiene su contenido anterior (o no existe, si era nuevo) o el nuevo completo, nunca una mezcla. Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor el temporal '{Temporal}'." },
+            { $"tmp {Base64(Temporal)}", $"No consta ninguna modificación de '/srv/app/f.txt'. Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor el temporal '{Temporal}'.{NoConfirmado}" },
+            { $"tmp {Base64(Temporal)}\nfase colocando", $"Se interrumpió durante el renombrado atómico del contenido nuevo: '/srv/app/f.txt' tiene su contenido anterior (o no existe, si era nuevo) o el nuevo completo, nunca una mezcla. Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor el temporal '{Temporal}'.{NoConfirmado}" },
             { "fase colocando\nfase colocado\nlimpio", "'/srv/app/f.txt' ya tiene el contenido nuevo completo (renombrado atómico)." },
-            { "fase colocando\nfase creando", "'/srv/app/f.txt', que no existía, puede haber quedado creado con solo una parte del contenido nuevo." },
-            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo", $"'/srv/app/f.txt' puede haber quedado a medio escribir: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo)." },
-            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase restaurando", $"'/srv/app/f.txt' puede haber quedado a medio escribir: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo)." },
+            { "fase colocando\nfase creando", $"'/srv/app/f.txt', que no existía, puede haber quedado creado con solo una parte del contenido nuevo.{NoConfirmado}" },
+            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo", AMedioEscribir + NoConfirmado },
+            { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase restaurando", AMedioEscribir + NoConfirmado },
             { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase restaurando\nfase fallido\nconservados", $"'/srv/app/f.txt' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo)." },
             { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase restaurando\nfase restaurado\nlimpio", "Se restauró el contenido original de '/srv/app/f.txt'." },
             { $"tmp {Base64(Temporal)}\ncopia {Base64(Copia)}\nfase escribiendo\nfase escrito\nlimpio", "'/srv/app/f.txt' ya tiene el contenido nuevo completo (escrito en el sitio)." },
-            { "fase anexando", "Al final de '/srv/app/f.txt' puede haberse anexado solo una parte del contenido." },
+            { "fase anexando", $"Al final de '/srv/app/f.txt' puede haberse anexado solo una parte del contenido.{NoConfirmado}" },
         };
 
         // Solo se afirma lo que el script llegó a anunciar: la última fase y, si no los borró, dónde quedan los temporales.
+        // Si no confirmó cómo terminó (falta su anuncio final: la salida se cortó o sigue en marcha), se dice que es lo
+        // último anunciado.
         [Theory]
         [MemberData(nameof(Interrupciones))]
         public void MensajeInterrupcion_DiceQuePasoConElArchivoSegunLaUltimaFaseAnunciada(string anuncios, string esperado)
         {
             // Arrange
-            string salida = anuncios.Length == 0 ? string.Empty : Anuncios(anuncios.Split('\n'));
+            string salida = Anuncios(anuncios.Split('\n'));
 
             // Act
-            string mensaje = InformeEscritura.Leer(salida, Id).MensajeInterrupcion("/srv/app/f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null);
+            string mensaje = InformeEscritura.Leer(salida, Id).MensajeInterrupcion("/srv/app/f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
 
             // Assert
             _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}, su salida completa con ssh_output). {esperado}");
+        }
+
+        // Una petición que no llegó a ejecutarse (cancelada en la cola) no modificó nada, sin matices.
+        [Fact]
+        public void MensajeInterrupcion_PeticionQueNoLlegoAEjecutarse_DiceQueNoSeModifico()
+        {
+            // Act
+            string mensaje = InformeEscritura.Leer(string.Empty, Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, "Cancelada antes de empezar.", isEjecutada: false);
+
+            // Assert
+            _ = mensaje.Should().EndWith("No se llegó a ejecutar: 'f.txt' no se ha modificado. Cancelada antes de empezar.");
         }
 
         [Fact]
         public void MensajeInterrupcion_AnadeElAvisoDeLaPeticionYLaSalidaSiNoSeAnuncioNada()
         {
             // Act
-            string sinAnuncios = InformeEscritura.Leer("[sudo] password for ana: \n", Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, "Cancelado: se envió Ctrl+C al proceso.");
-            string conAnuncios = InformeEscritura.Leer("Error: x\n" + Anuncios("fase colocando", "fase colocado"), Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, null);
+            string sinAnuncios = InformeEscritura.Leer("[sudo] password for ana: \n", Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, "Cancelado: se envió Ctrl+C al proceso.", isEjecutada: true);
+            string conAnuncios = InformeEscritura.Leer("Error: x\n" + Anuncios("fase colocando", "fase colocado", "limpio"), Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, null, isEjecutada: true);
 
             // Assert
-            _ = sinAnuncios.Should().EndWith("No se llegó a modificar 'f.txt'. Cancelado: se envió Ctrl+C al proceso. Salida del script: [sudo] password for ana:");
+            _ = sinAnuncios.Should().EndWith($"No consta ninguna modificación de 'f.txt'.{NoConfirmado} Cancelado: se envió Ctrl+C al proceso. Salida del script: [sudo] password for ana:");
             _ = conAnuncios.Should().EndWith("'f.txt' ya tiene el contenido nuevo completo (renombrado atómico).");
         }
 
@@ -121,7 +136,7 @@ namespace NativeSsh.Test.Herramientas
             string sinComprobar = InformeEscritura.Leer(anuncios + Anuncios("fase escrito capacidades?", "limpio"), Id).AvisoExito();
             string todoDevuelto = InformeEscritura.Leer(anuncios + Anuncios("fase escrito -", "limpio"), Id).AvisoExito();
             string error = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado setuid") + "Error: falló.\n", Id).MensajeError("x");
-            string interrupcion = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado capacidades", "limpio"), Id).MensajeInterrupcion("f", EstadoPeticionEnum.TiempoAgotado, Id, null);
+            string interrupcion = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado capacidades", "limpio"), Id).MensajeInterrupcion("f", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
 
             // Assert
             _ = exito.Should().Contain("salvo lo que sigue. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true). el núcleo quitó al escribir el bit setgid")
