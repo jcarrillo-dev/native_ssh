@@ -96,6 +96,36 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
+        // Tras una escritura en el sitio correcta, la trampa de salida borra la copia y el temporal y lo anuncia. Una señal en
+        // ese momento (el 'rm' de la limpieza tarda aquí 2 s) no la corta: sin ignorar las señales desde la primera orden de
+        // la trampa, la de la señal salía en medio de la limpieza, sin terminarla ni confirmarla, y la escritura correcta
+        // acababa en un error.
+        [Theory]
+        [InlineData("INT")]
+        [InlineData("HUP")]
+        public async Task EscrituraEnElSitio_SenalDuranteLaLimpiezaTrasEscribir_NoLaCorta(string senal)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            string marca = Ruta("limpiando");
+            await SustituirComandoAsync(herramientas, "rm", $"case \" $* \" in *.f.txt.tmp.*) : > '{marca}'; sleep 2 ;; esac\nexec /usr/bin/rm \"$@\"");
+
+            // Act
+            Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
+            await EsperasPrueba.EsperarHastaAsync(() => File.Exists(marca), TimeSpan.FromSeconds(20));
+            string script = Bash($"ps -o ppid= -p \"$(pgrep -f -- '{Ruta("bin/rm")} -f -- ' | head -n 1)\"");
+            _ = Bash($"pkill -{senal} -P {script}; kill -{senal} {script}");
+            ResultadoEscritura resultado = await escritura;
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("ya borrada");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo contenido\n");
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(2);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
         // SIGKILL al bash del script (el OOM killer o un kill -9) con la escritura en el sitio a medias: no hay trampa que
         // restaure ni anuncio final, y la petición termina con el código 137 sin un error propio del script. El error debe
         // decir que el archivo puede haber quedado a medio escribir, dónde están la copia del original y el contenido nuevo
