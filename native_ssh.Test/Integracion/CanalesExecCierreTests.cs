@@ -137,6 +137,37 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public async Task Tope_CierraElCanalAlMomentoYElProcesoQueEscribeMuerePorSigpipe()
+        {
+            // Arrange: 'yes' no termina solo; su plazo remoto (30 s) es mucho mayor que lo que debe tardar todo.
+            string marca = $"ns_tope_{Guid.NewGuid():N}";
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            try
+            {
+                // Act
+                ResultadoCanalExec resultado = await ExecAsync($"yes {marca}", 30);
+                TimeSpan duracion = reloj.Elapsed;
+                string vivos = BashLocal.Ejecutar($"pgrep -f '^yes {marca}$' || true");
+                for (int i = 0; i < 50 && vivos.Length > 0; i++)
+                {
+                    await Task.Delay(100);
+                    vivos = BashLocal.Ejecutar($"pgrep -f '^yes {marca}$' || true");
+                }
+
+                // Assert: al superar el tope se cierra el canal, así que 'yes' muere al escribir y la lectura no espera a su
+                // plazo remoto.
+                _ = resultado.HasExcedidoTope.Should().BeTrue();
+                _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(10));
+                _ = vivos.Should().BeEmpty();
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"pkill -KILL -f '^yes {marca}$' || true");
+            }
+        }
+
+        [Fact]
         public async Task CancelarUnaLectura_NoRetieneAQuienCancelaMientrasSuCanalSeCierra()
         {
             // Arrange: lectura muda con plazo remoto de 3 s; su canal no termina de cerrarse hasta que el servidor mata el
