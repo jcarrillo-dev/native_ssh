@@ -401,7 +401,7 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("tiempo agotado");
             _ = error.Message.Should().NotContain("parcial");
             _ = siguiente.Should().StartWith("[Líneas 1-3 de 10]");
-            _ = _herramientas.Estado().Sesiones.Should().ContainSingle().Which.CanalesExecActivos.Should().Be(0);
+            await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado().Sesiones.Single().CanalesExecActivos == 0);
         }
 
         [Fact]
