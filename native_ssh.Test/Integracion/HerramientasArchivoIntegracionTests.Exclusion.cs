@@ -81,13 +81,14 @@ namespace NativeSsh.Test.Integracion
 
         // El candado nunca queda huérfano: lo suelta el núcleo al cerrarse el último descriptor que lo comparte. Tras un
         // SIGKILL al script y a su 'cat', la siguiente escritura funciona al momento. Con SIGKILL solo al bash del script,
-        // el 'cat' que escribía sigue vivo con el descriptor heredado y la exclusión se mantiene hasta que él termina (sigue
-        // escribiendo en el archivo). Tras caer la conexión, el script restaura el original por su cuenta y lo suelta al
-        // salir.
+        // el 'cat' que escribía o restauraba sigue vivo con el descriptor heredado y la exclusión se mantiene hasta que él
+        // termina (sigue escribiendo en el archivo). Tras caer la conexión, el script restaura el original por su cuenta y lo
+        // suelta al salir.
         [Theory]
         [InlineData("sigkill_todo", false)]
         [InlineData("sigkill_todo", true)]
         [InlineData("sigkill_bash", false)]
+        [InlineData("sigkill_bash_restaurando", false)]
         [InlineData("caida", false)]
         [InlineData("caida", true)]
         public async Task EscrituraEnElSitioInterrumpida_ElCandadoSeSueltaAlTerminarSusProcesos(string interrupcion, bool isSudo)
@@ -96,12 +97,15 @@ namespace NativeSsh.Test.Integracion
             string[] procesosAjenos = _sshd.ProcesosDeConexion();
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
             (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
-            await SustituirComandoAsync(herramientas, "cat", CatFalso(EsperaInterrumpible()));
+            bool isRestaurando = interrupcion == "sigkill_bash_restaurando";
+            bool isSoloBash = interrupcion.StartsWith("sigkill_bash", StringComparison.Ordinal);
+            await SustituirComandoAsync(herramientas, "cat", isRestaurando ? CatFalso("exit 1", EsperaInterrumpible()) : CatFalso(EsperaInterrumpible()));
             if (isSudo)
                 await SimularSudoAsync(herramientas);
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: isSudo);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
-            string cat = Bash($"pgrep -f -- '{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.' | head -n 1");
+            string catVivo = $"{Ruta("bin/cat")} -- {carpeta}/.f.txt.{(isRestaurando ? "orig" : "tmp")}.";
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos(catVivo), TimeSpan.FromSeconds(20));
+            string cat = Bash($"pgrep -f -- '{catVivo}' | head -n 1");
             string script = Bash($"ps -o ppid= -p {cat}");
             bool isCandadoTomado = !IsCandadoLibre(archivo);
 
@@ -115,10 +119,10 @@ namespace NativeSsh.Test.Integracion
             _ = Bash(matar);
             _ = await Record.ExceptionAsync(() => escritura);
             Exception? mientrasEscribeElCat = null;
-            if (interrupcion == "sigkill_bash")
+            if (isSoloBash)
             {
                 await Task.Delay(500);
-                _ = IsCandadoLibre(archivo).Should().BeFalse("el 'cat' que escribía sigue vivo con el descriptor del candado");
+                _ = IsCandadoLibre(archivo).Should().BeFalse("el 'cat' que escribía o restauraba sigue vivo con el descriptor del candado");
 
                 // Sin reiniciar el shell, que con su SIGHUP mataría al 'cat'.
                 mientrasEscribeElCat = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "SIGUIENTE\n", overwrite: true));
@@ -135,8 +139,13 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = isCandadoTomado.Should().BeTrue();
-            _ = trasInterrupcion.Should().Be(interrupcion == "caida" ? "original completo\n" : "nue");
-            if (interrupcion == "sigkill_bash")
+            _ = trasInterrupcion.Should().Be(interrupcion switch
+            {
+                "caida" => "original completo\n",
+                "sigkill_bash_restaurando" => "ori",
+                _ => "nue"
+            });
+            if (isSoloBash)
                 _ = mientrasEscribeElCat!.Message.Should().StartWith($"Error: {TextoCandadoOcupado} {archivo} ");
             _ = siguiente.Mensaje.Should().StartWith("Archivo escrito correctamente");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("SIGUIENTE\n");
