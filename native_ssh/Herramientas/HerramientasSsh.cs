@@ -705,7 +705,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -784,8 +784,8 @@ namespace NativeSsh.Herramientas
             string textoOriginal = DecodificarArchivoUtf8(ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta), ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
-            string targetNormalizado = targetContent.ReplaceLineEndings(separador);
-            string replacementNormalizado = (replacementContent ?? string.Empty).ReplaceLineEndings(separador);
+            string targetNormalizado = AdaptarSaltos(targetContent, separador);
+            string replacementNormalizado = AdaptarSaltos(replacementContent ?? string.Empty, separador);
 
             string[] lineas = textoOriginal.Split(separador);
             bool hasSaltoFinal = textoOriginal.EndsWith(separador, StringComparison.Ordinal);
@@ -845,6 +845,14 @@ namespace NativeSsh.Herramientas
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
                 : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, !IsEscrituraNoAtomica(salidaEscritura), $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}");
+        }
+
+        // Solo los saltos '\r\n' y '\n' del texto se adaptan al separador del archivo: FF, NEL, LS, PS y un '\r' suelto son
+        // contenido y se conservan (ReplaceLineEndings los convertiría en saltos).
+        internal static string AdaptarSaltos(string texto, string separador)
+        {
+            string conLf = texto.Replace("\r\n", "\n", StringComparison.Ordinal);
+            return separador == "\n" ? conLf : conLf.Replace("\n", separador, StringComparison.Ordinal);
         }
 
         // Script común de ssh_write_file (sin append) y ssh_replace_file_content:

@@ -54,6 +54,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("archivo_latin1.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, [.. "caf"u8, 0xE9, .. "\nlinea 2\n"u8]) :
             comando.Contains("archivo_binario.bin", StringComparison.Ordinal) ? EnmarcarBase64(comando, [.. "linea 1\n"u8, 0x00, 0x01, .. "\n"u8]) :
             comando.Contains("archivo_bom.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, [0xEF, 0xBB, 0xBF, .. "linea 1\nlinea 2\n"u8]) :
+            comando.Contains("archivo_windows.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes(ContenidoCrlf)) :
+            comando.Contains("archivo_separadores.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes(ContenidoConSeparadores)) :
             comando.Contains("archivo_inexistente.txt", StringComparison.Ordinal)
                 ? new("Error: el archivo no existe: archivo_inexistente.txt\n", 1)
                 : comando.Contains("es_directorio/", StringComparison.Ordinal)
@@ -61,6 +63,10 @@ namespace NativeSsh.Test.Herramientas
                     : comando.Contains("archivo_multiples.txt", StringComparison.Ordinal)
                         ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes("linea 1\nrepetido\nrepetido\nlinea 4\n"))
                         : EnmarcarBase64(comando, Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n"));
+
+        private const string ContenidoCrlf = "uno\r\ndos\r\ntres\r\n";
+        private const string ContenidoConSeparadores = "uno\fdos\u0085tres\u2028cuatro\u2029cinco\rseis\nsiete\n";
+        private const string SeparadoresExoticos = "\f\u0085\u2028\u2029\r";
 
         // Responde como el script real: el base64 entre los marcadores con el id de la petición y el tamaño del archivo.
         private static RespuestaFalsa EnmarcarBase64(string comando, byte[] bytes)
@@ -1466,6 +1472,29 @@ namespace NativeSsh.Test.Herramientas
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "inexistente", "nuevo"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Contain("No se encontró 'targetContent' en todo el archivo");
+        }
+
+        // Solo '\r\n' y '\n' se adaptan al separador del archivo; FF, NEL, LS, PS y un '\r' suelto son contenido.
+        [Fact]
+        public async Task ReplaceFileContent_ArchivoLf_SoloAdaptaLosSaltosCrlfYConservaLosDemasSeparadores()
+        {
+            // Act
+            ResultadoEscritura resultado = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_separadores.txt", "dos\u0085tres\u2028cuatro\u2029cinco\rseis\r\nsiete", $"a{SeparadoresExoticos}b\r\nc\nd");
+
+            // Assert
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = PayloadUltimaEscritura().Should().Be($"uno\fa{SeparadoresExoticos}b\nc\nd\n");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ArchivoCrlf_AdaptaLosSaltosLfYConservaLosDemasSeparadores()
+        {
+            // Act: el objetivo con '\n' encuentra el texto con CRLF del archivo.
+            ResultadoEscritura resultado = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_windows.txt", "uno\ndos", $"x{SeparadoresExoticos}y\nz\r\nw");
+
+            // Assert
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = PayloadUltimaEscritura().Should().Be($"x{SeparadoresExoticos}y\r\nz\r\nw\r\ntres\r\n");
         }
 
         [Theory]

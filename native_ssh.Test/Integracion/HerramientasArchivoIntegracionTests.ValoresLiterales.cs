@@ -117,6 +117,27 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(carpeta).Should().BeEquivalentTo([objetivo, senuelo, nuevo]);
         }
 
+        // ssh_replace_file_content solo adapta al separador del archivo los saltos '\r\n' y '\n' del texto objetivo y del de
+        // reemplazo: FF, NEL, LS, PS y un '\r' suelto son contenido y se escriben tal cual.
+        [Theory]
+        [InlineData("\n")]
+        [InlineData("\r\n")]
+        public async Task ReemplazarContenido_TextosConSeparadoresQueNoSonSaltos_SeEscribenTalCual(string salto)
+        {
+            // Arrange
+            const string Separadores = "\f\u0085\u2028\u2029\r";
+            string archivo = Ruta("separadores.txt");
+            await File.WriteAllTextAsync(archivo, $"uno{salto}a{Separadores}b{salto}tres{salto}");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act: el objetivo lleva los separadores y un '\n' que debe casar con el salto del archivo.
+            ResultadoEscritura resultado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, $"a{Separadores}b\ntres", $"x{Separadores}y\nz\r\nw");
+
+            // Assert
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = (await File.ReadAllBytesAsync(archivo)).Should().Equal(System.Text.Encoding.UTF8.GetBytes($"uno{salto}x{Separadores}y{salto}z{salto}w{salto}"));
+        }
+
         // El directorio de trabajo vuelve del PTY en base64 entre marcadores: LimpiarAnsi quitaría el CR de un CRLF y Trim
         // los NEL, LS y PS finales. Después lo usan las rutas relativas por canal exec, por el PTY y en ssh_exec.
         [Theory]
