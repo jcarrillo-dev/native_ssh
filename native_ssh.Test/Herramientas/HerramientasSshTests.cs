@@ -484,6 +484,30 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task Lectura_TrasCaidaQueNoCierraElCanal_ElSiguienteExecRecreaElShellEnLaNuevaConexion()
+        {
+            // Arrange: shell vivo en la primera conexión; la caída no cierra su canal (como SSH.NET con un TCP muerto).
+            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            ConexionFalsa primera = _fabrica.Ultima!;
+            CanalFalso canalViejo = primera.CanalActual!;
+            primera.CaerSinCerrarCanal();
+
+            // Act: la lectura reconecta por su canal exec y después llega un ssh_exec.
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            bool isCanalViejoCerradoTrasLectura = canalViejo.IsCerrado;
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b");
+
+            // Assert: el canal muere con la conexión que lo abrió y el shell se recrea sobre la nueva.
+            _ = texto.Should().StartWith("[Líneas 1-3 de 10]");
+            _ = isCanalViejoCerradoTrasLectura.Should().BeTrue();
+            _ = comando.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = comando.Salida.Should().Be("eco:b\n");
+            _ = comando.Aviso.Should().Contain("Shell remoto recreado");
+            _ = _fabrica.Conexiones.Should().Be(2);
+            _ = _fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
         public async Task Lectura_TrasCaerLaConexion_ReconectaYElShellReutilizaLaNueva()
         {
             // Arrange

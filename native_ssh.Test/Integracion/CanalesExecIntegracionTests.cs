@@ -76,6 +76,58 @@ namespace NativeSsh.Test.Integracion
             _ = (await _herramientas.CancelarAsync(largo.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
+        // Mata los procesos sshd de las conexiones abiertas con el sshd local sin tocar el proceso maestro: el TCP se
+        // corta como en una caída de red.
+        private void MatarConexionesDelSshd()
+        {
+            string maestro = File.ReadAllText(Path.Combine(_sshd.DirectorioEstado, "sshd.pid")).Trim();
+            _ = Bash($"matar() {{ for c in $(pgrep -P $1); do matar $c; done; case \"$(ps -o comm= -p $1)\" in sshd*) kill -9 $1;; esac; }}; for c in $(pgrep -P {maestro}); do matar $c; done");
+        }
+
+        private static string Bash(string comando)
+        {
+            ProcessStartInfo inicio = new("bash", ["-c", comando]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using Process proceso = Process.Start(inicio)!;
+            string salida = proceso.StandardOutput.ReadToEnd();
+            _ = proceso.StandardError.ReadToEnd();
+            proceso.WaitForExit();
+            return salida.Trim();
+        }
+
+        [Fact]
+        public async Task CaidaDeLaConexion_ConOSinLecturaPrevia_ElSiguienteExecRecreaElShellYSeEjecuta()
+        {
+            // Arrange: cada caída obliga a reconectar; el limitador no debe frenar la prueba.
+            OpcionesNativeSsh opciones = _sshd.Opciones(maxConexiones: 1000);
+            await using GestorSesiones gestor = new(
+                _sshd.Fabrica(opciones),
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            await File.WriteAllTextAsync(Ruta("a.txt"), "uno\n");
+            _ = await herramientas.EjecutarAsync(Destino, "echo previo");
+            List<string> fallos = [];
+
+            // Act: con el shell vivo, caída y luego ssh_exec directo, o una lectura (reconecta por exec) y ssh_exec.
+            for (int i = 0; i < 10; i++)
+            {
+                bool isConLectura = i % 2 == 1;
+                MatarConexionesDelSshd();
+                await EsperasPrueba.EsperarHastaAsync(() => !gestor.ListarSesiones().Single().IsConectada);
+                string lectura = isConLectura ? await herramientas.LeerArchivoAsync(Destino, Ruta("a.txt")) : "[Líneas 1-1 de 1]\nuno\n";
+                ResultadoComando comando = await herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                if (lectura != "[Líneas 1-1 de 1]\nuno\n" || comando.Estado != EstadoPeticionEnum.Completado || comando.Salida != $"tras_{i}\n" || comando.Aviso?.Contains("Shell remoto recreado", StringComparison.Ordinal) != true)
+                    fallos.Add($"{i} (lectura previa: {isConLectura}): lectura='{lectura}' estado={comando.Estado} salida='{comando.Salida}' aviso='{comando.Aviso}'");
+            }
+
+            // Assert
+            _ = fallos.Should().BeEmpty();
+            _ = gestor.ListarSesiones().Single().ConexionesAbiertas.Should().Be(11);
+        }
+
         [Fact]
         public async Task Lectura_ArchivoCrlf_DevuelveSusRetornosDeCarroYTextoUtf8Fiel()
         {

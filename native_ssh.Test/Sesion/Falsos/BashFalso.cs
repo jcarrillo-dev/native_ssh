@@ -69,6 +69,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _execActivos;
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
+        private volatile bool _isCanalHuerfano;
 
         public bool IsConectada => _isConectada;
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
@@ -148,7 +149,23 @@ namespace NativeSsh.Test.Sesion.Falsos
             CanalActual?.Cerrar();
         }
 
-        public void Dispose() => Caer();
+        // Caída como la de SSH.NET con un TCP muerto: la conexión deja de estar activa, pero el canal del shell no se
+        // entera (Leer sigue bloqueado y nunca devuelve 0) y escribir en él falla. Ni liberar la conexión lo cierra:
+        // solo SesionShell puede descartarlo.
+        public void CaerSinCerrarCanal()
+        {
+            _isCanalHuerfano = true;
+            _isConectada = false;
+            CanalActual?.Zombificar();
+        }
+
+        public void Dispose()
+        {
+            if (_isCanalHuerfano)
+                _isConectada = false;
+            else
+                Caer();
+        }
     }
 
     public sealed class CanalFalso : ICanalShell
@@ -172,6 +189,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _sincronizaciones;
         private bool _isEnLogin;
         private bool _isReadPendiente;
+        private volatile bool _isZombi;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
@@ -220,6 +238,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 if (IsCerrado)
                     throw new InvalidOperationException("Canal cerrado.");
 
+                if (_isZombi)
+                    throw new InvalidOperationException("La conexión del canal se cayó.");
+
                 foreach (byte actual in datos)
                 {
                     if (IsCerrado)
@@ -242,6 +263,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 }
             }
         }
+
+        public void Zombificar() => _isZombi = true;
 
         public void Cerrar()
         {
