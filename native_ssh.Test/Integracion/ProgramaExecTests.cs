@@ -79,6 +79,24 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public void ConPathDeLogin_ElScriptYLaBusquedaDeTimeoutLoUsan()
+        {
+            // Arrange: el PATH del canal (el del proceso) tiene 'timeout'; el del login, un programa propio y no 'timeout'.
+            string login = Directory.CreateDirectory(Path.Combine(_raiz, "login")).FullName;
+            string sonda = Path.Combine(login, "ns_sonda_path");
+            File.WriteAllText(sonda, "#!/usr/bin/bash\necho sonda\n");
+            File.SetUnixFileMode(sonda, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            string comando = ConstructorComandoExec.Construir("ns_sonda_path; command -v timeout || echo sin-timeout; echo \"$PATH\"", null, TimeSpan.FromSeconds(30), $"{login}:{_sinTimeout}");
+
+            // Act
+            (int codigo, string salida, _, _) = Ejecutar(comando, Environment.GetEnvironmentVariable("PATH") ?? "/usr/bin", TimeSpan.FromSeconds(20));
+
+            // Assert
+            _ = codigo.Should().Be(0);
+            _ = salida.Should().Be($"sonda\nsin-timeout\n{login}:{_sinTimeout}\n");
+        }
+
+        [Fact]
         public async Task SinTimeout_UnScriptRapidoNoDejaElWatchdogVivo()
         {
             // Arrange: el plazo (único) es lo que duerme el watchdog.

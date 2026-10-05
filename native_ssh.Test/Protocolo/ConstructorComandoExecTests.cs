@@ -7,7 +7,7 @@ namespace NativeSsh.Test.Protocolo
 {
     public partial class ConstructorComandoExecTests
     {
-        [GeneratedRegex(@"^bash --noprofile --norc -c '[^'\\!]*' ns [A-Za-z0-9+/=]+ [0-9]+ </dev/null$")]
+        [GeneratedRegex(@"^bash --noprofile --norc -c '[^'\\!]*' ns [A-Za-z0-9+/=]+ [0-9]+ (-|[A-Za-z0-9+/=]+) </dev/null$")]
         private static partial Regex RegexComandoPortable();
 
         [Fact]
@@ -40,7 +40,7 @@ namespace NativeSsh.Test.Protocolo
             string comando = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(segundos));
 
             // Assert
-            _ = comando.Split(' ')[^2].Should().Be(esperado);
+            _ = comando.Split(' ')[^3].Should().Be(esperado);
         }
 
         [Fact]
@@ -49,9 +49,23 @@ namespace NativeSsh.Test.Protocolo
             // Act: lo interpreta el shell de login (sh, bash, zsh, fish, tcsh...): una palabra simple, un literal entre
             // comillas simples sin '\' ni '!' (fish y csh los tratan distinto) y una redirección de entrada.
             string comando = ConstructorComandoExec.Construir("echo \\ ! ' \" $x", "/a'b", TimeSpan.FromSeconds(5));
+            string conPath = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(5), "/home/ana/.cargo/bin:/usr/bin:/bin");
 
             // Assert
             _ = RegexComandoPortable().IsMatch(comando).Should().BeTrue(comando);
+            _ = RegexComandoPortable().IsMatch(conPath).Should().BeTrue(conPath);
+        }
+
+        [Fact]
+        public void Construir_PasaElPathDelLoginEnBase64OGuionSiNoSeConoce()
+        {
+            // Act
+            string sinPath = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(5));
+            string conPath = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(5), "/home/ana/.cargo/bin:/usr/bin");
+
+            // Assert
+            _ = ScriptExec.DecodificarPath(sinPath).Should().BeNull();
+            _ = ScriptExec.DecodificarPath(conPath).Should().Be("/home/ana/.cargo/bin:/usr/bin");
         }
     }
 }

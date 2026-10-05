@@ -48,6 +48,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
 
+        // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH).
+        public string PathLogin { get; set; } = "/usr/local/bin:/usr/bin:/bin";
+
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
@@ -57,7 +60,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 await Task.Delay(RetrasoConexion, cancellationToken);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec };
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec, PathLogin = PathLogin };
             Ultima = conexion;
             return conexion;
         }
@@ -83,6 +86,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int ExecActivos => Volatile.Read(ref _execActivos);
         public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
         public SemaphoreSlim? BloqueoExec { get; init; }
+        public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public CanalFalso? CanalActual { get; private set; }
 
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
@@ -138,7 +142,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 throw new InvalidOperationException("Conexión cerrada.");
 
             _ = Interlocked.Increment(ref _shellsAbiertos);
-            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin);
+            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin) { PathLogin = PathLogin };
             return CanalActual;
         }
 
@@ -206,6 +210,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         public int MarcadoresInicializacion => Volatile.Read(ref _marcadoresInicializacion);
+        public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
@@ -358,6 +363,10 @@ namespace NativeSsh.Test.Sesion.Falsos
                 Inicializaciones.Enqueue(linea);
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);
                 EmitirConMarcador("", ExtraerId(linea), 0);
+            }
+            else if (linea.Contains("\"$PATH\" | base64", StringComparison.Ordinal))
+            {
+                EmitirConMarcador(Convert.ToBase64String(Encoding.UTF8.GetBytes(PathLogin)) + "\n", ExtraerId(linea), 0);
             }
             else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
             {

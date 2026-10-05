@@ -546,6 +546,25 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task CanalesExec_UsanElPathDelLoginCapturadoAlInicializarElShell()
+        {
+            // Arrange: el login falso exporta otro PATH (p. ej. con ~/.cargo/bin) que el de un canal exec.
+            _fabrica.PathLogin = "/home/ana/.cargo/bin:/usr/local/bin:/usr/bin";
+
+            // Act: antes de que exista el shell PTY no hay PATH capturado; después, sí.
+            _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            string? antes = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
+            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.BuscarAsync("servidor", "algo");
+            string? despues = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
+
+            // Assert
+            _ = antes.Should().BeNull();
+            _ = despues.Should().Be("/home/ana/.cargo/bin:/usr/local/bin:/usr/bin");
+            _ = _gestor.ListarSesiones().Single().PathLogin.Should().Be("/home/ana/.cargo/bin:/usr/local/bin:/usr/bin");
+        }
+
+        [Fact]
         public async Task SetCwd_AlRecrearElShell_SeReexportaElDirectorio()
         {
             // Arrange

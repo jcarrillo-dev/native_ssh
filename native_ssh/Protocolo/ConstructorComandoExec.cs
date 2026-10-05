@@ -5,6 +5,9 @@ namespace NativeSsh.Protocolo
     // Comando de un canal exec. Lo interpreta el shell de login del usuario, que puede no ser bash (fish, zsh, tcsh...):
     // solo se usa sintaxis común a todos (palabras simples, un literal entre comillas simples y '</dev/null'). El script
     // viaja en base64 como argumento y lo ejecuta bash, con stdin en /dev/null (nada puede quedarse esperando entrada).
+    // Con el PATH del shell de login capturado por el shell PTY (en base64, '-' si aún no se conoce), para que el
+    // script vea los mismos programas que ssh_exec (p. ej. rg en ~/.cargo/bin); un canal exec solo recibe el PATH por
+    // defecto de sshd porque no pasa por los archivos de perfil. 'timeout' y 'bash' se buscan ya con ese PATH.
     //
     // El plazo se aplica en el propio servidor, porque cerrar el canal no mata nada (OpenSSH ignora la señal de
     // SshCommand.CancelAsync y el proceso sigue vivo si no escribe):
@@ -19,6 +22,7 @@ namespace NativeSsh.Protocolo
     {
         private const string Programa =
             "s=$(printf %s \"$1\" | base64 -d) || exit 125; " +
+            "[ \"$3\" = - ] || PATH=$(printf %s \"$3\" | base64 -d) || exit 125; export PATH; " +
             "if command -v timeout >/dev/null 2>&1; then exec timeout -k 2 \"$2\" bash --noprofile --norc -c \"$s\"; fi; " +
             "exec 3>&2 2>/dev/null; vencido=0; trap \"vencido=1\" USR1; set -m; " +
             "bash --noprofile --norc -c \"$s\" 2>&3 3>&- & p=$(jobs -p %+); " +
@@ -26,7 +30,7 @@ namespace NativeSsh.Protocolo
             "while :; do wait $p; rc=$?; kill -0 $p || break; done; " +
             "kill -KILL -- -$w; [ $vencido = 1 ] && exit 124; exit $rc";
 
-        public static string Construir(string script, string? directorioTrabajo, TimeSpan timeout)
+        public static string Construir(string script, string? directorioTrabajo, TimeSpan timeout, string? pathLogin = null)
         {
             StringBuilder completo = new(script.Length + 128);
             if (!string.IsNullOrEmpty(directorioTrabajo))
@@ -35,7 +39,8 @@ namespace NativeSsh.Protocolo
 
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(completo.ToString()));
             long segundos = Math.Max(1, (long)Math.Ceiling(timeout.TotalSeconds));
-            return $"bash --noprofile --norc -c '{Programa}' ns {base64} {segundos} </dev/null";
+            string path = string.IsNullOrEmpty(pathLogin) ? "-" : Convert.ToBase64String(Encoding.UTF8.GetBytes(pathLogin));
+            return $"bash --noprofile --norc -c '{Programa}' ns {base64} {segundos} {path} </dev/null";
         }
     }
 }

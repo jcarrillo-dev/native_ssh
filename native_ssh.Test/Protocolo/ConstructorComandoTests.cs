@@ -116,6 +116,28 @@ namespace NativeSsh.Test.Protocolo
         }
 
         [Fact]
+        public void Inicializacion_ConDirectorio_ReexportaNsCwdEnBase64AntesDelCd()
+        {
+            // Act
+            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w, "/srv/it's"));
+
+            // Assert
+            string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("/srv/it's"));
+            _ = linea.Should().Contain($"export __NS_CWD=\"$(printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
+            _ = linea.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();
+        }
+
+        [Fact]
+        public void CapturaPath_SaltoInicialYPathEnBase64EnUnaLineaConMarcador()
+        {
+            // Act
+            string texto = Componer(w => ConstructorComando.EscribirCapturaPath(Id, w));
+
+            // Assert: el primer '\n' satisface el 'read' del marcador anterior.
+            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; echo; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+        }
+
+        [Fact]
         public void ClausulaFallback_PresenteEnTodosLosComandos()
         {
             // Arrange
