@@ -245,7 +245,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = error.Should().BeAssignableTo(isPorToken ? typeof(OperationCanceledException) : typeof(NativeSshException));
-            _ = error!.Message.Should().Contain($"No se llegó a modificar '{archivo}'").And.MatchRegex("petición [0-9a-f]{32}");
+            _ = error!.Message.Should().Contain($"No se llegó a modificar '{archivo}'").And.MatchRegex("petición [0-9a-f]{32}").And.NotContain("pueden quedar");
             _ = File.Exists(marca).Should().BeTrue("el temporal ya existía cuando se interrumpió");
             await EsperasPrueba.EsperarHastaAsync(() => Directory.GetFileSystemEntries(carpeta).Length == 1, TimeSpan.FromSeconds(10));
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("antes\n");
@@ -375,8 +375,10 @@ namespace NativeSsh.Test.Integracion
         // Falla la escritura en el sitio y la restauración se interrumpe (Ctrl+C al vencer el timeout; la trampa la reintenta
         // y también se cuelga, hasta que el cierre del canal lo mata todo): la copia del original no se borra nunca mientras
         // el destino no esté restaurado, y el error da su ruta, la del contenido nuevo y el id de la petición.
-        [Fact]
-        public async Task EscrituraEnElSitio_FallaLaEscrituraYSeInterrumpeLaRestauracion_ConservaLaCopiaYDaSusRutas()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task EscrituraEnElSitio_FallaLaEscrituraYSeInterrumpeLaRestauracion_ConservaLaCopiaYDaSusRutas(bool isReplace)
         {
             // Arrange
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(2));
@@ -384,7 +386,9 @@ namespace NativeSsh.Test.Integracion
             await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", EsperaInterrumpible()));
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
+            NativeSshException error = (await FluentActions.Awaiting(() => isReplace
+                    ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original completo", "nuevo contenido")
+                    : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
             ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message));
@@ -607,9 +611,9 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
         }
 
-        // Nombres de 255 bytes (NAME_MAX): ASCII, con caracteres de 2 y 3 bytes que el recorte a 242 bytes partiría, y con
-        // caracteres de 4 bytes.
-        public static TheoryData<string> NombresDe255Bytes => [new string('a', 251) + ".txt", "a" + string.Concat(Enumerable.Repeat("€", 84)) + "ñ", string.Concat(Enumerable.Repeat("😀", 63)) + "abc"];
+        // Nombres de 255 bytes (NAME_MAX): ASCII, con caracteres de 3 bytes que el recorte a 242 bytes partiría tras su
+        // primer byte o tras el segundo, y con caracteres de 4 bytes.
+        public static TheoryData<string> NombresDe255Bytes => [new string('a', 251) + ".txt", "a" + string.Concat(Enumerable.Repeat("€", 84)) + "ñ", string.Concat(Enumerable.Repeat("€", 85)), string.Concat(Enumerable.Repeat("😀", 63)) + "abc"];
 
         // El temporal ".<nombre>.tmp.XXXXXX" y la copia ".<nombre>.orig.XXXXXX" deben caber en NAME_MAX: con un nombre de 255
         // bytes la parte del nombre se recorta por bytes sin partir caracteres UTF-8. Sin recorte, mktemp fallaba: un
