@@ -153,23 +153,49 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Línea inicial (1-indexed, por defecto 1).")] int lineaInicio = 1,
-            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas.")] int? lineaFin = null,
+            [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
+            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
+            bool isDesdeElFinal = lineaInicio < 0;
+            if (isDesdeElFinal && lineaFin is not null)
+                throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
+
             int inicio = Math.Max(1, lineaInicio);
             int fin = lineaFin ?? (inicio + 799);
-            if (fin < inicio)
+            if (!isDesdeElFinal && fin < inicio)
                 throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen sed y tail.
+            string lectura = isDesdeElFinal
+                ? $$"""
+                    ultimas={{-(long)lineaInicio}}
+                    inicio_efectivo=$(( total - ultimas + 1 ))
+                    [ "$inicio_efectivo" -lt 1 ] && inicio_efectivo=1
+                    if [ "$total" -eq 0 ]; then
+                      echo "[Líneas 0-0 de 0]"
+                    else
+                      echo "[Líneas $inicio_efectivo-$total de $total]"
+                    fi
+                    tail -n {{-(long)lineaInicio}} -- {{rutaEscapada}}
+                    """
+                : $$"""
+                    if [ "$total" -eq 0 ]; then
+                      echo "[Líneas 0-0 de 0]"
+                    else
+                      fin_efectivo=$(( total < {{fin}} ? total : {{fin}} ))
+                      echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
+                    fi
+                    sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
+                    """;
             string comando = $$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
@@ -181,14 +207,11 @@ namespace NativeSsh.Herramientas
                   printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                total=$(wc -l < {{rutaEscapada}})
-                if [ "$total" -eq 0 ]; then
-                  echo "[Líneas 0-0 de 0]"
-                else
-                  fin_efectivo=$(( total < {{fin}} ? total : {{fin}} ))
-                  echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
+                total=$(wc -l < {{rutaEscapada}}) || exit 1
+                if [ -s {{rutaEscapada}} ] && [ -n "$(tail -c 1 -- {{rutaEscapada}})" ]; then
+                  total=$(( total + 1 ))
                 fi
-                sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
+                {{lectura}}
                 )
                 """.ReplaceLineEndings("\n");
 

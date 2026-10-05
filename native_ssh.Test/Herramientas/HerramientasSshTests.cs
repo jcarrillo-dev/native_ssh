@@ -508,6 +508,26 @@ namespace NativeSsh.Test.Herramientas
             _ = comandos.Should().Contain(c => c.Contains("-type d -print", StringComparison.Ordinal) && c.Contains("| head -n 10", StringComparison.Ordinal));
         }
 
+        [Fact]
+        public async Task ReadFile_InicioNegativoConLineaFin_LanzaErrorClaro()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", -5, 10))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("lineaFin");
+            _ = error.Message.Should().Contain("negativo");
+        }
+
+        [Fact]
+        public async Task ReadFile_InicioNegativo_LeeLasUltimasLineasConTail()
+        {
+            // Act
+            _ = await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", -3)).Should().ThrowAsync<NativeSshException>();
+
+            // Assert: el guion falso no simula tail (responde con código 2); basta con el comando enviado.
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("tail -n 3 -- 'archivo.txt'", StringComparison.Ordinal));
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("   ")]

@@ -144,6 +144,33 @@ namespace NativeSsh.Test.Integracion
             _ = bytesListado.Should().BeLessThan(6 * 20);
         }
 
+        [Fact]
+        public async Task LeerArchivo_InicioNegativo_DevuelveLasUltimasLineasConLaMismaCabecera()
+        {
+            // Arrange
+            string archivo = Ruta("diez.txt");
+            await File.WriteAllLinesAsync(archivo, Enumerable.Range(1, 10).Select(i => $"l{i}"));
+            string vacio = Ruta("vacio.txt");
+            await File.WriteAllTextAsync(vacio, string.Empty);
+            string sinSalto = Ruta("sin_salto.txt");
+            await File.WriteAllTextAsync(sinSalto, "a\nb\nc");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string ultimas = await herramientas.LeerArchivoAsync(Destino, archivo, -3);
+            string todas = await herramientas.LeerArchivoAsync(Destino, archivo, -20);
+            string deVacio = await herramientas.LeerArchivoAsync(Destino, vacio, -5);
+            string finSinSalto = await herramientas.LeerArchivoAsync(Destino, sinSalto, -2);
+            string completoSinSalto = await herramientas.LeerArchivoAsync(Destino, sinSalto);
+
+            // Assert
+            _ = ultimas.Should().Be("[Líneas 8-10 de 10]\nl8\nl9\nl10\n");
+            _ = todas.Should().Be("[Líneas 1-10 de 10]\n" + string.Concat(Enumerable.Range(1, 10).Select(i => $"l{i}\n")));
+            _ = deVacio.Should().Be("[Líneas 0-0 de 0]\n");
+            _ = finSinSalto.Should().Be("[Líneas 2-3 de 3]\nb\nc");
+            _ = completoSinSalto.Should().Be("[Líneas 1-3 de 3]\na\nb\nc");
+        }
+
         private Peticion UltimaPeticion(string fragmentoComando) =>
             _gestor.ListarPeticiones().First(p => p.Comando.Contains(fragmentoComando, StringComparison.Ordinal));
     }
