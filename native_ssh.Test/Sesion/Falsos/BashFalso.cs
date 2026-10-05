@@ -112,6 +112,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             get => Volatile.Read(ref _alConsultarConexion);
             set => Volatile.Write(ref _alConsultarConexion, value);
         }
+
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
 
