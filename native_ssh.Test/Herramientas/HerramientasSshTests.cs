@@ -417,16 +417,18 @@ namespace NativeSsh.Test.Herramientas
             await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado().Sesiones.Single().CanalesExecActivos == 0);
         }
 
-        // La lectura previa de ssh_replace_file_content se interrumpe por el timeout: el error dice que el archivo no se tocó.
+        // La lectura previa de ssh_replace_file_content se interrumpe por el timeout: el error dice que el archivo no se tocó y
+        // da el id de la petición (la sesión la finaliza como TiempoAgotado antes de que venza la espera de la herramienta).
         [Fact]
-        public async Task ReplaceFileContent_LecturaPreviaConTiempoAgotado_DiceQueNoSeModifico()
+        public async Task ReplaceFileContent_LecturaPreviaConTiempoAgotado_DiceQueNoSeModificoYDaElId()
         {
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => HerramientasConTimeoutCorto().ReemplazarContenidoArchivoAsync("servidor", "colgado_r.txt", "a", "b"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain("TiempoAgotado").And.EndWith("No se ha modificado 'colgado_r.txt'.");
+            _ = error.Message.Should().MatchRegex("^La operación no se completó \\(estado: TiempoAgotado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. ")
+                .And.EndWith("No se ha modificado 'colgado_r.txt'.");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
         }
 

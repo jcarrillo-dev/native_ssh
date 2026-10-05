@@ -1889,13 +1889,13 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
+        // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
+        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
         private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
         {
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException(peticion.Aviso is { Length: > 0 } aviso
-                    ? $"La operación no se completó (estado: {estado}). {aviso}{(consecuencia is null ? string.Empty : " " + consecuencia)}"
-                    : $"La operación no se completó (estado: {estado}).{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

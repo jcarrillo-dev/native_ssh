@@ -61,5 +61,39 @@ namespace NativeSsh.Test.Integracion
                 .And.NotContain("Se restauró")
                 .And.NotContain("__NS_");
         }
+
+        // La lectura previa de ssh_replace_file_content (un 'base64' falso que se queda esperando al codificar) no termina:
+        // por el timeout, porque la sesión se cierra (ssh_disconnect) o por el token. La sesión finaliza la petición antes
+        // de que venza la espera de la herramienta, y el error debe decir igualmente que el archivo no se modificó y dar el
+        // id de la petición para ver su salida con ssh_output.
+        [Theory]
+        [InlineData("timeout")]
+        [InlineData("desconexion")]
+        [InlineData("token")]
+        public async Task ReemplazarContenido_LecturaPreviaQueNoTermina_DiceQueNoSeModificoYDaElId(string interrupcion)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: interrupcion == "timeout" ? TimeSpan.FromSeconds(2) : TimeSpan.FromSeconds(40));
+            string archivo = Ruta("f.txt");
+            await File.WriteAllTextAsync(archivo, "original\n");
+            string marca = Ruta("leyendo");
+            await SustituirComandoAsync(herramientas, "base64", $"[ \"$1\" = -d ] && exec /usr/bin/base64 \"$@\"\n: > '{marca}'\n{EsperaInterrumpible()}");
+            using CancellationTokenSource cancelacion = new();
+
+            // Act
+            Task<ResultadoEscritura> reemplazo = herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original", "cambiado", cancellationToken: cancelacion.Token);
+            await EsperasPrueba.EsperarHastaAsync(() => File.Exists(marca), TimeSpan.FromSeconds(20));
+            if (interrupcion == "desconexion")
+                _ = await herramientas.DesconectarAsync(Destino);
+            else if (interrupcion == "token")
+                await cancelacion.CancelAsync();
+            Exception? error = await Record.ExceptionAsync(() => reemplazo);
+            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/base64")), TimeSpan.FromSeconds(25));
+
+            // Assert
+            _ = error.Should().BeAssignableTo(interrupcion == "token" ? typeof(OperationCanceledException) : typeof(NativeSshException));
+            _ = error!.Message.Should().MatchRegex("petición [0-9a-f]{32}").And.EndWith($"No se ha modificado '{archivo}'.");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original\n");
+        }
     }
 }
