@@ -67,8 +67,10 @@ namespace NativeSsh.Test.Integracion
                 int conexiones = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas;
                 int aceptadasDespues = _sshd.ConexionesAceptadas();
 
+                // La lectura cancelada conserva su canal (y su cupo) mientras su 'sleep' remoto vive: se espera al proceso
+                // de la que sigue en vuelo, no al contador.
                 Task<ResultadoCanalExec> enVuelo = ExecAsync($"sleep {sleep + 2}", 30);
-                await EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarSesiones().Single().CanalesExecActivos == 1);
+                await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep + 2, sleep + 2).Length > 0);
                 await Task.Delay(300);
                 _ = await _gestor.DesconectarAsync(Destino);
                 NativeSshException cierre = (await FluentActions.Awaiting(() => enVuelo).Should().ThrowAsync<NativeSshException>()).Which;

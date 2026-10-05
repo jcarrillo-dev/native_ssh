@@ -24,8 +24,10 @@ namespace NativeSsh.Sesion
     // del shell se hace fuera del bucle y cada comando la espera solo hasta su propio límite (ObtenerCanalShellAsync), y
     // una escritura que el servidor no acepta solo se desbloquea liberando la conexión (DisposeAsync lo hace si el bucle
     // no termina al cerrar la sesión).
-    // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que está cerrado de verdad, aunque la operación
-    // ya haya fallado por su plazo local (apertura sin respuesta del servidor).
+    // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que el servidor lo cierra de verdad (o cae la
+    // conexión), aunque la operación ya haya fallado por su plazo local, su tope o una cancelación: cerrar un canal espera
+    // el CLOSE del servidor (ConexionSshNet), y OpenSSH no lo envía, ni libera la plaza de su MaxSessions, hasta que
+    // termina el proceso de la sesión (uno que no escribe vive hasta su plazo remoto, N s y 2 más si ignora TERM).
     public sealed class SesionShell : IAsyncDisposable
     {
         public const int TamanoBloqueLectura = 16 * 1024;
@@ -48,6 +50,10 @@ namespace NativeSsh.Sesion
         // Lo que DisposeAsync espera al bucle antes de liberar la conexión para sacarlo de una escritura que el servidor no
         // acepta (sin ConnectionInfo.Timeout, SSH.NET espera ahí a que responda o caiga la conexión).
         private static readonly TimeSpan EsperaFinBucleAlCerrar = TimeSpan.FromSeconds(2);
+
+        // Lo que quien cierra el canal del shell espera a que el servidor confirme el cierre (lo que hacía SSH.NET con su
+        // ChannelCloseTimeout por defecto); después el cierre sigue en segundo plano.
+        private static readonly TimeSpan EsperaCierreCanalShell = TimeSpan.FromSeconds(1);
 
         private const string DetalleComandoNoEnviado = "el comando no llegó a enviarse.";
         private const string AvisoAperturaShellPendiente = "El servidor aún no ha respondido a la apertura del shell: el siguiente comando esperará a esa misma apertura en lugar de abrir otro canal.";
@@ -99,6 +105,14 @@ namespace NativeSsh.Sesion
             _opciones = opciones;
             _logger = logger;
             _bucle = Task.Run(BucleComandosAsync);
+        }
+
+        // Hasta dónde llegó una lectura cuyo límite local venció.
+        private enum EtapaExecEnum
+        {
+            Cupo,
+            Conexion,
+            Canal
         }
 
         private enum EscrituraEnum
@@ -237,8 +251,10 @@ namespace NativeSsh.Sesion
 
         // Canal exec sobre la conexión de la sesión, sin pasar por la cola del shell. 'timeout' cubre la espera de cupo,
         // la conexión (si no la hay) y la ejecución; al agotarse se cierra el canal y se lanza NativeSshException.
-        // La operación termina al agotarse el límite local aunque la apertura del canal siga colgada (servidor que no
-        // responde): el canal conserva su cupo hasta que se cierra de verdad, para no superar el MaxSessions del servidor.
+        // La operación termina al agotarse el límite local aunque la apertura del canal siga sin respuesta del servidor o
+        // su proceso remoto siga vivo: el canal conserva su cupo hasta que el servidor lo cierra de verdad (como mucho al
+        // vencer su plazo remoto), para no superar el MaxSessions del servidor con canales que ya nadie usa. Las lecturas
+        // que esperan ese cupo fallan al vencer su propio límite y lo dicen.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string script, TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (IsCerrando)
@@ -252,14 +268,17 @@ namespace NativeSsh.Sesion
             CancellationToken token = enlazado.Token;
             bool isCupoTomado = false;
             bool isCanalContado = false;
+            EtapaExecEnum etapa = EtapaExecEnum.Cupo;
             Task<ResultadoCanalExec>? ejecucion = null;
             try
             {
                 await _cupoExec.WaitAsync(token).ConfigureAwait(false);
                 isCupoTomado = true;
+                etapa = EtapaExecEnum.Conexion;
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
+                etapa = EtapaExecEnum.Canal;
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token);
                 return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
@@ -271,7 +290,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se abandona y su canal exec se cierra.");
+                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa, timeout));
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -284,6 +303,18 @@ namespace NativeSsh.Sesion
                 else
                     LiberarCanalExec(isCupoTomado, isCanalContado);
             }
+        }
+
+        private string DescribirTiempoAgotadoExec(EtapaExecEnum etapa, TimeSpan timeout)
+        {
+            string plazo = $"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado)";
+            return etapa switch
+            {
+                EtapaExecEnum.Cupo => $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, por lecturas en curso o por otras ya abandonadas cuyo proceso remoto aún no ha terminado (el servidor mantiene su sesión hasta entonces, como mucho hasta el plazo de cada una). Reintenta en unos segundos.",
+                EtapaExecEnum.Conexion => $"{plazo} sin llegar a obtener canal: la conexión con {Destino.Clave} no se estableció a tiempo.",
+                EtapaExecEnum.Canal => $"{plazo}; se abandona y su canal exec se cierra (el servidor lo libera cuando termina su proceso remoto, como mucho al vencer su plazo).",
+                _ => throw new ArgumentOutOfRangeException(nameof(etapa), etapa, null)
+            };
         }
 
         // La tarea de IConexionSsh.EjecutarExecAsync termina cuando el canal está cerrado (si su apertura seguía en curso,
@@ -769,14 +800,7 @@ namespace NativeSsh.Sesion
             }
 
             _logger.AperturaShellAbandonada(null, Destino.Clave);
-            try
-            {
-                canal.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.ErrorCerrandoCanal(ex, Destino.Clave);
-            }
+            _ = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         // Un login lento con readline (bash -l) lee la línea del exec en modo crudo; al volver a modo canónico el
@@ -939,9 +963,17 @@ namespace NativeSsh.Sesion
             }
 
             _ = (espera?.TrySetResult(CodigoCanalCerrado));
+            // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
+            // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.
+            Task cierre = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            _ = cierre.Wait(EsperaCierreCanalShell);
+        }
+
+        private void LiberarCanal(object? estado)
+        {
             try
             {
-                canal.Dispose();
+                ((ICanalShell)estado!).Dispose();
             }
             catch (Exception ex)
             {

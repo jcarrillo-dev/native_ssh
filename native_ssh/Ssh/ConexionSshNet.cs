@@ -40,14 +40,22 @@ namespace NativeSsh.Ssh
         //   una renegociación de claves (Session.SendMessage): esperan a que el servidor responda o a que caiga la conexión;
         //   cerrar la sesión (ssh_disconnect) libera la conexión y las desbloquea;
         // - keepalive: solo durante una renegociación sin respuesta, y los siguientes se saltan mientras tanto.
-        // No cambian: la desconexión (DisconnectMessage se admite durante una renegociación y la espera del hilo de mensajes
-        // no tiene plazo) ni el cierre de un canal (ChannelCloseTimeout). El hilo de mensajes de SSH.NET no puede quedarse
-        // esperando una renegociación: entre KEXINIT y NEWKEYS el servidor solo envía mensajes de la propia renegociación
-        // (RFC 4253, 7.1), así que nunca le hace contestar con otra cosa.
+        // No cambia la desconexión: DisconnectMessage se admite durante una renegociación y la espera del hilo de mensajes
+        // no tiene plazo. El hilo de mensajes de SSH.NET no puede quedarse esperando una renegociación: entre KEXINIT y
+        // NEWKEYS el servidor solo envía mensajes de la propia renegociación (RFC 4253, 7.1), así que nunca le hace
+        // contestar con otra cosa.
+        //
+        // Cerrar un canal tampoco tiene plazo (ChannelCloseTimeout, 1 s por defecto, pasa a infinito): Channel.Close envía
+        // nuestro CLOSE y espera el del servidor, que OpenSSH no manda hasta que termina el proceso de la sesión (un proceso
+        // que no escribe vive hasta su plazo remoto). Así, cerrar un canal exec abortado termina cuando el servidor libera
+        // de verdad su sesión (o cae la conexión), y su cupo se libera entonces: con 1 s se daba por cerrado mientras el
+        // servidor seguía contándolo en su MaxSessions. Quien cierra el canal del shell no lo espera más de un segundo
+        // (SesionShell.CerrarCanal): un bash remoto que no muere al perder el terminal no puede bloquear la cola.
         public ConexionSshNet(SshClient cliente)
         {
             _cliente = cliente;
             cliente.ConnectionInfo.Timeout = Timeout.InfiniteTimeSpan;
+            cliente.ConnectionInfo.ChannelCloseTimeout = Timeout.InfiniteTimeSpan;
             cliente.ErrorOccurred += OnErrorConexionEvent;
         }
 
