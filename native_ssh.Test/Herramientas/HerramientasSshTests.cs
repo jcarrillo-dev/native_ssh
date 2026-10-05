@@ -790,7 +790,7 @@ namespace NativeSsh.Test.Herramientas
                 .Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
 
         [Fact]
-        public void DescripcionesDeEscritura_DocumentanSoloLecturaAclYAtributosExtendidos()
+        public void DescripcionesDeEscritura_DocumentanSoloLecturaYLosAtributosQueSeConservan()
         {
             // Act
             string escribir = DescripcionDe(nameof(HerramientasSsh.EscribirArchivoAsync));
@@ -798,8 +798,9 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = escribir.Should().Contain("archivos de solo lectura propios").And.Contain("conservando su modo");
-            _ = escribir.Should().Contain("ACL o atributos extendidos").And.NotContain("no conserva ACL");
-            _ = reemplazar.Should().Contain("ACL o atributos extendidos").And.NotContain("no conserva ACL");
+            _ = escribir.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
+            _ = reemplazar.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
+            _ = (escribir + reemplazar).Should().NotContain("el contexto SELinux no cuenta");
         }
 
         [Fact]
@@ -930,8 +931,8 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Split("sudo ").Should().HaveCount(2);
             _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
             _ = comando.Should().Contain("mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
-            _ = comando.Should().Contain("chown --reference=\"$destino\" -- \"$tmp\"");
-            _ = comando.Should().Contain("chmod --reference=\"$destino\" -- \"$tmp\"");
+            _ = comando.Should().Contain("cp --attributes-only --preserve=mode,ownership,xattr,context -- \"$1\" \"$2\"");
+            _ = comando.Should().Contain("conservar_atributos \"$destino\" \"$tmp\"");
             _ = comando.Should().Contain("mv -f -- \"$tmp\" \"$destino\"");
             _ = comando.Should().Contain("base64 -d > \"$tmp\"");
         }

@@ -254,7 +254,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, ACL o atributos extendidos (detectados con getfattr, getfacl o ls; el contexto SELinux no cuenta), lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat y, si existen, getfattr o getfacl), lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar) o el archivo tiene enlaces duros, lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -747,7 +747,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -906,8 +906,10 @@ namespace NativeSsh.Herramientas
         // - todo el script (comprobaciones incluidas) se ejecuta con el mismo privilegio: con sudo=true, un único 'sudo bash';
         // - un enlace simbólico se resuelve (readlink -f) y se escribe en su destino, nunca se sustituye el enlace;
         // - el temporal se crea con mktemp (0600) en el directorio del destino resuelto;
-        // - archivo existente: el temporal recibe propietario/grupo y modo (chown/chmod --reference) y se renombra encima;
-        //   si no se puede (propietario ajeno sin sudo, sin --reference) o hay enlaces duros, se escribe en el sitio (no atómico);
+        // - un destino que existe y no es un archivo regular (FIFO, socket, dispositivo) se rechaza sin tocarlo;
+        // - archivo existente: el temporal recibe todos los atributos del original (conservar_atributos) y se renombra
+        //   encima; si no se pueden copiar y comprobar (propietario ajeno sin sudo, cp que no es de GNU, contexto SELinux
+        //   que no se puede asignar...) o hay enlaces duros, se escribe en el sitio (no atómico);
         // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber).
         private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir)
         {
@@ -923,20 +925,16 @@ namespace NativeSsh.Herramientas
             // Sin sobrescribir nunca se mira si el destino existe para decidir: ln falla si apareció entretanto.
             string colocar = isSobrescribir
                 ? PlantillaBash.Crear($$"""
+                    {{DefinicionConservarAtributos}}
                     if [ -e "$destino" ]; then
                       en_sitio=0
-                      {{DefinicionTieneAclOAtributos}}
-                      tiene_acl_o_atributos "$destino" && en_sitio=1
-                      tiene_acl_o_atributos "$tmp" && en_sitio=1
-                      chown --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
-                      chmod --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
-                      [ "$(stat -c '%u:%g' -- "$tmp" 2>/dev/null)" = "$(stat -c '%u:%g' -- "$destino" 2>/dev/null)" ] || en_sitio=1
                       [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
+                      [ "$en_sitio" = 1 ] || conservar_atributos "$destino" "$tmp" || en_sitio=1
                       if [ "$en_sitio" = 0 ]; then
                         mv -f -- "$tmp" "$destino" || exit 1
                       else
                         if [ ! -w "$destino" ]; then
-                          printf 'Error: %s no tiene permiso de escritura (¿solo lectura?) y habría que sobrescribirlo en el sitio, porque no se puede renombrar encima conservando su propietario, modo, enlaces duros, ACL o atributos extendidos. No se ha modificado: dale permiso de escritura o usa sudo=true.\n' "$ruta" >&2
+                          printf 'Error: %s no tiene permiso de escritura (¿solo lectura?) y habría que sobrescribirlo en el sitio, porque tiene enlaces duros o no se pueden copiar a un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux). No se ha modificado: dale permiso de escritura o usa sudo=true.\n' "$ruta" >&2
                           exit 1
                         fi
                         cat -- "$tmp" > "$destino" || exit 1
@@ -991,27 +989,41 @@ namespace NativeSsh.Herramientas
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
         }
 
-        // ¿Tiene ACL o atributos extendidos? mv los perdería (o, si el temporal heredó la ACL por defecto del directorio,
-        // pondría una que el original no tenía). Detección portable, de más a menos completa:
-        // 1. getfattr -m - (attr): lista todos los espacios de nombres, ACL incluidas (system.posix_acl_access);
-        // 2. getfacl -s (acl): solo ACL, la salida está vacía si el archivo solo tiene la ACL mínima;
-        // 3. ls -ld: '+' tras los permisos (ACL en GNU) o '@' (xattr en macOS).
-        // security.selinux no cuenta: lo tienen todos los archivos con SELinux y volvería no atómica cada escritura
-        // (el temporal recibe el contexto por defecto del directorio). Sin 'grep -q': con pipefail, su salida anticipada
-        // mataría a getfattr por SIGPIPE y el 141 se leería como "sin atributos" (y se renombraría encima).
-        internal static readonly string DefinicionTieneAclOAtributos = """
-            tiene_acl_o_atributos() {
+        // conservar_atributos ORIGINAL TEMPORAL: copia al temporal todos los atributos del original —modo y ACL, propietario
+        // y grupo, atributos extendidos de todos los espacios de nombres y contexto SELinux— con cp de GNU coreutils, sin
+        // tocar su contenido ni sus fechas (la de modificación queda la de la escritura), y comprueba que coinciden. Si algo
+        // no se puede copiar o no coincide, devuelve 1 y el archivo se sobrescribe en el sitio, que lo conserva todo.
+        // - cp falla si no puede copiar un atributo pedido explícitamente, salvo el propietario sin privilegios, que ignora:
+        //   propietario, grupo y modo se comparan con stat.
+        // - Sin SELinux en el núcleo, 'cp --preserve=context' falla al instante: se repite sin 'context'. El contexto se
+        //   compara con stat %C ('?' y código 1 sin SELinux: se compara solo el texto).
+        // - ACL y atributos extendidos: con getfattr, todos los espacios de nombres (ACL incluidas); si no, las ACL con
+        //   getfacl y el indicador de ACL de 'ls -ld' (el temporal hereda la ACL por defecto del directorio y cp no se la
+        //   quita si el original no tiene). Sin getfattr, de los demás atributos extendidos responde cp.
+        // Sin 'grep -q': con pipefail, su salida anticipada mataría a getfattr por SIGPIPE.
+        internal static readonly string DefinicionConservarAtributos = """
+            volcar_atributos() {
+              getfattr --absolute-names -d -m - -e hex -- "$1" 2>/dev/null | grep -v '^# file: ' | sort
+            }
+            mismas_acl_y_atributos() {
               if command -v getfattr >/dev/null 2>&1; then
-                [ -n "$(getfattr --absolute-names -m - -- "$1" 2>/dev/null | grep -v -e '^#' -e '^$' -e '^security\.selinux$')" ]
+                [ "$(volcar_atributos "$1")" = "$(volcar_atributos "$2")" ]
                 return
               fi
-              if command -v getfacl >/dev/null 2>&1 && [ -n "$(getfacl -s -p -- "$1" 2>/dev/null)" ]; then
-                return 0
+              if command -v getfacl >/dev/null 2>&1; then
+                [ "$(getfacl -c -p -- "$1" 2>/dev/null)" = "$(getfacl -c -p -- "$2" 2>/dev/null)" ] || return 1
               fi
-              case "$(ls -ld -- "$1" 2>/dev/null)" in
-                ??????????[+@]*) return 0 ;;
-              esac
-              return 1
+              [ "$(ls -ld -- "$1" 2>/dev/null | cut -c 11)" = "$(ls -ld -- "$2" 2>/dev/null | cut -c 11)" ]
+            }
+            conservar_atributos() {
+              cp --attributes-only --preserve=mode,ownership,xattr,context -- "$1" "$2" 2>/dev/null \
+                || cp --attributes-only --preserve=mode,ownership,xattr -- "$1" "$2" 2>/dev/null \
+                || return 1
+              local original
+              original=$(stat -c '%u:%g:%a' -- "$1" 2>/dev/null) && [ -n "$original" ] || return 1
+              [ "$original" = "$(stat -c '%u:%g:%a' -- "$2" 2>/dev/null)" ] || return 1
+              [ "$(stat -c %C -- "$1" 2>/dev/null)" = "$(stat -c %C -- "$2" 2>/dev/null)" ] || return 1
+              mismas_acl_y_atributos "$1" "$2"
             }
             """.ReplaceLineEndings("\n");
 
@@ -1046,7 +1058,7 @@ namespace NativeSsh.Herramientas
 
         private static string AvisoEscrituraNoAtomica(string salida) =>
             IsEscrituraNoAtomica(salida)
-                ? " Escritura no atómica: no se podía conservar el propietario o el modo del original, o tiene enlaces duros, ACL o atributos extendidos, así que se sobrescribió en el sitio conservando inodo, modo, propietario, enlaces duros, ACL y atributos extendidos."
+                ? " Escritura no atómica: el archivo tiene enlaces duros o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio conservando inodo, enlaces duros y todos sus atributos."
                 : string.Empty;
 
         private const string PrefijoMarcaBase64 = "__NS_B64_";

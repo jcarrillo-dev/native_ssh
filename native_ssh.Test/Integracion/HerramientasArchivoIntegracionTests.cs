@@ -337,8 +337,10 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFiles(_directorio).Should().HaveCount(2);
         }
 
-        // Sin sudo no se puede crear un archivo de otro usuario: se fuerza el mismo camino haciendo fallar 'chown'
-        // (exactamente lo que ocurre al intentar 'chown --reference' sobre un archivo ajeno sin privilegios).
+        // Sin sudo, el temporal no puede recibir el propietario de un archivo ajeno (cp lo ignora en silencio y stat lo
+        // detecta): se escribe en el sitio, que conserva propietario, grupo, modo e inodo. Con los subuid de la simulación
+        // de sudo el archivo es de verdad de otro uid y otro grupo (0666, para poder escribirlo); sin ellos se fuerza el
+        // mismo camino con un 'stat' que da otro propietario al temporal.
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -347,10 +349,12 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             string archivo = Ruta("ajeno.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
-            _ = Bash($"chmod 640 '{archivo}'");
-            string inodo = Stat(archivo).Split(' ')[2];
             HerramientasSsh herramientas = Herramientas();
-            await SustituirComandoAsync(herramientas, "chown", "echo 'chown: operación no permitida' >&2; exit 1");
+            if (SudoSimulado.HasOtrosUsuarios)
+                _ = SudoSimulado.ComoRoot("chown 1:2 -- \"$1\" && chmod 666 -- \"$1\"", archivo);
+            else
+                await SustituirComandoAsync(herramientas, "stat", "case \"$2 $4\" in '%u:%g:%a '*.tmp.*) echo '12345:12345:666'; exit 0 ;; esac\nexec /usr/bin/stat \"$@\"");
+            string antes = Bash($"stat -c '%u:%g %a %i' -- '{archivo}'");
 
             // Act
             ResultadoEscritura resultado = isReplace
@@ -361,9 +365,7 @@ namespace NativeSsh.Test.Integracion
             _ = resultado.IsAtomica.Should().BeFalse();
             _ = resultado.Mensaje.Should().Contain("no atómica");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
-            string stat = Stat(archivo);
-            _ = stat.Should().StartWith("640 ");
-            _ = stat.Split(' ')[2].Should().Be(inodo);
+            _ = Bash($"stat -c '%u:%g %a %i' -- '{archivo}'").Should().Be(antes);
             _ = Directory.GetFiles(_directorio).Should().ContainSingle();
         }
 
@@ -620,14 +622,14 @@ namespace NativeSsh.Test.Integracion
         private static string AclYAtributos(string ruta) =>
             Bash($"getfacl -c -- '{ruta}' 2>&1; getfattr --absolute-names -d -m - -- '{ruta}' 2>&1 | grep -v '^# file:'");
 
-        // mv sustituiría el archivo por uno sin sus ACL ni atributos extendidos (y la máscara de la ACL heredada podría
-        // ampliar permisos de grupo): con ACL o xattr se escribe en el sitio, avisando de que no es atómica.
+        // Las ACL y los atributos extendidos se copian al temporal (cp --attributes-only) y se comprueban antes de renombrarlo
+        // encima: la escritura es atómica y el archivo los conserva (con otro inodo).
         [Theory]
         [InlineData("acl", false)]
         [InlineData("acl", true)]
         [InlineData("xattr", false)]
         [InlineData("xattr", true)]
-        public async Task Sobrescribir_ArchivoConAclOAtributosExtendidos_EscribeEnElSitioYLosConserva(string tipo, bool isReplace)
+        public async Task Sobrescribir_ArchivoConAclOAtributosExtendidos_LosCopiaAlTemporalYEsAtomica(string tipo, bool isReplace)
         {
             // Arrange
             string archivo = Ruta("con_atributos.txt");
@@ -644,17 +646,19 @@ namespace NativeSsh.Test.Integracion
                 ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues")
                 : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
 
-            // Assert
+            // Assert: modo y grupo iguales; el inodo es el del temporal.
             _ = atributos.Should().Contain(tipo == "acl" ? "user:nobody:r--" : "user.marca=\"valor\"");
-            _ = resultado.IsAtomica.Should().BeFalse();
-            _ = resultado.Mensaje.Should().Contain("no atómica");
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = resultado.Mensaje.Should().NotContain("no atómica");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
             _ = AclYAtributos(archivo).Should().Be(atributos);
-            _ = Stat(archivo).Should().Be(stat);
+            _ = Stat(archivo).Split(' ')[..2].Should().Equal(stat.Split(' ')[..2]);
+            _ = Stat(archivo).Split(' ')[2].Should().NotBe(stat.Split(' ')[2]);
             _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
         }
 
-        // El temporal hereda la ACL por defecto del directorio: renombrarlo pondría al archivo una ACL que no tenía.
+        // El temporal hereda la ACL por defecto del directorio y cp no se la quita si el original no tiene: renombrarlo pondría
+        // al archivo una ACL que no tenía. La comprobación lo detecta y se escribe en el sitio.
         [Fact]
         public async Task Sobrescribir_EnDirectorioConAclPorDefecto_NoAnadeAclAlArchivo()
         {
@@ -678,41 +682,6 @@ namespace NativeSsh.Test.Integracion
             _ = AclYAtributos(archivo).Should().Be(atributos);
             _ = Stat(archivo).Should().Be(stat);
             _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
-        }
-
-        // Las tres vías de detección de ACL/xattr, con un PATH que solo tiene las herramientas de cada vía.
-        [Theory]
-        [InlineData("getfattr", true, true)]
-        [InlineData("getfacl", true, false)]
-        [InlineData("ls", true, false)]
-        public async Task DeteccionDeAclOAtributos_SegunLasHerramientasDisponibles(string via, bool isAclDetectada, bool isXattrDetectado)
-        {
-            // Arrange
-            string bin = Ruta("bin_" + via);
-            _ = Directory.CreateDirectory(bin);
-            string[] herramientas = via switch
-            {
-                "getfattr" => ["bash", "grep", "ls", "getfattr", "getfacl"],
-                "getfacl" => ["bash", "grep", "ls", "getfacl"],
-                _ => ["bash", "grep", "ls"]
-            };
-            foreach (string herramienta in herramientas)
-                _ = File.CreateSymbolicLink(Path.Combine(bin, herramienta), Bash($"command -v {herramienta}"));
-            string script = Ruta("deteccion.sh");
-            await File.WriteAllTextAsync(script, HerramientasSsh.DefinicionTieneAclOAtributos + "\nfor f in \"$@\"; do if tiene_acl_o_atributos \"$f\"; then echo si; else echo no; fi; done\n");
-            string normal = Ruta("normal.txt");
-            string conAcl = Ruta("acl.txt");
-            string conXattr = Ruta("xattr.txt");
-            await File.WriteAllTextAsync(normal, "x");
-            await File.WriteAllTextAsync(conAcl, "x");
-            await File.WriteAllTextAsync(conXattr, "x");
-            _ = Bash($"setfacl -m u:nobody:r '{conAcl}' && setfattr -n user.marca -v 1 '{conXattr}'");
-
-            // Act
-            string[] resultado = Bash($"PATH='{bin}' '{bin}/bash' '{script}' '{normal}' '{conAcl}' '{conXattr}'").Split('\n');
-
-            // Assert
-            _ = resultado.Should().Equal("no", isAclDetectada ? "si" : "no", isXattrDetectado ? "si" : "no");
         }
 
         // Mutación superviviente de A4: una espera fija de 20 s en lugar del timeout de la herramienta. Un comando de
@@ -770,18 +739,18 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
         }
 
-        // Un archivo de solo lectura que hay que sobrescribir en el sitio (aquí por un atributo extendido) no se puede
-        // abrir para escritura sin sudo: falla con un mensaje claro y sin tocarlo, en lugar de un "Permiso denegado".
+        // Un archivo de solo lectura que hay que sobrescribir en el sitio (aquí por tener un enlace duro) no se puede abrir
+        // para escritura sin sudo: falla con un mensaje claro y sin tocarlo, en lugar de un "Permiso denegado".
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
         public async Task Sobrescribir_SoloLecturaQueHayQueEscribirEnElSitio_FallaSinTocarloConMensajeClaro(bool isReplace)
         {
             // Arrange
-            string archivo = Ruta("solo_lectura_xattr.txt");
+            string archivo = Ruta("solo_lectura.txt");
+            string otroNombre = Ruta("solo_lectura_2.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
-            _ = Bash($"setfattr -n user.marca -v valor '{archivo}' && chmod 444 '{archivo}'");
-            string atributos = AclYAtributos(archivo);
+            _ = Bash($"ln '{archivo}' '{otroNombre}' && chmod 444 '{archivo}'");
             string stat = Stat(archivo);
             HerramientasSsh herramientas = Herramientas();
 
@@ -793,10 +762,9 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = error.Message.Should().Contain("no tiene permiso de escritura").And.Contain("No se ha modificado");
-            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("antes\n");
-            _ = AclYAtributos(archivo).Should().Be(atributos);
+            _ = (await File.ReadAllTextAsync(otroNombre)).Should().Be("antes\n");
             _ = Stat(archivo).Should().Be(stat);
-            _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
+            _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(2);
         }
 
         // S10: la lectura previa de ssh_replace_file_content va por el PTY, donde el stderr de sudo se mezcla con el
