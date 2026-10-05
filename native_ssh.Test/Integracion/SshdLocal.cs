@@ -12,6 +12,11 @@ namespace NativeSsh.Test.Integracion
     // Arranca pruebas/sshd-local.sh una vez para toda la colección y lo para al terminar.
     public sealed class SshdLocal : IDisposable
     {
+        // Rastro en el log de sshd (nivel INFO, con ForceCommand) de una petición 'signal' recibida ("refusing to send
+        // signal", "no pid for session", "no session N req signal") o de una conexión cortada por un mensaje dirigido a
+        // un canal ya liberado ("unknown channel", "nonexistent channel").
+        public static readonly string[] LineasSenalODesconexion = ["refusing to send signal", "no pid for session", "req signal", "unknown channel", "nonexistent channel"];
+
         private readonly Dictionary<string, string> _entorno = [];
 
         public SshdLocal()
@@ -45,6 +50,26 @@ namespace NativeSsh.Test.Integracion
         public int Puerto { get; }
         public string RutaClave { get; }
         public string RutaKnownHosts { get; }
+        public string RutaLog => Path.Combine(DirectorioEstado, "sshd.log");
+        public string PidMaestro => File.ReadAllText(Path.Combine(DirectorioEstado, "sshd.pid")).Trim();
+
+        // Conexiones TCP autenticadas desde que arrancó el sshd.
+        public int ConexionesAceptadas() => ContarLineasLog("Accepted publickey");
+
+        // Procesos sshd de las conexiones abiertas: los sshd-session que cuelgan del maestro (el monitor y el que atiende
+        // la conexión), sin los procesos de los usuarios.
+        public string[] ProcesosDeConexion() =>
+            BashLocal.Ejecutar($"desc() {{ for c in $(pgrep -P $1); do case \"$(ps -o comm= -p $c)\" in sshd*) echo $c; desc $c;; esac; done; }}; desc {PidMaestro}")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        public int ContarLineasLog(params string[] textos)
+        {
+            int total = 0;
+            foreach (string linea in File.ReadLines(RutaLog))
+                if (Array.Exists(textos, t => linea.Contains(t, StringComparison.Ordinal)))
+                    total++;
+            return total;
+        }
 
         public DestinoSsh Destino
         {
@@ -91,7 +116,7 @@ namespace NativeSsh.Test.Integracion
                 : salida;
         }
 
-        private static string BuscarDirectorioPruebas()
+        internal static string BuscarDirectorioPruebas()
         {
             for (DirectoryInfo? dir = new(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
             {
@@ -125,15 +150,30 @@ namespace NativeSsh.Test.Integracion
         public const string LineaRgFalso = "rg_del_login:1:PATH del shell de login";
 
         public SshdLocalRestringido()
+            : this(Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022", ".estado-restringido", Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"))
         {
-            DirectorioLogin = GranjaBinarios.Crear(Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"), "timeout", "rg");
-            CrearEjecutable("rg", $"echo '{LineaRgFalso}'");
-            CrearEjecutable("ns_sonda_path", "echo sonda");
-            Sshd = new SshdLocal(
-                Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022",
-                ".estado-restringido",
-                $"/usr/bin/env PATH={DirectorioLogin} /usr/bin/bash --norc --noprofile",
-                "MaxSessions 2");
+        }
+
+        // Con su propio puerto, directorio de estado (iniciar para antes el sshd de ese directorio) y granja de binarios.
+        // Si sshd no arranca, xUnit no llama a Dispose: la granja se borra aquí.
+        internal SshdLocalRestringido(string puerto, string directorioEstado, string directorioLogin)
+        {
+            DirectorioLogin = GranjaBinarios.Crear(directorioLogin, "timeout", "rg");
+            try
+            {
+                CrearEjecutable("rg", $"echo '{LineaRgFalso}'");
+                CrearEjecutable("ns_sonda_path", "echo sonda");
+                Sshd = new SshdLocal(
+                    puerto,
+                    directorioEstado,
+                    $"/usr/bin/env PATH={DirectorioLogin} /usr/bin/bash --norc --noprofile",
+                    "MaxSessions 2");
+            }
+            catch
+            {
+                Directory.Delete(DirectorioLogin, recursive: true);
+                throw;
+            }
         }
 
         public SshdLocal Sshd { get; }

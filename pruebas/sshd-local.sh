@@ -12,11 +12,40 @@ PUERTO="${NATIVE_SSH_PUERTO_PRUEBAS:-22022}"
 FORCE_COMMAND="${NATIVE_SSH_FORCE_COMMAND:-/bin/bash -l}"
 SSHD="${NATIVE_SSH_SSHD:-$(command -v sshd || echo /usr/sbin/sshd)}"
 
+# Vivo y no zombi (un zombi ya no escucha; solo falta que su padre lo recoja).
+vivo() {
+    local estado
+    estado="$(ps -o stat= -p "$1" 2>/dev/null)" || return 1
+    [[ -n "$estado" && "$estado" != Z* ]]
+}
+
+# Espera hasta 'decimas' décimas de segundo a que el proceso termine.
+esperar_fin() {
+    local i
+    for i in $(seq 1 "$2"); do
+        vivo "$1" || return 0
+        sleep 0.1
+    done
+    ! vivo "$1"
+}
+
+# No vuelve hasta que el sshd ha terminado (TERM y, si en 3 s no basta, KILL) y su puerto ya no acepta conexiones:
+# quien lo arranque justo después (otra instancia de las pruebas, la siguiente pasada) lo encuentra libre.
 parar() {
-    if [[ -f "$DIR/sshd.pid" ]]; then
-        kill "$(cat "$DIR/sshd.pid")" 2>/dev/null || true
-        rm -f "$DIR/sshd.pid"
+    [[ -f "$DIR/sshd.pid" ]] || return 0
+    local pid puerto i
+    pid="$(cat "$DIR/sshd.pid")"
+    puerto="$(cat "$DIR/puerto" 2>/dev/null || echo "$PUERTO")"
+    kill "$pid" 2>/dev/null || true
+    if ! esperar_fin "$pid" 30; then
+        kill -KILL "$pid" 2>/dev/null || true
+        esperar_fin "$pid" 20 || { echo "sshd ($pid) no terminó" >&2; return 1; }
     fi
+    for i in $(seq 1 50); do
+        (exec 3<>"/dev/tcp/127.0.0.1/$puerto") 2>/dev/null || break
+        sleep 0.1
+    done
+    rm -f "$DIR/sshd.pid"
 }
 
 iniciar() {

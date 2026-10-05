@@ -49,8 +49,18 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
 
-        // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH).
+        // Si no es null, cada canal exec espera a que se libere ignorando el token, como la apertura síncrona de SSH.NET
+        // con un servidor que no responde; después atiende la cancelación.
+        public SemaphoreSlim? BloqueoAperturaExec { get; set; }
+
+        // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH). BytesPathLogin, si no es
+        // null, lo sustituye byte a byte (para un PATH que no es UTF-8).
         public string PathLogin { get; set; } = "/usr/local/bin:/usr/bin:/bin";
+        public byte[]? BytesPathLogin { get; set; }
+
+        // Salida ajena (de otro proceso que escribe en el terminal) antes y después de la de la línea de captura del PATH.
+        public string RuidoAntesCapturaPath { get; set; } = "";
+        public string RuidoTrasCapturaPath { get; set; } = "";
 
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
@@ -61,7 +71,15 @@ namespace NativeSsh.Test.Sesion.Falsos
                 await Task.Delay(RetrasoConexion, cancellationToken);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec, PathLogin = PathLogin };
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin)
+            {
+                BloqueoExec = BloqueoExec,
+                BloqueoAperturaExec = BloqueoAperturaExec,
+                PathLogin = PathLogin,
+                BytesPathLogin = BytesPathLogin,
+                RuidoAntesCapturaPath = RuidoAntesCapturaPath,
+                RuidoTrasCapturaPath = RuidoTrasCapturaPath
+            };
             Ultima = conexion;
             return conexion;
         }
@@ -74,8 +92,27 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
         private volatile bool _isCanalHuerfano;
+        private volatile bool _isDispuesta;
+        private Action? _alConsultarConexion;
 
-        public bool IsConectada => _isConectada;
+        // El gancho se ejecuta una vez justo después de leer el estado: simula que la conexión cambia (p. ej. se libera)
+        // entre la comprobación y su uso.
+        public bool IsConectada
+        {
+            get
+            {
+                bool isConectada = _isConectada;
+                Interlocked.Exchange(ref _alConsultarConexion, null)?.Invoke();
+                return isConectada;
+            }
+        }
+
+        public Action? AlConsultarConexion
+        {
+            get => Volatile.Read(ref _alConsultarConexion);
+            set => Volatile.Write(ref _alConsultarConexion, value);
+        }
+
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
 
@@ -87,12 +124,18 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int ExecActivos => Volatile.Read(ref _execActivos);
         public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
         public SemaphoreSlim? BloqueoExec { get; init; }
+        public SemaphoreSlim? BloqueoAperturaExec { get; init; }
         public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
+        public byte[]? BytesPathLogin { get; init; }
+        public string RuidoAntesCapturaPath { get; init; } = "";
+        public string RuidoTrasCapturaPath { get; init; } = "";
         public CanalFalso? CanalActual { get; private set; }
 
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken)
         {
+            // Como SshClient tras Dispose.
+            ObjectDisposedException.ThrowIf(_isDispuesta, this);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
 
@@ -107,6 +150,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             try
             {
+                if (BloqueoAperturaExec is { } apertura)
+                {
+                    await apertura.WaitAsync(CancellationToken.None);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
                 if (BloqueoExec is { } bloqueo)
                 {
                     await bloqueo.WaitAsync(cancellationToken);
@@ -143,7 +192,13 @@ namespace NativeSsh.Test.Sesion.Falsos
                 throw new InvalidOperationException("Conexión cerrada.");
 
             _ = Interlocked.Increment(ref _shellsAbiertos);
-            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin) { PathLogin = PathLogin };
+            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin)
+            {
+                PathLogin = PathLogin,
+                BytesPathLogin = BytesPathLogin,
+                RuidoAntesCapturaPath = RuidoAntesCapturaPath,
+                RuidoTrasCapturaPath = RuidoTrasCapturaPath
+            };
             return CanalActual;
         }
 
@@ -166,6 +221,7 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Dispose()
         {
+            _isDispuesta = true;
             if (_isCanalHuerfano)
                 _isConectada = false;
             else
@@ -212,6 +268,9 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public int MarcadoresInicializacion => Volatile.Read(ref _marcadoresInicializacion);
         public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
+        public byte[]? BytesPathLogin { get; init; }
+        public string RuidoAntesCapturaPath { get; init; } = "";
+        public string RuidoTrasCapturaPath { get; init; } = "";
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
@@ -367,7 +426,12 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
             else if (linea.Contains("\"$PATH\" | base64", StringComparison.Ordinal))
             {
-                EmitirConMarcador(Convert.ToBase64String(Encoding.UTF8.GetBytes(PathLogin)) + "\n", ExtraerId(linea), 0);
+                // Lo que bash imprime para la línea: el base64 entre los marcadores de la captura, o a secas si la línea
+                // no los pide (formato anterior).
+                string id = ExtraerId(linea);
+                string base64 = Convert.ToBase64String(BytesPathLogin ?? Encoding.UTF8.GetBytes(PathLogin));
+                string captura = linea.Contains("'__NSP'", StringComparison.Ordinal) ? $"__NSP_{id}_\n{base64}\n__NSQ_{id}_\n" : $"{base64}\n";
+                EmitirConMarcador(RuidoAntesCapturaPath + captura + RuidoTrasCapturaPath, id, 0);
             }
             else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
             {

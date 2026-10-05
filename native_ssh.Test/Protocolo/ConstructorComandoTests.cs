@@ -128,13 +128,14 @@ namespace NativeSsh.Test.Protocolo
         }
 
         [Fact]
-        public void CapturaPath_SaltoInicialYPathEnBase64EnUnaLineaConMarcador()
+        public void CapturaPath_SaltoInicialYPathEnBase64EntreMarcadoresEnUnaLineaConMarcador()
         {
             // Act
             string texto = Componer(w => ConstructorComando.EscribirCapturaPath(Id, w));
 
-            // Assert: el primer '\n' satisface el 'read' del marcador anterior.
-            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; echo; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            // Assert: el primer '\n' satisface el 'read' del marcador anterior; los marcadores no aparecen en el texto.
+            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}");
         }
 
         [Fact]

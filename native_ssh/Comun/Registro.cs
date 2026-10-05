@@ -39,5 +39,14 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 12, Level = LogLevel.Debug, Message = "Error liberando una conexión caída con {Destino}.")]
         public static partial void ErrorLiberandoConexion(this ILogger logger, Exception ex, string destino);
+
+        [LoggerMessage(EventId = 30, Level = LogLevel.Debug, Message = "Un canal exec de {Destino} abandonado al agotarse su plazo (o cancelarse) terminó de cerrarse.")]
+        public static partial void CanalExecCerradoTrasAbandonarlo(this ILogger logger, Exception ex, string destino);
+
+        [LoggerMessage(EventId = 31, Level = LogLevel.Warning, Message = "Se descarta el PATH del shell de login de {Destino}: {Motivo}. Los canales exec usarán el PATH por defecto de sshd.")]
+        public static partial void PathLoginDescartado(this ILogger logger, string destino, string motivo);
+
+        [LoggerMessage(EventId = 32, Level = LogLevel.Debug, Message = "Se descarta la conexión caída con {Destino} (sustituida por una nueva) y, si era suyo, el canal del shell.")]
+        public static partial void ConexionDescartada(this ILogger logger, string destino);
     }
 }

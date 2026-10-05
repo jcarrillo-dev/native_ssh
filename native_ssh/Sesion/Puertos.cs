@@ -22,7 +22,8 @@ namespace NativeSsh.Sesion
         ICanalShell AbrirShell();
 
         // Ejecuta 'comando' tal cual en un canal exec nuevo sobre la misma conexión TCP (lo interpreta el shell de login).
-        // Cancelar el token cierra el canal y lanza OperationCanceledException.
+        // Cancelar el token cierra el canal y lanza OperationCanceledException. La tarea termina solo cuando el canal ya
+        // está cerrado: si la apertura no atiende el token (la de SSH.NET es síncrona), cuando termine y se cierre.
         Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken);
     }
 
