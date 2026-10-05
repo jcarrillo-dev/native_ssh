@@ -25,6 +25,10 @@ namespace NativeSsh.Herramientas
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
         private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
+
+        // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
+        // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
+        private const string ErrorNoRegular = """printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
         private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
         // ssh_replace_file_content lee el archivo con 'base64', que parte en líneas de 76 caracteres + '\n':
@@ -231,7 +235,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, ACL o atributos extendidos (detectados con getfattr, getfacl o ls; el contexto SELinux no cuenta), lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, ACL o atributos extendidos (detectados con getfattr, getfacl o ls; el contexto SELinux no cuenta), lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -258,6 +262,9 @@ namespace NativeSsh.Herramientas
                     if [ -d "$ruta" ]; then
                       printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
+                    fi
+                    if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
+                      {{ErrorNoRegular}}
                     fi
                     base64 -d >> "$ruta"
                     """), sudo, rutaEscapada, payloadBase64)
@@ -698,7 +705,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -745,6 +752,9 @@ namespace NativeSsh.Herramientas
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
+                fi
+                if [ ! -f "$ruta" ]; then
+                  {{ErrorNoRegular}}
                 fi
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 if [ -z "$tam" ]; then
@@ -907,6 +917,9 @@ namespace NativeSsh.Herramientas
                     printf 'Error: no se pudo resolver el enlace simbólico: %s\n' "$ruta" >&2
                     exit 1
                   fi
+                fi
+                if [ -e "$destino" ] && [ ! -f "$destino" ]; then
+                  {{ErrorNoRegular}}
                 fi
                 {{SustitucionLiteral("dir", "dirname -- \"$destino\"")}}
                 {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
