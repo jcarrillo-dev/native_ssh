@@ -47,7 +47,8 @@ namespace NativeSsh.Ssh
         //   gracias al parche de externo/SSH.NET (rama native-ssh, "Do not block Session.Dispose on a send that the server
         //   does not accept"): Session.Dispose no espera más de 1 s al candado de escritura que retiene el envío bloqueado
         //   (sin él no envía SSH_MSG_DISCONNECT) y cierra el socket, lo que hace fallar ese Send; sin el parche Dispose se
-        //   quedaba esperando ese candado para siempre;
+        //   quedaba esperando ese candado para siempre. Con el búfer TCP lleno y ningún envío en curso, el propio
+        //   SSH_MSG_DISCONNECT tiene un plazo de 1 s ("Bound the send of the disconnect message");
         // - keepalive: solo durante una renegociación sin respuesta, y los siguientes se saltan mientras tanto.
         // No cambia la desconexión: DisconnectMessage se admite durante una renegociación y la espera del hilo de mensajes
         // no tiene plazo. El hilo de mensajes de SSH.NET no puede quedarse esperando una renegociación: entre KEXINIT y
