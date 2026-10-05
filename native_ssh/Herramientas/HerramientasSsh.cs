@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using JCarrillo.AOT.Core.Extensiones.ValueLINQ;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
@@ -11,14 +12,18 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Herramientas
 {
     [McpServerToolType]
-    public sealed class HerramientasSsh(GestorSesiones gestor, OpcionesNativeSsh opciones)
+    public sealed partial class HerramientasSsh(GestorSesiones gestor, OpcionesNativeSsh opciones)
     {
         public const int MaxSegundosEspera = 120;
         private const int MaxPeticionesEnEstado = 20;
         private const int MaxCaracteresComando = 120;
 
+        private const string AvisoGrepDisco = "Sugerencia de rendimiento: Has ejecutado 'grep' sobre el sistema de archivos vía ssh_exec. Utiliza la herramienta especializada 'ssh_search' para excluir automáticamente binarios (.pyc), directorios pesados (.venv, node_modules) y optimizar el consumo de contexto.";
+        private const string AvisoFindDisco = "Sugerencia de rendimiento: Has ejecutado 'find' vía ssh_exec. Utiliza la herramienta especializada 'ssh_find' para localizar archivos por nombre/glob o 'ssh_list_dir' para explorar la topología de carpetas con poda automática.";
+        private const string AvisoCdEncadenado = "Sugerencia de rendimiento: Has encadenado 'cd <ruta> &&' en ssh_exec. Utiliza 'ssh_set_cwd(destino, ruta)' para fijar el directorio de trabajo persistente de forma automática y operar con rutas relativas limpias.";
+
         [McpServerTool(Name = "ssh_exec", Destructive = true, OpenWorld = true)]
-        [Description("Ejecuta un comando bash en un shell persistente del destino (una conexión SSH por destino; los comandos se encolan en orden). Las variables exportadas se conservan entre comandos. Tras cada comando, el shell se restablece automáticamente a 'cd ${__NS_CWD:-$HOME}': para fijar un directorio de trabajo continuo entre múltiples comandos usa ssh_set_cwd o exporta 'export __NS_CWD=/ruta' (y omite la ruta en ssh_set_cwd o usa 'unset __NS_CWD' para volver a $HOME). Si el comando no termina en 'esperarSegundos', devuelve estado Ejecutando: usa ssh_output con el id para seguir, ssh_input si espera una respuesta, o ssh_cancel.")]
+        [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd.")]
         public async Task<ResultadoComando> EjecutarAsync(
             [Description("usuario@servidor[:puerto]. Sin usuario se usa el usuario local.")] string destino,
             [Description("Comando bash. Admite varias líneas, heredocs y comillas.")] string comando,
@@ -241,7 +246,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Busca patrones de texto o regex en archivos del servidor remoto, ignorando automáticamente carpetas ruidosas (.git, node_modules, .venv, etc.) y limitando los resultados para no saturar el contexto.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Mucho más rápido y eficiente en tokens que grep.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar.")] string patron,
@@ -315,7 +320,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Explora la estructura topológica de carpetas y subcarpetas en rutas relativas limpias (ej. ['src', 'src/services', 'src/ui']), excluyendo automáticamente carpetas ruidosas (.git, node_modules, .venv, dist, build, bin, obj, etc.). Permite entender la arquitectura completa de un proyecto en una sola llamada sin saturar el contexto.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -370,7 +375,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Busca archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*') excluyendo automáticamente carpetas ruidosas (.git, node_modules, .venv, bin, obj, etc.). Devuelve las rutas relativas encontradas.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -490,7 +495,7 @@ namespace NativeSsh.Herramientas
                         : (bytes / (1024.0 * 1024.0 * 1024.0)).ToString("0.#", CultureInfo.InvariantCulture) + " GiB";
 
         [McpServerTool(Name = "ssh_set_cwd", Destructive = true)]
-        [Description("Establece o restablece el directorio de trabajo persistente (__NS_CWD) para la sesión del destino. Comprueba previamente en el servidor remoto que la ruta exista y sea un directorio. Si se omite 'ruta' o se pasa vacío/null, desactiva la persistencia volviendo al directorio por defecto ($HOME).")]
+        [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes sin necesidad de encadenar 'cd dir &&'. Pasa vacío/null para volver a $HOME.")]
         public async Task<string> FijarDirectorioAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
@@ -706,6 +711,12 @@ namespace NativeSsh.Herramientas
             EstadoPeticionEnum estado = peticion.Estado;
             TimeSpan? tiempoSinSalida = peticion.TiempoSinSalida;
             PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal());
+
+            string? avisoFinal = peticion.Aviso;
+            string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
+            if (avisoAntipatron is not null)
+                avisoFinal = avisoFinal is null ? avisoAntipatron : $"{avisoFinal} {avisoAntipatron}";
+
             return new ResultadoComando(
                 peticion.IdTexto,
                 peticion.Destino.Clave,
@@ -718,7 +729,226 @@ namespace NativeSsh.Herramientas
                 pagina.HasDatosDescartados,
                 Math.Round(peticion.TiempoEjecucion.TotalSeconds, 1),
                 tiempoSinSalida is { } sinSalida ? Math.Round(sinSalida.TotalSeconds, 1) : null,
-                peticion.Aviso);
+                avisoFinal);
+        }
+
+        [GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", RegexOptions.CultureInvariant)]
+        private static partial Regex RegexFlagsRecursivosGrep();
+
+        private static string? DetectarAvisoAntipatron(string comando)
+        {
+            if (string.IsNullOrWhiteSpace(comando))
+                return null;
+
+            AnalizarComando(comando, out bool hasCd, out bool hasFind, out bool hasGrep);
+
+            if (!hasCd && !hasFind && !hasGrep)
+                return null;
+
+            List<string> avisos = [];
+            if (hasGrep)
+                avisos.Add(AvisoGrepDisco);
+            if (hasFind)
+                avisos.Add(AvisoFindDisco);
+            if (hasCd)
+                avisos.Add(AvisoCdEncadenado);
+
+            return string.Join(" ", avisos);
+        }
+
+        private static void AnalizarComando(string comando, out bool hasCd, out bool hasFind, out bool hasGrep)
+        {
+            hasCd = false;
+            hasFind = false;
+            hasGrep = false;
+
+            ReadOnlySpan<char> span = comando.AsSpan();
+            int longitud = span.Length;
+            int inicioSegmento = 0;
+            string separadorPrevio = string.Empty;
+
+            char comilla = '\0';
+            int i = 0;
+
+            while (i < longitud)
+            {
+                char c = span[i];
+
+                if (comilla != '\0')
+                {
+                    if (c == '\\' && i + 1 < longitud)
+                    {
+                        i += 2;
+                        continue;
+                    }
+                    if (c == comilla)
+                        comilla = '\0';
+                    i++;
+                    continue;
+                }
+
+                if (c is '\'' or '"')
+                {
+                    comilla = c;
+                    i++;
+                    continue;
+                }
+
+                string? separadorDetectado = null;
+                int avance = 0;
+
+                if (c == '&' && i + 1 < longitud && span[i + 1] == '&')
+                {
+                    separadorDetectado = "&&";
+                    avance = 2;
+                }
+                else if (c == '|' && i + 1 < longitud && span[i + 1] == '|')
+                {
+                    separadorDetectado = "||";
+                    avance = 2;
+                }
+                else if (c == '|' && i + 1 < longitud && span[i + 1] == '&')
+                {
+                    separadorDetectado = "|&";
+                    avance = 2;
+                }
+                else if (c == '|')
+                {
+                    separadorDetectado = "|";
+                    avance = 1;
+                }
+                else if (c == ';')
+                {
+                    separadorDetectado = ";";
+                    avance = 1;
+                }
+                else if (c == '\n')
+                {
+                    separadorDetectado = "\n";
+                    avance = 1;
+                }
+                else if (c == '\r')
+                {
+                    separadorDetectado = "\n";
+                    avance = (i + 1 < longitud && span[i + 1] == '\n') ? 2 : 1;
+                }
+
+                if (separadorDetectado is not null)
+                {
+                    string segmento = span[inicioSegmento..i].ToString();
+                    ProcesarSegmento(segmento, separadorPrevio, separadorDetectado, ref hasCd, ref hasFind, ref hasGrep);
+                    separadorPrevio = separadorDetectado;
+                    i += avance;
+                    inicioSegmento = i;
+                }
+                else
+                {
+                    i++;
+                }
+            }
+
+            if (inicioSegmento < longitud)
+            {
+                string ultimoSegmento = span[inicioSegmento..longitud].ToString();
+                ProcesarSegmento(ultimoSegmento, separadorPrevio, string.Empty, ref hasCd, ref hasFind, ref hasGrep);
+            }
+        }
+
+        private static void ProcesarSegmento(
+            string segmento,
+            string separadorPrevio,
+            string separadorSiguiente,
+            ref bool hasCd,
+            ref bool hasFind,
+            ref bool hasGrep)
+        {
+            string segLimpio = segmento.Trim();
+            if (string.IsNullOrEmpty(segLimpio))
+                return;
+
+            if (!hasCd && separadorSiguiente == "&&" && EsComandoCd(segLimpio))
+                hasCd = true;
+
+            if (!hasFind && separadorPrevio != "|" && separadorPrevio != "|&" && EsComandoFind(segLimpio))
+                hasFind = true;
+
+            if (!hasGrep && EsComandoGrep(segLimpio))
+            {
+                bool isRgrep = EsComandoRgrep(segLimpio);
+                bool hasFlagsRecursivos = isRgrep || RegexFlagsRecursivosGrep().IsMatch(segLimpio);
+                if (hasFlagsRecursivos || (separadorPrevio != "|" && separadorPrevio != "|&"))
+                    hasGrep = true;
+            }
+        }
+
+        private static bool EsComandoRgrep(string texto)
+        {
+            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
+            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
+                span = span[4..].TrimStart(" \t");
+
+            if (span.StartsWith("rgrep", StringComparison.Ordinal))
+            {
+                if (span.Length == 5)
+                    return true;
+                char c = span[5];
+                return char.IsWhiteSpace(c);
+            }
+            return false;
+        }
+
+        private static bool EsComandoCd(string texto)
+        {
+            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
+            if (span.StartsWith("cd", StringComparison.Ordinal))
+            {
+                if (span.Length == 2)
+                    return true;
+                char c = span[2];
+                return char.IsWhiteSpace(c) || c is '/' or '.' or '~' or '$';
+            }
+            return false;
+        }
+
+        private static bool EsComandoFind(string texto)
+        {
+            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
+            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
+                span = span[4..].TrimStart(" \t");
+
+            if (span.StartsWith("find", StringComparison.Ordinal))
+            {
+                if (span.Length == 4)
+                    return true;
+                char c = span[4];
+                return char.IsWhiteSpace(c);
+            }
+            return false;
+        }
+
+        private static bool EsComandoGrep(string texto)
+        {
+            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
+            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
+                span = span[4..].TrimStart(" \t");
+
+            if (span.StartsWith("grep", StringComparison.Ordinal))
+            {
+                if (span.Length == 4)
+                    return true;
+                char c = span[4];
+                return char.IsWhiteSpace(c);
+            }
+
+            if (span.StartsWith("egrep", StringComparison.Ordinal) || span.StartsWith("fgrep", StringComparison.Ordinal) || span.StartsWith("rgrep", StringComparison.Ordinal))
+            {
+                if (span.Length == 5)
+                    return true;
+                char c = span[5];
+                return char.IsWhiteSpace(c);
+            }
+
+            return false;
         }
 
         private static int? Codigo(Peticion peticion) => peticion.IsFinalizada ? peticion.CodigoSalida : null;

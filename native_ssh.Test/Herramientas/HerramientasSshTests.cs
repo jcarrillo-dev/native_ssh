@@ -658,5 +658,85 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_multiples.txt (2 reemplazo(s) realizado(s)).");
         }
+
+        [Theory]
+        [InlineData("pm2 list | grep online")]
+        [InlineData("systemctl status mi-app | grep Active")]
+        [InlineData("npm test |& grep FAILED")]
+        [InlineData("cat app.log |grep error")]
+        [InlineData("pm2 list | egrep online")]
+        [InlineData("cat app.log | fgrep error")]
+        public async Task Exec_ConTuberiasGrep_NoGeneraAviso(string comando)
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+
+            // Assert
+            _ = resultado.Aviso.Should().BeNull();
+        }
+
+        [Theory]
+        [InlineData("grep -rn 'list_team_names' src/")]
+        [InlineData("rgrep patron .")]
+        [InlineData("egrep -rn patron src/")]
+        [InlineData("fgrep 'texto' archivo.txt")]
+        public async Task Exec_ConGrepDisco_GeneraAvisoSearch(string comando)
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+
+            // Assert
+            _ = resultado.Aviso.Should().NotBeNull();
+            _ = resultado.Aviso.Should().Contain("ssh_search");
+        }
+
+        [Theory]
+        [InlineData("false || grep 'error' app.log")]
+        [InlineData("false ||grep 'error' app.log")]
+        [InlineData("false || egrep 'error' app.log")]
+        [InlineData("false ||egrep 'error' app.log")]
+        public async Task Exec_ConOrLogicoGrep_GeneraAvisoSearch(string comando)
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+
+            // Assert
+            _ = resultado.Aviso.Should().NotBeNull();
+            _ = resultado.Aviso.Should().Contain("ssh_search");
+        }
+
+        [Fact]
+        public async Task Exec_ConFindDisco_GeneraAvisoFind()
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "find . -name '*.py'");
+
+            // Assert
+            _ = resultado.Aviso.Should().NotBeNull();
+            _ = resultado.Aviso.Should().Contain("ssh_find");
+        }
+
+        [Fact]
+        public async Task Exec_ConCdEncadenado_GeneraAvisoSetCwd()
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && npm test");
+
+            // Assert
+            _ = resultado.Aviso.Should().NotBeNull();
+            _ = resultado.Aviso.Should().Contain("ssh_set_cwd");
+        }
+
+        [Fact]
+        public async Task Exec_ConCombinacionCdYGrep_GeneraAvisoCombinado()
+        {
+            // Act
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && grep -rn 'algo' src/");
+
+            // Assert
+            _ = resultado.Aviso.Should().NotBeNull();
+            _ = resultado.Aviso.Should().Contain("ssh_set_cwd");
+            _ = resultado.Aviso.Should().Contain("ssh_search");
+        }
     }
 }
