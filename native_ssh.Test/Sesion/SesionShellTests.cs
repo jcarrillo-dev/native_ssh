@@ -631,10 +631,10 @@ namespace NativeSsh.Test.Sesion
             await using SesionShell sesion = Crear(fabrica);
             using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(200));
 
-            // Act & Assert
+            // Act & Assert: el cupo se libera cuando el canal termina de cerrarse, justo después de la cancelación.
             _ = await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("sleep 100", TimeSpan.FromSeconds(30), cancelacion.Token))
                 .Should().ThrowAsync<OperationCanceledException>();
-            _ = sesion.CanalesExecActivos.Should().Be(0);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.CanalesExecActivos == 0, TimeSpan.FromSeconds(2));
         }
 
         [Fact]
