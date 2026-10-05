@@ -9,8 +9,8 @@ namespace NativeSsh.Protocolo
     // script vea los mismos programas que ssh_exec (p. ej. rg en ~/.cargo/bin); un canal exec solo recibe el PATH por
     // defecto de sshd porque no pasa por los archivos de perfil. 'timeout' y 'bash' se buscan ya con ese PATH.
     //
-    // El plazo se aplica en el propio servidor, porque cerrar el canal no mata nada (OpenSSH ignora la señal de
-    // SshCommand.CancelAsync y el proceso sigue vivo si no escribe):
+    // El plazo se aplica en el propio servidor, porque cerrar el canal no mata un proceso que no escribe y no se envían
+    // señales (CanalExecSshNet explica por qué):
     // - con 'timeout': TERM al grupo del script al vencer y KILL 2 s después (código 124, o 137 si hizo falta KILL);
     // - sin 'timeout': watchdog en bash. El script corre como trabajo en su propio grupo de procesos (set -m); una
     //   subshell duerme el plazo, avisa al padre (USR1), manda TERM al grupo y KILL 2 s después, y el padre sale con
