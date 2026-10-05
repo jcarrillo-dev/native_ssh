@@ -116,7 +116,7 @@ namespace NativeSsh.Test.Integracion
                 : salida;
         }
 
-        private static string BuscarDirectorioPruebas()
+        internal static string BuscarDirectorioPruebas()
         {
             for (DirectoryInfo? dir = new(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
             {
@@ -150,15 +150,30 @@ namespace NativeSsh.Test.Integracion
         public const string LineaRgFalso = "rg_del_login:1:PATH del shell de login";
 
         public SshdLocalRestringido()
+            : this(Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022", ".estado-restringido", Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"))
         {
-            DirectorioLogin = GranjaBinarios.Crear(Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"), "timeout", "rg");
-            CrearEjecutable("rg", $"echo '{LineaRgFalso}'");
-            CrearEjecutable("ns_sonda_path", "echo sonda");
-            Sshd = new SshdLocal(
-                Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022",
-                ".estado-restringido",
-                $"/usr/bin/env PATH={DirectorioLogin} /usr/bin/bash --norc --noprofile",
-                "MaxSessions 2");
+        }
+
+        // Con su propio puerto, directorio de estado (iniciar para antes el sshd de ese directorio) y granja de binarios.
+        // Si sshd no arranca, xUnit no llama a Dispose: la granja se borra aquí.
+        internal SshdLocalRestringido(string puerto, string directorioEstado, string directorioLogin)
+        {
+            DirectorioLogin = GranjaBinarios.Crear(directorioLogin, "timeout", "rg");
+            try
+            {
+                CrearEjecutable("rg", $"echo '{LineaRgFalso}'");
+                CrearEjecutable("ns_sonda_path", "echo sonda");
+                Sshd = new SshdLocal(
+                    puerto,
+                    directorioEstado,
+                    $"/usr/bin/env PATH={DirectorioLogin} /usr/bin/bash --norc --noprofile",
+                    "MaxSessions 2");
+            }
+            catch
+            {
+                Directory.Delete(DirectorioLogin, recursive: true);
+                throw;
+            }
         }
 
         public SshdLocal Sshd { get; }

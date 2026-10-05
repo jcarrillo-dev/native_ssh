@@ -5,7 +5,5 @@ obj/
 TestResults/
 BenchmarkDotNet.Artifacts/
 artefactos/
-pruebas/.estado/
-pruebas/.estado-lento/
-pruebas/.estado-restringido/
+pruebas/.estado*/
 .agents/
