@@ -128,6 +128,61 @@ namespace NativeSsh.Test.Integracion
             _ = gestor.ListarSesiones().Single().ConexionesAbiertas.Should().Be(11);
         }
 
+        // Procesos 'sleep <n>' vivos en el servidor (es la misma máquina). Se filtra por el nombre exacto del programa:
+        // un 'pgrep -f' encontraría también el propio shell que ejecuta la comprobación.
+        internal static string ProcesosSleepVivos(long primero, long segundo) =>
+            Bash($"ps -eo args= | awk -v a={primero} -v b={segundo} '$1==\"sleep\" && ($2==a || $2==b)'");
+
+        // Espera hasta 5 s a que no quede ninguno y devuelve los que sigan vivos.
+        internal static async Task<string> EsperarSinProcesosSleepAsync(long primero, long segundo)
+        {
+            string vivos = ProcesosSleepVivos(primero, segundo);
+            for (int i = 0; i < 50 && vivos.Length > 0; i++)
+            {
+                await Task.Delay(100);
+                vivos = ProcesosSleepVivos(primero, segundo);
+            }
+
+            return vivos;
+        }
+
+        internal static void MatarProcesosSleep(long primero, long segundo) =>
+            _ = Bash($"pkill -KILL -f 'sleep ({primero}|{segundo})$' || true");
+
+        [Fact]
+        public async Task ExecConTiempoAgotado_MataElProcesoRemotoYSusHijosAunqueIgnorenTerm()
+        {
+            // Arrange: un hijo en segundo plano y un proceso principal que ignora TERM (su 'sleep' hereda la señal ignorada).
+            long hijo = 700_000 + Random.Shared.Next(100_000);
+            long principal = hijo + 100_000;
+            string script = $"sleep {hijo} & trap '' TERM; sleep {principal}; wait";
+            string resultado;
+
+            // Act
+            try
+            {
+                try
+                {
+                    ResultadoCanalExec ejecucion = await _gestor.EjecutarExecAsync(Destino, script, TimeSpan.FromSeconds(2), CancellationToken.None);
+                    resultado = $"código {ejecucion.CodigoSalida}";
+                }
+                catch (NativeSshException ex)
+                {
+                    resultado = ex.Message;
+                }
+
+                string vivos = await EsperarSinProcesosSleepAsync(hijo, principal);
+
+                // Assert: 'timeout' manda TERM a los 2 s (muere el hijo) y KILL 2 s después (el resto), antes que el límite local.
+                _ = vivos.Should().BeEmpty();
+                _ = resultado.Should().BeOneOf("código 124", "código 137");
+            }
+            finally
+            {
+                MatarProcesosSleep(hijo, principal);
+            }
+        }
+
         [Fact]
         public async Task Lectura_ArchivoCrlf_DevuelveSusRetornosDeCarroYTextoUtf8Fiel()
         {
