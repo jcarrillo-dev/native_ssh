@@ -506,6 +506,34 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task ConexionSustituidaPorUnaLectura_EnLaVentanaAntesDeDescartarLaCaida_ElComandoNoUsaElShellViejo()
+        {
+            // Arrange: shell vivo en la primera conexión, que cae sin cerrar su canal (SSH.NET antes de enterarse).
+            using LoggerPrueba logger = new() { EventoBloqueante = 32 };
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+            _ = await EjecutarAsync(sesion, "a");
+            fabrica.Ultima!.CaerSinCerrarCanal();
+
+            // Act: una lectura reconecta y se detiene justo antes de descartar la conexión caída, con _conexion ya
+            // sustituida y el canal viejo aún en _canal; entonces llega un ssh_exec.
+            Task<ResultadoCanalExec> lectura = Task.Run(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(10), CancellationToken.None));
+            await logger.Bloqueado.WaitAsync(Limite);
+            Peticion comando = await EjecutarAsync(sesion, "b");
+            logger.Liberar();
+            ResultadoCanalExec resultado = await lectura.WaitAsync(Limite);
+
+            // Assert: el canal viejo no es de la conexión vigente, así que se abre un shell nuevo sobre ella.
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = comando.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(comando).Should().Be("eco:b\n");
+            _ = comando.Aviso.Should().Contain("recreado");
+            _ = resultado.CodigoSalida.Should().Be(0);
+            _ = fabrica.Conexiones.Should().Be(2);
+            _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
         public async Task Limitador_RechazaLaReconexion()
         {
             // Arrange

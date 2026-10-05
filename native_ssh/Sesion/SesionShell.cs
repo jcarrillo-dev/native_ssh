@@ -546,8 +546,11 @@ namespace NativeSsh.Sesion
 
         // Una conexión sustituida se lleva su canal de shell: si siguiera en _canal, el siguiente comando se escribiría
         // en un canal muerto (ShellPerdido sin ejecutarse) en lugar de abrir un shell nuevo sobre la conexión vigente.
+        // Mientras tanto (ya fuera del candado) _conexion es la nueva y _canal puede ser aún el de la caída:
+        // AsegurarShellAsync no lo da por bueno porque no es de la conexión vigente (IsShellDe).
         private void DescartarConexion(IConexionSsh conexion)
         {
+            _logger.ConexionDescartada(Destino.Clave);
             ICanalShell? canal;
             lock (_candadoProceso)
                 canal = ReferenceEquals(_conexionDelCanal, conexion) ? _canal : null;

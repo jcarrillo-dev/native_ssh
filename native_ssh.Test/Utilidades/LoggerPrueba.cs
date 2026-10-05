@@ -6,7 +6,8 @@ namespace NativeSsh.Test.Utilidades
     public sealed record EntradaLog(LogLevel Nivel, int Evento, string Mensaje);
 
     // Registra los mensajes. Con EventoBloqueante, el primer Log de ese evento avisa (Bloqueado) y se detiene hasta
-    // Liberar (o hasta 10 s): permite ensanchar de forma determinista la ventana que sigue a ese punto del código.
+    // Liberar (o hasta 10 s, y entonces IsEsperaAgotada): permite ensanchar de forma determinista la ventana que sigue a
+    // ese punto del código. Quien llama debe hacerlo desde otro hilo que el de la prueba.
     public sealed class LoggerPrueba : ILogger, IDisposable
     {
         private static readonly TimeSpan EsperaMaxima = TimeSpan.FromSeconds(10);
@@ -15,10 +16,12 @@ namespace NativeSsh.Test.Utilidades
         private readonly TaskCompletionSource _bloqueado = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly ManualResetEventSlim _liberado = new(false);
         private int _isBloqueoUsado;
+        private volatile bool _isEsperaAgotada;
 
         public int? EventoBloqueante { get; init; }
         public IReadOnlyCollection<EntradaLog> Entradas => _entradas;
         public Task Bloqueado => _bloqueado.Task;
+        public bool IsEsperaAgotada => _isEsperaAgotada;
 
         public void Liberar() => _liberado.Set();
 
@@ -36,7 +39,7 @@ namespace NativeSsh.Test.Utilidades
                 return;
 
             _ = _bloqueado.TrySetResult();
-            _ = _liberado.Wait(EsperaMaxima);
+            _isEsperaAgotada = !_liberado.Wait(EsperaMaxima);
         }
     }
 }

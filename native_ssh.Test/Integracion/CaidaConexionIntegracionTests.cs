@@ -41,6 +41,53 @@ namespace NativeSsh.Test.Integracion
 
         public async Task DisposeAsync() => await _gestor.DisposeAsync();
 
+        private void MatarConexiones() => _ = BashLocal.Ejecutar($"kill -9 {string.Join(' ', _sshd.ProcesosDeConexion())} 2>/dev/null || true");
+
+        private async Task<string> LeerAsync()
+        {
+            try
+            {
+                ResultadoCanalExec resultado = await _gestor.EjecutarExecAsync(Destino, "echo leida", TimeSpan.FromSeconds(10), CancellationToken.None);
+                return resultado.CodigoSalida == 0 ? "leida" : $"código {resultado.CodigoSalida}";
+            }
+            catch (NativeSshException ex)
+            {
+                return $"error: {ex.Message}";
+            }
+        }
+
+        // Variante de la prueba de EB1 sin esperar a que se detecte la caída: la lectura puede fallar (si aún no se
+        // detectó), y sin lectura el comando puede acabar como shell perdido si salió antes de detectarla; en ese caso
+        // el siguiente debe funcionar. Con lectura previa la caída ya se detectó: el comando nunca es un shell perdido.
+        [Fact]
+        public async Task CaidaDeLaConexion_SinEsperarASuDeteccion_ElSiguienteExecSeEjecutaEnUnShellNuevo()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync(Destino, "echo previo");
+            int aceptadas = _sshd.ConexionesAceptadas();
+            List<string> fallos = [];
+            List<string> lecturas = [];
+
+            // Act
+            for (int i = 0; i < 10; i++)
+            {
+                bool isConLectura = i % 2 == 1;
+                MatarConexiones();
+                if (isConLectura)
+                    lecturas.Add(await LeerAsync());
+                ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                if (!isConLectura && comando.Estado == EstadoPeticionEnum.ShellPerdido)
+                    comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                if (comando.Estado != EstadoPeticionEnum.Completado || comando.Salida != $"tras_{i}\n" || comando.Aviso?.Contains("Shell remoto recreado", StringComparison.Ordinal) != true)
+                    fallos.Add($"{i} (lectura previa: {isConLectura}): estado={comando.Estado} salida='{comando.Salida}' aviso='{comando.Aviso}'");
+            }
+
+            // Assert: una conexión nueva por caída.
+            _ = fallos.Should().BeEmpty();
+            _ = lecturas.Should().AllSatisfy(l => l.Should().Match(x => x == "leida" || x.StartsWith("error: ", StringComparison.Ordinal)));
+            _ = (_sshd.ConexionesAceptadas() - aceptadas).Should().Be(10);
+        }
+
         [Fact]
         public async Task CaidaDeLaConexion_ConUnComandoLargoYSinLecturas_TerminaComoShellPerdidoAlMomento()
         {
