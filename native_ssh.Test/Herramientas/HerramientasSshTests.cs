@@ -1716,6 +1716,28 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima.Should().BeNull();
         }
 
+        // El tipo no distingue mayúsculas y admite 'directory' como sinónimo de 'dir': la descripción del parámetro lo dice,
+        // igual que el valor por defecto y que cualquier otro valor da error.
+        [Theory]
+        [InlineData("FILE", "-type f ")]
+        [InlineData("Dir", "-type d ")]
+        [InlineData("directory", "-type d ")]
+        [InlineData("ALL", null)]
+        public async Task Find_TipoEnMayusculasOSinonimo_SeAceptaComoDiceSuDescripcion(string tipo, string? filtro)
+        {
+            // Act
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "*.service", tipo: tipo);
+            string descripcion = typeof(HerramientasSsh).GetMethod(nameof(HerramientasSsh.BuscarPorNombreAsync))!.GetParameters().Single(p => p.Name == "tipo")
+                .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), false).Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Single(c => c.Contains("-name '*.service'", StringComparison.Ordinal));
+            _ = filtro is null
+                ? comando.Should().NotContain("-type ")
+                : comando.Should().Contain(filtro);
+            _ = descripcion.Should().Contain("'directory'").And.Contain("sin distinguir mayúsculas").And.Contain("Por defecto (o vacío), 'file'").And.Contain("Otro valor").And.Contain("da error");
+        }
+
         // Un NUL no puede viajar en un argumento ni sobrevive a '$(... | base64 -d)' (bash lo descarta): la ruta llegaría
         // sin él, a otro archivo. Se rechaza antes de enviar nada.
         [Fact]

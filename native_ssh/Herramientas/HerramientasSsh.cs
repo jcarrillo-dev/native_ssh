@@ -551,7 +551,7 @@ namespace NativeSsh.Herramientas
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
             [Description("Ruta base donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
-            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' (directorios) o 'all' (ambos). Por defecto 'file'. Otro valor da error.")] string tipo = "file",
+            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' o 'directory' (directorios) o 'all' (ambos), sin distinguir mayúsculas. Por defecto (o vacío), 'file'. Otro valor, también con blancos alrededor, da error.")] string tipo = "file",
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
             CancellationToken cancellationToken = default)
@@ -566,7 +566,8 @@ namespace NativeSsh.Herramientas
             string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string rutaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
-            // Sin tipo, 'file'; un tipo desconocido es un error, no una búsqueda de archivos.
+            // Sin tipo, 'file'; sin distinguir mayúsculas y con 'directory' como sinónimo de 'dir' (lo dice la descripción); un
+            // tipo desconocido es un error, no una búsqueda de archivos.
             string filtroTipo = (string.IsNullOrEmpty(tipo) ? "file" : tipo.ToLowerInvariant()) switch
             {
                 "file" => "-type f ",
@@ -1128,9 +1129,11 @@ namespace NativeSsh.Herramientas
             """.ReplaceLineEndings("\n");
 
         // renombrar y enlazar colocan el temporal en el destino con 'mv -T' y 'ln -T' (GNU coreutils), que tratan el destino
-        // como un archivo: si se ha convertido en un directorio (o en un enlace a uno) entre las comprobaciones y la
-        // colocación, fallan en lugar de meter el temporal dentro. Si mv o ln no admiten -T (p. ej. busybox o BSD), se
-        // comprueba justo antes que el destino no es un directorio ni existe (ln); queda una ventana entre esa comprobación
+        // como un archivo y nunca meten el temporal dentro de un directorio. Si entre las comprobaciones y la colocación el
+        // destino se ha convertido en un directorio, 'mv -T' falla; si se ha convertido en un enlace simbólico (también a un
+        // directorio), 'mv -T' sustituye el enlace por el archivo nuevo, sin tocar el directorio. 'ln -T' falla en los dos
+        // casos (el destino ya existe). Si mv o ln no admiten -T (p. ej. busybox o BSD), se comprueba justo antes que el
+        // destino no es un directorio ni un enlace a uno (mv) o que no existe (ln); queda una ventana entre esa comprobación
         // y la colocación que solo -T cierra.
         private static readonly string DefinicionRenombrar = """
             renombrar() {
