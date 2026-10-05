@@ -89,6 +89,16 @@ namespace NativeSsh.Test.Protocolo
         }
 
         [Fact]
+        public void Sincronizacion_DosSaltosDeLineaYUnaSolaLineaConMarcador()
+        {
+            // Arrange
+            string texto = Componer(w => ConstructorComando.EscribirSincronizacion(Id, w));
+
+            // Act & Assert
+            _ = texto.Should().Be($"\n\n__ns_rc=0; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+        }
+
+        [Fact]
         public void Inicializacion_Estructura()
         {
             // Arrange
