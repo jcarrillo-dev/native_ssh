@@ -363,6 +363,8 @@ namespace NativeSsh.Herramientas
             string rutaEscapada = Escapar(ruta);
             string idMarcas = Guid.NewGuid().ToString("N");
 
+            // Anexar: el archivo se abre (y se crea si no existía) antes de anunciar que se anexa, para que un fallo normal al
+            // abrirlo (permiso denegado) no se describa como una muerte a mitad del anexado.
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
@@ -376,13 +378,12 @@ namespace NativeSsh.Herramientas
                       {{ErrorNoRegular}}
                     fi
                     {{DefinicionCandado}}
+                    { exec {anexo}>>"$ruta"; } || exit 1
                     destino=$ruta
-                    if [ -e "$destino" ]; then
-                      tomar_candado -x || exit 1
-                      [ -n "$estado_candado" ] && anunciar candado "$estado_candado"
-                    fi
+                    tomar_candado -x || exit 1
+                    [ -n "$estado_candado" ] && anunciar candado "$estado_candado"
                     anunciar fase anexando
-                    base64 -d >> "$ruta" || exit 1
+                    base64 -d >&"$anexo" || exit 1
                     anunciar fase anexado
                     """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);

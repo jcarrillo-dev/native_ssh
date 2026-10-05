@@ -28,5 +28,26 @@ namespace NativeSsh.Test.Integracion
             _ = error.Message.Should().MatchRegex(@"ns: \S+ [0-9]+: 12 x: \S");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original\n");
         }
+
+        // Un fallo normal al abrir el archivo para anexar (permiso denegado) no es una muerte a mitad: el error es el de bash,
+        // sin «terminó sin que el script confirmara cómo terminó» ni «puede haberse anexado solo una parte», porque el script
+        // solo anuncia que anexa después de abrirlo.
+        [Fact]
+        public async Task Anexar_SinPermisoParaAbrirlo_ElErrorEsElDeBashNoUnaMuerteAMitad()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            string archivo = Ruta("solo_lectura.txt");
+            await File.WriteAllTextAsync(archivo, "original\n");
+            _ = Bash($"chmod 444 '{archivo}'");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "mas\n", append: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex($@"^ns: \S+ [0-9]+: {System.Text.RegularExpressions.Regex.Escape(archivo)}: [^\n]+$");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original\n");
+        }
     }
 }
