@@ -9,17 +9,27 @@ namespace NativeSsh.Test.Integracion
     [SupportedOSPlatform("linux")]
     public sealed class SshdPropio : IDisposable
     {
+        // Otra prueba en paralelo puede elegir el mismo puerto libre justo antes: sshd no arranca y se prueba con otro.
+        private const int Intentos = 3;
+
         public SshdPropio(string configuracionExtra)
         {
             Directorio = Path.Combine(Path.GetTempPath(), $"ns_sshd_{Guid.NewGuid():N}");
-            try
+            for (int intento = 1; ; intento++)
             {
-                Sshd = new SshdLocal(PuertosPruebas.Libre().ToString(CultureInfo.InvariantCulture), Directorio, null, configuracionExtra);
-            }
-            catch
-            {
-                BorrarDirectorio();
-                throw;
+                try
+                {
+                    Sshd = new SshdLocal(PuertosPruebas.Libre().ToString(CultureInfo.InvariantCulture), Directorio, null, configuracionExtra);
+                    return;
+                }
+                catch (InvalidOperationException) when (intento < Intentos)
+                {
+                }
+                catch
+                {
+                    BorrarDirectorio();
+                    throw;
+                }
             }
         }
 
