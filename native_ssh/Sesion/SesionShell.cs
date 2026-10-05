@@ -18,6 +18,10 @@ namespace NativeSsh.Sesion
     // aún la estuviera usando falla con error y no deja nada a medias.
     // El canal del shell queda ligado a la conexión que lo abrió (_conexionDelCanal): al sustituirla se cierra (SSH.NET
     // no siempre lo cierra cuando cae el TCP) y AsegurarShellAsync solo da por bueno un canal de la conexión vigente.
+    // Además el adaptador lo cierra en cuanto SSH.NET avisa de la caída (CanalShellSshNet): el comando en curso termina
+    // al momento como ShellPerdido y la cola no queda bloqueada hasta su plazo.
+    // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que está cerrado de verdad, aunque la operación
+    // ya haya fallado por su plazo local (apertura sin respuesta del servidor).
     public sealed class SesionShell : IAsyncDisposable
     {
         public const int TamanoBloqueLectura = 16 * 1024;
@@ -115,10 +119,6 @@ namespace NativeSsh.Sesion
 
         // Un canal cuya conexión ya se perdió no cuenta como shell activo aunque aún no se haya cerrado: ssh_status nunca
         // muestra un shell activo sin conexión (IsConectada se lee antes que este valor).
-        // Cierre en curso o terminado. DisposeAsync lo marca antes de cancelar _cierre: es el único criterio para decidir
-        // si un fallo se debe al cierre (un comando en curso termina como Cancelado, nunca como Error).
-        private bool IsCerrando => Volatile.Read(ref _isDispuesto) != 0;
-
         public bool IsShellActivo
         {
             get
@@ -127,6 +127,10 @@ namespace NativeSsh.Sesion
                     return _canal is not null && _conexionDelCanal is { IsConectada: true };
             }
         }
+
+        // Cierre en curso o terminado. DisposeAsync lo marca antes de cancelar _cierre: es el único criterio para decidir
+        // si un fallo se debe al cierre (un comando en curso termina como Cancelado, nunca como Error).
+        private bool IsCerrando => Volatile.Read(ref _isDispuesto) != 0;
 
         public void Encolar(Peticion peticion)
         {
