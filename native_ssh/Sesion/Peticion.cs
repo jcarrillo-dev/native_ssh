@@ -126,8 +126,11 @@ namespace NativeSsh.Sesion
                 _isCancelacionSolicitada = true;
             }
 
-            // Fuera del candado: Cancel ejecuta los callbacks registrados de forma síncrona.
-            _interrupcion.Cancel();
+            // Fuera del candado y en el pool: Cancel ejecuta de forma síncrona los callbacks registrados, y con ellos la
+            // continuación del bucle que interrumpe el comando, que espera (acotado) al candado de escritura del shell si lo
+            // retiene una entrada atascada en un envío que el servidor no acepta: quien cancela (ssh_cancel, ssh_reset_shell)
+            // no debe quedarse dentro.
+            _ = ThreadPool.UnsafeQueueUserWorkItem(static interrupcion => interrupcion.Cancel(), _interrupcion, preferLocal: false);
             return true;
         }
 

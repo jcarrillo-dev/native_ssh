@@ -85,10 +85,42 @@ namespace NativeSsh.Test.Sesion
             // Act
             _ = peticion.SolicitarCancelacion().Should().BeTrue();
 
-            // Assert
-            _ = peticion.TokenInterrupcion.IsCancellationRequested.Should().BeTrue();
+            // Assert: el token se cancela en el pool, no en el hilo de quien cancela.
             _ = peticion.IsCancelacionSolicitada.Should().BeTrue();
+            _ = peticion.TokenInterrupcion.WaitHandle.WaitOne(TimeSpan.FromSeconds(5)).Should().BeTrue();
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+        }
+
+        [Fact]
+        public async Task Cancelar_EnEjecucion_VuelveAunqueUnaContinuacionDelTokenNoTermine()
+        {
+            // Arrange: una continuación del token que no vuelve, como la del bucle que interrumpe el comando cuando espera
+            // al candado de escritura de una entrada atascada en un envío que el servidor no acepta.
+            Peticion peticion = Nueva();
+            _ = peticion.TryMarcarEjecutando();
+            using ManualResetEventSlim liberacion = new(false);
+            using ManualResetEventSlim ejecutada = new(false);
+            using CancellationTokenRegistration registro = peticion.TokenInterrupcion.Register(() =>
+            {
+                ejecutada.Set();
+                _ = liberacion.Wait(TimeSpan.FromSeconds(10));
+            });
+
+            try
+            {
+                // Act
+                Task<bool> solicitud = Task.Run(peticion.SolicitarCancelacion);
+                bool isVuelta = await Task.WhenAny(solicitud, Task.Delay(TimeSpan.FromSeconds(2))) == solicitud;
+
+                // Assert: vuelve aunque la continuación siga dentro (y la continuación sí llega a ejecutarse).
+                _ = isVuelta.Should().BeTrue();
+                _ = (await solicitud).Should().BeTrue();
+                _ = ejecutada.Wait(TimeSpan.FromSeconds(5)).Should().BeTrue();
+            }
+            finally
+            {
+                liberacion.Set();
+            }
         }
 
         [Fact]
