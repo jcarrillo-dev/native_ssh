@@ -22,7 +22,7 @@ namespace NativeSsh.Herramientas
     // Lo que el script anunció del candado del archivo ("candado <estado>", ver HerramientasSsh.DefinicionCandado).
     internal enum CandadoEscrituraEnum
     {
-        // Sin anuncio: el archivo no existía (escritura nueva), no se pudo abrir para leer o el script no llegó a tomarlo.
+        // Sin anuncio: el archivo no existía (escritura nueva) o el script no llegó a tomarlo.
         SinAnuncio,
 
         // "tomado": excluye a las demás operaciones sobre el archivo mientras el script siga en marcha.
@@ -34,7 +34,10 @@ namespace NativeSsh.Herramientas
 
         // "ninguno": ninguna herramienta pudo tomarlo (no hay flock, python3 ni perl que funcionen, o el sistema de
         // archivos no admite flock).
-        SinHerramienta
+        SinHerramienta,
+
+        // "sin_abrir": el archivo no se pudo abrir ni para leer ni para anexar (sin permiso, o desapareció entretanto).
+        SinAbrir
     }
 
     // Lo que el script de una escritura (ssh_write_file, ssh_replace_file_content) anuncia mientras trabaja, en líneas
@@ -48,9 +51,9 @@ namespace NativeSsh.Herramientas
     //   o capacidades? (no se pudo comprobar si las tenía), separados por comas, o '-'. Solo si no falta nada se dice que
     //   todo se devolvió y se comprobó;
     // - "candado <estado>": qué pasó al tomar el candado del archivo (flock, ver DefinicionCandado) antes de tocar nada:
-    //   tomado, sin_comprobar (tomado sin poder comprobar que esté sobre el archivo de la ruta) o ninguno (no hubo
-    //   herramienta que lo tomara: sigue sin exclusión) (CandadoEscrituraEnum). Sin anuncio, el archivo no existía o no
-    //   se pudo abrir para leer;
+    //   tomado, sin_comprobar (tomado sin poder comprobar que esté sobre el archivo de la ruta), ninguno (no hubo
+    //   herramienta que lo tomara) o sin_abrir (no se pudo abrir ni para leer ni para anexar); en los dos últimos sigue
+    //   sin exclusión (CandadoEscrituraEnum). Sin anuncio, el archivo no existía;
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
@@ -159,6 +162,7 @@ namespace NativeSsh.Herramientas
             "tomado" => CandadoEscrituraEnum.Tomado,
             "sin_comprobar" => CandadoEscrituraEnum.SinComprobar,
             "ninguno" => CandadoEscrituraEnum.SinHerramienta,
+            "sin_abrir" => CandadoEscrituraEnum.SinAbrir,
             _ => CandadoEscrituraEnum.SinAnuncio
         };
 
@@ -267,6 +271,7 @@ namespace NativeSsh.Herramientas
             CandadoEscrituraEnum.Tomado => $" {CandadoTomadoEnCurso}",
             CandadoEscrituraEnum.SinComprobar => $" {CandadoTomadoEnCurso} Pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, no excluye a nadie.",
             CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} {SinCandadoEnCurso}",
+            CandadoEscrituraEnum.SinAbrir => $" {SinCandadoPorApertura} {SinCandadoEnCurso}",
             CandadoEscrituraEnum.SinAnuncio => string.Empty,
             _ => string.Empty
         };
@@ -274,6 +279,7 @@ namespace NativeSsh.Herramientas
         private const string CandadoTomadoEnCurso = "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.";
         private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos)";
         private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+        private const string SinCandadoPorApertura = "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto).";
         private const string SinCandadoEnCurso = "Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.";
         private const string SinProteccion = "no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
 
@@ -282,6 +288,7 @@ namespace NativeSsh.Herramientas
         {
             CandadoEscrituraEnum.SinComprobar => $" El script tomó el candado del archivo (flock), pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, la escritura {SinProteccion}",
             CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} La escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinAbrir => $" {SinCandadoPorApertura} La escritura {SinProteccion}",
             CandadoEscrituraEnum.SinAnuncio or CandadoEscrituraEnum.Tomado => string.Empty,
             _ => string.Empty
         };

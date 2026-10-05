@@ -280,6 +280,7 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("candado tomado", nameof(CandadoEscrituraEnum.Tomado), "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.")]
         [InlineData("candado sin_comprobar", nameof(CandadoEscrituraEnum.SinComprobar), "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine. Pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos): si otro proceso lo sustituyó justo mientras se tomaba, no excluye a nadie.")]
         [InlineData("candado ninguno", nameof(CandadoEscrituraEnum.SinHerramienta), "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock. Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.")]
+        [InlineData("candado sin_abrir", nameof(CandadoEscrituraEnum.SinAbrir), "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto). Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.")]
         [InlineData("candado otro", nameof(CandadoEscrituraEnum.SinAnuncio), null)]
         [InlineData(null, nameof(CandadoEscrituraEnum.SinAnuncio), null)]
         public void MensajeInterrupcion_EscribiendoEnElSitio_DiceQuePasaConLasEscriturasNuevas(string? anuncio, string candado, string? esperado)
@@ -300,10 +301,11 @@ namespace NativeSsh.Test.Herramientas
             _ = trasSigkill.Should().NotContain("candado", "con el script muerto ya no hay restauración en curso");
         }
 
-        // Una escritura terminada sin candado (ninguna herramienta pudo tomarlo) o con un
+        // Una escritura terminada sin candado (ninguna herramienta pudo tomarlo, o no se pudo abrir el archivo) o con un
         // candado que no se pudo comprobar lo avisa, con el motivo; con el candado tomado y comprobado, nada.
         [Theory]
         [InlineData("candado ninguno", " El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock. La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
+        [InlineData("candado sin_abrir", " El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto). La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
         [InlineData("candado sin_comprobar", " El script tomó el candado del archivo (flock), pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos): si otro proceso lo sustituyó justo mientras se tomaba, la escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
         [InlineData("candado tomado", "")]
         [InlineData("candado otro", "")]

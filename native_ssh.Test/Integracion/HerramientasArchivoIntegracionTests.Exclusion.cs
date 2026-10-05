@@ -267,6 +267,50 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
+        // Un archivo con permiso de escritura pero no de lectura (0200) también lleva candado: se abre para anexar, sin
+        // truncarlo (flock no depende del modo de apertura), porque todavía se le puede anexar y, con sudo, escribir en el
+        // sitio. Durante la restauración de una escritura en el sitio con sudo interrumpida, un anexado sin sudo (que no
+        // puede leerlo) falla al momento sin tocarlo; con sudo, también. Antes, sin permiso de lectura no se tomaba el
+        // candado: el anexado se confirmaba como correcto y la restauración lo borraba (auditoría del A-sexies, sonda X01).
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task AnexadoSobreUnArchivoSinPermisoDeLectura_DuranteLaRestauracion_FallaAlMomentoSinTocarlo(bool isSudoAnexado)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = Bash($"chmod 0200 '{archivo}'");
+            await SustituirComandoAsync(herramientas, "cat", CatConRestauracionLenta(6));
+            await SimularSudoAsync(herramientas);
+            Task<ResultadoEscritura> primera = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: true);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            _ = await herramientas.DesconectarAsync(Destino);
+            _ = await Record.ExceptionAsync(() => primera);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
+            File.Delete(Ruta("bin/cat"));
+            if (isSudoAnexado)
+                await SimularSudoAsync(herramientas);
+            string[] entradas = Directory.GetFileSystemEntries(carpeta);
+
+            // Act
+            Exception? error = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADO\n", append: true, sudo: isSudoAnexado));
+            bool isRestaurandoTodavia = HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig.");
+            string[] entradasTrasAnexado = Directory.GetFileSystemEntries(carpeta);
+            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(30));
+            await EsperasPrueba.EsperarHastaAsync(() => IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
+            ResultadoEscritura libre = await herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADO\n", append: true, sudo: isSudoAnexado);
+            _ = Bash($"chmod 0600 '{archivo}'");
+
+            // Assert
+            _ = isRestaurandoTodavia.Should().BeTrue("el anexado tenía que llegar durante la restauración");
+            _ = error.Should().BeOfType<NativeSshException>();
+            _ = error!.Message.Should().StartWith($"Error: {TextoCandadoOcupado} {archivo} ");
+            _ = entradasTrasAnexado.Should().BeEquivalentTo(entradas, "el anexado no puede tocar nada");
+            _ = libre.Mensaje.Should().Be($"Contenido anexado correctamente a: {archivo} (8 bytes).", "terminada la restauración, el anexado toma el candado y no avisa de nada");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\nANEXADO\n");
+        }
+
         // 'flock ARCHIVO sleep 37.5' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor.
         private static void SoltarCandadoAjeno(Process ajeno)
         {
@@ -275,7 +319,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Nadie tiene el flock del archivo. Las pruebas leen el archivo después: .NET toma un flock compartido al abrirlo
-        // (así emula FileShare en Unix) y falla mientras un script tenga el exclusivo.
-        private static bool IsCandadoLibre(string archivo) => Bash($"flock -n -E 75 '{archivo}' true; echo $?") == "0";
+        // (así emula FileShare en Unix) y falla mientras un script tenga el exclusivo. Se abre para leer o, si no se puede
+        // (archivo 0200), para anexar, como el script.
+        private static bool IsCandadoLibre(string archivo) => Bash($"{{ exec 9<'{archivo}' || exec 9>>'{archivo}'; }} 2>/dev/null && flock -n -E 75 9; echo $?") == "0";
     }
 }
