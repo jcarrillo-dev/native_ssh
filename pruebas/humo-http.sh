@@ -85,8 +85,8 @@ inicio = enviar("initialize", {"protocolVersion": "2025-06-18", "capabilities": 
 comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize por HTTP")
 enviar("notifications/initialized", notificacion=True)
 
-herramientas = enviar("tools/list")["result"]["tools"]
-comprobar(len(herramientas) == 8, "tools/list por HTTP")
+herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
+comprobar(len(herramientas) == 10 and herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_input", "ssh_output", "ssh_read_file", "ssh_reset_shell", "ssh_search", "ssh_status", "ssh_write_file"], f"tools/list por HTTP: {herramientas}")
 
 resultado = enviar("tools/call", {"name": "ssh_exec", "arguments": {"destino": destino, "comando": "echo hola-http"}})["result"]
 datos = json.loads(resultado["content"][0]["text"])

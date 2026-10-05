@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Linq;
 using System.Text;
 using NativeSsh.Buffers;
 using NativeSsh.Herramientas;

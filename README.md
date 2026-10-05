@@ -20,12 +20,29 @@ El servidor mantiene una sesión SSH persistente con un shell PTY interactivo po
 | `ssh_disconnect` | `destino` (string) | `ResultadoAccion` | Cierra la conexión SSH activa con el destino indicado. |
 | `ssh_reset_shell` | `destino` (string) | `ResultadoAccion` | Reinicia el shell bash sobre la conexión TCP existente, descartando el entorno previo. |
 | `ssh_read_file` | `destino` (string), `ruta` (string), `lineaInicio` (1), `lineaFin` (null) | `string` (TextContent) | Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve texto plano con saltos de línea reales sin envoltorios JSON. |
+| `ssh_write_file` | `destino` (string), `ruta` (string), `contenido` (string), `overwrite` (false), `append` (false), `sudo` (false) | `string` | Escribe o anexa contenido de forma atómica y segura mediante Base64. |
+| `ssh_search` | `destino` (string), `patron` (string), `ruta` ("."), `maxResultados` (50) | `string` | Busca patrones de texto o regex ignorando carpetas ruidosas (.git, node_modules, .venv, bin, obj, etc.). |
 
 ### Lectura limpia de archivos (`ssh_read_file`)
 
 La herramienta `ssh_read_file` permite inspeccionar archivos y fragmentos de código fuente directamente desde el servidor remoto sin necesidad de ejecutar comandos `cat` o `sed` manuales a través de `ssh_exec`. A diferencia de `ssh_exec`, que devuelve un objeto JSON estructurado (`ResultadoComando`), `ssh_read_file` devuelve directamente texto plano (`TextContent`) con saltos de línea reales (`\n`), evitando la serialización JSON con caracteres escapados (`\n`, `\"`).
 
 Admite lectura acotada mediante `lineaInicio` (por defecto 1) y `lineaFin` (por defecto hasta 800 líneas a partir de inicio). Si la ruta no existe o es un directorio, falla inmediatamente reportando el error.
+
+### Escritura atómica y segura de archivos (`ssh_write_file`)
+
+La herramienta `ssh_write_file` permite crear, sobrescribir o anexar contenido a archivos remotos sin los riesgos habituales de concatenación o escaping en cadenas bash (comillas simples, dobles, caracteres de escape o expansiones de variables). La carga útil se codifica localmente en Base64 y se decodifica en destino mediante `base64 -d`.
+
+- **Escritura atómica:** En operaciones de sobrescritura o creación, los datos se vuelcan primero a un archivo temporal (`.<nombre>.tmp.<pid>`) en el mismo directorio y se reemplazan atómicamente mediante `mv -f`, protegiendo la integridad del archivo original ante cancelaciones o cortes de red.
+- **Protección contra sobrescritura accidental:** Por seguridad, la herramienta no sobrescribe un archivo existente a menos que se indique explícitamente `overwrite: true` o se elija el modo `append: true`. Especificar ambas opciones simultáneamente produce un error de validación inmediato.
+- **Permisos elevados (`sudo`):** Mediante el parámetro `sudo: true`, la herramienta utiliza `sudo tee` para interactuar con archivos protegidos por permisos de superusuario en el destino remoto.
+
+### Búsqueda inteligente de patrones (`ssh_search`)
+
+La herramienta `ssh_search` proporciona capacidades de búsqueda rápida basada en `grep -rnIs -E` sobre el servidor remoto, orientada a la exploración de código y configuración.
+
+- **Exclusiones automáticas:** Ignora de forma predeterminada directorios ruidosos o de gran volumen (`.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`, `.next`, `.cache`, `bin`, `obj`) y archivos de artefactos/bloqueo (`*.min.js`, `*.min.css`, `*.map`, `*.lock`, `package-lock.json`, `pnpm-lock.yaml`).
+- **Control de contexto:** El parámetro `maxResultados` (por defecto 50, con límite de 1 a 200) acota el volumen de resultados devueltos para evitar la saturación del contexto de trabajo del cliente MCP, informando explícitamente mediante una nota final si se ha alcanzado el límite.
 
 ### Mecanismo de paginación y lectura
 
@@ -154,6 +171,7 @@ Para garantizar la estabilidad del servicio y evitar bloqueos defensivos por par
 - **Control de conexiones TCP (D7):** Límite estricto de 4 conexiones nuevas cada 30 segundos por destino. En caso de error de conexión, se aplica un retroceso exponencial (*backoff*) de 2 a 60 segundos. Se envía un paquete de *keep-alive* cada 30 segundos para evitar desconexiones por inactividad en pasarelas NAT.
 - **Cancelación escalonada sin apertura de sockets (D6):** La cancelación envía una señal de interrupción (Ctrl+C) directamente por el canal del shell abierto. Si el proceso no se detiene tras el intervalo de gracia (`EsperaTrasCtrlC`), se destruye únicamente el canal lógico del shell y se reabre uno nuevo sobre la conexión TCP existente, evitando consumir cupo de conexiones nuevas en el cortafuegos.
 - **Gestión de memoria y buffers de salida (D10):** Límite máximo de 1 MiB de salida retenida por comando utilizando bloques de 16 KiB reciclados del pool de memoria (`ArrayPool<byte>`). Si se sobrepasa dicho límite, los datos más antiguos se descartan manteniendo offsets acumulativos absolutos. Se retienen en memoria hasta 64 peticiones finalizadas durante una ventana máxima de 30 minutos.
+- **Motor de cero asignaciones con `ValueLINQDelay` y `JCarrillo.AOT.Core`:** Los pipelines de filtrado y acotación de colecciones internas (como el límite de peticiones en `ssh_status` o el podado de peticiones finalizadas) operan sobre estructuras `ref struct` en la pila mediante `JCarrillo.AOT.Core` y extensiones `ValueLINQDelay`, garantizando cero asignaciones en el heap y ausencia total de sobrecarga del recolector de basura (GC) durante la iteración diferida.
 
 ---
 
@@ -203,6 +221,7 @@ La solución comparte la configuración y políticas de análisis de `JCarrillo.
 - Tipado explícito obligatorio (`var` deshabilitado).
 - Omitir llaves en bloques de sentencia única.
 - Uso del operador de rango sobre llamadas `Slice`.
+- Erradicación de `System.Linq` global en favor de pipelines en pila con `JCarrillo.AOT.Core.ValueLINQ` y `ValueLINQDelay`.
 - Normalización de fines de línea a CRLF en archivos de código C# (manteniendo LF en scripts `.sh`).
 
 ### Advertencia sobre formateo automático (`IDE0010` / `IDE0072`)

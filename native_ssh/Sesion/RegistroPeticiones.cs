@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using JCarrillo.AOT.Core.Extensiones.ValueLINQ;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 
 namespace NativeSsh.Sesion
 {
@@ -17,7 +19,12 @@ namespace NativeSsh.Sesion
 
         public Peticion? Buscar(string idTexto) => _peticiones.TryGetValue(idTexto, out Peticion? peticion) ? peticion : null;
 
-        public IReadOnlyList<Peticion> ListarRecientes() => [.. _peticiones.Values.OrderByDescending(p => p.CreadoTimestamp)];
+        public IReadOnlyList<Peticion> ListarRecientes()
+        {
+            List<Peticion> peticiones = [.. _peticiones.Values];
+            peticiones.Sort(static (a, b) => b.CreadoTimestamp.CompareTo(a.CreadoTimestamp));
+            return peticiones;
+        }
 
         public void Podar()
         {
@@ -32,11 +39,14 @@ namespace NativeSsh.Sesion
             if (exceso <= 0)
                 return;
 
-            List<Peticion> sobrantes = [.. _peticiones.Values
-                .Where(p => p.IsFinalizada)
-                .OrderBy(p => p.FinTimestamp)
-                .Take(exceso)];
-            foreach (Peticion peticion in sobrantes)
+            List<Peticion> finalizadas = [];
+            foreach (Peticion peticion in _peticiones.Values)
+                if (peticion.IsFinalizada)
+                    finalizadas.Add(peticion);
+
+            finalizadas.Sort(static (a, b) => a.FinTimestamp.CompareTo(b.FinTimestamp));
+            Peticion[] arrayFinalizadas = [.. finalizadas];
+            foreach (Peticion peticion in arrayFinalizadas.ToValueQuery().Delay().Take(exceso))
                 Quitar(peticion.IdTexto);
         }
 

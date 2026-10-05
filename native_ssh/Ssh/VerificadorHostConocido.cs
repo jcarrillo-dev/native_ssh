@@ -18,16 +18,18 @@ namespace NativeSsh.Ssh
     {
         public IReadOnlyList<string> Rutas { get; } = rutas;
 
-        public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
-        {
-            IEnumerable<string> lineas = Rutas.Where(File.Exists).SelectMany(File.ReadLines);
-            return Verificar(lineas, servidor, puerto, tipoClave, clave);
-        }
+        public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave) =>
+            Verificar(LeerLineas(), servidor, puerto, tipoClave, clave);
 
-        public IReadOnlySet<string> ObtenerTiposClave(string servidor, int puerto)
+        public IReadOnlySet<string> ObtenerTiposClave(string servidor, int puerto) =>
+            ObtenerTiposClave(LeerLineas(), servidor, puerto);
+
+        private IEnumerable<string> LeerLineas()
         {
-            IEnumerable<string> lineas = Rutas.Where(File.Exists).SelectMany(File.ReadLines);
-            return ObtenerTiposClave(lineas, servidor, puerto);
+            foreach (string ruta in Rutas)
+                if (File.Exists(ruta))
+                    foreach (string linea in File.ReadLines(ruta))
+                        yield return linea;
         }
 
         public static IReadOnlySet<string> ObtenerTiposClave(IEnumerable<string> lineas, string servidor, int puerto)

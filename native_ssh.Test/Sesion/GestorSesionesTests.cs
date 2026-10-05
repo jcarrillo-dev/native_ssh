@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;

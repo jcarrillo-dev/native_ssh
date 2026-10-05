@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Text;
+using JCarrillo.AOT.Core.Extensiones.ValueLINQ;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Herramientas
@@ -76,13 +78,21 @@ namespace NativeSsh.Herramientas
             [Description("Filtrar por destino (opcional).")] string? destino = null)
         {
             string? clave = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino).Clave;
-            List<EstadoSesion> sesiones = [.. gestor.ListarSesiones()
-                .Where(s => clave is null || s.Destino.Clave == clave)
-                .Select(s => new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto))];
-            List<ResumenPeticion> peticiones = [.. gestor.ListarPeticiones()
-                .Where(p => clave is null || p.Destino.Clave == clave)
-                .Take(MaxPeticionesEnEstado)
-                .Select(p => new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)))];
+            List<EstadoSesion> sesiones = [];
+            foreach (SesionShell s in gestor.ListarSesiones())
+                if (clave is null || s.Destino.Clave == clave)
+                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto));
+
+            List<Peticion> candidatas = [];
+            foreach (Peticion p in gestor.ListarPeticiones())
+                if (clave is null || p.Destino.Clave == clave)
+                    candidatas.Add(p);
+
+            List<ResumenPeticion> peticiones = [];
+            Peticion[] arrayPeticiones = [.. candidatas];
+            foreach (Peticion p in arrayPeticiones.ToValueQuery().Delay().Take(MaxPeticionesEnEstado))
+                peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
+
             return new ResultadoEstado(sesiones, peticiones);
         }
 
@@ -124,23 +134,172 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
-            string comando = $"""
+            string comando = $$"""
                 (
-                if [ ! -e {rutaEscapada} ]; then
-                  echo "Error: el archivo no existe: {ruta}" >&2
+                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
+                if [ ! -e {{rutaEscapada}} ]; then
+                  printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                if [ -d {rutaEscapada} ]; then
-                  echo "Error: la ruta es un directorio: {ruta}" >&2
+                if [ -d {{rutaEscapada}} ]; then
+                  printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                sed -n '{inicio},{fin}p' {rutaEscapada}
+                total=$(wc -l < {{rutaEscapada}})
+                if [ "$total" -eq 0 ]; then
+                  echo "[Líneas 0-0 de 0]"
+                else
+                  fin_efectivo=$(( total < {{fin}} ? total : {{fin}} ))
+                  echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
+                fi
+                sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
                 )
                 """.ReplaceLineEndings("\n");
 
             Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
             await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
 
+            string textoCompleto = ReconstruirSalida(peticion);
+            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
+                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoCompleto.Trim())
+                : textoCompleto;
+        }
+
+        [McpServerTool(Name = "ssh_write_file", Destructive = true)]
+        [Description("Escribe o anexa contenido en un archivo remoto de forma segura mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobreescribe si el archivo ya existe.")]
+        public async Task<string> EscribirArchivoAsync(
+            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
+            [Description("Contenido textual o datos a escribir.")] string contenido,
+            [Description("Sobrescribir si el archivo ya existe (por defecto false).")] bool overwrite = false,
+            [Description("Anexar al final del archivo existente (por defecto false).")] bool append = false,
+            [Description("Ejecutar escritura con permisos elevados usando sudo tee (por defecto false).")] bool sudo = false,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(ruta))
+                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
+
+            if (overwrite && append)
+                throw new NativeSshException("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
+
+            byte[] bytesUtf8 = Encoding.UTF8.GetBytes(contenido ?? string.Empty);
+            string payloadBase64 = Convert.ToBase64String(bytesUtf8);
+            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+
+            string accionEscritura = append
+                ? (sudo
+                    ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -a -- {rutaEscapada} >/dev/null"
+                    : $"printf '%s' '{payloadBase64}' | base64 -d >> {rutaEscapada}")
+                : (sudo
+                    ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -- \"$tmp\" >/dev/null && sudo mv -f -- \"$tmp\" {rutaEscapada}"
+                    : $"printf '%s' '{payloadBase64}' | base64 -d > \"$tmp\" && mv -f -- \"$tmp\" {rutaEscapada}");
+
+            string comando = append
+                ? $$"""
+                    (
+                    cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
+                    if [ -d {{rutaEscapada}} ]; then
+                      printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                      exit 1
+                    fi
+                    {{accionEscritura}}
+                    )
+                    """.ReplaceLineEndings("\n")
+                : $$"""
+                    (
+                    cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
+                    if [ -d {{rutaEscapada}} ]; then
+                      printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                      exit 1
+                    fi
+                    {{(!overwrite ? $$"""
+                    if [ -e {{rutaEscapada}} ]; then
+                      printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' {{rutaEscapada}} >&2
+                      exit 1
+                    fi
+                    """ : string.Empty)}}
+                    dir=$(dirname -- {{rutaEscapada}})
+                    tmp="${dir}/.$(basename -- {{rutaEscapada}}).tmp.$$"
+                    trap 'rm -f -- "$tmp" 2>/dev/null' EXIT;
+                    {{accionEscritura}}
+                    )
+                    """.ReplaceLineEndings("\n");
+
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
+            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+
+            string textoCompleto = ReconstruirSalida(peticion);
+            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
+                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim())
+                : peticion.Estado != EstadoPeticionEnum.Completado
+                    ? throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).")
+                    : append
+                        ? $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes)."
+                        : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).";
+        }
+
+        [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
+        [Description("Busca patrones de texto o regex en archivos del servidor remoto, ignorando automáticamente carpetas ruidosas (.git, node_modules, .venv, etc.) y limitando los resultados para no saturar el contexto.")]
+        public async Task<string> BuscarAsync(
+            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("Texto o patrón regex a buscar.")] string patron,
+            [Description("Directorio o ruta donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
+            [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(patron))
+                throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
+
+            int limite = Math.Clamp(maxResultados, 1, 200);
+            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEscapada = "'" + rutaEfectiva.Replace("'", "'\\''") + "'";
+            string patronEscapado = "'" + patron.Replace("'", "'\\''") + "'";
+
+            string comando = $$"""
+                (
+                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
+                if [ ! -e {{rutaEscapada}} ]; then
+                  printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                grep -rnIs \
+                  --exclude-dir={.git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj} \
+                  --exclude={'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'} \
+                  -m {{limite}} \
+                  -E -e {{patronEscapado}} \
+                  -- {{rutaEscapada}} 2>&1
+                )
+                """.ReplaceLineEndings("\n");
+
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
+            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+
+            if (peticion.Estado != EstadoPeticionEnum.Completado)
+                throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).");
+
+            string salida = ReconstruirSalida(peticion).Trim();
+            if ((peticion.CodigoSalida == 1 || (peticion.CodigoSalida == 2 && !salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))) && string.IsNullOrEmpty(salida))
+                return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.";
+
+            if (peticion.CodigoSalida == 2 && salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))
+                throw new NativeSshException(salida);
+
+            if (peticion.CodigoSalida is not (0 or 2))
+                throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error en búsqueda (código {peticion.CodigoSalida})." : salida);
+
+            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            if (lineas.Length > limite)
+            {
+                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
+                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
+            }
+            return lineas.Length == limite
+                ? $"{salida}\n\n[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]"
+                : salida;
+        }
+
+        private string ReconstruirSalida(Peticion peticion)
+        {
             StringBuilder sb = new();
             long desde = 0;
             while (true)
@@ -152,11 +311,9 @@ namespace NativeSsh.Herramientas
                 desde = pagina.Siguiente;
             }
 
-            string textoCompleto = sb.ToString();
-            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
-                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoCompleto.Trim())
-                : textoCompleto;
+            return sb.ToString();
         }
+
 
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
         {

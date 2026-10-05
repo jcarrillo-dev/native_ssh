@@ -1,4 +1,6 @@
 using FluentAssertions;
+using System.Globalization;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -24,7 +26,9 @@ namespace NativeSsh.Test.Herramientas
 
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
-            comando.Contains("sed -n") ? new("linea 1\nlinea 2\nlinea 3\n", 0) :
+            comando.Contains("sed -n") ? SimularLectura(comando) :
+            comando.Contains("base64 -d") ? SimularEscritura(comando) :
+            comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
@@ -32,6 +36,63 @@ namespace NativeSsh.Test.Herramientas
                 "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
                 _ => new($"eco:{comando}\n", 2)
             };
+
+        private static RespuestaFalsa SimularBusqueda(string comando)
+        {
+            if (!comando.Contains("-E -e"))
+                return new("grep: error falta flag -e\n", 2);
+
+            if (comando.Contains("ruta_inexistente"))
+                return new("Error: la ruta de búsqueda no existe: ruta_inexistente\n", 1);
+
+            if (comando.Contains("error_fatal"))
+                return new("grep: error de sintaxis en expresión regular\n", 2);
+
+            if (comando.Contains("sin_coincidencias"))
+                return new("", 1);
+
+            if (comando.Contains("muchas_coincidencias"))
+            {
+                string muchas = string.Concat(Enumerable.Range(1, 5).Select(i => $"archivo.txt:{i}:coincidencia {i}\n"));
+                return new(muchas, 0);
+            }
+
+            return new("archivo.txt:1:coincidencia encontrada\n", 0);
+        }
+
+        private static RespuestaFalsa SimularEscritura(string comando) =>
+            comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
+                ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
+                : new("", 0);
+
+        private static RespuestaFalsa SimularLectura(string comando)
+        {
+            int idxCabecera = comando.LastIndexOf("echo \"[Líneas ", StringComparison.Ordinal);
+            if (idxCabecera >= 0)
+            {
+                int finCabecera = comando.IndexOf(']', idxCabecera);
+                if (finCabecera > idxCabecera)
+                {
+                    const int total = 10;
+                    int fin = total;
+                    int idxFin = comando.IndexOf("total < ", StringComparison.Ordinal);
+                    if (idxFin >= 0)
+                    {
+                        int idxEspacio = comando.IndexOf(' ', idxFin + 8);
+                        if (idxEspacio > idxFin && int.TryParse(comando[(idxFin + 8)..idxEspacio], out int parsedFin))
+                            fin = parsedFin;
+                    }
+
+                    int finEfectivo = Math.Min(total, fin);
+                    string cabecera = comando[(idxCabecera + 6)..(finCabecera + 1)]
+                        .Replace("$total", total.ToString(CultureInfo.InvariantCulture))
+                        .Replace("$fin_efectivo", finEfectivo.ToString(CultureInfo.InvariantCulture));
+                    return new($"{cabecera}\nlinea 1\nlinea 2\nlinea 3\n", 0);
+                }
+            }
+
+            return new("linea 1\nlinea 2\nlinea 3\n", 0);
+        }
 
         public ValueTask DisposeAsync() => _gestor.DisposeAsync();
 
@@ -163,14 +224,23 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task ReadFile_ConMetadatos_DevuelveCabeceraConTotalLineas()
+        {
+            // Simula comando que devuelve cabecera y contenido
+            string contenido = await _herramientas.LeerArchivoAsync("servidor", "fichero.txt", lineaInicio: 1, lineaFin: 2);
+            _ = contenido.Should().StartWith("[Líneas 1-2 de ");
+        }
+
+        [Fact]
         public async Task ReadFile_LecturaExitosa_DevuelveTextoPlano()
         {
             // Act
             string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
 
             // Assert
-            _ = texto.Should().Be("linea 1\nlinea 2\nlinea 3\n");
+            _ = texto.Should().Be("[Líneas 1-3 de 10]\nlinea 1\nlinea 2\nlinea 3\n");
         }
+
 
         [Theory]
         [InlineData("")]
@@ -196,6 +266,123 @@ namespace NativeSsh.Test.Herramientas
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "error.txt")).Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Be("Error: el archivo no existe: error.txt");
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task WriteFile_RutaVacia_LanzaExcepcion(string ruta)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", ruta, "contenido")).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("vacía");
+        }
+
+        [Fact]
+        public async Task WriteFile_ArchivoExisteSinOverwriteNiAppend_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "ya_existe.txt", "nuevo contenido", overwrite: false, append: false)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("ya existe");
+        }
+
+        [Fact]
+        public async Task WriteFile_OverwriteYAppendSimultaneos_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "archivo.txt", "contenido", overwrite: true, append: true)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
+        }
+
+        [Fact]
+        public async Task WriteFile_EscrituraExitosa_DevuelveMensajeConfirmacion()
+        {
+            // Act
+            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola mundo");
+
+            // Assert
+            _ = resultado.Should().Contain("Archivo escrito correctamente: nuevo.txt");
+            _ = resultado.Should().Contain("10 bytes");
+        }
+
+        [Fact]
+        public async Task WriteFile_AnexadoExitoso_DevuelveMensajeConfirmacion()
+        {
+            // Act
+            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola", append: true);
+
+            // Assert
+            _ = resultado.Should().Contain("Contenido anexado correctamente a: nuevo.txt");
+            _ = resultado.Should().Contain("4 bytes");
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task Search_PatronVacio_LanzaExcepcion(string patron)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync("servidor", patron)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("patrón de búsqueda no puede estar vacío");
+        }
+
+        [Fact]
+        public async Task Search_SinCoincidencias_DevuelveMensajeInformativoSinError()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "sin_coincidencias");
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron coincidencias para el patrón: 'sin_coincidencias' en '.'.");
+        }
+
+        [Fact]
+        public async Task Search_ConCoincidencias_DevuelveTextoFiltrado()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "algo");
+
+            // Assert
+            _ = resultado.Should().Be("archivo.txt:1:coincidencia encontrada");
+        }
+
+        [Fact]
+        public async Task Search_LimiteAlcanzado_AnexaAviso()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "muchas_coincidencias", maxResultados: 3);
+
+            // Assert
+            _ = resultado.Should().Contain("[Límite alcanzado: se muestran 3 coincidencias.");
+            _ = resultado.Should().Contain("coincidencia 3");
+            _ = resultado.Should().NotContain("coincidencia 4");
+        }
+
+        [Fact]
+        public async Task Search_PatronConGuion_UsaFlagEParaProtegerPatron()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "--version");
+
+            // Assert
+            _ = resultado.Should().Be("archivo.txt:1:coincidencia encontrada");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-E -e '--version'"));
+        }
+
+        [Fact]
+        public async Task Search_RutaInexistente_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync("servidor", "algo", "ruta_inexistente")).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("la ruta de búsqueda no existe");
+        }
+
+        [Fact]
+        public async Task Search_FalloGrep_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync("servidor", "error_fatal")).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("error de sintaxis");
         }
     }
 }

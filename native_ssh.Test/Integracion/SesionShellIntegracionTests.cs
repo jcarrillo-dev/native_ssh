@@ -255,8 +255,8 @@ namespace NativeSsh.Test.Integracion
                 // Act 1: Leer líneas 2 a 4
                 string contenido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal, lineaInicio: 2, lineaFin: 4);
 
-                // Assert 1: Devuelve exactamente las líneas 2 a 4 con saltos de línea reales
-                _ = contenido.Should().Be("Línea 2\nLínea 3\nLínea 4\n");
+                // Assert 1: Devuelve la cabecera de metadatos y exactamente las líneas 2 a 4 con saltos de línea reales
+                _ = contenido.Should().Be("[Líneas 2-4 de 5]\nLínea 2\nLínea 3\nLínea 4\n");
 
                 // Act 2: Pedir un archivo que no existe
                 string rutaInexistente = Path.Combine(Path.GetTempPath(), $"no_existe_{Guid.NewGuid():N}.txt");
@@ -275,6 +275,512 @@ namespace NativeSsh.Test.Integracion
             {
                 if (File.Exists(archivoTemporal))
                     File.Delete(archivoTemporal);
+            }
+        }
+
+        [Fact]
+        public async Task LeerArchivo_SinEspecificarLineaFin_DevuelveFinEfectivo()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.GetTempFileName();
+            try
+            {
+                string[] lineas = ["Línea 1", "Línea 2", "Línea 3", "Línea 4", "Línea 5"];
+                await File.WriteAllLinesAsync(archivoTemporal, lineas);
+
+                // Act: lectura de archivo completo sin especificar lineaFin
+                string contenido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+
+                // Assert: devuelve [Líneas 1-5 de 5] y no [Líneas 1-800 de 5]
+                _ = contenido.Should().StartWith("[Líneas 1-5 de 5]\n");
+                _ = contenido.Should().NotContain("[Líneas 1-800 de 5]");
+                _ = contenido.Should().Be("[Líneas 1-5 de 5]\nLínea 1\nLínea 2\nLínea 3\nLínea 4\nLínea 5\n");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
+            }
+        }
+
+        [Fact]
+        public async Task LeerArchivo_RutaConCaracteresEspeciales_EsSeguraYPrevieneInyeccion()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            // Archivo cuyo nombre empieza por guion y contiene comillas, espacios y signos $
+            string nombreEspecial = "--archivo 'con comillas' y $HOME.txt";
+            string rutaCompleta = Path.Combine(Path.GetTempPath(), nombreEspecial);
+            try
+            {
+                await File.WriteAllLinesAsync(rutaCompleta, ["Contenido 1", "Contenido 2"]);
+
+                // Act 1: Leer archivo existente con nombre especial y guiones iniciales
+                string contenido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, rutaCompleta);
+
+                // Assert 1: sed procesa el archivo gracias al flag '--' y devuelve el contenido
+                _ = contenido.Should().Be("[Líneas 1-2 de 2]\nContenido 1\nContenido 2\n");
+
+                // Act 2: Ruta inexistente con caracteres de inyección y comillas
+                string rutaMaliciosa = "/tmp/-n $(echo inyeccion) ' \"";
+                NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(sshd.Destino.Clave, rutaMaliciosa)).Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert 2: printf imprime exactamente la ruta literal sin evaluar el subshell $(echo inyeccion)
+                _ = error.Message.Should().Contain($"Error: el archivo no existe: {rutaMaliciosa}");
+                _ = error.Message.Should().Contain("$(echo inyeccion)");
+
+                // Act 3: Ruta con flag tipo -n
+                NativeSshException errorFlag = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(sshd.Destino.Clave, "-n")).Should().ThrowAsync<NativeSshException>()).Which;
+                _ = errorFlag.Message.Should().Contain("Error: el archivo no existe: -n");
+            }
+            finally
+            {
+                if (File.Exists(rutaCompleta))
+                    File.Delete(rutaCompleta);
+            }
+        }
+
+        [Fact]
+        public async Task EscribirArchivo_CicloCompleto_EscrituraDuplicadoSobrescrituraYAnexado()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.Combine(Path.GetTempPath(), $"test_write_{Guid.NewGuid():N}.txt");
+            try
+            {
+                // Act 1: Escritura de archivo nuevo
+                string res1 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Primera línea\n");
+
+                // Assert 1: Mensaje de confirmación y contenido verificado con LeerArchivoAsync
+                _ = res1.Should().Contain("Archivo escrito correctamente");
+                string leido1 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leido1.Should().Contain("Primera línea\n");
+
+                // Act 2: Intento de reescribir sin overwrite ni append debe fallar
+                NativeSshException errorDuplicado = (await FluentActions.Awaiting(() =>
+                    herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Intento sin overwrite", overwrite: false, append: false))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert 2: Mensaje de error indica que el archivo ya existe y sugiere overwrite/append
+                _ = errorDuplicado.Message.Should().Contain("el archivo ya existe");
+                _ = errorDuplicado.Message.Should().Contain("overwrite=true");
+
+                // Act 3: Sobrescritura con overwrite = true
+                string res3 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido sobrescrito\n", overwrite: true);
+
+                // Assert 3: Archivo contiene únicamente el contenido sobrescrito
+                _ = res3.Should().Contain("Archivo escrito correctamente");
+                string leido3 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leido3.Should().Contain("Contenido sobrescrito\n");
+                _ = leido3.Should().NotContain("Primera línea");
+
+                // Act 4: Anexado con append = true
+                string res4 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Segunda línea anexada\n", append: true);
+
+                // Assert 4: Archivo contiene el contenido concatenado
+                _ = res4.Should().Contain("Contenido anexado correctamente");
+                string leido4 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leido4.Should().Contain("Contenido sobrescrito\nSegunda línea anexada\n");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
+            }
+        }
+
+        [Fact]
+        public async Task EscribirArchivo_RutaConCaracteresEspecialesYEspacios_EsSegura()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string nombreEspecial = $"--write 'comillas' $HOME {Guid.NewGuid():N}.txt";
+            string rutaCompleta = Path.Combine(Path.GetTempPath(), nombreEspecial);
+            try
+            {
+                // Act: Escribir archivo con caracteres especiales
+                string res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, rutaCompleta, "Contenido seguro");
+
+                // Assert: Escrito correctamente y leíble sin evaluar subshells
+                _ = res.Should().Contain("Archivo escrito correctamente");
+                string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, rutaCompleta);
+                _ = leido.Should().Contain("Contenido seguro");
+            }
+            finally
+            {
+                if (File.Exists(rutaCompleta))
+                    File.Delete(rutaCompleta);
+            }
+        }
+
+        [Fact]
+        public async Task EscribirArchivo_OverwriteYAppendSimultaneos_LanzaExcepcion()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                herramientas.EscribirArchivoAsync(sshd.Destino.Clave, "archivo.txt", "contenido", overwrite: true, append: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
+        }
+
+        [Fact]
+        public async Task EscribirArchivo_RutaEsDirectorioExistente_LanzaExcepcion()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                herramientas.EscribirArchivoAsync(sshd.Destino.Clave, "/tmp", "contenido"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Be("Error: la ruta es un directorio: /tmp");
+        }
+
+        [Fact]
+        public async Task EscribirArchivo_AppendEnArchivoInexistente_CreaYEscribeCorrectamente()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.Combine(Path.GetTempPath(), $"test_append_nuevo_{Guid.NewGuid():N}.txt");
+            try
+            {
+                // Act: append = true sobre un archivo que no existía previamente
+                string res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido inicial append\n", append: true);
+
+                // Assert: Se crea y escribe correctamente
+                _ = res.Should().Contain("Contenido anexado correctamente");
+                string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leido.Should().Contain("Contenido inicial append\n");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_ExcluyeDirectoriosRuidososComoNodeModules()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_excl_{Guid.NewGuid():N}");
+            string subNodeModules = Path.Combine(dirTemporal, "node_modules");
+            string archivoRaiz = Path.Combine(dirTemporal, "archivo_raiz.js");
+            string archivoOculto = Path.Combine(subNodeModules, "modulo.js");
+
+            try
+            {
+                _ = Directory.CreateDirectory(subNodeModules);
+                await File.WriteAllTextAsync(archivoRaiz, "const CLAVE_SECRETA = \"val1\";\n");
+                await File.WriteAllTextAsync(archivoOculto, "const CLAVE_SECRETA = \"val2\";\n");
+
+                // Act
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "CLAVE_SECRETA", dirTemporal);
+
+                // Assert
+                _ = res.Should().Contain("archivo_raiz.js");
+                _ = res.Should().NotContain("node_modules");
+                _ = res.Should().NotContain("modulo.js");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_SinCoincidencias_DevuelveMensajeInformativoSinError()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_vacio_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                string archivo = Path.Combine(dirTemporal, "archivo.txt");
+                await File.WriteAllTextAsync(archivo, "hola mundo\n");
+
+                // Act
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "patron_inexistente_xyz_123", dirTemporal);
+
+                // Assert
+                _ = res.Should().Be($"No se encontraron coincidencias para el patrón: 'patron_inexistente_xyz_123' en '{dirTemporal}'.");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_RutaInexistente_LanzaExcepcion()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string rutaInexistente = $"/tmp/ruta_inexistente_{Guid.NewGuid():N}";
+
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                herramientas.BuscarAsync(sshd.Destino.Clave, "patron", rutaInexistente))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain("la ruta de búsqueda no existe");
+        }
+
+        [Fact]
+        public async Task Buscar_SuperaLimite_AnexaAviso()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_limite_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                string contenido = "coincidencia 1\ncoincidencia 2\ncoincidencia 3\n";
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "archivo.txt"), contenido);
+
+                // Act
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "coincidencia", dirTemporal, maxResultados: 2);
+
+                // Assert
+                _ = res.Should().Contain("[Límite alcanzado: se muestran 2 coincidencias.");
+                _ = res.Should().Contain("coincidencia 2");
+                _ = res.Should().NotContain("coincidencia 3");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_PatronQueIniciaConGuion_NoInterpretaComoFlagYEncuentraCoincidencias()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_guion_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                string contenido = "ejecutar --version para ver version\nconfigurar --config=prod.json ahora\n";
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "archivo.txt"), contenido);
+
+                // Act
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "--version", dirTemporal);
+
+                // Assert
+                _ = res.Should().Contain("ejecutar --version para ver version");
+                _ = res.Should().NotContain("GNU grep");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_MultiplesArchivos_TruncadoEnCSharpEntregaExactamenteLimiteLineas()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_truncado_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                // 3 archivos, cada uno con 3 coincidencias = 9 coincidencias en total
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "a1.txt"), "marca 1\nmarca 2\nmarca 3\n");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "a2.txt"), "marca 4\nmarca 5\nmarca 6\n");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "a3.txt"), "marca 7\nmarca 8\nmarca 9\n");
+
+                // Act: pedimos límite de 4 resultados
+                const int limite = 4;
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "marca", dirTemporal, maxResultados: limite);
+
+                // Assert
+                _ = res.Should().Contain($"[Límite alcanzado: se muestran {limite} coincidencias.");
+                string textoCoincidencias = res.Split("\n\n[Límite alcanzado")[0];
+                string[] lineas = textoCoincidencias.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                _ = lineas.Length.Should().Be(limite);
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_RegexInvalido_LanzaExcepcionConDiagnosticoDeGrep()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"test_search_regex_invalido_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "archivo.txt"), "texto de prueba\n");
+
+                // Act & Assert
+                NativeSshException error = (await FluentActions.Awaiting(() =>
+                    herramientas.BuscarAsync(sshd.Destino.Clave, "[unclosed", dirTemporal))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                _ = error.Message.Should().Contain("grep:");
+                _ = error.Message.Should().Contain("[");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
             }
         }
     }

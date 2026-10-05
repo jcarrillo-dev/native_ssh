@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Linq;
 using System.Text;
 using BenchmarkDotNet.Attributes;
 using NativeSsh.Buffers;
