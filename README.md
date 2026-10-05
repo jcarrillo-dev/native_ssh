@@ -6,22 +6,27 @@ Servidor MCP (*Model Context Protocol*) desarrollado en .NET 10 y compilado en N
 
 ## 1. Descripción general y herramientas
 
-El servidor mantiene una sesión SSH persistente con un shell PTY interactivo por cada destino (`usuario@servidor[:puerto]`). Los comandos se ejecutan secuencialmente en una cola FIFO dentro del mismo shell, permitiendo que variables de entorno, funciones y estado de sesión persistan entre invocaciones sucesivas, mientras que el directorio de trabajo se reinicia automáticamente al directorio configurado en `__NS_CWD` (o al directorio personal `~` por defecto) tras cada ejecución.
+El servidor mantiene una sesión SSH persistente con un shell PTY interactivo por cada destino (`usuario@servidor[:puerto]`). Los comandos se ejecutan secuencialmente en una cola FIFO dentro del mismo shell, permitiendo que variables de entorno, funciones y estado de sesión persistan entre invocaciones sucesivas, mientras que el directorio de trabajo se reinicia automáticamente al directorio configurado en `__NS_CWD` (o al directorio personal `~` por defecto) tras cada ejecución mediante el hook post-ejecución `cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;`.
 
 ### Herramientas MCP registradas
 
 | Herramienta | Parámetros (por defecto) | Devuelve | Descripción |
 |---|---|---|---|
-| `ssh_exec` | `destino` (string), `comando` (string), `timeoutSegundos` (300), `esperarSegundos` (20) | `ResultadoComando` | Ejecuta un comando en el shell del destino; devuelve la salida desde el byte 0. |
-| `ssh_output` | `id` (string), `desdeByte` (0), `esperarSegundos` (0) | `ResultadoComando` | Lee la salida acumulada a partir del offset indicado en `desdeByte`. |
-| `ssh_input` | `id` (string), `texto` (string), `enter` (true), `esperarSegundos` (2) | `ResultadoComando` | Envía texto a la entrada estándar del proceso en ejecución y captura la salida posterior. |
 | `ssh_cancel` | `id` (string) | `ResultadoComando` | Cancela la petición; espera hasta `EsperaTrasCtrlC` + 2 s antes de responder. |
-| `ssh_status` | `destino` (opcional, string) | `ResultadoEstado` | Reporta el estado de sesiones activas y las últimas 20 peticiones procesadas. |
 | `ssh_disconnect` | `destino` (string) | `ResultadoAccion` | Cierra la conexión SSH activa con el destino indicado. |
-| `ssh_reset_shell` | `destino` (string) | `ResultadoAccion` | Reinicia el shell bash sobre la conexión TCP existente, descartando el entorno previo. |
+| `ssh_exec` | `destino` (string), `comando` (string), `timeoutSegundos` (300), `esperarSegundos` (20) | `ResultadoComando` | Ejecuta un comando en el shell del destino; devuelve la salida desde el byte 0. |
+| `ssh_find` | `destino` (string), `patron` (string), `ruta` ("."), `tipo` ("file"), `profundidadMax` (10), `maxResultados` (100) | `string` | Busca archivos o carpetas por nombre o patrón glob (`*.service`, `docker-compose*.yml`, etc.) excluyendo carpetas ruidosas. |
+| `ssh_input` | `id` (string), `texto` (string), `enter` (true), `esperarSegundos` (2) | `ResultadoComando` | Envía texto a la entrada estándar del proceso en ejecución y captura la salida posterior. |
+| `ssh_list_dir` | `destino` (string), `ruta` ("."), `profundidadMax` (3), `maxResultados` (100) | `string` | Explora la estructura topológica de carpetas y subcarpetas en rutas relativas limpias excluyendo carpetas ruidosas. |
+| `ssh_output` | `id` (string), `desdeByte` (0), `esperarSegundos` (0) | `ResultadoComando` | Lee la salida acumulada a partir del offset indicado en `desdeByte`. |
 | `ssh_read_file` | `destino` (string), `ruta` (string), `lineaInicio` (1), `lineaFin` (null) | `string` (TextContent) | Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve texto plano con saltos de línea reales sin envoltorios JSON. |
+| `ssh_replace_file_content` | `destino` (string), `ruta` (string), `targetContent` (string), `replacementContent` (string), `lineaInicio` (1), `lineaFin` (null), `allowMultiple` (false), `sudo` (false) | `string` | Sustituye quirúrgicamente un bloque de texto dentro de un rango delimitado de líneas con swap atómico. |
+| `ssh_reset_shell` | `destino` (string) | `ResultadoAccion` | Reinicia el shell bash sobre la conexión TCP existente, descartando el entorno previo. |
+| `ssh_search` | `destino` (string), `patron` (string), `ruta` ("."), `extension` (null), `maxResultados` (50) | `string` | Busca patrones de texto o regex con filtro opcional por extensión o glob ignorando carpetas ruidosas (.git, node_modules, .venv, bin, obj, etc.). |
+| `ssh_set_cwd` | `destino` (string), `ruta` (null) | `string` | Establece o restablece el directorio de trabajo persistente del shell remoto. Si `ruta` es null o vacía, se restablece a `$HOME`. |
+| `ssh_stat` | `destino` (string), `ruta` (string) | `string` (JSON) | Devuelve metadatos básicos estructurados (existe, tipo, tamaño en bytes, tamaño legible, permisos, última modificación) de forma defensiva. |
+| `ssh_status` | `destino` (opcional, string) | `ResultadoEstado` | Reporta el estado de sesiones activas y las últimas 20 peticiones procesadas. |
 | `ssh_write_file` | `destino` (string), `ruta` (string), `contenido` (string), `overwrite` (false), `append` (false), `sudo` (false) | `string` | Escribe o anexa contenido de forma atómica y segura mediante Base64. |
-| `ssh_search` | `destino` (string), `patron` (string), `ruta` ("."), `maxResultados` (50) | `string` | Busca patrones de texto o regex ignorando carpetas ruidosas (.git, node_modules, .venv, bin, obj, etc.). |
 
 ### Lectura limpia de archivos (`ssh_read_file`)
 
@@ -37,12 +42,45 @@ La herramienta `ssh_write_file` permite crear, sobrescribir o anexar contenido a
 - **Protección contra sobrescritura accidental:** Por seguridad, la herramienta no sobrescribe un archivo existente a menos que se indique explícitamente `overwrite: true` o se elija el modo `append: true`. Especificar ambas opciones simultáneamente produce un error de validación inmediato.
 - **Permisos elevados (`sudo`):** Mediante el parámetro `sudo: true`, la herramienta utiliza `sudo tee` para interactuar con archivos protegidos por permisos de superusuario en el destino remoto.
 
+### Modificación quirúrgica de archivos (`ssh_replace_file_content`)
+
+La herramienta `ssh_replace_file_content` permite sustituir bloques específicos de código o texto dentro de un rango delimitado de líneas (`lineaInicio` y `lineaFin`, indexadas desde 1), minimizando el riesgo de corromper archivos extensos o cometer alucinaciones de contenido circundante.
+
+- **Rango y coincidencia exacta:** El bloque objetivo `targetContent` se busca dentro del intervalo de líneas indicado. Detecta automáticamente el formato de fin de línea (`\r\n` o `\n`) del archivo remoto y normaliza la búsqueda.
+- **Protección contra ambigüedad:** Si `targetContent` aparece más de una vez en el rango seleccionado y no se especifica `allowMultiple: true`, la herramienta aborta la operación reportando el conteo de apariciones para forzar una delimitación más precisa. Asimismo, si no se encuentra la cadena objetivo dentro del rango, emite un mensaje diagnóstico detallado para verificar números de línea e indentación.
+- **Escritura atómica y elevación de privilegios (`sudo`):** Recompone el archivo en memoria y lo escribe de forma atómica mediante codificación Base64 y un archivo temporal con reemplazo seguro (`mv -f`), admitiendo el parámetro opcional `sudo: true` para editar archivos de sistema mediante `sudo tee` y `sudo mv -f`.
+
 ### Búsqueda inteligente de patrones (`ssh_search`)
 
 La herramienta `ssh_search` proporciona capacidades de búsqueda rápida basada en `grep -rnIs -E` sobre el servidor remoto, orientada a la exploración de código y configuración.
 
+- **Filtro por extensión o glob (`extension`):** Permite filtrar los archivos a analizar mediante una extensión simple (ej. `'py'`, `'.ts'`) o patrón glob (ej. `'*.json'`), activando el modo de inclusión selectiva previa en `grep`.
 - **Exclusiones automáticas:** Ignora de forma predeterminada directorios ruidosos o de gran volumen (`.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`, `.next`, `.cache`, `bin`, `obj`) y archivos de artefactos/bloqueo (`*.min.js`, `*.min.css`, `*.map`, `*.lock`, `package-lock.json`, `pnpm-lock.yaml`).
 - **Control de contexto:** El parámetro `maxResultados` (por defecto 50, con límite de 1 a 200) acota el volumen de resultados devueltos para evitar la saturación del contexto de trabajo del cliente MCP, informando explícitamente mediante una nota final si se ha alcanzado el límite.
+
+### Búsqueda de archivos por nombre o patrón (`ssh_find`)
+
+La herramienta `ssh_find` permite localizar archivos o directorios por su nombre o patrón glob (ej. `*.service`, `docker-compose*.yml`, `.env*`) en el servidor remoto.
+
+- **Filtrado por tipo:** El parámetro `tipo` permite restringir la búsqueda a archivos (`'file'`, por defecto), directorios (`'dir'` o `'directory'`) o ambos (`'all'`).
+- **Poda automática:** Excluye sistemáticamente árboles de directorios ruidosos o pesados (`.git`, `node_modules`, `.venv`, `dist`, `build`, `bin`, `obj`, etc.) para agilizar la búsqueda.
+- **Rutas relativas limpias:** Devuelve rutas relativas limpias ordenadas alfabéticamente sin el prefijo `./`.
+
+### Exploración topológica de directorios (`ssh_list_dir`)
+
+La herramienta `ssh_list_dir` permite mapear de un vistazo la estructura y jerarquía de directorios de un proyecto remoto sin saturar el contexto con listas masivas de archivos.
+
+- **Recursión controlada:** El parámetro `profundidadMax` (por defecto 3, entre 1 y 10) define el nivel máximo de profundidad en el árbol de carpetas.
+- **Exclusión de dependencias y artefactos:** Ignora automáticamente directorios no esenciales (`.git`, `node_modules`, `.venv`, `.next`, `dist`, `build`, `bin`, `obj`, `.cache`).
+- **Resumen arquitectónico:** Ideal para entender rápidamente la organización de módulos y capas en repositorios remotos.
+
+### Inspección defensiva de metadatos (`ssh_stat`)
+
+La herramienta `ssh_stat` proporciona información detallada y estructurada sobre cualquier archivo, directorio o enlace simbólico remoto antes de proceder a lecturas o modificaciones.
+
+- **Respuesta JSON estructurada:** Devuelve un documento JSON con propiedades normalizadas (`ruta`, `existe`, `tipo`, `tamanoBytes`, `tamanoHumano`, `permisos`, `ultimaModificacion`).
+- **Lectura defensiva:** Permite verificar si un archivo supera límites seguros (ej. varios megabytes o gigabytes) antes de intentar volcarlo en memoria con `ssh_read_file`, evitando bloqueos o sobrecargas de contexto.
+- **Detección de inexistencia segura:** Si el destino no existe, devuelve `{"existe": false, ...}` con código de éxito en lugar de abortar abruptamente la sesión.
 
 ### Mecanismo de paginación y lectura
 
@@ -50,15 +88,23 @@ La herramienta `ssh_search` proporciona capacidades de búsqueda rápida basada 
 - Cada bloque de respuesta tiene un tamaño máximo de 64 KiB (`MaxBytesPorRespuesta`).
 - Si un comando genera una salida extensa o continúa en ejecución (`HasMasSalida = true`), las lecturas posteriores deben realizarse invocando `ssh_output` pasando en `desdeByte` el valor de `SiguienteByte` obtenido en la respuesta previa.
 
-### Directorio de trabajo persistente (`__NS_CWD`)
+### Directorio de trabajo persistente (`ssh_set_cwd` y `__NS_CWD`)
 
-Por defecto, el directorio de trabajo se restablece automáticamente a `$HOME` (`~`) tras cada comando. La variable `__NS_CWD` permite al usuario o agente cambiar el directorio base de la sesión persistente simplemente ejecutando:
+Por defecto, el directorio de trabajo se restablece automáticamente a `$HOME` (`~`) tras cada comando. Cada comando ejecutado por el servidor se envuelve internamente con una cláusula final:
 
 ```bash
-export __NS_CWD=/ruta/del/proyecto
+cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
 ```
 
-Si la variable `__NS_CWD` no está definida o apunta a una ruta inexistente, el shell aplica de forma transparente un *fallback* a `$HOME` (`cd ~`), asegurando que la ejecución continúe con normalidad y sin errores.
+Esto garantiza que incluso si un comando ejecuta llamadas `cd` intermedias (p. ej. `cd /var/log && cat syslog`), la siguiente llamada comenzará siempre en el directorio de trabajo configurado.
+
+#### Herramienta `ssh_set_cwd`
+
+Permite configurar o restablecer de forma segura el directorio de trabajo persistente de la sesión:
+
+- **Validación previa y resolución de ruta:** Comprueba en el host remoto que la ruta exista y sea un directorio (`test -d "$ruta"`). Si es válida, resuelve la ruta absoluta física canónica (`cd "$ruta" && pwd -P`) y exporta `export __NS_CWD="..."` en la sesión interactiva viva.
+- **Restablecimiento a `$HOME`:** Si se invoca con `ruta: null` o vacía, la herramienta ejecuta `unset __NS_CWD` y devuelve el shell a `$HOME` (`cd ~`).
+- **Fail-fast:** Si el directorio no existe o no se tienen permisos de acceso, la herramienta falla inmediatamente con un error descriptivo sin modificar el estado previo de la sesión.
 
 ---
 
