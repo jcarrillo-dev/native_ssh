@@ -21,6 +21,10 @@ namespace NativeSsh.Test.Integracion
     {
         private const string Configuracion = "LogLevel DEBUG\nMaxSessions 5";
 
+        // Tope de cualquier espera con el servidor congelado: si el código no respetara su límite local, la prueba falla
+        // en lugar de colgarse con los procesos detenidos (el kill -CONT del finally siempre llega).
+        private static readonly TimeSpan EsperaMaximaCongelado = TimeSpan.FromSeconds(30);
+
         private readonly SshdPropio _sshd = new(Configuracion);
 
         public Task InitializeAsync() => Task.CompletedTask;
@@ -80,7 +84,7 @@ namespace NativeSsh.Test.Integracion
             {
                 _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
                 Stopwatch reloj = Stopwatch.StartNew();
-                errores = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "echo l", TimeSpan.FromSeconds(1), CancellationToken.None))));
+                errores = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "echo l", TimeSpan.FromSeconds(1), CancellationToken.None)))).WaitAsync(EsperaMaximaCongelado);
                 await EsperarHastaAsync(reloj, TimeSpan.FromSeconds(9));
                 activosCongelado = sesion.CanalesExecActivos;
             }
@@ -124,7 +128,7 @@ namespace NativeSsh.Test.Integracion
             {
                 _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
                 Stopwatch reloj = Stopwatch.StartNew();
-                primero = await herramientas.EjecutarAsync(destino, "echo uno", timeoutSegundos: 2, esperarSegundos: 20);
+                primero = await herramientas.EjecutarAsync(destino, "echo uno", timeoutSegundos: 2, esperarSegundos: 20).WaitAsync(EsperaMaximaCongelado);
                 duracion = reloj.Elapsed;
                 await EsperarHastaAsync(reloj, TimeSpan.FromSeconds(6));
             }

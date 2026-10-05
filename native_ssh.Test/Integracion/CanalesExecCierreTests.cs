@@ -113,7 +113,8 @@ namespace NativeSsh.Test.Integracion
             {
                 _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
                 reloj = Stopwatch.StartNew();
-                error = (await FluentActions.Awaiting(() => ExecAsync("echo hola", 2)).Should().ThrowAsync<NativeSshException>()).Which;
+                // Acotada: si la lectura no respetara su límite local, falla sin dejar el servidor congelado.
+                error = (await FluentActions.Awaiting(() => ExecAsync("echo hola", 2).WaitAsync(TimeSpan.FromSeconds(30))).Should().ThrowAsync<NativeSshException>()).Which;
                 reloj.Stop();
                 activosCongelado = sesion.CanalesExecActivos;
             }
