@@ -50,7 +50,9 @@ namespace NativeSsh.Test.Integracion
         [Fact]
         public Task CerrarElShellMientrasLlegaSalida_CadaCierreVuelveYLaConexionSigueAtendiendo() => CerrarConSalidaAsync(rondasPorCierre: 4);
 
+        // La categoría de la clase es Integracion: sin la suya, el filtro Categoria=Estres no la seleccionaría nunca.
         [FactEstres]
+        [Trait("Categoria", "Estres")]
         public Task Estres_CerrarElShellMientrasLlegaSalida_CadaCierreVuelveYLaConexionSigueAtendiendo() => CerrarConSalidaAsync(rondasPorCierre: 60);
 
         private async Task CerrarConSalidaAsync(int rondasPorCierre)
