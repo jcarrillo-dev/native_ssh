@@ -155,12 +155,16 @@ namespace NativeSsh.Test.Integracion
         // excluir de verdad: con el flock del archivo en manos de otro proceso (aquí, un 'flock ... sleep' lanzado por la
         // prueba), la escritura, el anexado y el reemplazo fallan sin tocarlo, y al soltarlo funcionan. Una herramienta que
         // no funciona (aquí, una falsa que sale con 127, como una orden que no existe) nunca cuenta como «ocupado»: se prueba
-        // la siguiente. Sin ninguna, se escribe sin exclusión y la respuesta lo avisa.
+        // la siguiente. Sin ninguna, se escribe sin exclusión y la respuesta lo avisa. Con una sola herramienta disponible
+        // (solo_flock, solo_python3), basta ella: así ninguna de las otras puede tapar que su rama falle o desaparezca (p.
+        // ej. un flock sin -E 75, cuyo «ocupado» sería el 1 de «no funciona»).
         [Theory]
         [InlineData("flock", false)]
         [InlineData("flock", true)]
+        [InlineData("solo_flock", false)]
         [InlineData("python3", false)]
         [InlineData("python3", true)]
+        [InlineData("solo_python3", false)]
         [InlineData("perl", false)]
         [InlineData("ninguna", false)]
         public async Task CandadoEnManosDeOtroProceso_LasOperacionesFallanSinTocarYAlSoltarloFuncionan(string herramienta, bool isSudo)
@@ -171,7 +175,9 @@ namespace NativeSsh.Test.Integracion
             string[] inservibles = herramienta switch
             {
                 "flock" => [],
+                "solo_flock" => ["python3", "perl"],
                 "python3" => ["flock"],
+                "solo_python3" => ["flock", "perl"],
                 "perl" => ["flock", "python3"],
                 _ => ["flock", "python3", "perl"]
             };
@@ -309,6 +315,39 @@ namespace NativeSsh.Test.Integracion
             _ = entradasTrasAnexado.Should().BeEquivalentTo(entradas, "el anexado no puede tocar nada");
             _ = libre.Mensaje.Should().Be($"Contenido anexado correctamente a: {archivo} (8 bytes).", "terminada la restauración, el anexado toma el candado y no avisa de nada");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\nANEXADO\n");
+        }
+
+        // La lectura previa de ssh_replace_file_content toma el candado compartido: coexiste con otro lector compartido
+        // (aquí, un 'flock -s ... sleep' lanzado por la prueba que el 'base64' de la lectura suelta antes de codificar) y
+        // la escritura posterior, con el exclusivo, ya lo encuentra libre. Con un candado exclusivo en la lectura, el
+        // reemplazo fallaría al leer aunque nadie estuviera escribiendo.
+        [Fact]
+        public async Task Reemplazo_LecturaPreviaConOtroLectorCompartido_CoexisteYReemplaza()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            string archivo = Ruta("compartido.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", "38.5"]);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos("^sleep 38[.]5$"), TimeSpan.FromSeconds(10));
+            string soltado = Ruta("lector_soltado");
+            await SustituirComandoAsync(herramientas, "base64", $"if pkill -f -- '^sleep 38[.]5$'; then\n  while pgrep -f -- '^(flock -s -n|sleep 38[.]5)' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
+
+            try
+            {
+                // Act
+                ResultadoEscritura resultado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues");
+
+                // Assert
+                _ = File.Exists(soltado).Should().BeTrue("el lector compartido tenía que seguir vivo durante la lectura previa");
+                _ = resultado.Reemplazos.Should().Be(1);
+                _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            }
+            finally
+            {
+                _ = Bash("pkill -f -- '^sleep 38[.]5$'; true");
+                lector.WaitForExit();
+            }
         }
 
         // 'flock ARCHIVO sleep 37.5' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor.
