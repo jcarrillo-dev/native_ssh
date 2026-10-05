@@ -28,7 +28,10 @@ namespace NativeSsh.Sesion
     // conexión. Liberarla la desbloquea (SSH.NET parcheado en externo/SSH.NET: Session.Dispose no espera más de 1 s al
     // candado de escritura que retiene ese envío y cierra el socket, lo que hace fallar el Send bloqueado), y DisposeAsync
     // lo hace si el bucle no termina al cerrar la sesión. Mientras tanto ssh_input no espera sin límite a ese candado
-    // (EnviarEntrada) y el comando en curso avisa de la escritura atascada (SegundosEnEscritura).
+    // (EnviarEntrada) y el comando en curso avisa de la escritura atascada (SegundosEnEscritura). Si la escritura atascada
+    // es la de una entrada, ssh_cancel tampoco espera sin límite: la petición termina como cancelada sin enviar Ctrl+C,
+    // diciendo que el proceso sigue (InterrumpirAsync), y la cancelación nunca corre en el hilo de quien la pide
+    // (Peticion.SolicitarCancelacion).
     // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que el servidor lo cierra de verdad (o cae la
     // conexión), aunque la operación ya haya fallado por su plazo local, su tope o una cancelación: cerrar un canal espera
     // el CLOSE del servidor (ConexionSshNet), y OpenSSH no lo envía, ni libera la plaza de su MaxSessions, hasta que
