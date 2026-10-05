@@ -1066,8 +1066,7 @@ namespace NativeSsh.Herramientas
                 tmp=
                 copia=
                 fuera=0
-                en_curso=0
-                conservar=0
+                fase=
                 {{DefinicionEscrituraEnElSitio}}
                 trap limpiar EXIT
                 if ! tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX" 2>/dev/null); then
@@ -1105,28 +1104,33 @@ namespace NativeSsh.Herramientas
             }
             """.ReplaceLineEndings("\n");
 
-        // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin poder dejarlo truncado y sin copia. Antes copia el original
+        // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin dejarlo nunca truncado sin copia. Antes copia el original
         // a una copia de seguridad (mktemp, 0600) en su directorio o, si no admite escritura, en ${TMPDIR:-/tmp}; si no puede,
-        // no toca nada. Si la escritura falla, o se interrumpe (la trampa de salida 'limpiar' ve en_curso=1), restaura la
-        // copia; si la restauración también falla, no borra nada (conservar=1) y el error da las rutas de la copia del
-        // original y del temporal con el contenido nuevo. Si todo va bien, 'limpiar' borra ambos.
+        // no toca nada. 'fase' sigue el estado del destino: '' (intacto), escribiendo, escrito, restaurando, restaurado o
+        // fallido (no se pudo restaurar). Si la escritura falla, restaura la copia. La trampa de salida 'limpiar' es lo único
+        // que borra la copia y el temporal, y solo con la fase '', escrito o restaurado: si el script se interrumpe (Ctrl+C,
+        // cierre del terminal) escribiendo o restaurando, la trampa vuelve a restaurar y solo borra si lo consigue; si una
+        // segunda señal la interrumpe a ella, bash muere sin terminarla y no se borra nada. Si la restauración falla, el
+        // error da las rutas de la copia y del temporal, que se conservan.
         private static readonly string DefinicionEscrituraEnElSitio = """
             restaurar() {
+              fase=restaurando
               if cat -- "$copia" > "$destino"; then
+                fase=restaurado
                 printf 'Error: %s de %s; se ha restaurado su contenido original.\n' "$1" "$ruta" >&2
               else
-                conservar=1
-                printf 'Error: %s de %s y no se pudo restaurar: la copia del original está en %s y el contenido nuevo en %s (no se han borrado).\n' "$1" "$ruta" "$copia" "$tmp" >&2
+                fase=fallido
+                printf 'Error: %s de %s y no se pudo restaurar su contenido original: la copia de seguridad del original está en %s y el contenido nuevo en %s (no se han borrado).\n' "$1" "$ruta" "$copia" "$tmp" >&2
               fi
+              return 0
             }
             limpiar() {
-              if [ "$en_curso" = 1 ]; then
-                en_curso=0
-                restaurar 'se interrumpió la escritura en el sitio'
-              fi
-              [ "$conservar" = 1 ] && return
-              [ -n "$tmp" ] && rm -f -- "$tmp" 2>/dev/null
-              [ -n "$copia" ] && rm -f -- "$copia" 2>/dev/null
+              case $fase in
+                escribiendo|restaurando) restaurar 'se interrumpió la escritura en el sitio' ;;
+              esac
+              [ "$fase" = fallido ] && return 0
+              rm -f -- "$tmp" "$copia" 2>/dev/null
+              return 0
             }
             escribir_en_sitio() {
               copia=$(mktemp -- "$dir/.$base.orig.XXXXXX" 2>/dev/null) || copia=$(mktemp -- "${TMPDIR:-/tmp}/.ns_original.XXXXXX" 2>/dev/null) || {
@@ -1138,12 +1142,11 @@ namespace NativeSsh.Herramientas
                 printf 'Error: no se pudo hacer la copia de seguridad de %s: no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" >&2
                 return 1
               fi
-              en_curso=1
+              fase=escribiendo
               if cat -- "$tmp" > "$destino"; then
-                en_curso=0
+                fase=escrito
                 return 0
               fi
-              en_curso=0
               restaurar 'falló la escritura en el sitio'
               return 1
             }

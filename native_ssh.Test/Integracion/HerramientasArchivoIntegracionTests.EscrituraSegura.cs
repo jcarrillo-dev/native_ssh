@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Versioning;
 using FluentAssertions;
@@ -259,10 +260,35 @@ namespace NativeSsh.Test.Integracion
             return (carpeta, archivo, await FijarTmpdirAsync(herramientas));
         }
 
-        // 'cat' falso que, al copiar el contenido nuevo (el temporal) sobre el destino, escribe solo 3 bytes y falla; con
-        // isFallaRestaurar falla igual al copiar la copia de seguridad (restauración).
-        private static string CatQueFallaAMitad(bool isFallaRestaurar, string accion = "exit 1") =>
-            $"case \"$2\" in *.tmp.*{(isFallaRestaurar ? "|*.orig.*" : string.Empty)}) head -c 3 -- \"$2\"; {accion} ;; esac\nexec /usr/bin/cat \"$@\"";
+        // 'cat' falso para la escritura en el sitio: al copiar el contenido nuevo (el temporal, '*.tmp.*') o la copia de
+        // seguridad ('*.orig.*') sobre el destino escribe solo 3 bytes y después ejecuta la acción indicada (null = el cat
+        // real). Cualquier otra copia, como la que hace la copia de seguridad, usa el cat real.
+        private static string CatFalso(string? accionEscritura, string? accionRestauracion = null) =>
+            $"case \"$2\" in\n" +
+            (accionEscritura is null ? string.Empty : $"  *.tmp.*) head -c 3 -- \"$2\"; {accionEscritura} ;;\n") +
+            (accionRestauracion is null ? string.Empty : $"  *.orig.*) head -c 3 -- \"$2\"; {accionRestauracion} ;;\n") +
+            "esac\nexec /usr/bin/cat \"$@\"";
+
+        // Acción del 'cat' falso que se queda esperando hasta 20 s (un 'read' de bash sobre una FIFO sin escritor, en el
+        // propio proceso del falso, que así se puede localizar con pgrep) y después falla: solo termina antes si una señal
+        // lo mata, y nunca da por buena una copia a medias.
+        private string EsperaInterrumpible()
+        {
+            string fifo = Ruta("espera");
+            if (!File.Exists(fifo))
+                _ = Bash($"mkfifo '{fifo}'");
+            return $"read -t 20 -r _ <> '{fifo}'; exit 1";
+        }
+
+        // Procesos cuya línea de órdenes contiene 'texto' (sin pasar por un shell, que también lo contendría).
+        private static bool HayProcesos(string texto)
+        {
+            ProcessStartInfo inicio = new("pgrep", ["-f", "--", texto]) { RedirectStandardOutput = true };
+            using Process proceso = Process.Start(inicio)!;
+            string salida = proceso.StandardOutput.ReadToEnd();
+            proceso.WaitForExit();
+            return salida.Trim().Length > 0;
+        }
 
         // La escritura en el sitio trunca el destino: si falla a mitad, el original se restaura desde la copia de seguridad
         // hecha antes (mktemp 0600 en su directorio) y no queda ninguna de las dos copias.
@@ -275,7 +301,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
             (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
             string stat = Stat(archivo);
-            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: false));
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1"));
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => isReplace
@@ -299,7 +325,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             HerramientasSsh herramientas = Herramientas();
             (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
-            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: true));
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", "exit 1"));
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
@@ -321,7 +347,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(2));
             (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
-            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: false, "sleep 30"));
+            await SustituirComandoAsync(herramientas, "cat", CatFalso(EsperaInterrumpible()));
 
             // Act
             _ = await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
@@ -331,6 +357,31 @@ namespace NativeSsh.Test.Integracion
             await EsperasPrueba.EsperarHastaAsync(() => Directory.GetFileSystemEntries(carpeta).Length == 2, TimeSpan.FromSeconds(10));
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
+        // Falla la escritura en el sitio y la restauración se interrumpe (Ctrl+C al vencer el timeout; la trampa la reintenta
+        // y también se cuelga, hasta que el cierre del canal lo mata todo): la copia del original no se borra nunca mientras
+        // el destino no esté restaurado, ni el temporal con el contenido nuevo.
+        [Fact]
+        public async Task EscrituraEnElSitio_FallaLaEscrituraYSeInterrumpeLaRestauracion_ConservaLaCopia()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(2));
+            (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", EsperaInterrumpible()));
+
+            // Act
+            _ = await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>();
+            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(Destino, "echo vivo", esperarSegundos: 10);
+
+            // Assert
+            string copia = Directory.GetFiles(carpeta, ".f.txt.orig.*").Should().ContainSingle().Which;
+            string nuevo = Directory.GetFiles(carpeta, ".f.txt.tmp.*").Should().ContainSingle().Which;
+            _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
+            _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
+            _ = siguiente.Salida.Should().Be("vivo\n");
         }
 
         // Sin copia de seguridad no se escribe en el sitio: si no se puede crear (ni en el directorio ni en TMPDIR), error
