@@ -348,7 +348,8 @@ namespace NativeSsh.Herramientas
                 fi
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
-                  \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) -prune \
+                  \( -name __pycache__ -o -name .cache \) -prune \
+                  -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print -prune \
                   -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort
                 )
                 """.ReplaceLineEndings("\n");

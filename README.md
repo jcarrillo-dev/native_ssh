@@ -72,7 +72,9 @@ La herramienta `ssh_list_dir` permite mapear de un vistazo la estructura y jerar
 
 - **Inclusión opcional de archivos (`incluirArchivos`):** Por defecto (`false`), lista exclusivamente directorios para brindar un mapa topológico limpio. Con `incluirArchivos: true`, enumera tanto archivos como carpetas respetando la profundidad máxima configurada.
 - **Recursión controlada:** El parámetro `profundidadMax` (por defecto 3, entre 1 y 10) define el nivel máximo de profundidad en el árbol de carpetas.
-- **Exclusión de dependencias y artefactos:** Ignora automáticamente directorios no esenciales (`.git`, `node_modules`, `.venv`, `.next`, `dist`, `build`, `bin`, `obj`, `.cache`).
+- **Distinción entre marcadores arquitectónicos y cachés:**
+  - **Marcadores arquitectónicos de alto valor:** Carpetas raíz y marcadores clave del proyecto (`.git`, `node_modules`, `.venv`, `venv`, `dist`, `build`, `.next`, `bin`, `obj`) se listan en su nivel correspondiente con su interior podado de inmediato (`-print -prune`), ofreciendo visibilidad inmediata sobre la topología del proyecto sin sobrecargar el buffer.
+  - **Cachés ruidosas repetitivas:** Directorios de caché efímera (`__pycache__`, `.cache`) se podan en silencio absoluto (`-prune`) sin imprimirse en la salida.
 - **Resumen arquitectónico:** Ideal para entender rápidamente la organización de módulos y capas en repositorios remotos.
 
 ### Inspección defensiva de metadatos (`ssh_stat`)

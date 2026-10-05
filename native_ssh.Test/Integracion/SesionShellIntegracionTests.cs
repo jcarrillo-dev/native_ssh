@@ -942,16 +942,21 @@ namespace NativeSsh.Test.Integracion
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src", "views"));
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules", "pkg"));
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".git", "objects"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "__pycache__"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src", "__pycache__"));
 
                 // Act
                 string res = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, 3, 100);
 
                 // Assert
+                _ = res.Should().Contain(".git");
+                _ = res.Should().NotContain(".git/objects");
+                _ = res.Should().Contain("node_modules");
+                _ = res.Should().NotContain("node_modules/pkg");
+                _ = res.Should().NotContain("__pycache__");
                 _ = res.Should().Contain("src");
                 _ = res.Should().Contain("src/models");
                 _ = res.Should().Contain("src/views");
-                _ = res.Should().NotContain("node_modules");
-                _ = res.Should().NotContain(".git");
             }
             finally
             {
@@ -1158,23 +1163,33 @@ namespace NativeSsh.Test.Integracion
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src"));
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".git"));
                 _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "__pycache__"));
 
                 await File.WriteAllTextAsync(Path.Combine(dirTemporal, "README.md"), "# Test");
                 await File.WriteAllTextAsync(Path.Combine(dirTemporal, "src", "app.cs"), "class App {}");
                 await File.WriteAllTextAsync(Path.Combine(dirTemporal, ".git", "config"), "test");
                 await File.WriteAllTextAsync(Path.Combine(dirTemporal, "node_modules", "dep.js"), "test");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "__pycache__", "module.cpython-312.pyc"), "bytecode");
 
                 // Act 1: Por defecto (solo directorios, excluyendo podados)
                 string resDirs = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, incluirArchivos: false);
-                _ = resDirs.Should().Be("src");
+                _ = resDirs.Should().Be(".git\nnode_modules\nsrc");
+                _ = resDirs.Should().NotContain(".git/config");
+                _ = resDirs.Should().NotContain("node_modules/dep.js");
+                _ = resDirs.Should().NotContain("__pycache__");
+                _ = resDirs.Should().NotContain("README.md");
 
                 // Act 2: Con incluirArchivos = true
                 string resTodos = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, incluirArchivos: true);
+                _ = resTodos.Should().Be(".git\nnode_modules\nREADME.md\nsrc\nsrc/app.cs");
+                _ = resTodos.Should().Contain(".git");
+                _ = resTodos.Should().Contain("node_modules");
                 _ = resTodos.Should().Contain("README.md");
                 _ = resTodos.Should().Contain("src");
                 _ = resTodos.Should().Contain("src/app.cs");
-                _ = resTodos.Should().NotContain(".git");
-                _ = resTodos.Should().NotContain("node_modules");
+                _ = resTodos.Should().NotContain(".git/config");
+                _ = resTodos.Should().NotContain("node_modules/dep.js");
+                _ = resTodos.Should().NotContain("__pycache__");
             }
             finally
             {

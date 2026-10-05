@@ -30,8 +30,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
-            comando.Contains("-print -prune") ? SimularFind(comando) :
             comando.Contains("-o -type d -print") || comando.Contains("-o -print 2>/dev/null") ? SimularListDir(comando) :
+            comando.Contains("-print -prune") ? SimularFind(comando) :
             comando.Contains("find -L . -maxdepth") ? SimularFind(comando) :
             comando.Contains("stat -c") ? SimularStat(comando) :
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
@@ -91,6 +91,9 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1) :
             comando.Contains("es_archivo.txt") ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1) :
             comando.Contains("vacio") ? new("", 0) :
+            comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print 2>/dev/null")
+                ? new(".git\nnode_modules\nProgram.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0)
+                : new(".git\nnode_modules\nsrc\nsrc/models\nsrc/views\n", 0)) :
             comando.Contains("-o -print 2>/dev/null") ? new("Program.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0) :
             new("src\nsrc/models\nsrc/views\n", 0);
 
@@ -477,6 +480,8 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Be("src\nsrc/models\nsrc/views");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("find -L . -maxdepth 3 -mindepth 1"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"\( -name __pycache__ -o -name .cache \) -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"-o \( -name .git -o -name node_modules"));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -type d -print"));
         }
 
@@ -489,8 +494,23 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Contain("Program.cs");
             _ = resultado.Should().Contain("src");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"\( -name __pycache__ -o -name .cache \) -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"-o \( -name .git -o -name node_modules"));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print 2>/dev/null"));
             _ = _fabrica.Ultima!.Comandos.Should().NotContain("-type d -print");
+        }
+
+        [Fact]
+        public async Task ListDir_ConMarcadores_MuestraMarcadoresYPrune()
+        {
+            // Act
+            string resultado = await _herramientas.ListarDirectoriosAsync("servidor", "marcadores");
+
+            // Assert
+            _ = resultado.Should().Contain(".git");
+            _ = resultado.Should().Contain("node_modules");
+            _ = resultado.Should().Contain("src");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"-o \( -name .git -o -name node_modules -o -name .venv"));
         }
 
         [Fact]
