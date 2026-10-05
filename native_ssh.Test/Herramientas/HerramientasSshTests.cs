@@ -180,6 +180,7 @@ namespace NativeSsh.Test.Herramientas
             int posicion = comando.IndexOf(Asignacion, StringComparison.Ordinal) + Asignacion.Length;
             string marca = $"__NS_W_{comando[posicion..(posicion + 32)]}__ ";
             return comando.Contains("no_atomico.txt") ? new($"{marca}fase escribiendo\n{marca}fase escrito\n{marca}limpio\n", 0) :
+                comando.Contains("salida_desbordada.txt") ? new($"{marca}fase escribiendo\n{new string('r', BytesSalidaEnorme)}\nError: algo falló\n{marca}limpio\n", 1) :
                 comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
                     ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
                     : comando.Contains("base64 -d >> ", StringComparison.Ordinal)
@@ -711,6 +712,28 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("superó");
             _ = error.Message.Should().Contain("No se ha escrito nada");
             _ = fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        // Una escritura cuya salida supera el máximo por petición pierde su principio, y con él anuncios (aquí, que empezó a
+        // escribir en el sitio): el error no puede apoyarse en lo que queda (el anuncio final) para decir qué pasó con el
+        // archivo, lo dice, y no vuelca la salida entera.
+        [Fact]
+        public async Task WriteFile_SalidaConDatosDescartados_ElErrorNoSeApoyaEnLosAnunciosQueQuedan()
+        {
+            // Arrange
+            (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync("servidor", "salida_desbordada.txt", "x", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición ")
+                .And.Contain("No consta ninguna modificación de 'salida_desbordada.txt'.")
+                .And.Contain("superó el máximo de bytes por petición y se descartó su principio")
+                .And.EndWith("Error: algo falló");
+            _ = error.Message.Length.Should().BeLessThan(3000);
         }
 
         [Fact]

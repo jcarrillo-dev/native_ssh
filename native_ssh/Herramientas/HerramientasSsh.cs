@@ -1831,7 +1831,8 @@ namespace NativeSsh.Herramientas
                 await EsperarFinalizacionAsync(peticion).ConfigureAwait(false);
             }
 
-            InformeEscritura informe = InformeEscritura.Leer(ReconstruirSalida(peticion, out _), idMarcas);
+            // Si se descartó el principio de la salida, pueden faltar anuncios: el informe no da nada por confirmado.
+            InformeEscritura informe = InformeEscritura.Leer(ReconstruirSalida(peticion, out bool hasDatosDescartados), idMarcas, isSalidaCompleta: !hasDatosDescartados);
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado == EstadoPeticionEnum.Completado && !isCancelada)
                 return (peticion, informe);

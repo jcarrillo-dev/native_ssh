@@ -100,6 +100,26 @@ namespace NativeSsh.Test.Herramientas
             _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}, su salida completa con ssh_output). {esperado}");
         }
 
+        // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: aunque quede el
+        // final, no se afirma que no se modificó nada ni que la limpieza confirmó cómo terminó, y se dice por qué.
+        [Fact]
+        public void SalidaIncompleta_NoSeApoyaEnLosAnunciosQueQuedan()
+        {
+            // Arrange
+            InformeEscritura informe = InformeEscritura.Leer(Anuncios("limpio"), Id, isSalidaCompleta: false);
+
+            // Act
+            string interrupcion = informe.MensajeInterrupcion("f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
+            string error = informe.MensajeError("por defecto", "f.txt", 1, Id);
+            string exito = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado", "limpio"), Id, isSalidaCompleta: false).AvisoExito();
+
+            // Assert
+            const string Descartada = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+            _ = interrupcion.Should().Contain("No consta ninguna modificación de 'f.txt'.").And.NotContain("No se llegó a modificar").And.Contain(Descartada).And.Contain(NoConfirmado.Trim());
+            _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}").And.Contain(Descartada);
+            _ = exito.Should().Be($" {Descartada}");
+        }
+
         // Una petición que no llegó a ejecutarse (cancelada en la cola) no modificó nada, sin matices.
         [Fact]
         public void MensajeInterrupcion_PeticionQueNoLlegoAEjecutarse_DiceQueNoSeModifico()

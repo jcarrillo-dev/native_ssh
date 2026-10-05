@@ -33,12 +33,20 @@ namespace NativeSsh.Herramientas
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
     // "limpio" o "restos") confirma que el script terminó y que todo lo anterior llegó; sin él (la salida se cortó al
     // cerrarse el canal o perderse la conexión, o el script sigue en marcha) el script pudo seguir después, y el error lo
-    // dice. Texto: la salida sin los anuncios.
+    // dice. Texto: la salida sin los anuncios. Si la salida superó el máximo por petición y se descartó su principio
+    // (IsSalidaIncompleta), pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
     internal sealed record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
 
-        public static InformeEscritura Leer(string salida, string idMarcas)
+        // Lo que se incluye de la salida del script en un error que ya da el id de la petición (la completa, con ssh_output).
+        private const int MaxCaracteresSalidaEnError = 2000;
+
+        private const string AvisoSalidaIncompleta = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+
+        public bool IsSalidaIncompleta { get; init; }
+
+        public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
             string marca = $"{PrefijoMarca}{idMarcas}__ ";
             StringBuilder texto = new();
@@ -92,14 +100,16 @@ namespace NativeSsh.Herramientas
                 }
             }
 
-            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim());
+            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta };
         }
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
         public bool IsAtomica => Fase == "colocado";
 
         // Lo que se añade al mensaje de una escritura terminada con éxito.
-        public string AvisoExito() => Fase switch
+        public string AvisoExito() => IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase();
+
+        private string AvisoExitoSegunFase() => Fase switch
         {
             "colocado" => string.Empty,
             "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Count == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo (los bits, salvo si escribe root), se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid (salvo si escribe root) y las capacidades (security.capability); lo que el archivo tenía se le devolvió y se comprobó, con estas excepciones.")}{AvisoPerdidos}",
@@ -115,13 +125,15 @@ namespace NativeSsh.Herramientas
         public string MensajeError(string porDefecto, string ruta, int codigo, string idPeticion)
         {
             bool hasAnuncios = Fase is not null || Temporal is not null || Copia is not null;
-            if (IsFinalConfirmado || !hasAnuncios)
+            if (IsFinalConfirmado || (!hasAnuncios && !IsSalidaIncompleta))
                 return (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
             StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)} sin que el script confirmara cómo terminó (petición {idPeticion}, su salida completa con ssh_output). ");
             _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: true)).Append(Restos);
+            if (IsSalidaIncompleta)
+                _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
             if (Texto.Length > 0)
-                _ = mensaje.Append(" Salida del script: ").Append(Texto);
+                _ = mensaje.Append(SalidaDelScript);
             return mensaje.ToString();
         }
 
@@ -145,16 +157,24 @@ namespace NativeSsh.Herramientas
                 _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: false)).Append(Restos);
                 if (!IsFinalConfirmado)
                     _ = mensaje.Append(" El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.");
+                if (IsSalidaIncompleta)
+                    _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
             }
 
             if (aviso is { Length: > 0 })
                 _ = mensaje.Append(' ').Append(aviso);
             if (Fase is null && Texto.Length > 0)
-                _ = mensaje.Append(" Salida del script: ").Append(Texto);
+                _ = mensaje.Append(SalidaDelScript);
             return mensaje.ToString();
         }
 
-        private bool IsFinalConfirmado => Limpieza != LimpiezaEscrituraEnum.Desconocida;
+        // Con la salida incompleta, que quede el anuncio final no confirma lo anterior.
+        private bool IsFinalConfirmado => !IsSalidaIncompleta && Limpieza != LimpiezaEscrituraEnum.Desconocida;
+
+        // La salida del script (sin los anuncios) en un error, acotada a su final.
+        private string SalidaDelScript => Texto.Length <= MaxCaracteresSalidaEnError
+            ? $" Salida del script: {Texto}"
+            : $" Salida del script (sus últimos {MaxCaracteresSalidaEnError} caracteres): …{Texto.AsSpan(Texto.Length - MaxCaracteresSalidaEnError)}";
 
         // isScriptTerminado: el script ya no corre (terminó con un código), en lugar de quedar en marcha tras la interrupción.
         private string DescribirArchivo(string ruta, bool isScriptTerminado) => Fase switch
