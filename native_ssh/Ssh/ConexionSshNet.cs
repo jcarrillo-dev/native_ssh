@@ -53,10 +53,11 @@ namespace NativeSsh.Ssh
         // No cambia la desconexión: DisconnectMessage se admite durante una renegociación y la espera del hilo de mensajes
         // no tiene plazo. El hilo de mensajes de SSH.NET no puede quedarse esperando una renegociación: entre KEXINIT y
         // NEWKEYS el servidor solo puede enviar mensajes genéricos de transporte (IGNORE, DEBUG...) y los de la propia
-        // renegociación (RFC 4253, 7.1), y ninguno le hace contestar con un mensaje que tenga que esperarla. Lo que sí pasa
-        // (limitación conocida, README): SSH.NET 2026.0.0 aplica strict-kex también a las renegociaciones y corta la
-        // conexión ante el SSH_MSG_IGNORE que OpenSSH 10.5 envía en ese intervalo; la corrección está preparada en la rama
-        // native-ssh-strict-kex del submódulo, sin integrar (RenegociacionStrictKexTests).
+        // renegociación (RFC 4253, 7.1), y ninguno le hace contestar con un mensaje que tenga que esperarla. SSH.NET
+        // 2026.0.0 aplicaba strict-kex también a las renegociaciones y cortaba la conexión ante el SSH_MSG_IGNORE que
+        // OpenSSH 10.5 envía en ese intervalo; corregido en externo/SSH.NET (rama native-ssh, "Apply the strict key exchange
+        // termination rule only to the initial key exchange"): la regla estricta solo en el intercambio inicial, como dice
+        // la especificación de OpenSSH (RenegociacionStrictKexTests).
         //
         // Cerrar un canal tampoco tiene plazo (ChannelCloseTimeout, 1 s por defecto, pasa a infinito): Channel.Close envía
         // nuestro CLOSE y espera el del servidor, que OpenSSH no manda hasta que termina el proceso de la sesión (un proceso

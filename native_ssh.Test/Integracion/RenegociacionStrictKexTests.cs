@@ -11,23 +11,23 @@ using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
 {
-    // FALLO CONOCIDO (EQQ3, decisión aplazada por el usuario; README, «Limitaciones conocidas»): SSH.NET 2026.0.0 aplica
-    // la regla estricta de strict-kex («cortar ante cualquier mensaje inesperado») también a las renegociaciones de
-    // claves, y OpenSSH 10.5 envía SSH_MSG_IGNORE entre KEXINIT y NEWKEYS al renegociar: SSH.NET corta la conexión
-    // ("Message type 2 is not valid in the current context"), se pierde el shell con sus 'export' y se gasta una
-    // conexión. Con 'RekeyLimit 64K 2s' el servidor renegocia cada pocos segundos y el corte llega enseguida (medido:
-    // 25 cortes en 56 renegociaciones en 60 s).
-    // La prueba comprueba que el fallo sigue ocurriendo. Si falla porque la conexión sobrevive, el fallo se ha corregido
-    // (p. ej. al integrar la rama native-ssh-strict-kex del submódulo): hay que invertirla y quitar la limitación del README.
+    // EQQ3: SSH.NET 2026.0.0 aplicaba la regla estricta de strict-kex («cortar ante cualquier mensaje inesperado») también
+    // a las renegociaciones de claves, y OpenSSH 10.5 envía SSH_MSG_IGNORE entre KEXINIT y NEWKEYS al renegociar: SSH.NET
+    // cortaba la conexión ("Message type 2 is not valid in the current context"), se perdía el shell con sus 'export' y se
+    // gastaba una conexión (medido: 25 cortes en 56 renegociaciones en 60 s). Corregido en externo/SSH.NET (rama
+    // native-ssh): la regla estricta solo en el intercambio inicial. Con 'RekeyLimit 64K 2s' el servidor renegocia cada
+    // pocos segundos; LogLevel DEBUG para contar las renegociaciones en su log.
     [Trait("Categoria", "Integracion")]
-    [Trait("Categoria", "FalloConocido")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd se libera en IAsyncLifetime.DisposeAsync.")]
     public sealed class RenegociacionStrictKexTests(ITestOutputHelper salida) : IAsyncLifetime
     {
-        private static readonly TimeSpan Tope = TimeSpan.FromSeconds(60);
+        private static readonly TimeSpan Duracion = TimeSpan.FromSeconds(30);
 
-        private readonly SshdPropio _sshd = new("RekeyLimit 64K 2s");
+        // Antes de la corrección, la primera renegociación con IGNORE cortaba la conexión a los pocos segundos.
+        private const int MinRenegociaciones = 5;
+
+        private readonly SshdPropio _sshd = new("RekeyLimit 64K 2s\nLogLevel DEBUG");
 
         public Task InitializeAsync() => Task.CompletedTask;
 
@@ -38,7 +38,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
-        public async Task FalloConocido_RenegociacionesConIgnoreDeOpenSsh_SshNetCortaLaConexionYSePierdeElShell()
+        public async Task RenegociacionesConIgnoreDeOpenSsh_NoCortanLaConexionNiSePierdeElShell()
         {
             // Arrange
             OpcionesNativeSsh opciones = _sshd.Sshd.Opciones(maxConexiones: 1000);
@@ -47,35 +47,44 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             _ = await herramientas.EjecutarAsync(destino, "export NS_RENEGOCIACION=si");
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
+            int renegociacionesAntes = _sshd.Sshd.ContarLineasLog("SSH2_MSG_KEXINIT sent");
             Stopwatch reloj = Stopwatch.StartNew();
             int rondas = 0;
+            List<string> fallos = [];
 
-            // Act: tráfico (lecturas por canales exec y comandos) hasta el primer corte o el tope.
-            while (_sshd.Sshd.ConexionesAceptadas() == aceptadas && reloj.Elapsed < Tope)
+            // Act: tráfico (lecturas por canales exec y comandos) durante el tiempo de varias renegociaciones.
+            while (reloj.Elapsed < Duracion)
             {
-                Task[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => IntentarAsync(gestor.EjecutarExecAsync(destino, "head -c 100000 /dev/zero | base64 | wc -c", TimeSpan.FromSeconds(30), CancellationToken.None)))];
-                _ = await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 30);
-                await Task.WhenAll(lecturas);
+                Task<string>[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "head -c 100000 /dev/zero | base64 | wc -c", TimeSpan.FromSeconds(30), CancellationToken.None)))];
+                ResultadoComando comando = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30);
+                if (comando.Salida != "v=si\n")
+                    fallos.Add($"comando: {comando.Estado} '{comando.Salida.Trim()}' '{comando.Aviso}'");
+                fallos.AddRange((await Task.WhenAll(lecturas)).Where(m => m != "sin error"));
                 rondas++;
             }
 
+            int renegociaciones = _sshd.Sshd.ContarLineasLog("SSH2_MSG_KEXINIT sent") - renegociacionesAntes;
             ResultadoComando despues = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30);
-            salida.WriteLine($"{rondas} rondas en {reloj.Elapsed.TotalSeconds:0} s; conexiones nuevas: {_sshd.Sshd.ConexionesAceptadas() - aceptadas}; después: '{despues.Salida.Trim()}' aviso='{despues.Aviso}'");
+            salida.WriteLine($"{rondas} rondas en {reloj.Elapsed.TotalSeconds:0} s; renegociaciones del servidor: {renegociaciones}; conexiones nuevas: {_sshd.Sshd.ConexionesAceptadas() - aceptadas}; fallos: {fallos.Count}");
 
-            // Assert: el fallo conocido sigue ahí (ver el comentario de la clase si deja de ocurrir).
-            _ = _sshd.Sshd.ConexionesAceptadas().Should().BeGreaterThan(aceptadas, "SSH.NET corta la conexión al recibir SSH_MSG_IGNORE durante una renegociación (fallo conocido; si ya no ocurre, se ha corregido)");
-            _ = despues.Salida.Should().Be("v=\n");
+            // Assert
+            _ = renegociaciones.Should().BeGreaterThanOrEqualTo(MinRenegociaciones);
+            _ = fallos.Should().BeEmpty();
+            _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
+            _ = despues.Salida.Should().Be("v=si\n");
+            _ = despues.Aviso.Should().BeNull();
         }
 
-        private static async Task IntentarAsync(Task tarea)
+        private static async Task<string> MensajeDeFalloAsync(Task tarea)
         {
             try
             {
                 await tarea;
+                return "sin error";
             }
-            catch (NativeSshException)
+            catch (NativeSshException ex)
             {
-                // Una lectura en vuelo cuando se corta la conexión falla: es parte del fallo conocido.
+                return ex.Message;
             }
         }
     }
