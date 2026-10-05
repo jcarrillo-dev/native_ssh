@@ -38,5 +38,38 @@ namespace NativeSsh.Test.Integracion
             _ = cliente.IsConnected.Should().BeTrue();
             _ = conexion.IsConectada.Should().BeFalse();
         }
+
+        // Lo que hace Session.RaiseError de SSH.NET al detectar la caída, sin el aviso: guardar la excepción y señalar
+        // _exceptionWaitHandle, que despierta las esperas (WaitOnHandle relanza la excepción). El aviso ErrorOccurred llega
+        // después, y el socket se cierra más tarde aún.
+        private static void SenalarCaidaSinAvisar(SshClient cliente)
+        {
+            object sesion = typeof(BaseClient).GetProperty("Session", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cliente)!;
+            Type tipo = sesion.GetType();
+            tipo.GetField("_exception", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(sesion, new SshConnectionException("An established connection was aborted by the server."));
+            _ = ((EventWaitHandle)tipo.GetField("_exceptionWaitHandle", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(sesion)!).Set();
+        }
+
+        [Fact]
+        public async Task CaidaQueDespiertaLaAperturaDelShellAntesDelAviso_LaConexionSeDaPorPerdida()
+        {
+            // Arrange: la apertura del shell falla por la caída antes de que llegue ErrorOccurred y con el socket aún abierto,
+            // así que solo el propio AbrirShell (MarcarPerdida) puede dar la conexión por perdida a tiempo: si no, SesionShell
+            // mostraría el texto de SSH.NET como si la conexión siguiera viva y el siguiente comando no reconectaría.
+            using PrivateKeyFile clave = new(sshd.RutaClave);
+            SshClient cliente = new(new Renci.SshNet.ConnectionInfo("127.0.0.1", sshd.Puerto, Environment.UserName, new PrivateKeyAuthenticationMethod(Environment.UserName, clave)));
+            cliente.HostKeyReceived += (_, e) => e.CanTrust = true;
+            await cliente.ConnectAsync(CancellationToken.None);
+            using ConexionSshNet conexion = new(cliente);
+            SenalarCaidaSinAvisar(cliente);
+
+            // Act
+            Action abrir = () => conexion.AbrirShell().Dispose();
+
+            // Assert
+            _ = abrir.Should().Throw<SshConnectionException>();
+            _ = cliente.IsConnected.Should().BeTrue();
+            _ = conexion.IsConectada.Should().BeFalse();
+        }
     }
 }
