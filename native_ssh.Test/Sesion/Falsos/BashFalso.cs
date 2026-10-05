@@ -38,13 +38,21 @@ namespace NativeSsh.Test.Sesion.Falsos
     public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
         private int _conexiones;
+        private int _conexionesRetenidas;
 
         public int Conexiones => Volatile.Read(ref _conexiones);
+
+        // Conexiones detenidas ahora mismo en BloqueoConexion.
+        public int ConexionesRetenidas => Volatile.Read(ref _conexionesRetenidas);
         public ConexionFalsa? Ultima { get; private set; }
         public Exception? ErrorAlConectar { get; set; }
 
         // Ensancha la ventana de carrera entre conexiones simultáneas.
         public TimeSpan RetrasoConexion { get; set; }
+
+        // Si no es null, cada conexión espera a que se libere (atendiendo el token): quien conecta retiene mientras tanto
+        // el candado de conexión de la sesión.
+        public SemaphoreSlim? BloqueoConexion { get; set; }
 
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
@@ -69,6 +77,19 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             if (RetrasoConexion > TimeSpan.Zero)
                 await Task.Delay(RetrasoConexion, cancellationToken);
+
+            if (BloqueoConexion is { } bloqueo)
+            {
+                _ = Interlocked.Increment(ref _conexionesRetenidas);
+                try
+                {
+                    await bloqueo.WaitAsync(cancellationToken);
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _conexionesRetenidas);
+                }
+            }
 
             _ = Interlocked.Increment(ref _conexiones);
             ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin)

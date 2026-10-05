@@ -48,5 +48,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 32, Level = LogLevel.Debug, Message = "Se descarta la conexión caída con {Destino} (sustituida por una nueva) y, si era suyo, el canal del shell.")]
         public static partial void ConexionDescartada(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 40, Level = LogLevel.Debug, Message = "Cerrando la sesión con {Destino}: no se admiten más comandos ni lecturas.")]
+        public static partial void CerrandoSesion(this ILogger logger, string destino);
     }
 }

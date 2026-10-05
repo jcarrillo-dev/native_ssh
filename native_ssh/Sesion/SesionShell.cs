@@ -177,6 +177,9 @@ namespace NativeSsh.Sesion
             if (Interlocked.Exchange(ref _isDispuesto, 1) != 0)
                 return;
 
+            // Desde aquí cualquier fallo de un comando o de una lectura se atribuye al cierre (IsCerrando), aunque _cierre
+            // aún no esté cancelado.
+            _logger.CerrandoSesion(Destino.Clave);
             _ = _cola.Writer.TryComplete();
             _cierre.Cancel();
             try

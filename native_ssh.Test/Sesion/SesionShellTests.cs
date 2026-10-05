@@ -636,6 +636,37 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Dispose_EnLaVentanaEntreMarcarElCierreYCancelarlo_ElComandoQueIbaAConectarTerminaCancelado()
+        {
+            // Arrange: una lectura está conectando y retiene el candado de conexión; un comando espera ese candado.
+            using LoggerPrueba logger = new() { EventoBloqueante = 40 };
+            using SemaphoreSlim conexion = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoConexion = conexion };
+            SesionShell sesion = Crear(fabrica, logger: logger);
+            Task<ResultadoCanalExec> lectura = sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(10), CancellationToken.None);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.ConexionesRetenidas == 1);
+            Peticion comando = Nueva("hola");
+            sesion.Encolar(comando);
+            await EsperasPrueba.EsperarHastaAsync(() => comando.Estado == EstadoPeticionEnum.Ejecutando);
+
+            // Act: el cierre se detiene recién marcado, con _cierre aún sin cancelar; en esa ventana la lectura termina de
+            // conectar y el comando obtiene el candado, ve la sesión cerrada y falla.
+            Task cierre = Task.Run(() => sesion.DisposeAsync().AsTask());
+            await logger.Bloqueado.WaitAsync(Limite);
+            _ = conexion.Release();
+            await comando.Finalizacion.WaitAsync(Limite);
+            EstadoPeticionEnum estadoEnLaVentana = comando.Estado;
+            logger.Liberar();
+            await cierre.WaitAsync(Limite);
+            _ = await Record.ExceptionAsync(() => lectura);
+
+            // Assert: el fallo se atribuye al cierre aunque _cierre no estuviera cancelado.
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = estadoEnLaVentana.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = comando.Aviso.Should().Contain("se cerró");
+        }
+
+        [Fact]
         public async Task Exec_AlCerrarLaSesion_TerminaConErrorYNoAbreOtraConexion()
         {
             // Arrange
