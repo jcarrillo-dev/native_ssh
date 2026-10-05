@@ -109,7 +109,7 @@ namespace NativeSsh.Herramientas
                 case $? in
                   0) [ "/dev/fd/$candado" -ef "$destino" ] && { estado_candado=tomado; return 0; } ;;
                   75)
-                    printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
+                    printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
                     return 1 ;;
                   *) estado_candado=ninguno; return 0 ;;
                 esac

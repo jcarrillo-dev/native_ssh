@@ -70,7 +70,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = isRestaurandoTodavia.Should().BeTrue("la segunda operación tenía que llegar durante la restauración");
             _ = errorSegunda.Should().BeOfType<NativeSshException>();
-            _ = errorSegunda!.Message.Should().Be($"Error: {TextoCandadoOcupado} {archivo} (otro proceso tiene tomado su candado, flock). No se ha modificado: reintenta cuando termine.");
+            _ = errorSegunda!.Message.Should().Be($"Error: {TextoCandadoOcupado} {archivo} (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.");
             _ = entradasTrasSegunda.Should().BeEquivalentTo(entradas, "la segunda operación no puede crear un temporal ni una copia");
             _ = trasRestaurar.Should().Be("original completo\n");
             _ = entradasTrasRestaurar.Should().HaveCount(entradas.Length - 2, "la restauración borra la copia y el temporal al terminar");
@@ -207,7 +207,7 @@ namespace NativeSsh.Test.Integracion
                 }
                 else
                 {
-                    string ocupado = $"Error: {TextoCandadoOcupado} {archivo} (otro proceso tiene tomado su candado, flock). No se ha modificado: reintenta cuando termine.";
+                    string ocupado = $"Error: {TextoCandadoOcupado} {archivo} (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.";
                     _ = escritura!.Message.Should().Be(ocupado);
                     _ = anexado!.Message.Should().Be(ocupado);
                     _ = reemplazo!.Message.Should().Be(ocupado);
