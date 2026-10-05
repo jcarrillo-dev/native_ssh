@@ -723,8 +723,8 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Una escritura cuya salida supera el máximo por petición pierde su principio, y con él anuncios (aquí, que empezó a
-        // escribir en el sitio): el error no puede apoyarse en lo que queda (el anuncio final) para decir qué pasó con el
-        // archivo, lo dice, y no vuelca la salida entera.
+        // escribir en el sitio): el error no puede apoyarse en lo que queda para decir qué pasó con el archivo, lo dice, y no
+        // vuelca la salida entera. El anuncio final sí llegó (es lo último): dice que el script anunció que terminó.
         [Fact]
         public async Task WriteFile_SalidaConDatosDescartados_ElErrorNoSeApoyaEnLosAnunciosQueQuedan()
         {
@@ -737,7 +737,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición ")
+            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición ")
                 .And.Contain("No consta ninguna modificación de 'salida_desbordada.txt'.")
                 .And.Contain("superó el máximo de bytes por petición y se descartó su principio")
                 .And.EndWith("Error: algo falló");

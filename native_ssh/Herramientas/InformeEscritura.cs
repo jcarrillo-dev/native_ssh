@@ -41,7 +41,8 @@ namespace NativeSsh.Herramientas
     // termina con un código distinto de 0 sin ese anuncio (lo mató SIGKILL a mitad, o anexaba), el error dice lo mismo
     // según lo anunciado, con el código y el id. Texto: la salida sin los anuncios ni los avisos de bash sobre hijos
     // muertos por una señal. Si la salida superó el máximo por petición y se descartó su principio (IsSalidaIncompleta),
-    // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
+    // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen; como lo que se conserva es el final, si
+    // el anuncio final llegó dicen que el script anunció que terminó (no que no lo confirmó).
     internal sealed partial record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
@@ -49,7 +50,10 @@ namespace NativeSsh.Herramientas
         // Lo que se incluye de la salida del script en un error que ya da el id de la petición (la completa, con ssh_output).
         private const int MaxCaracteresSalidaEnError = 2000;
 
-        private const string AvisoSalidaIncompleta = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+        // Si la salida se descartó en parte, se conserva su final: el anuncio final del script, si llegó, sigue ahí.
+        private string AvisoSalidaIncompleta => IsFinalRecibido
+            ? "La salida del script superó el máximo de bytes por petición y se descartó su principio: el script anunció que terminó, pero puede faltar parte de lo que anunció antes."
+            : "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
 
         public bool IsSalidaIncompleta { get; init; }
 
@@ -156,7 +160,8 @@ namespace NativeSsh.Herramientas
             if (IsFinalConfirmado || (!hasAnuncios && !IsSalidaIncompleta))
                 return (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
-            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)} sin que el script confirmara cómo terminó (petición {idPeticion}, su salida completa con ssh_output). ");
+            string final = IsFinalRecibido ? "; el script anunció que terminó, pero se descartó el principio de su salida" : " sin que el script confirmara cómo terminó";
+            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)}{final} (petición {idPeticion}, su salida completa con ssh_output). ");
             _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: true)).Append(Restos);
             if (IsSalidaIncompleta)
                 _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
@@ -183,7 +188,7 @@ namespace NativeSsh.Herramientas
             else
             {
                 _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: false)).Append(Restos);
-                if (!IsFinalConfirmado)
+                if (!IsFinalRecibido)
                     _ = mensaje.Append(" El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.");
                 if (IsSalidaIncompleta)
                     _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
@@ -196,8 +201,11 @@ namespace NativeSsh.Herramientas
             return mensaje.ToString();
         }
 
+        // Llegó el anuncio final del script ("conservados", "limpio" o "restos"): terminó.
+        private bool IsFinalRecibido => Limpieza != LimpiezaEscrituraEnum.Desconocida;
+
         // Con la salida incompleta, que quede el anuncio final no confirma lo anterior.
-        private bool IsFinalConfirmado => !IsSalidaIncompleta && Limpieza != LimpiezaEscrituraEnum.Desconocida;
+        private bool IsFinalConfirmado => !IsSalidaIncompleta && IsFinalRecibido;
 
         // La salida del script (sin los anuncios) en un error, acotada a su final.
         private string SalidaDelScript => Texto.Length <= MaxCaracteresSalidaEnError

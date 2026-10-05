@@ -140,24 +140,39 @@ namespace NativeSsh.Test.Herramientas
             _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}, su salida completa con ssh_output). {esperado}");
         }
 
-        // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: aunque quede el
-        // final, no se afirma que no se modificó nada ni que la limpieza confirmó cómo terminó, y se dice por qué.
-        [Fact]
-        public void SalidaIncompleta_NoSeApoyaEnLosAnunciosQueQuedan()
+        // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: no se afirma que no se
+        // modificó nada y se dice por qué. Si el anuncio final llegó (está al final, que es lo que se conserva), el mensaje
+        // dice que el script anunció que terminó, no que no lo confirmó; sin él, que no lo confirmó.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void SalidaIncompleta_NoSeApoyaEnLosAnunciosQueQuedanYDiceSiLlegoElFinal(bool isFinal)
         {
             // Arrange
-            InformeEscritura informe = InformeEscritura.Leer(Anuncios("limpio"), Id, isSalidaCompleta: false);
+            string final = isFinal ? Anuncios("limpio") : string.Empty;
+            InformeEscritura informe = InformeEscritura.Leer(Anuncios("fase restaurado") + final, Id, isSalidaCompleta: false);
 
             // Act
-            string interrupcion = informe.MensajeInterrupcion("f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
+            string interrupcion = InformeEscritura.Leer(final, Id, isSalidaCompleta: false).MensajeInterrupcion("f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
             string error = informe.MensajeError("por defecto", "f.txt", 1, Id);
-            string exito = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado", "limpio"), Id, isSalidaCompleta: false).AvisoExito();
+            string exito = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado") + final, Id, isSalidaCompleta: false).AvisoExito();
 
             // Assert
-            const string Descartada = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
-            _ = interrupcion.Should().Contain("No consta ninguna modificación de 'f.txt'.").And.NotContain("No se llegó a modificar").And.Contain(Descartada).And.Contain(NoConfirmado.Trim());
-            _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}").And.Contain(Descartada);
-            _ = exito.Should().Be($" {Descartada}");
+            string descartada = isFinal
+                ? "La salida del script superó el máximo de bytes por petición y se descartó su principio: el script anunció que terminó, pero puede faltar parte de lo que anunció antes."
+                : "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+            _ = interrupcion.Should().Contain("No consta ninguna modificación de 'f.txt'.").And.NotContain("No se llegó a modificar").And.Contain(descartada);
+            _ = exito.Should().Be($" {descartada}");
+            if (isFinal)
+            {
+                _ = interrupcion.Should().NotContain("no confirmó");
+                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición {Id}, su salida completa con ssh_output). Se restauró el contenido original de 'f.txt'. {descartada}");
+            }
+            else
+            {
+                _ = interrupcion.Should().Contain(NoConfirmado.Trim());
+                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}").And.Contain(descartada);
+            }
         }
 
         // Una petición que no llegó a ejecutarse (cancelada en la cola) no modificó nada, sin matices.
