@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using System.Linq;
 using System.Text.Json;
@@ -12,7 +13,9 @@ namespace NativeSsh.Test.Integracion
     // Herramientas de archivo contra el sshd local: lo que depende del shell real (enlaces, permisos, tiempos...).
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
-    public sealed class HerramientasArchivoIntegracionTests : IAsyncDisposable
+    // IAsyncLifetime (no IAsyncDisposable): es lo que xUnit v2 invoca al terminar cada prueba.
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    public sealed class HerramientasArchivoIntegracionTests : IAsyncLifetime
     {
         private readonly SshdLocal _sshd;
         private readonly string _directorio = Path.Combine(Path.GetTempPath(), $"ns_archivos_{Guid.NewGuid():N}");
@@ -34,7 +37,9 @@ namespace NativeSsh.Test.Integracion
 
         private string Destino => _sshd.Destino.Clave;
 
-        public async ValueTask DisposeAsync()
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public async Task DisposeAsync()
         {
             await _gestor.DisposeAsync();
             if (Directory.Exists(_directorio))
