@@ -415,9 +415,7 @@ namespace NativeSsh.Sesion
             finally
             {
                 if (ejecucion is { IsCompleted: false })
-                {
                     _ = LiberarCanalExecAlCerrarseAsync(ejecucion, apertura);
-                }
                 else
                 {
                     apertura?.Terminar();
