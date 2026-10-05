@@ -15,9 +15,9 @@ El servidor mantiene una sesión SSH persistente con un shell PTY interactivo po
 | `ssh_cancel` | `id` (string) | `ResultadoComando` | Cancela la petición; espera hasta `EsperaTrasCtrlC` + 2 s antes de responder. |
 | `ssh_disconnect` | `destino` (string) | `ResultadoAccion` | Cierra la conexión SSH activa con el destino indicado. |
 | `ssh_exec` | `destino` (string), `comando` (string), `timeoutSegundos` (300), `esperarSegundos` (20) | `ResultadoComando` | Ejecuta un comando en el shell del destino; devuelve la salida desde el byte 0. |
-| `ssh_find` | `destino` (string), `patron` (string), `ruta` ("."), `tipo` ("file"), `profundidadMax` (10), `maxResultados` (100) | `string` | Busca archivos o carpetas por nombre o patrón glob (`*.service`, `docker-compose*.yml`, etc.) excluyendo carpetas ruidosas. |
+| `ssh_find` | `destino` (string), `patron` (string), `ruta` ("."), `tipo` ("file"), `profundidadMax` (10), `maxResultados` (100) | `string` | Busca archivos o carpetas por nombre o patrón glob (`*.service`, `docker-compose*.yml`, etc.) con soporte para poda inteligente ("Imprimir pero Podar") de carpetas excluidas. |
 | `ssh_input` | `id` (string), `texto` (string), `enter` (true), `esperarSegundos` (2) | `ResultadoComando` | Envía texto a la entrada estándar del proceso en ejecución y captura la salida posterior. |
-| `ssh_list_dir` | `destino` (string), `ruta` ("."), `profundidadMax` (3), `maxResultados` (100) | `string` | Explora la estructura topológica de carpetas y subcarpetas en rutas relativas limpias excluyendo carpetas ruidosas. |
+| `ssh_list_dir` | `destino` (string), `ruta` ("."), `profundidadMax` (3), `maxResultados` (100), `incluirArchivos` (false) | `string` | Explora la estructura topológica de carpetas y subcarpetas (o también archivos con `incluirArchivos=true`) en rutas relativas limpias excluyendo carpetas ruidosas. |
 | `ssh_output` | `id` (string), `desdeByte` (0), `esperarSegundos` (0) | `ResultadoComando` | Lee la salida acumulada a partir del offset indicado en `desdeByte`. |
 | `ssh_read_file` | `destino` (string), `ruta` (string), `lineaInicio` (1), `lineaFin` (null) | `string` (TextContent) | Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve texto plano con saltos de línea reales sin envoltorios JSON. |
 | `ssh_replace_file_content` | `destino` (string), `ruta` (string), `targetContent` (string), `replacementContent` (string), `lineaInicio` (1), `lineaFin` (null), `allowMultiple` (false), `sudo` (false) | `string` | Sustituye quirúrgicamente un bloque de texto dentro de un rango delimitado de líneas con swap atómico. |
@@ -63,13 +63,14 @@ La herramienta `ssh_search` proporciona capacidades de búsqueda rápida basada 
 La herramienta `ssh_find` permite localizar archivos o directorios por su nombre o patrón glob (ej. `*.service`, `docker-compose*.yml`, `.env*`) en el servidor remoto.
 
 - **Filtrado por tipo:** El parámetro `tipo` permite restringir la búsqueda a archivos (`'file'`, por defecto), directorios (`'dir'` o `'directory'`) o ambos (`'all'`).
-- **Poda automática:** Excluye sistemáticamente árboles de directorios ruidosos o pesados (`.git`, `node_modules`, `.venv`, `dist`, `build`, `bin`, `obj`, etc.) para agilizar la búsqueda.
+- **Poda inteligente con regla universal "Imprimir pero Podar":** Excluye sistemáticamente árboles pesados o ruidosos (`.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`, `.next`, `bin`, `obj`, `.cache`). Mediante la regla universal `-print -prune`, si la consulta busca el directorio excluido en sí (ej. `.git` o `node_modules` con `tipo="dir"` o `tipo="all"`), la carpeta coincidente se incluye en los resultados pero su contenido interior se poda inmediatamente sin descender recursivamente.
 - **Rutas relativas limpias:** Devuelve rutas relativas limpias ordenadas alfabéticamente sin el prefijo `./`.
 
 ### Exploración topológica de directorios (`ssh_list_dir`)
 
 La herramienta `ssh_list_dir` permite mapear de un vistazo la estructura y jerarquía de directorios de un proyecto remoto sin saturar el contexto con listas masivas de archivos.
 
+- **Inclusión opcional de archivos (`incluirArchivos`):** Por defecto (`false`), lista exclusivamente directorios para brindar un mapa topológico limpio. Con `incluirArchivos: true`, enumera tanto archivos como carpetas respetando la profundidad máxima configurada.
 - **Recursión controlada:** El parámetro `profundidadMax` (por defecto 3, entre 1 y 10) define el nivel máximo de profundidad en el árbol de carpetas.
 - **Exclusión de dependencias y artefactos:** Ignora automáticamente directorios no esenciales (`.git`, `node_modules`, `.venv`, `.next`, `dist`, `build`, `bin`, `obj`, `.cache`).
 - **Resumen arquitectónico:** Ideal para entender rápidamente la organización de módulos y capas en repositorios remotos.

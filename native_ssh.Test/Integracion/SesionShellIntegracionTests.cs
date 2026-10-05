@@ -1077,5 +1077,110 @@ namespace NativeSsh.Test.Integracion
                     File.Delete(archivoTemporal);
             }
         }
+
+        [Fact]
+        public async Task BuscarPorNombre_CarpetasExcluidas_LocalizaConPrintPrune()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_find_prune_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".git"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".venv"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "__pycache__"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src"));
+
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, ".git", "config"), "test");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "node_modules", "package.json"), "{}");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "src", "app.cs"), "class App {}");
+
+                // Act 1: Buscar .git como directorio debe devolver .git pero no su contenido
+                string resGit = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, ".git", dirTemporal, tipo: "dir");
+                _ = resGit.Should().Be(".git");
+
+                // Act 2: Buscar node_modules como directorio
+                string resNodeModules = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, "node_modules", dirTemporal, tipo: "dir");
+                _ = resNodeModules.Should().Be("node_modules");
+
+                // Act 3: Buscar .venv como directorio
+                string resVenv = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, ".venv", dirTemporal, tipo: "dir");
+                _ = resVenv.Should().Be(".venv");
+
+                // Act 4: Buscar __pycache__ como directorio
+                string resPycache = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, "__pycache__", dirTemporal, tipo: "dir");
+                _ = resPycache.Should().Be("__pycache__");
+
+                // Act 5: Buscar archivos normales excluyendo el contenido de carpetas podadas
+                string resCs = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, "*.cs", dirTemporal, tipo: "file");
+                _ = resCs.Should().Be("src/app.cs");
+                _ = resCs.Should().NotContain(".git");
+                _ = resCs.Should().NotContain("node_modules");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task ListarDirectorios_ConIncluirArchivos_DevuelveArchivosYCarpetas()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_list_dir_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".git"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules"));
+
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "README.md"), "# Test");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "src", "app.cs"), "class App {}");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, ".git", "config"), "test");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "node_modules", "dep.js"), "test");
+
+                // Act 1: Por defecto (solo directorios, excluyendo podados)
+                string resDirs = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, incluirArchivos: false);
+                _ = resDirs.Should().Be("src");
+
+                // Act 2: Con incluirArchivos = true
+                string resTodos = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, incluirArchivos: true);
+                _ = resTodos.Should().Contain("README.md");
+                _ = resTodos.Should().Contain("src");
+                _ = resTodos.Should().Contain("src/app.cs");
+                _ = resTodos.Should().NotContain(".git");
+                _ = resTodos.Should().NotContain("node_modules");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
     }
 }

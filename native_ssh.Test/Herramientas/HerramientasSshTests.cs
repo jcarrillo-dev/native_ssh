@@ -30,7 +30,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
-            comando.Contains("-o -type d -print") ? SimularListDir(comando) :
+            comando.Contains("-print -prune") ? SimularFind(comando) :
+            comando.Contains("-o -type d -print") || comando.Contains("-o -print 2>/dev/null") ? SimularListDir(comando) :
             comando.Contains("find -L . -maxdepth") ? SimularFind(comando) :
             comando.Contains("stat -c") ? SimularStat(comando) :
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
@@ -87,20 +88,21 @@ namespace NativeSsh.Test.Herramientas
         }
 
         private static RespuestaFalsa SimularListDir(string comando) =>
-            comando.Contains("ruta_inexistente")
-                ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1)
-                : comando.Contains("es_archivo.txt")
-                    ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1)
-                    : comando.Contains("vacio")
-                        ? new("", 0)
-                        : new("src\nsrc/models\nsrc/views\n", 0);
+            comando.Contains("ruta_inexistente") ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("es_archivo.txt") ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1) :
+            comando.Contains("vacio") ? new("", 0) :
+            comando.Contains("-o -print 2>/dev/null") ? new("Program.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0) :
+            new("src\nsrc/models\nsrc/views\n", 0);
 
         private static RespuestaFalsa SimularFind(string comando) =>
-            comando.Contains("ruta_inexistente")
-                ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1)
-                : comando.Contains("sin_coincidencias")
-                    ? new("", 0)
-                    : new("app.service\nnginx.conf\n", 0);
+            comando.Contains("ruta_inexistente") ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("sin_coincidencias") ? new("", 0) :
+            comando.Contains("-name '.git'") ? new(".git\n", 0) :
+            comando.Contains("-name 'node_modules'") ? new("node_modules\n", 0) :
+            comando.Contains("-name '__pycache__'") ? new("__pycache__\n", 0) :
+            comando.Contains("-name '.venv'") ? new(".venv\n", 0) :
+            comando.Contains("-name '*.cs'") ? new("Program.cs\nHerramientas/HerramientasSsh.cs\n", 0) :
+            new("app.service\nnginx.conf\n", 0);
 
         private static RespuestaFalsa SimularStat(string comando) =>
             comando.Contains("no_existe.txt")
@@ -475,6 +477,30 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Be("src\nsrc/models\nsrc/views");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("find -L . -maxdepth 3 -mindepth 1"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -type d -print"));
+        }
+
+        [Fact]
+        public async Task ListDir_ConIncluirArchivos_DevuelveArchivosYDirectorios()
+        {
+            // Act
+            string resultado = await _herramientas.ListarDirectoriosAsync("servidor", "proyecto", incluirArchivos: true);
+
+            // Assert
+            _ = resultado.Should().Contain("Program.cs");
+            _ = resultado.Should().Contain("src");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print 2>/dev/null"));
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain("-type d -print");
+        }
+
+        [Fact]
+        public async Task ListDir_ConIncluirArchivos_VacioDevuelveElementos()
+        {
+            // Act
+            string resultado = await _herramientas.ListarDirectoriosAsync("servidor", "vacio", incluirArchivos: true);
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron elementos en 'vacio'.");
         }
 
         [Theory]
@@ -508,6 +534,33 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Be("app.service\nnginx.conf");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-name '*.service'"));
+        }
+
+        [Theory]
+        [InlineData(".git", ".git")]
+        [InlineData("node_modules", "node_modules")]
+        [InlineData("__pycache__", "__pycache__")]
+        [InlineData(".venv", ".venv")]
+        public async Task Find_CarpetasExcluidas_DevuelveCarpetaYComandoContienePrintPrune(string patron, string esperado)
+        {
+            // Act
+            string resultado = await _herramientas.BuscarPorNombreAsync("servidor", patron, tipo: "dir");
+
+            // Assert
+            _ = resultado.Should().Be(esperado);
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
+        }
+
+        [Fact]
+        public async Task Find_ArchivosNormales_ExcluyeCarpetasPodadas()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarPorNombreAsync("servidor", "*.cs", tipo: "file");
+
+            // Assert
+            _ = resultado.Should().Contain("Program.cs");
+            _ = resultado.Should().NotContain("node_modules");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
         }
 
         [Theory]

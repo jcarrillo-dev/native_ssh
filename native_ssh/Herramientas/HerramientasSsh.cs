@@ -326,12 +326,14 @@ namespace NativeSsh.Herramientas
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Profundidad máxima de recursión (por defecto 3, entre 1 y 10).")] int profundidadMax = 3,
             [Description("Número máximo de directorios a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
+            [Description("Si es true, incluye también archivos inmediatos junto a los directorios (sustituyendo completamente a 'ls' o 'tree'). Por defecto false.")] bool incluirArchivos = false,
             CancellationToken cancellationToken = default)
         {
             int profundidad = Math.Clamp(profundidadMax, 1, 10);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
             string rutaEscapada = "'" + rutaEfectiva.Replace("'", "'\\''") + "'";
+            string filtroTipo = incluirArchivos ? string.Empty : "-type d ";
 
             string comando = $$"""
                 (
@@ -347,7 +349,7 @@ namespace NativeSsh.Herramientas
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) -prune \
-                  -o -type d -print 2>/dev/null | sed 's|^\./||' | sort
+                  -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort
                 )
                 """.ReplaceLineEndings("\n");
 
@@ -361,14 +363,16 @@ namespace NativeSsh.Herramientas
             if (peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al listar directorios (código {peticion.CodigoSalida})." : salida);
 
+            string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
             if (string.IsNullOrEmpty(salida))
-                return $"No se encontraron subdirectorios en '{rutaEfectiva}'.";
+                return $"No se encontraron {etiquetaVacio} en '{rutaEfectiva}'.";
 
             string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             if (lineas.Length > limite)
             {
                 string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} directorios (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]";
+                string etiquetaLimite = incluirArchivos ? "elementos" : "directorios";
+                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} {etiquetaLimite} (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]";
             }
 
             return salida;
@@ -396,7 +400,7 @@ namespace NativeSsh.Herramientas
             string filtroTipo = tipo.ToLowerInvariant() switch
             {
                 "dir" or "directory" => "-type d ",
-                "all" => "",
+                "all" => string.Empty,
                 _ => "-type f "
             };
 
@@ -409,7 +413,8 @@ namespace NativeSsh.Herramientas
                 fi
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
-                  \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) -prune \
+                  \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
+                  \( {{filtroTipo}}-name {{patronEscapado}} -print -prune -o -prune \) \
                   -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort
                 )
                 """.ReplaceLineEndings("\n");
