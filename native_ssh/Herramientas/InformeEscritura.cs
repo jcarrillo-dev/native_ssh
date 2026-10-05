@@ -34,8 +34,11 @@ namespace NativeSsh.Herramientas
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
     // "limpio" o "restos") confirma que el script terminó y que todo lo anterior llegó; sin él (la salida se cortó al
     // cerrarse el canal o perderse la conexión, o el script sigue en marcha) el script pudo seguir después, y el error lo
-    // dice. Texto: la salida sin los anuncios. Si la salida superó el máximo por petición y se descartó su principio
-    // (IsSalidaIncompleta), pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
+    // dice: interrumpido escribiendo o restaurando en el sitio, el script sigue hasta restaurar o conservar las copias. Si
+    // termina con un código distinto de 0 sin ese anuncio (lo mató SIGKILL a mitad, o anexaba), el error dice lo mismo
+    // según lo anunciado, con el código y el id. Texto: la salida sin los anuncios ni los avisos de bash sobre hijos
+    // muertos por una señal. Si la salida superó el máximo por petición y se descartó su principio (IsSalidaIncompleta),
+    // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
     internal sealed partial record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";

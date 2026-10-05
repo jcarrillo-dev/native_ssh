@@ -902,6 +902,11 @@ namespace NativeSsh.Test.Herramientas
             _ = (escribir + reemplazar).Should().NotContain("conserva inodo, enlaces duros y todos los atributos");
             _ = escribir.Should().Contain("bits setuid y setgid").And.Contain("salvo si escribe root").And.Contain("security.capability").And.Contain("lo que no se pueda devolver o comprobar lo dice la respuesta");
             _ = reemplazar.Should().Contain("bits setuid y setgid").And.Contain("salvo si escribe root").And.Contain("security.capability").And.Contain("lo que no se pueda devolver o comprobar lo dice la respuesta");
+
+            // Si no termina (también por ssh_disconnect o una conexión perdida) o el script muere a mitad, el error dice qué pasó
+            // con el archivo y da el id de la petición; interrumpida en el sitio, el script restaura el original por su cuenta.
+            _ = new[] { escribir, reemplazar }.Should().AllSatisfy(descripcion => descripcion.Should()
+                .Contain("ssh_disconnect o conexión perdida").And.Contain("o el script muere a mitad (p. ej. por SIGKILL)").And.Contain("el script restaura el original por su cuenta"));
         }
 
         [Fact]
