@@ -326,6 +326,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _escriturasColgadas;
         private int _escriturasTrasCerrar;
         private ManualResetEventSlim? _liberacionEscrituras;
+        private ManualResetEventSlim? _confirmacionCierre;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
@@ -423,6 +424,10 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void ColgarEscrituras(ManualResetEventSlim liberacion) => Volatile.Write(ref _liberacionEscrituras, liberacion);
 
+        // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
+        // muere al perder el terminal.
+        public void RetenerCierre(ManualResetEventSlim confirmacion) => Volatile.Write(ref _confirmacionCierre, confirmacion);
+
         public void Cerrar()
         {
             lock (_candado)
@@ -435,6 +440,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public void Dispose()
         {
             _isDispuesto = true;
+            Volatile.Read(ref _confirmacionCierre)?.Wait();
             _finLogin?.Dispose();
             Cerrar();
         }

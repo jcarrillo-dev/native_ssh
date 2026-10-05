@@ -317,6 +317,39 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task CierreDelCanalQueElServidorNoConfirma_NoDetieneLaCola()
+        {
+            // Arrange: cerrar el canal no vuelve hasta que el servidor confirma, y no confirma (su bash no muere al perder
+            // el terminal); el proceso en curso ignora Ctrl+C, así que hay que cerrar el canal.
+            using ManualResetEventSlim confirmacion = new(false);
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.CanalActual!.RetenerCierre(confirmacion);
+            Stopwatch reloj = Stopwatch.StartNew();
+            Peticion terco;
+            Peticion siguiente;
+
+            try
+            {
+                // Act
+                terco = await EjecutarAsync(sesion, "terco", timeoutSegundos: 1);
+                siguiente = await EjecutarAsync(sesion, "dos");
+            }
+            finally
+            {
+                confirmacion.Set();
+            }
+
+            // Assert: quien cierra espera como mucho un segundo y la cola sigue con un shell nuevo.
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:dos\n");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(2);
+        }
+
+        [Fact]
         public async Task EntradaInteractiva()
         {
             // Arrange
