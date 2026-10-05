@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Versioning;
+using System.Text;
 using System.Text.RegularExpressions;
 using FluentAssertions;
 using NativeSsh.Comun;
@@ -604,6 +605,71 @@ namespace NativeSsh.Test.Integracion
             _ = error.Message.Should().Contain(isSobrescribir ? "se ha convertido en un directorio" : "ya existe");
             _ = Directory.GetFileSystemEntries(archivo).Should().BeEmpty();
             _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
+        // Nombres de 255 bytes (NAME_MAX): ASCII, con caracteres de 2 y 3 bytes que el recorte a 242 bytes partiría, y con
+        // caracteres de 4 bytes.
+        public static TheoryData<string> NombresDe255Bytes => [new string('a', 251) + ".txt", "a" + string.Concat(Enumerable.Repeat("€", 84)) + "ñ", string.Concat(Enumerable.Repeat("😀", 63)) + "abc"];
+
+        // El temporal ".<nombre>.tmp.XXXXXX" y la copia ".<nombre>.orig.XXXXXX" deben caber en NAME_MAX: con un nombre de 255
+        // bytes la parte del nombre se recorta por bytes sin partir caracteres UTF-8. Sin recorte, mktemp fallaba: un
+        // archivo nuevo no se podía crear y uno existente se escribía en el sitio (temporal en TMPDIR) en vez de atómico.
+        [Theory]
+        [MemberData(nameof(NombresDe255Bytes))]
+        public async Task Escrituras_NombreDe255Bytes_CreanSobrescribenYReemplazanConElTemporalJuntoAlArchivo(string nombre)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, nombre);
+            HerramientasSsh herramientas = Herramientas();
+            string tmpdir = await FijarTmpdirAsync(herramientas);
+
+            // Act
+            ResultadoEscritura creado = await herramientas.EscribirArchivoAsync(Destino, archivo, "uno\n");
+            ResultadoEscritura sobrescrito = await herramientas.EscribirArchivoAsync(Destino, archivo, "dos\n", overwrite: true);
+            ResultadoEscritura reemplazado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "dos", "tres");
+
+            // Assert
+            _ = Encoding.UTF8.GetByteCount(nombre).Should().Be(255);
+            _ = new[] { creado, sobrescrito, reemplazado }.Should().AllSatisfy(resultado => resultado.IsAtomica.Should().BeTrue());
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("tres\n");
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
+        // Escritura en el sitio de un archivo con un nombre de 255 bytes que falla y no se puede restaurar: la copia y el
+        // temporal quedan en su directorio, con nombres que caben en NAME_MAX y son UTF-8 válido (sin caracteres partidos).
+        [Theory]
+        [MemberData(nameof(NombresDe255Bytes))]
+        public async Task EscrituraEnElSitio_NombreDe255Bytes_LaCopiaYElTemporalVanAlDirectorioConNombresValidos(string nombre)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, nombre);
+            await File.WriteAllTextAsync(archivo, "original completo\n");
+            _ = Bash($"ln '{archivo}' '{Path.Combine(carpeta, "f2.txt")}'");
+            HerramientasSsh herramientas = Herramientas();
+            string tmpdir = await FijarTmpdirAsync(herramientas);
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", "exit 1"));
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            string copia = Directory.GetFiles(carpeta, "*.orig.*").Should().ContainSingle().Which;
+            string nuevo = Directory.GetFiles(carpeta, "*.tmp.*").Should().ContainSingle().Which;
+            _ = new[] { Path.GetFileName(copia), Path.GetFileName(nuevo) }.Should().AllSatisfy(restante =>
+            {
+                _ = Encoding.UTF8.GetByteCount(restante).Should().BeLessThanOrEqualTo(255);
+                _ = restante.Should().NotContain("\uFFFD").And.StartWith("." + nombre[..10]);
+            });
+            _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
+            _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
+            _ = error.Message.Should().Contain("no se pudo restaurar").And.Contain(copia).And.Contain(nuevo);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
         // Sin copia de seguridad no se escribe en el sitio: si no se puede crear (ni en el directorio ni en TMPDIR), error

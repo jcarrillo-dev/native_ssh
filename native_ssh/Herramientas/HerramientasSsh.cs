@@ -1075,6 +1075,8 @@ namespace NativeSsh.Herramientas
                 fi
                 {{SustitucionLiteral("dir", "dirname -- \"$destino\"")}}
                 {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
+                {{DefinicionAcortarNombre}}
+                acortar_nombre
                 tmp=
                 copia=
                 fuera=0
@@ -1082,7 +1084,7 @@ namespace NativeSsh.Herramientas
                 {{DefinicionPrivilegios}}
                 {{DefinicionEscrituraEnElSitio}}
                 trap limpiar EXIT
-                if ! tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX" 2>/dev/null); then
+                if ! tmp=$(mktemp -- "$dir/.$corto.tmp.XXXXXX" 2>/dev/null); then
                   {{temporalFuera}}
                 fi
                 anunciar_ruta tmp "$tmp"
@@ -1096,6 +1098,31 @@ namespace NativeSsh.Herramientas
                 : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella}", payloadBase64);
         }
+
+        // acortar_nombre: deja en 'corto' el nombre del destino ('base') recortado a 242 bytes, para que el temporal
+        // ".<corto>.tmp.XXXXXX" y la copia ".<corto>.orig.XXXXXX" quepan en NAME_MAX (255 bytes) con cualquier nombre válido.
+        // Con LC_ALL=C las longitudes y los recortes de bash son en bytes; tras recortar se quita un carácter UTF-8 que haya
+        // quedado partido al final (bytes de continuación 10xxxxxx sin todos los que pide su byte inicial).
+        private static readonly string DefinicionAcortarNombre = """
+            acortar_nombre() {
+              local LC_ALL=C
+              local i c
+              corto=$base
+              [ "${#corto}" -le 242 ] && return 0
+              corto=${corto:0:242}
+              for (( i = 1; i <= 4; i++ )); do
+                c=${corto: -i:1}
+                case $c in
+                  [$'\x80'-$'\xbf']) continue ;;
+                  [$'\xc0'-$'\xdf']) [ "$i" -lt 2 ] && corto=${corto:0:${#corto}-i} ;;
+                  [$'\xe0'-$'\xef']) [ "$i" -lt 3 ] && corto=${corto:0:${#corto}-i} ;;
+                  [$'\xf0'-$'\xf7']) [ "$i" -lt 4 ] && corto=${corto:0:${#corto}-i} ;;
+                esac
+                break
+              done
+              return 0
+            }
+            """.ReplaceLineEndings("\n");
 
         // renombrar y enlazar colocan el temporal en el destino con 'mv -T' y 'ln -T' (GNU coreutils), que tratan el destino
         // como un archivo: si se ha convertido en un directorio (o en un enlace a uno) entre las comprobaciones y la
@@ -1275,7 +1302,7 @@ namespace NativeSsh.Herramientas
               return 0
             }
             escribir_en_sitio() {
-              copia=$(mktemp -- "$dir/.$base.orig.XXXXXX" 2>/dev/null) || copia=$(mktemp -- "${TMPDIR:-/tmp}/.ns_original.XXXXXX" 2>/dev/null) || {
+              copia=$(mktemp -- "$dir/.$corto.orig.XXXXXX" 2>/dev/null) || copia=$(mktemp -- "${TMPDIR:-/tmp}/.ns_original.XXXXXX" 2>/dev/null) || {
                 copia=
                 printf 'Error: no se pudo crear la copia de seguridad de %s (ni en su directorio ni en %s): no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" "${TMPDIR:-/tmp}" >&2
                 return 1

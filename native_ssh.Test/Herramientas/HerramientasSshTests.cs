@@ -980,7 +980,8 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("| sudo bash -c '");
             _ = comando.Split("sudo ").Should().HaveCount(2);
             _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
-            _ = comando.Should().Contain("mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
+            _ = comando.Should().Contain("mktemp -- \"$dir/.$corto.tmp.XXXXXX\"").And.Contain("mktemp -- \"$dir/.$corto.orig.XXXXXX\"");
+            _ = comando.IndexOf("\nacortar_nombre\n", StringComparison.Ordinal).Should().BePositive().And.BeLessThan(comando.IndexOf("mktemp -- \"$dir/.$corto.tmp.XXXXXX\"", StringComparison.Ordinal));
             _ = comando.Should().Contain("cp --attributes-only --preserve=mode,ownership,xattr,context -- \"$1\" \"$2\"");
             _ = comando.Should().Contain("conservar_atributos \"$destino\" \"$tmp\"");
             _ = comando.Should().Contain("mv -f -T -- \"$tmp\" \"$destino\"").And.Contain("mv -f -- \"$tmp\" \"$destino\"");
