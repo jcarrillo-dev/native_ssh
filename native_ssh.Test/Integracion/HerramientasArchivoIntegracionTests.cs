@@ -666,5 +666,35 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = resultado.Should().Equal("no", isAclDetectada ? "si" : "no", isXattrDetectado ? "si" : "no");
         }
+
+        // Mutación superviviente de A4: una espera fija de 20 s en lugar del timeout de la herramienta. Un comando de
+        // ≈22 s con un timeout de 40 s debe completarse, tanto por el shell PTY (escritura) como por un canal exec (búsqueda).
+        [Fact]
+        public async Task Herramientas_ComandoQueDuraMasDe20sSinSuperarSuTimeout_SeCompletan()
+        {
+            // Arrange
+            string archivo = Ruta("lento.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            string fifo = Ruta("fifo_lenta");
+            _ = Bash($"mkfifo '{fifo}'");
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            // mktemp solo lo usa el script de escritura (base64 -d también decodifica cada comando enviado al shell).
+            string mktemp = Bash("command -v mktemp");
+            await SustituirComandoAsync(herramientas, "mktemp", $"sleep 22\nexec '{mktemp}' \"$@\"");
+            Stopwatch cronometro = Stopwatch.StartNew();
+
+            // Act: la búsqueda lee la FIFO, que no recibe datos hasta pasados 22 s (con tope por si nadie la abre).
+            Task escritorFifo = Task.Run(() => Bash($"sleep 22; timeout 60 bash -c \"echo coincidencia > '{fifo}'\""));
+            Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+            Task<string> busqueda = herramientas.BuscarAsync(Destino, "coincidencia", fifo);
+            await Task.WhenAll(escritura, busqueda, escritorFifo);
+            TimeSpan duracion = cronometro.Elapsed;
+
+            // Assert
+            _ = duracion.Should().BeGreaterThan(TimeSpan.FromSeconds(21));
+            _ = (await escritura).IsAtomica.Should().BeTrue();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = (await busqueda).Should().Contain(":1:coincidencia");
+        }
     }
 }
