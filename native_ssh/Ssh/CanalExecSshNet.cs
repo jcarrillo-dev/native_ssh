@@ -26,8 +26,13 @@ namespace NativeSsh.Ssh
     //   OpenSSH 10.5 los descarta con un aviso en su log si el canal ya no existe. Los mensajes que sí cortan la
     //   conexión (DATA, EOF, CLOSE y peticiones) no pueden seguir al CLOSE: un canal exec no escribe en stdin, el EOF
     //   solo sale dentro de Close (antes del CLOSE), el CLOSE una sola vez y la única petición es el exec al abrir.
-    // - Cerrar el canal no termina un proceso que no escribe (uno que escriba recibe SIGPIPE). La barrera real es el
-    //   plazo remoto del propio script ('timeout' o el watchdog, ConstructorComandoExec).
+    // - Cerrar el canal no termina un proceso que no escribe (uno que escriba recibe SIGPIPE), y la señal tampoco servía
+    //   de barrera (comprobado con OpenSSH 10.5): sin ForceCommand, OpenSSH la aplica con killpg al grupo de procesos de
+    //   la sesión (el del shell de login que ejecuta el comando) y con ForceCommand la rechaza ("refusing to send
+    //   signal"). Aplicada, tampoco llega al script si está en otro grupo, que es lo habitual: 'timeout' se pone en el
+    //   suyo con setpgid (salvo que sea el líder de la sesión, si el shell de login hace exec del comando) y el watchdog
+    //   lo ejecuta como trabajo en otro grupo (set -m). La barrera real es el plazo remoto del propio script ('timeout
+    //   -k' o el watchdog, ConstructorComandoExec): tras abortar, el proceso remoto vive hasta ese plazo.
     // - Con el token de ExecuteAsync SSH.NET llamaría a CancelAsync (señal y espera síncrona de 500 ms): no se usa.
     // - Si el servidor rechaza abrir el canal (MaxSessions de sshd), Open lanza un SshException genérico ("Failed to
     //   open a channel after N attempts.") con la conexión intacta: se traduce a un mensaje que lo explica.
