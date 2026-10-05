@@ -96,8 +96,17 @@ namespace NativeSsh.Test.Herramientas
                 : comando.Contains("es_archivo.txt")
                     ? new("Error: la ruta no es un directorio: es_archivo.txt\n", 1)
                     : comando.Contains("/var/www/proyecto")
-                        ? new("/var/www/proyecto\n", 0)
-                        : new("/tmp/trabajo\n", 0);
+                        ? MarcarDirectorio(comando, "/var/www/proyecto")
+                        : MarcarDirectorio(comando, "/tmp/trabajo");
+
+        // Responde como el script real: la ruta resuelta en base64 tras el marcador con el id de la petición.
+        private static RespuestaFalsa MarcarDirectorio(string comando, string directorio)
+        {
+            const string Formato = "__NS_CWD_%s__ %s\\n' ";
+            int posicion = comando.IndexOf(Formato, StringComparison.Ordinal) + Formato.Length;
+            string id = comando[posicion..(posicion + 32)];
+            return new($"__NS_CWD_{id}__ {Convert.ToBase64String(Encoding.UTF8.GetBytes(directorio))}\n", 0);
+        }
 
         // El script elige el motor en el servidor y lo anuncia en la primera línea; el falso simula 'grep -P'.
         private static RespuestaFalsa SimularBusqueda(string comando)
@@ -735,6 +744,39 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = error.Message.Should().Contain(mensajeEsperado).And.Contain("No se ha escrito nada en 'a.txt'.");
+        }
+
+        [Fact]
+        public void ExtraerDirectorioMarcado_ConRuidoAlrededor_DevuelveLaRutaExacta()
+        {
+            // Arrange: CRLF, LS y espacio dentro y al final del nombre; el terminal añade sus propios CRLF.
+            string directorio = "/tmp/d\r\ne\u2028 ";
+            string salida = $"aviso\r\n__NS_CWD_{IdMarcas}__ {Convert.ToBase64String(Encoding.UTF8.GetBytes(directorio))}\r\notro\n";
+
+            // Act & Assert
+            _ = HerramientasSsh.ExtraerDirectorioMarcado(salida, IdMarcas).Should().Be(directorio);
+        }
+
+        public static TheoryData<string, string> SalidasDeDirectorioInvalidas => new()
+        {
+            { "/tmp/trabajo\n", "(marcas: 0)" },
+            { "__NS_CWD_ffffffffffffffffffffffffffffffff__ L3RtcA==\n", "(marcas: 0)" },
+            { $"__NS_CWD_{IdMarcas}__ L3RtcA==\n__NS_CWD_{IdMarcas}__ L3RtcA==\n", "(marcas: 2)" },
+            { $"__NS_CWD_{IdMarcas}__ L3RtcA\n", "no es base64" },
+            { $"__NS_CWD_{IdMarcas}__ {Convert.ToBase64String([0x2F, 0xFF])}\n", "UTF-8" },
+            { $"__NS_CWD_{IdMarcas}__ {Convert.ToBase64String("tmp"u8)}\n", "no es absoluta" },
+        };
+
+        [Theory]
+        [MemberData(nameof(SalidasDeDirectorioInvalidas))]
+        public void ExtraerDirectorioMarcado_SalidaSinRutaValida_LanzaSinFijarNada(string salida, string mensajeEsperado)
+        {
+            // Act
+            NativeSshException error = FluentActions.Invoking(() => HerramientasSsh.ExtraerDirectorioMarcado(salida, IdMarcas))
+                .Should().Throw<NativeSshException>().Which;
+
+            // Assert
+            _ = error.Message.Should().Contain(mensajeEsperado).And.Contain("No se ha cambiado el directorio de trabajo.");
         }
 
         private static string DescripcionDe(string metodo) =>
@@ -1435,6 +1477,68 @@ namespace NativeSsh.Test.Herramientas
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "otra", inicio, fin))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Contain("lineaInicio y lineaFin");
+            _ = _fabrica.Ultima.Should().BeNull();
+        }
+
+        // Los valores del usuario se copian en el script tal cual: ningún separador de línea (CR, CRLF, FF, NEL, LS, PS) se
+        // convierte en '\n', ni por canal exec ni por el shell PTY (con y sin sudo).
+        [Theory]
+        [InlineData("\r")]
+        [InlineData("\r\n")]
+        [InlineData("\f")]
+        [InlineData("\u0085")]
+        [InlineData("\u2028")]
+        [InlineData("\u2029")]
+        public async Task Herramientas_ValoresConSeparadoresDeLinea_LleganAlScriptTalCual(string separador)
+        {
+            // Arrange
+            string ruta = $"x{separador}y";
+            string patron = $"p{separador}q";
+
+            // Act
+            _ = await _herramientas.LeerArchivoAsync("servidor", ruta, 1, 3);
+            _ = await _herramientas.ConsultarMetadatosAsync("servidor", ruta);
+            _ = await _herramientas.BuscarAsync("servidor", patron, ruta, $"t{separador}xt");
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", patron, ruta);
+            _ = await _herramientas.ListarDirectoriosAsync("servidor", ruta);
+            _ = await _herramientas.EscribirArchivoAsync("servidor", ruta, "c", overwrite: true);
+            _ = await _herramientas.EscribirArchivoAsync("servidor", ruta, "c", append: true, sudo: true);
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", ruta, "linea 3", "otra");
+            _ = await _herramientas.FijarDirectorioAsync("servidor", ruta);
+
+            // Assert
+            string[] comandos = [.. _fabrica.Ultima!.Comandos];
+            _ = comandos.Count(c => c.Contains($"'{ruta}'", StringComparison.Ordinal)).Should().BeGreaterThanOrEqualTo(10);
+            _ = comandos.Should().Contain(c => c.Contains($"-e '{patron}'", StringComparison.Ordinal) && c.Contains($"'*.t{separador}xt'", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains($"-name '{patron}'", StringComparison.Ordinal));
+            _ = comandos.Should().NotContain(c => c.Contains("x\ny", StringComparison.Ordinal) || c.Contains("p\nq", StringComparison.Ordinal) || c.Contains("t\nxt", StringComparison.Ordinal));
+        }
+
+        // Un NUL no puede viajar en un argumento ni sobrevive a '$(... | base64 -d)' (bash lo descarta): la ruta llegaría
+        // sin él, a otro archivo. Se rechaza antes de enviar nada.
+        [Fact]
+        public async Task Herramientas_ValorConNul_LanzanSinEnviarNada()
+        {
+            // Arrange
+            Func<Task>[] llamadas =
+            [
+                () => _herramientas.LeerArchivoAsync("servidor", "a\0b"),
+                () => _herramientas.ConsultarMetadatosAsync("servidor", "a\0b"),
+                () => _herramientas.BuscarAsync("servidor", "patron", "a\0b"),
+                () => _herramientas.BuscarAsync("servidor", "pa\0tron"),
+                () => _herramientas.BuscarAsync("servidor", "patron", extension: "t\0xt"),
+                () => _herramientas.BuscarPorNombreAsync("servidor", "*.txt", "a\0b"),
+                () => _herramientas.BuscarPorNombreAsync("servidor", "*\0.txt"),
+                () => _herramientas.ListarDirectoriosAsync("servidor", "a\0b"),
+                () => _herramientas.EscribirArchivoAsync("servidor", "a\0b", "c", overwrite: true),
+                () => _herramientas.EscribirArchivoAsync("servidor", "a\0b", "c", append: true),
+                () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "a\0b", "linea 3", "otra"),
+                () => _herramientas.FijarDirectorioAsync("servidor", "a\0b"),
+            ];
+
+            // Act & Assert
+            foreach (Func<Task> llamada in llamadas)
+                _ = (await FluentActions.Awaiting(llamada).Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("NUL");
             _ = _fabrica.Ultima.Should().BeNull();
         }
 

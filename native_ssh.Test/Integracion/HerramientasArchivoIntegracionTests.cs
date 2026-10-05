@@ -15,7 +15,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "Integracion")]
     // IAsyncLifetime (no IAsyncDisposable): es lo que xUnit v2 invoca al terminar cada prueba.
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
-    public sealed class HerramientasArchivoIntegracionTests : IAsyncLifetime
+    public sealed partial class HerramientasArchivoIntegracionTests : IAsyncLifetime
     {
         private readonly SshdLocal _sshd;
         private readonly string _directorio = Path.Combine(Path.GetTempPath(), $"ns_archivos_{Guid.NewGuid():N}");

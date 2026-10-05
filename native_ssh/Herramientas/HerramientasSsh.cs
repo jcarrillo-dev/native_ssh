@@ -168,6 +168,7 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
+            ExigirSinNul(ruta, "La ruta");
             bool isDesdeElFinal = lineaInicio < 0;
             if (isDesdeElFinal && lineaFin is not null)
                 throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
@@ -177,10 +178,10 @@ namespace NativeSsh.Herramientas
             if (!isDesdeElFinal && fin < inicio)
                 throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
 
-            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            string rutaEscapada = Escapar(ruta);
             // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen sed y tail.
             string lectura = isDesdeElFinal
-                ? $$"""
+                ? PlantillaBash.Crear($$"""
                     ultimas={{-(long)lineaInicio}}
                     inicio_efectivo=$(( total - ultimas + 1 ))
                     [ "$inicio_efectivo" -lt 1 ] && inicio_efectivo=1
@@ -190,8 +191,8 @@ namespace NativeSsh.Herramientas
                       echo "[Líneas $inicio_efectivo-$total de $total]"
                     fi
                     tail -n {{-(long)lineaInicio}} -- {{rutaEscapada}}
-                    """
-                : $$"""
+                    """)
+                : PlantillaBash.Crear($$"""
                     if [ "$total" -eq 0 ]; then
                       echo "[Líneas 0-0 de 0]"
                     else
@@ -199,8 +200,8 @@ namespace NativeSsh.Herramientas
                       echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
                     fi
                     sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
-                    """;
-            string comando = $$"""
+                    """);
+            string comando = PlantillaBash.Crear($$"""
                 (
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
@@ -216,7 +217,7 @@ namespace NativeSsh.Herramientas
                 fi
                 {{lectura}}
                 )
-                """.ReplaceLineEndings("\n");
+                """);
 
             SalidaLectura resultado = await EjecutarLecturaAsync(destino, comando, TimeoutLecturaSegundos, "Lee un rango de líneas menor (lineaInicio/lineaFin).", cancellationToken).ConfigureAwait(false);
             if (resultado.Codigo != 0)
@@ -246,19 +247,20 @@ namespace NativeSsh.Herramientas
             if (overwrite && append)
                 throw new NativeSshException("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
 
+            ExigirSinNul(ruta, "La ruta");
             byte[] bytesUtf8 = Encoding.UTF8.GetBytes(contenido ?? string.Empty);
             string payloadBase64 = Convert.ToBase64String(bytesUtf8);
-            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            string rutaEscapada = Escapar(ruta);
 
             string comando = append
-                ? EnvolverEnBash("""
+                ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
                     if [ -d "$ruta" ]; then
                       printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
                     fi
                     base64 -d >> "$ruta"
-                    """, sudo, rutaEscapada, payloadBase64)
+                    """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite);
 
             Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
@@ -287,6 +289,9 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
+            ExigirSinNul(patron, "El patrón");
+            ExigirSinNul(ruta ?? string.Empty, "La ruta");
+            ExigirSinNul(extension ?? string.Empty, "La extensión");
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
@@ -322,7 +327,7 @@ namespace NativeSsh.Herramientas
 
             string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
-            return $$"""
+            return PlantillaBash.Crear($$"""
                 (
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
@@ -352,7 +357,7 @@ namespace NativeSsh.Herramientas
                 [ "$rc" -eq 141 ] && rc=0
                 exit "$rc"
                 )
-                """.ReplaceLineEndings("\n");
+                """);
         }
 
         // Códigos de rg y grep: 0 = coincidencias, 1 = ninguna, 2 = error (con -s/--no-messages, archivos ilegibles o regex inválida).
@@ -395,6 +400,14 @@ namespace NativeSsh.Herramientas
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
+        // Un NUL no puede llegar al servidor: no cabe en un argumento y bash lo descarta al decodificar el script con
+        // '$(... | base64 -d)', así que la ruta o el patrón serían otros. Se rechaza antes de enviar nada.
+        private static void ExigirSinNul(string valor, string nombre)
+        {
+            if (valor.Contains('\0', StringComparison.Ordinal))
+                throw new NativeSshException($"{nombre} contiene un carácter NUL (\\0), que no puede formar parte de una ruta ni de un patrón.");
+        }
+
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
         [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
@@ -405,13 +418,14 @@ namespace NativeSsh.Herramientas
             [Description("Si es true, incluye también archivos inmediatos junto a los directorios (sustituyendo completamente a 'ls' o 'tree'). Por defecto false.")] bool incluirArchivos = false,
             CancellationToken cancellationToken = default)
         {
+            ExigirSinNul(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 10);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
-            string rutaEscapada = "'" + rutaEfectiva.Replace("'", "'\\''") + "'";
+            string rutaEscapada = Escapar(rutaEfectiva);
             string filtroTipo = incluirArchivos ? string.Empty : "-type d ";
 
-            string comando = $$"""
+            string comando = PlantillaBash.Crear($$"""
                 (
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de exploración no existe: %s\n' {{rutaEscapada}} >&2
@@ -427,7 +441,7 @@ namespace NativeSsh.Herramientas
                   -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print -prune \
                   -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
                 )
-                """.ReplaceLineEndings("\n");
+                """);
 
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta o reduce la profundidad.", cancellationToken).ConfigureAwait(false);
             if (lectura.Codigo != 0)
@@ -464,11 +478,13 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
+            ExigirSinNul(patron, "El patrón");
+            ExigirSinNul(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
-            string rutaEscapada = "'" + rutaEfectiva.Replace("'", "'\\''") + "'";
-            string patronEscapado = "'" + patron.Replace("'", "'\\''") + "'";
+            string rutaEscapada = Escapar(rutaEfectiva);
+            string patronEscapado = Escapar(patron);
             string filtroTipo = tipo.ToLowerInvariant() switch
             {
                 "dir" or "directory" => "-type d ",
@@ -476,7 +492,7 @@ namespace NativeSsh.Herramientas
                 _ => "-type f "
             };
 
-            string comando = $$"""
+            string comando = PlantillaBash.Crear($$"""
                 (
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
@@ -488,7 +504,7 @@ namespace NativeSsh.Herramientas
                   \( {{filtroTipo}}-name {{patronEscapado}} -print -prune -o -prune \) \
                   -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
                 )
-                """.ReplaceLineEndings("\n");
+                """);
 
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
             if (lectura.Codigo != 0)
@@ -519,9 +535,10 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(ruta))
                 throw new NativeSshException("La ruta no puede estar vacía.");
 
-            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            ExigirSinNul(ruta, "La ruta");
+            string rutaEscapada = Escapar(ruta);
 
-            string comando = $$"""
+            string comando = PlantillaBash.Crear($$"""
                 (
                 if [ ! -e {{rutaEscapada}} ] && [ ! -L {{rutaEscapada}} ]; then
                   echo "NO_EXISTE"
@@ -533,7 +550,7 @@ namespace NativeSsh.Herramientas
                   printf 'ENLACE:%s' "${enlace%x}"
                 fi
                 )
-                """.ReplaceLineEndings("\n");
+                """);
 
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutMetadatosSegundos, "Revisa la ruta.", cancellationToken).ConfigureAwait(false);
             // Sin Trim ni Split por líneas sobre la salida completa: el destino del enlace puede contener o terminar en
@@ -599,20 +616,26 @@ namespace NativeSsh.Herramientas
                 return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
             }
 
-            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
-            string comandoValidacion = $$"""
+            ExigirSinNul(ruta, "La ruta");
+            string idMarca = Guid.NewGuid().ToString("N");
+            // El directorio resuelto vuelve por el PTY, donde LimpiarAnsi quitaría el '\r' de un CRLF (y los ESC y BEL) y Trim
+            // los blancos finales (NEL, LS, PS...): viaja en base64 en una línea marcada con un id aleatorio por petición.
+            string comandoValidacion = PlantillaBash.Crear($$"""
                 (
-                if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta no existe: %s\n' {{rutaEscapada}} >&2
+                ruta={{Escapar(ruta)}}
+                if [ ! -e "$ruta" ]; then
+                  printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
                   exit 1
                 fi
-                if [ ! -d {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta no es un directorio: %s\n' {{rutaEscapada}} >&2
+                if [ ! -d "$ruta" ]; then
+                  printf 'Error: la ruta no es un directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
-                cd -- {{rutaEscapada}} && pwd -P
+                cd -- "$ruta" || exit 1
+                {{SustitucionLiteral("real", "pwd -P")}}
+                printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(printf '%s' "$real" | base64 | tr -d '\n')"
                 )
-                """.ReplaceLineEndings("\n");
+                """);
 
             Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionValidacion);
@@ -623,11 +646,10 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError);
             }
 
-            string pwdReal = ReconstruirSalida(peticionValidacion, out _).Trim();
+            string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
             // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
             gestor.FijarDirectorioTrabajo(destino, pwdReal);
-            string pwdRealEscapado = "'" + pwdReal.Replace("'", "'\\''") + "'";
-            string comandoExport = $"export __NS_CWD={pwdRealEscapado}";
+            string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
             Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport);
 
@@ -638,6 +660,41 @@ namespace NativeSsh.Herramientas
             }
 
             return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
+        }
+
+        private const string PrefijoMarcaDirectorio = "__NS_CWD_";
+
+        // Directorio que resolvió la validación de ssh_set_cwd: el base64 de la única línea "__NS_CWD_<id>__ <base64>" de la
+        // salida (nada ajeno puede imitar el id). Debe ser una ruta absoluta en UTF-8 válido: si no, no se fija nada.
+        internal static string ExtraerDirectorioMarcado(string salida, string idMarca)
+        {
+            string marca = $"{PrefijoMarcaDirectorio}{idMarca}__ ";
+            string? base64 = null;
+            int marcas = 0;
+            foreach (string linea in salida.Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n'))
+                if (linea.StartsWith(marca, StringComparison.Ordinal))
+                {
+                    marcas++;
+                    base64 = linea[marca.Length..];
+                }
+
+            const string SinCambios = "No se ha cambiado el directorio de trabajo.";
+            if (marcas != 1 || base64 is null)
+                throw new NativeSshException($"La validación del directorio no devolvió su ruta resuelta (marcas: {marcas}); ¿se mezcló otra salida del terminal? {SinCambios}");
+
+            string directorio;
+            try
+            {
+                directorio = Utf8Estricto.GetString(Convert.FromBase64String(base64));
+            }
+            catch (Exception ex) when (ex is FormatException or DecoderFallbackException)
+            {
+                throw new NativeSshException($"La ruta resuelta del directorio no es base64 de un texto UTF-8 válido (los nombres que no son UTF-8 no se pueden fijar). {SinCambios}");
+            }
+
+            return directorio.StartsWith('/')
+                ? directorio
+                : throw new NativeSshException($"La ruta resuelta del directorio no es absoluta: '{directorio}'. {SinCambios}");
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
@@ -671,14 +728,15 @@ namespace NativeSsh.Herramientas
             if (isConRango && lineaFin < lineaInicio)
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
-            string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            ExigirSinNul(ruta, "La ruta");
+            string rutaEscapada = Escapar(ruta);
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
             string idMarcas = Guid.NewGuid().ToString("N");
             // Con sudo=true todas las comprobaciones van con sudo: sin él, un archivo en un directorio que el usuario no
             // puede atravesar parece no existir. El base64 se imprime entre marcadores (ver ExtraerArchivoEntreMarcadores)
             // y se lee entero antes del primero, así que el stderr de cat y base64 nunca cae entre ellos. Los marcadores se
             // componen con printf para que su texto literal no aparezca en el propio script.
-            string comandoLectura = EnvolverEnBash($$"""
+            string comandoLectura = EnvolverEnBash(PlantillaBash.Crear($$"""
                 ruta=$1
                 if [ ! -e "$ruta" ]; then
                   printf 'Error: el archivo no existe: %s\n' "$ruta" >&2
@@ -701,7 +759,7 @@ namespace NativeSsh.Herramientas
                 printf '{{PrefijoMarcaBase64}}%s_%s__\n' INICIO {{idMarcas}}
                 printf '%s\n' "$b64"
                 printf '{{PrefijoMarcaBase64}}%s_%s__ %s\n' FIN {{idMarcas}} "$tam"
-                """, sudo, rutaEscapada);
+                """), sudo, rutaEscapada);
 
             Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionLectura);
@@ -792,14 +850,14 @@ namespace NativeSsh.Herramientas
 
             string comprobarNoExiste = isSobrescribir
                 ? string.Empty
-                : $$"""
+                : PlantillaBash.Crear($$"""
                     if [ -e "$ruta" ] || [ -L "$ruta" ]; then
                       {{ErrorYaExiste}}
                     fi
-                    """;
+                    """);
             // Sin sobrescribir nunca se mira si el destino existe para decidir: ln falla si apareció entretanto.
             string colocar = isSobrescribir
-                ? $$"""
+                ? PlantillaBash.Crear($$"""
                     if [ -e "$destino" ]; then
                       en_sitio=0
                       {{DefinicionTieneAclOAtributos}}
@@ -823,8 +881,8 @@ namespace NativeSsh.Herramientas
                       chmod "$modo_nuevo" -- "$tmp" || exit 1
                       mv -f -- "$tmp" "$destino" || exit 1
                     fi
-                    """
-                : $$"""
+                    """)
+                : PlantillaBash.Crear($$"""
                     chmod "$modo_nuevo" -- "$tmp" || exit 1
                     if ! ln -- "$tmp" "$destino" 2>/dev/null; then
                       if [ -e "$destino" ] || [ -L "$destino" ]; then
@@ -832,9 +890,9 @@ namespace NativeSsh.Herramientas
                       fi
                       (set -C; cat -- "$tmp" > "$destino") || exit 1
                     fi
-                    """;
+                    """);
 
-            string script = $$"""
+            string script = PlantillaBash.Crear($$"""
                 ruta=$1
                 modo_nuevo=$2
                 if [ -d "$ruta" ]; then
@@ -859,7 +917,7 @@ namespace NativeSsh.Herramientas
                 trap 'rm -f -- "$tmp" 2>/dev/null' EXIT
                 base64 -d > "$tmp" || exit 1
                 {{colocar}}
-                """;
+                """);
             // La umask se toma del shell del usuario: bajo sudo sería la unión con la de sudoers.
             const string ModoPorUmask = "\"$(printf '%o' $(( 0666 & ~0$(umask) )))\"";
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
@@ -873,7 +931,7 @@ namespace NativeSsh.Herramientas
         // security.selinux no cuenta: lo tienen todos los archivos con SELinux y volvería no atómica cada escritura
         // (el temporal recibe el contexto por defecto del directorio). Sin 'grep -q': con pipefail, su salida anticipada
         // mataría a getfattr por SIGPIPE y el 141 se leería como "sin atributos" (y se renombraría encima).
-        internal const string DefinicionTieneAclOAtributos = """
+        internal static readonly string DefinicionTieneAclOAtributos = """
             tiene_acl_o_atributos() {
               if command -v getfattr >/dev/null 2>&1; then
                 [ -n "$(getfattr --absolute-names -m - -- "$1" 2>/dev/null | grep -v -e '^#' -e '^$' -e '^security\.selinux$')" ]
@@ -887,7 +945,7 @@ namespace NativeSsh.Herramientas
               esac
               return 1
             }
-            """;
+            """.ReplaceLineEndings("\n");
 
         // $(cmd) quita TODOS los saltos de línea finales, también los que forman parte de un nombre de archivo ("victima\n"
         // acabaría en "victima"). Se añade un centinela 'x' tras la salida y se quita después junto con el único '\n' que
@@ -897,6 +955,8 @@ namespace NativeSsh.Herramientas
 
         // Ejecuta 'script' con bash ("$1", "$2"... = 'argumentos', ya escapados), con 'sudo bash' si sudo=true, de modo
         // que todas sus comprobaciones (test -e/-d/-L, readlink, stat...) usan el mismo privilegio que la escritura.
+        // - 'script' es solo código, construido con PlantillaBash; los valores del usuario van en 'argumentos' y se copian
+        //   tal cual (no se normaliza nada después de interpolarlos).
         // - El cd a __NS_CWD se hace fuera de sudo: env_reset descarta __NS_CWD y cambia HOME, pero sudo conserva el cwd.
         // - El contenido (base64) llega por stdin, nunca como argumento: un argumento no puede pasar de 128 KiB (MAX_ARG_STRLEN).
         //   sudo pide la contraseña por /dev/tty, no por stdin.
@@ -905,13 +965,13 @@ namespace NativeSsh.Herramientas
         {
             string entrada = payloadBase64 is null ? string.Empty : $"printf '%s' '{payloadBase64}' | ";
             string programa = sudo ? "sudo bash" : "bash";
-            return $$"""
+            return PlantillaBash.Crear($$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~
                 set -o pipefail
-                {{entrada}}{{programa}} -c {{Escapar("set -o pipefail\n" + script.ReplaceLineEndings("\n"))}} ns {{argumentos}}
+                {{entrada}}{{programa}} -c {{Escapar("set -o pipefail\n" + script)}} ns {{argumentos}}
                 )
-                """.ReplaceLineEndings("\n");
+                """);
         }
 
         private static bool IsEscrituraNoAtomica(string salida) => salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal);
