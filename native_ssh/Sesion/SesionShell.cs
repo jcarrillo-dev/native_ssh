@@ -76,6 +76,10 @@ namespace NativeSsh.Sesion
         private ICanalShell? _canal;
         private IConexionSsh? _conexionDelCanal;
         private BufferSalida? _salidaActual;
+
+        // Salida del comando que estaba en curso cuando se cerró el canal del shell: hasta que el bucle lo da por perdido,
+        // su entrada se rechaza diciendo por qué.
+        private BufferSalida? _salidaConCanalCerrado;
         private TaskCompletionSource<int>? _esperaMarcador;
         private bool _isInterrumpiendo;
 
@@ -170,16 +174,29 @@ namespace NativeSsh.Sesion
             _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, $"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar el comando.");
         }
 
+        // Una vez observado el cierre del canal del shell (CerrarCanal) no se escribe nada más en él: el comando que estaba
+        // en curso rechaza su entrada con un mensaje propio hasta que el bucle lo da por perdido. La carrera de fondo es de
+        // SSH.NET y no se puede cerrar desde aquí: cuando el servidor cierra el canal (exit), su hilo de mensajes contesta
+        // con nuestro CLOSE y Channel.SendData comprueba IsOpen fuera de _messagingLock, así que una escritura que ya había
+        // pasado esa comprobación puede salir después del CLOSE y OpenSSH corta la conexión ("data packet referred to
+        // nonexistent channel"). ShellStream no avisa del EOF del servidor y su evento Closed llega cuando nuestro CLOSE ya
+        // salió: lo primero que se puede observar es el propio cierre.
         public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter)
         {
             lock (_candadoEscritura)
             {
                 ICanalShell? canal;
+                bool isCanalCerrado;
                 lock (_candadoProceso)
                 {
-                    bool isAdmiteEntrada = peticion.Estado == EstadoPeticionEnum.Ejecutando && !_isInterrumpiendo && ReferenceEquals(_salidaActual, peticion.Salida);
+                    bool isEnCurso = peticion.Estado == EstadoPeticionEnum.Ejecutando;
+                    isCanalCerrado = isEnCurso && ReferenceEquals(_salidaConCanalCerrado, peticion.Salida);
+                    bool isAdmiteEntrada = isEnCurso && !_isInterrumpiendo && ReferenceEquals(_salidaActual, peticion.Salida);
                     canal = isAdmiteEntrada ? _canal : null;
                 }
+
+                if (isCanalCerrado)
+                    throw new NativeSshException($"El canal del shell se cerró (exit o cierre desde el servidor) mientras se ejecutaba el comando {peticion.IdTexto} en {Destino.Clave}: la entrada no se envió. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo.");
 
                 if (canal is null)
                     return false;
@@ -432,6 +449,7 @@ namespace NativeSsh.Sesion
                 {
                     canal = _canal;
                     conexionDelCanal = _conexionDelCanal;
+                    _salidaConCanalCerrado = null;
                     if (canal is not null)
                     {
                         _escaner.Reiniciar(peticion.Id);
@@ -962,10 +980,12 @@ namespace NativeSsh.Sesion
                 _conexionDelCanal = null;
                 espera = _esperaMarcador;
                 _esperaMarcador = null;
+                _salidaConCanalCerrado = _salidaActual;
                 _salidaActual = null;
                 _escaner.Desactivar();
             }
 
+            _logger.CanalShellCerrado(Destino.Clave);
             _ = (espera?.TrySetResult(CodigoCanalCerrado));
             // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
             // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.

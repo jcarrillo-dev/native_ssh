@@ -324,6 +324,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private volatile bool _isZombi;
         private volatile bool _isDispuesto;
         private int _escriturasColgadas;
+        private int _escriturasTrasCerrar;
         private ManualResetEventSlim? _liberacionEscrituras;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
@@ -352,6 +353,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         public bool IsDispuesto => _isDispuesto;
         public int SigintsRecibidos => Volatile.Read(ref _sigints);
         public int EscriturasColgadas => Volatile.Read(ref _escriturasColgadas);
+
+        // Intentos de escribir con el canal ya cerrado.
+        public int EscriturasTrasCerrar => Volatile.Read(ref _escriturasTrasCerrar);
 
         public int Leer(Span<byte> destino)
         {
@@ -384,7 +388,10 @@ namespace NativeSsh.Test.Sesion.Falsos
             lock (_candado)
             {
                 if (IsCerrado)
+                {
+                    _ = Interlocked.Increment(ref _escriturasTrasCerrar);
                     throw new InvalidOperationException("Canal cerrado.");
+                }
 
                 if (_isZombi)
                     throw new InvalidOperationException("La conexión del canal se cayó.");

@@ -367,6 +367,36 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task EntradaConElCanalDelShellYaCerrado_SeRechazaConMensajeClaroSinEscribirEnEl()
+        {
+            // Arrange: el comando espera entrada y el servidor cierra el canal (exit); el cierre se detiene justo después de
+            // observarse, con la petición aún en ejecución.
+            using LoggerPrueba logger = new() { EventoBloqueante = 43 };
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("Nombre", StringComparison.Ordinal));
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            canal.Cerrar();
+            await logger.Bloqueado.WaitAsync(Limite);
+            Action enviar = () => sesion.EnviarEntrada(pregunta, "hola", isEnviarEnter: true);
+            NativeSshException error = enviar.Should().Throw<NativeSshException>().Which;
+            EstadoPeticionEnum estadoAlRechazar = pregunta.Estado;
+            logger.Liberar();
+            await pregunta.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = estadoAlRechazar.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = error.Message.Should().Contain("canal del shell se cerró").And.Contain("no se envió");
+            _ = canal.EscriturasTrasCerrar.Should().Be(0);
+            _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+        }
+
+        [Fact]
         public async Task EntradaTardia_NoPasaAComandoPosterior()
         {
             // Arrange

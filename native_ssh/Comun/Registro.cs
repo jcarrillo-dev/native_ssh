@@ -57,5 +57,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 42, Level = LogLevel.Debug, Message = "Al cerrar la sesión con {Destino} el bucle de comandos sigue dentro de una escritura que el servidor no acepta: se libera la conexión para desbloquearla.")]
         public static partial void BucleBloqueadoAlCerrar(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 43, Level = LogLevel.Debug, Message = "Se cierra el canal del shell de {Destino} (lo cerró el servidor, cayó la conexión o se descarta): no se escribe nada más en él.")]
+        public static partial void CanalShellCerrado(this ILogger logger, string destino);
     }
 }
