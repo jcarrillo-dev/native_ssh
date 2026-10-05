@@ -7,13 +7,14 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Ssh
 {
     // Canal exec con SshCommand de SSH.NET 2026.0.0 (CreateCommand + ExecuteAsync):
-    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions, hasta
-    //   ConnectionInfo.Timeout, sin atender ningún token): se invoca en el pool (Task.Factory.StartNew) y se espera
-    //   después la tarea que devuelve. Si el token se cancela durante la apertura, esta tarea espera a que termine y
-    //   cierra el canal: solo acaba con el canal cerrado (contrato de IConexionSsh), y SesionShell falla la operación
-    //   al momento sin liberar su cupo hasta entonces. Si la apertura agota ConnectionInfo.Timeout, SSH.NET la da por
-    //   fallida e ignora una confirmación posterior: ese canal queda abierto en el servidor hasta que se cierre la
-    //   conexión. Si se abre tarde, el comando llega a arrancar y lo acota su plazo remoto.
+    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions sin atender
+    //   ningún token y, tras conectar, sin plazo: ConexionSshNet quita ConnectionInfo.Timeout para que SSH.NET no dé por
+    //   fallida una apertura que el servidor confirmará después, lo que dejaba el canal abierto en el servidor sin que
+    //   nadie lo cerrara): se invoca en el pool (Task.Factory.StartNew) y se espera después la tarea que devuelve. Si el
+    //   token se cancela durante la apertura, esta tarea espera a que termine (confirmación, rechazo o caída de la
+    //   conexión) y cierra el canal: solo acaba con el canal cerrado (contrato de IConexionSsh), y SesionShell falla la
+    //   operación al momento sin liberar su cupo hasta entonces. Si se abre tarde, el comando llega a arrancar y lo acota
+    //   su plazo remoto.
     // - OutputStream y ExtendedOutputStream son PipeStream sin límite: SSH.NET encola todo lo que llega aunque nadie
     //   lea. Se leen a la vez (lectura bloqueante, un hilo dedicado por flujo) contando los bytes de ambos; al superar
     //   el tope se aborta en lugar de seguir acumulando.

@@ -535,6 +535,97 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task AperturaDelShellSinRespuesta_ElComandoVenceASuTiempoYElSiguienteEsperaEsaMismaApertura()
+        {
+            // Arrange: la apertura del canal del shell no responde ni atiende ningún token (SSH.NET con el servidor
+            // congelado: solo termina cuando responde o cae la conexión).
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaShell = apertura };
+            await using SesionShell sesion = Crear(fabrica);
+            Stopwatch reloj = Stopwatch.StartNew();
+            Peticion primero;
+            TimeSpan duracion;
+            Peticion segundo;
+
+            try
+            {
+                // Act
+                primero = await EjecutarAsync(sesion, "uno", timeoutSegundos: 1);
+                duracion = reloj.Elapsed;
+                segundo = Nueva("dos");
+                sesion.Encolar(segundo);
+                await EsperasPrueba.EsperarHastaAsync(() => segundo.Estado == EstadoPeticionEnum.Ejecutando);
+                await Task.Delay(200);
+            }
+            finally
+            {
+                _ = apertura.Release(2);
+            }
+
+            await segundo.Finalizacion.WaitAsync(Limite);
+
+            // Assert: el primero vence sin llegar al shell y lo dice; el segundo usa el canal de aquella apertura.
+            _ = primero.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = primero.Aviso.Should().Contain("no llegó a enviarse").And.Contain("apertura del shell");
+            _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(3));
+            _ = segundo.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(segundo).Should().Be("eco:dos\n");
+            _ = fabrica.Ultima!.AperturasShell.Should().Be(1);
+            _ = fabrica.Ultima.Comandos.Should().Equal(["dos"]);
+        }
+
+        [Fact]
+        public async Task AperturaDelShellAbandonadaQueTerminaDespues_SuCanalSeCierraAlCerrarLaSesion()
+        {
+            // Arrange: el comando vence mientras se abre el shell; la apertura termina después y nadie la usa.
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaShell = apertura };
+            SesionShell sesion = Crear(fabrica);
+            Peticion comando;
+            try
+            {
+                comando = await EjecutarAsync(sesion, "uno", timeoutSegundos: 1);
+            }
+            finally
+            {
+                _ = apertura.Release();
+            }
+
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.CanalActual is not null);
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+
+            // Assert
+            _ = comando.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            await EsperasPrueba.EsperarHastaAsync(() => canal.IsDispuesto);
+        }
+
+        [Fact]
+        public async Task Dispose_ConElBucleColgadoEnUnaEscritura_LiberaLaConexionYElComandoTerminaCancelado()
+        {
+            // Arrange: escribir en el shell no vuelve hasta que se libera la conexión (SSH.NET con la ventana del servidor
+            // agotada); el bucle se queda dentro al enviar el comando.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.ColgarEscrituras();
+            Peticion colgado = Nueva("dos");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.CanalActual!.EscriturasColgadas == 1);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+
+            // Assert
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = fabrica.Ultima.IsConectada.Should().BeFalse();
+        }
+
+        [Fact]
         public async Task Limitador_RechazaLaReconexion()
         {
             // Arrange

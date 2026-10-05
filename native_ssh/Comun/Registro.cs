@@ -51,5 +51,11 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 40, Level = LogLevel.Debug, Message = "Cerrando la sesión con {Destino}: no se admiten más comandos ni lecturas.")]
         public static partial void CerrandoSesion(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 41, Level = LogLevel.Debug, Message = "Terminó una apertura del shell de {Destino} que ya nadie esperaba (conexión sustituida o sesión cerrada); si abrió el canal, se cierra.")]
+        public static partial void AperturaShellAbandonada(this ILogger logger, Exception? ex, string destino);
+
+        [LoggerMessage(EventId = 42, Level = LogLevel.Debug, Message = "Al cerrar la sesión con {Destino} el bucle de comandos sigue dentro de una escritura que el servidor no acepta: se libera la conexión para desbloquearla.")]
+        public static partial void BucleBloqueadoAlCerrar(this ILogger logger, string destino);
     }
 }
