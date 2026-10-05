@@ -142,6 +142,52 @@ namespace NativeSsh.Test.Integracion
             _ = Stat(archivo).Should().Be(stat);
         }
 
+        // TMPDIR propio en el shell remoto, para comprobar qué temporales se crean fuera del directorio del archivo.
+        private async Task<string> FijarTmpdirAsync(HerramientasSsh herramientas)
+        {
+            string tmpdir = Ruta("tmpdir");
+            _ = Directory.CreateDirectory(tmpdir);
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{tmpdir}'", esperarSegundos: 10);
+            _ = export.CodigoSalida.Should().Be(0);
+            return tmpdir;
+        }
+
+        // Un directorio sin permiso de escritura no admite el temporal ni el renombrado, pero el archivo sí se puede
+        // escribir: se sobrescribe en el sitio (con el temporal en ${TMPDIR:-/tmp}) en lugar de fallar. Un archivo nuevo
+        // no se puede crear ahí.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_DirectorioSinPermisoDeEscrituraConArchivoEscribible_EscribeEnElSitio(bool isReplace)
+        {
+            // Arrange
+            string carpeta = Ruta("solo_lectura");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            string stat = Stat(archivo);
+            _ = Bash($"chmod 555 '{carpeta}'");
+            HerramientasSsh herramientas = Herramientas();
+            string tmpdir = await FijarTmpdirAsync(herramientas);
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues")
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+            NativeSshException errorNuevo = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, Path.Combine(carpeta, "nuevo.txt"), "x\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = Bash($"chmod 755 '{carpeta}'");
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("no atómica");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = Stat(archivo).Should().Be(stat);
+            _ = errorNuevo.Message.Should().Contain("no se pudo crear el archivo temporal");
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
         private static readonly string[] HerramientasDeConservarAtributos = ["bash", "grep", "sort", "ls", "cut"];
 
         // Lógica de conservar_atributos aislada, con un PATH mínimo: el 'cp' de cada caso (real o falso) y las herramientas
