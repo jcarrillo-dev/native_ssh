@@ -25,19 +25,37 @@ namespace NativeSsh.Herramientas
         private const int TimeoutBusquedaSegundos = 90;
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
-        private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
 
-        // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). El
-        // mensaje de stat en el locale C los distingue (strerror: "Permission denied" en GNU, BSD y busybox): sin_acceso
-        // informa del segundo caso y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
-        private static readonly string DefinicionSinAcceso = """
+        // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). Para
+        // distinguirlos no se lee ningún mensaje (el de stat lleva la ruta dentro, y una ruta inexistente que contenga
+        // "Permission denied" engañaría): se sube por los directorios de la ruta hasta el primero que existe y se mira si
+        // se puede atravesar (-x, con el usuario efectivo, ACL incluidas). Un enlace que no se puede seguir se resuelve un
+        // nivel (readlink) y se sigue por su destino, hasta 40 saltos. Si un directorio lo impide, sin_acceso lo nombra
+        // ($3 es la ruta pedida) y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
+        // Las sustituciones conservan un salto de línea final del nombre (ver SustitucionLiteral).
+        internal static readonly string DefinicionSinAcceso = """
             sin_acceso() {
-              case "$(LC_ALL=C stat -- "$1" 2>&1 >/dev/null)" in
-                *'Permission denied'*)
-                  printf 'Error: sin permiso para acceder a la ruta: %s (algún directorio de la ruta no se puede atravesar).\n' "$1" >&2
-                  return 0 ;;
-              esac
-              return 1
+              local ruta=$1 saltos=${2:-0} pedida=${3:-$1} padre destino bloqueo
+              [ "$saltos" -gt 40 ] && return 1
+              [ -e "$ruta" ] && return 1
+              padre=$(dirname -- "$ruta"; printf x); padre=${padre%x}; padre=${padre%$'\n'}
+              if [ -L "$ruta" ]; then
+                destino=$(readlink -- "$ruta"; printf x); destino=${destino%x}; destino=${destino%$'\n'}
+                case $destino in
+                  /*) ;;
+                  *) destino=$padre/$destino ;;
+                esac
+                sin_acceso "$destino" $(( saltos + 1 )) "$pedida"
+                return
+              fi
+              [ "$padre" = "$ruta" ] && return 1
+              if [ -d "$padre" ]; then
+                [ -x "$padre" ] && return 1
+                bloqueo=$(readlink -f -- "$padre" 2>/dev/null; printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
+                printf 'Error: sin permiso para acceder a la ruta: %s (el directorio %s no se puede atravesar).\n' "$pedida" "${bloqueo:-$padre}" >&2
+                return 0
+              fi
+              sin_acceso "$padre" $(( saltos + 1 )) "$pedida"
             }
             """.ReplaceLineEndings("\n");
 
@@ -176,7 +194,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar o si no hay permiso de lectura. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -184,7 +202,7 @@ namespace NativeSsh.Herramientas
             [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -231,6 +249,12 @@ namespace NativeSsh.Herramientas
                   printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
+                # Una FIFO sin escritor bloquearía hasta el plazo y un dispositivo no es el contenido de un archivo. Los de
+                # /proc y /sys sí son archivos regulares (de tamaño 0) y se leen.
+                if [ ! -f {{rutaEscapada}} ]; then
+                  printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee.\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
                 if [ ! -r {{rutaEscapada}} ]; then
                   printf 'Error: sin permiso de lectura: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -255,7 +279,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos con getfattr o, si no está, con getfacl y ls), lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original y, si tampoco puede, conserva la copia y el contenido nuevo y da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -265,7 +289,7 @@ namespace NativeSsh.Herramientas
             [Description("Ejecutar la escritura con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             if (overwrite && append)
@@ -276,10 +300,13 @@ namespace NativeSsh.Herramientas
             byte[] bytesUtf8 = Encoding.UTF8.GetBytes(contenido ?? string.Empty);
             string payloadBase64 = Convert.ToBase64String(bytesUtf8);
             string rutaEscapada = Escapar(ruta);
+            string idMarcas = Guid.NewGuid().ToString("N");
 
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
+                    marca={{idMarcas}}
+                    {{DefinicionAnunciar}}
                     if [ -d "$ruta" ]; then
                       printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
@@ -287,21 +314,18 @@ namespace NativeSsh.Herramientas
                     if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
                       {{ErrorNoRegular}}
                     fi
-                    base64 -d >> "$ruta"
+                    anunciar fase anexando
+                    base64 -d >> "$ruta" || exit 1
+                    anunciar fase anexado
                     """), sudo, rutaEscapada, payloadBase64)
-                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite);
+                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticion);
-
-            string textoCompleto = ReconstruirSalida(peticion, out _);
-            if (peticion.CodigoSalida != 0)
-                throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim());
-
-            bool isAtomica = !append && !IsEscrituraNoAtomica(textoCompleto);
-            return append
-                ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
-                : new ResultadoEscritura(ruta, bytesUtf8.Length, null, isAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{AvisoEscrituraNoAtomica(textoCompleto)}");
+            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, cancellationToken).ConfigureAwait(false);
+            return peticion.CodigoSalida != 0
+                ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
+                : append
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
+                    : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -314,14 +338,14 @@ namespace NativeSsh.Herramientas
             [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(patron))
+            if (string.IsNullOrEmpty(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
             ExigirValorLiteral(patron, "El patrón");
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             ExigirValorLiteral(extension ?? string.Empty, "La extensión");
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.", cancellationToken).ConfigureAwait(false);
             return InterpretarBusqueda(lectura, patron, rutaEfectiva, limite);
@@ -340,14 +364,13 @@ namespace NativeSsh.Herramientas
             string patronEscapado = Escapar(patron);
             string filtroRg = string.Empty;
             string filtroGrep = string.Empty;
-            if (!string.IsNullOrWhiteSpace(extension))
+            if (!string.IsNullOrEmpty(extension))
             {
-                string extensionLimpia = extension.Trim();
-                string filtro = extensionLimpia.StartsWith("*.", StringComparison.Ordinal)
-                    ? extensionLimpia
-                    : extensionLimpia.StartsWith('.')
-                        ? "*" + extensionLimpia
-                        : "*." + extensionLimpia;
+                string filtro = extension.StartsWith("*.", StringComparison.Ordinal)
+                    ? extension
+                    : extension.StartsWith('.')
+                        ? "*" + extension
+                        : "*." + extension;
                 string filtroEscapado = Escapar(filtro);
                 filtroRg = $"-g {filtroEscapado} ";
                 filtroGrep = $"--include={filtroEscapado} ";
@@ -393,15 +416,17 @@ namespace NativeSsh.Herramientas
         private static string InterpretarBusqueda(SalidaLectura lectura, string patron, string rutaEfectiva, int limite)
         {
             int codigo = lectura.Codigo;
-            string salida = lectura.Salida.Trim();
+            string salida = lectura.Salida;
             string motor = "desconocido";
             string resultados = salida;
             if (salida.StartsWith(PrefijoMotor, StringComparison.Ordinal))
             {
                 int finLinea = salida.IndexOf('\n', StringComparison.Ordinal);
-                motor = (finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea]).Trim();
-                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..].Trim();
+                motor = finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea];
+                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..];
             }
+
+            resultados = QuitarSaltoFinal(resultados);
 
             string pie = $"[motor: {motor}]";
             string errores = lectura.Errores.Trim();
@@ -418,7 +443,7 @@ namespace NativeSsh.Herramientas
             if (codigo is not (0 or 2))
                 throw new NativeSshException(lectura.Error("Error en búsqueda"));
 
-            string[] lineas = resultados.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string[] lineas = resultados.Split('\n');
             string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
             return lineas.Length > limite
                 ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{pie}"
@@ -428,6 +453,67 @@ namespace NativeSsh.Herramientas
         }
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
+
+        // Solo se quita el salto de línea que cierra la última línea de un listado: los blancos y separadores al principio
+        // del primer nombre (o línea encontrada) y al final del último son datos.
+        private static string QuitarSaltoFinal(string salida) => salida.EndsWith('\n') ? salida[..^1] : salida;
+
+        // Fin de los listados de ssh_find y ssh_list_dir: lee los nombres que da 'find -print0' (ya ordenados con 'sort -z'),
+        // les quita el "./" inicial y escribe como mucho 'maximo', terminados en NUL. Un nombre con '\n' sigue siendo uno
+        // solo: con 'sed | sort | head -n' se partía en dos líneas, que además se ordenaban por separado.
+        private static string LimitarNombres(int maximo) =>
+            PlantillaBash.Crear($$"""{ n=0; while [ "$n" -lt {{maximo}} ] && IFS= read -r -d '' nombre; do printf '%s\0' "${nombre#./}"; n=$((n + 1)); done; }""");
+
+        // Nombres de un listado terminados en NUL (el último NUL no deja un nombre vacío detrás).
+        private static string[] SepararNombres(string salida) =>
+            salida.Length == 0 ? [] : (salida.EndsWith('\0') ? salida[..^1] : salida).Split('\0');
+
+        // Los 'cantidad' primeros nombres, uno por línea (EscaparNombre).
+        private static string UnirNombres(string[] nombres, int cantidad)
+        {
+            StringBuilder listado = new();
+            int total = Math.Min(nombres.Length, cantidad);
+            for (int i = 0; i < total; i++)
+            {
+                if (i > 0)
+                    _ = listado.Append('\n');
+                EscaparNombre(listado, nombres[i]);
+            }
+
+            return listado.ToString();
+        }
+
+        // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
+        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL) o empieza por comillas dobles; entonces va entre
+        // comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se puede pegar tal
+        // cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad; una barra
+        // invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
+        private static void EscaparNombre(StringBuilder listado, string nombre)
+        {
+            ReadOnlySpan<char> caracteres = nombre;
+            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f');
+            if (!hasControl && !nombre.StartsWith('"'))
+            {
+                _ = listado.Append(nombre);
+                return;
+            }
+
+            _ = listado.Append('"');
+            foreach (char c in nombre)
+                _ = c switch
+                {
+                    '"' => listado.Append("\\\""),
+                    '\\' => listado.Append("\\\\"),
+                    '\n' => listado.Append("\\n"),
+                    '\r' => listado.Append("\\r"),
+                    '\t' => listado.Append("\\t"),
+                    '\f' => listado.Append("\\f"),
+                    '\b' => listado.Append("\\b"),
+                    _ when char.IsControl(c) => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
+                    _ => listado.Append(c)
+                };
+            _ = listado.Append('"');
+        }
 
         // Un valor que va dentro del script debe llegar al servidor tal cual. Un NUL no cabe en un argumento y bash lo
         // descarta al decodificar el script con '$(... | base64 -d)': la ruta o el patrón serían otros. Se rechaza antes de
@@ -455,7 +541,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -467,7 +553,7 @@ namespace NativeSsh.Herramientas
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 10);
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string rutaEscapada = Escapar(rutaEfectiva);
             string filtroTipo = incluirArchivos ? string.Empty : "-type d ";
 
@@ -490,8 +576,8 @@ namespace NativeSsh.Herramientas
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name __pycache__ -o -name .cache \) -prune \
-                  -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print -prune \
-                  -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
+                  -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print0 -prune \
+                  -o {{filtroTipo}}-print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
                 )
                 """);
 
@@ -499,49 +585,47 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error al listar directorios"));
 
-            string salida = lectura.Salida.Trim();
-
+            string[] nombres = SepararNombres(lectura.Salida);
             string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
-            if (string.IsNullOrEmpty(salida))
+            if (nombres.Length == 0)
                 return $"No se encontraron {etiquetaVacio} en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            if (lineas.Length > limite)
-            {
-                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                string etiquetaLimite = incluirArchivos ? "elementos" : "directorios";
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} {etiquetaLimite} (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]";
-            }
-
-            return salida;
+            string listado = UnirNombres(nombres, limite);
+            string etiquetaLimite = incluirArchivos ? "elementos" : "directorios";
+            return nombres.Length > limite
+                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} {etiquetaLimite} (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]"
+                : listado;
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
             [Description("Ruta base donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
-            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' (directorios) o 'all' (ambos). Por defecto 'file'.")] string tipo = "file",
+            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' o 'directory' (directorios) o 'all' (ambos), sin distinguir mayúsculas. Por defecto (o vacío), 'file'. Otro valor, también con blancos alrededor, da error.")] string tipo = "file",
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(patron))
+            if (string.IsNullOrEmpty(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
             ExigirValorLiteral(patron, "El patrón");
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string rutaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
-            string filtroTipo = tipo.ToLowerInvariant() switch
+            // Sin tipo, 'file'; sin distinguir mayúsculas y con 'directory' como sinónimo de 'dir' (lo dice la descripción); un
+            // tipo desconocido es un error, no una búsqueda de archivos.
+            string filtroTipo = (string.IsNullOrEmpty(tipo) ? "file" : tipo.ToLowerInvariant()) switch
             {
+                "file" => "-type f ",
                 "dir" or "directory" => "-type d ",
                 "all" => string.Empty,
-                _ => "-type f "
+                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' o 'all'.")
             };
 
             string comando = PlantillaBash.Crear($$"""
@@ -559,8 +643,8 @@ namespace NativeSsh.Herramientas
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
-                  \( {{filtroTipo}}-name {{patronEscapado}} -print -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
+                  \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
+                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
                 )
                 """);
 
@@ -568,29 +652,24 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
 
-            string salida = lectura.Salida.Trim();
-
-            if (string.IsNullOrEmpty(salida))
+            string[] nombres = SepararNombres(lectura.Salida);
+            if (nombres.Length == 0)
                 return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
-            if (lineas.Length > limite)
-            {
-                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]";
-            }
-
-            return salida;
+            string listado = UnirNombres(nombres, limite);
+            return nombres.Length > limite
+                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]"
+                : listado;
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
-        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. El tipo es uno de estos valores fijos, iguales en cualquier servidor e idioma: 'archivo regular', 'directorio', 'enlace simbólico', 'fifo', 'socket', 'dispositivo de caracteres', 'dispositivo de bloques' o 'desconocido'. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<ResultadoMetadatos> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta no puede estar vacía.");
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -604,7 +683,19 @@ namespace NativeSsh.Herramientas
                   echo "NO_EXISTE"
                   exit 0
                 fi
-                stat -c '%F|%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || stat -f '%HT|%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
+                # El tipo no sale de 'stat' (su texto depende del idioma del servidor y de la implementación): es uno de
+                # unos valores fijos.
+                if [ -L {{rutaEscapada}} ]; then tipo='enlace simbólico'
+                elif [ -d {{rutaEscapada}} ]; then tipo=directorio
+                elif [ -f {{rutaEscapada}} ]; then tipo='archivo regular'
+                elif [ -p {{rutaEscapada}} ]; then tipo=fifo
+                elif [ -S {{rutaEscapada}} ]; then tipo=socket
+                elif [ -c {{rutaEscapada}} ]; then tipo='dispositivo de caracteres'
+                elif [ -b {{rutaEscapada}} ]; then tipo='dispositivo de bloques'
+                else tipo=desconocido
+                fi
+                printf '%s|' "$tipo"
+                LC_ALL=C stat -c '%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || LC_ALL=C stat -f '%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
                 if [ -L {{rutaEscapada}} ]; then
                   enlace=$(readlink -- {{rutaEscapada}}; printf x)
                   printf 'ENLACE:%s' "${enlace%x}"
@@ -663,11 +754,11 @@ namespace NativeSsh.Herramientas
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
             {
                 gestor.FijarDirectorioTrabajo(destino, null);
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset);
 
                 if (peticionReset.CodigoSalida != 0)
@@ -705,7 +796,7 @@ namespace NativeSsh.Herramientas
                 )
                 """);
 
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionValidacion);
 
             if (peticionValidacion.CodigoSalida != 0)
@@ -718,7 +809,7 @@ namespace NativeSsh.Herramientas
             // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
             gestor.FijarDirectorioTrabajo(destino, pwdReal);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport);
 
             if (peticionExport.CodigoSalida != 0)
@@ -766,7 +857,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; con copia de seguridad previa que restaura si la escritura falla; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -778,7 +869,7 @@ namespace NativeSsh.Herramientas
             [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             if (string.IsNullOrEmpty(targetContent))
@@ -839,8 +930,9 @@ namespace NativeSsh.Herramientas
                 printf '{{PrefijoMarcaBase64}}%s_%s__ %s\n' FIN {{idMarcas}} "$tam"
                 """), sudo, rutaEscapada);
 
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura);
+            string sinModificar = $"No se ha modificado '{ruta}'.";
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, sinModificar, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura, sinModificar);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -905,15 +997,13 @@ namespace NativeSsh.Herramientas
             byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
             string payloadBase64 = Convert.ToBase64String(bytesModificados);
 
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, bytesLeidos);
+            string idEscritura = Guid.NewGuid().ToString("N");
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
 
-            Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionEscritura);
-
-            string salidaEscritura = ReconstruirSalida(peticionEscritura, out _).Trim();
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
             return peticionEscritura.CodigoSalida != 0
-                ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
-                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, !IsEscrituraNoAtomica(salidaEscritura), $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}");
+                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
         }
 
         // Solo los saltos '\r\n' y '\n' del texto se adaptan al separador del archivo: FF, NEL, LS, PS y un '\r' suelto son
@@ -935,8 +1025,10 @@ namespace NativeSsh.Herramientas
         //   que no se puede asignar...) o hay enlaces duros, se escribe en el sitio (no atómico);
         // - ssh_replace_file_content (contenidoLeido): justo antes de colocar, el destino debe seguir siendo el que se leyó
         //   ($3 = sha256, $4 = suma y bytes de cksum); si cambió o desapareció, no se escribe;
-        // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber).
-        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, byte[]? contenidoLeido = null)
+        // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber);
+        // - anuncia (InformeEscritura, con idMarcas) las rutas del temporal y de la copia de seguridad en cuanto las crea y
+        //   cada fase de la colocación, para que un error por tiempo agotado o cancelación diga qué pasó con el archivo.
+        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, string idMarcas, byte[]? contenidoLeido = null)
         {
             const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
 
@@ -952,34 +1044,44 @@ namespace NativeSsh.Herramientas
                 ? PlantillaBash.Crear($$"""
                     {{DefinicionConservarAtributos}}
                     {{DefinicionSinCambios}}
+                    {{DefinicionRenombrar}}
                     if [ -e "$destino" ]; then
                       en_sitio=$fuera
                       [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
                       [ "$en_sitio" = 1 ] || conservar_atributos "$destino" "$tmp" || en_sitio=1
                       sin_cambios || exit 1
                       if [ "$en_sitio" = 0 ]; then
-                        mv -f -- "$tmp" "$destino" || exit 1
+                        anunciar fase colocando
+                        renombrar || exit 1
+                        anunciar fase colocado
                       else
                         if [ ! -w "$destino" ]; then
                           printf 'Error: %s no tiene permiso de escritura (¿solo lectura?) y habría que sobrescribirlo en el sitio, porque tiene enlaces duros, su directorio no admite escritura o no se pueden copiar a un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux). No se ha modificado: dale permiso de escritura o usa sudo=true.\n' "$ruta" >&2
                           exit 1
                         fi
                         escribir_en_sitio || exit 1
-                        echo '{{MarcaEscrituraNoAtomica}}'
                       fi
                     else
                       sin_cambios || exit 1
-                      chmod "$modo_nuevo" -- "$tmp" || exit 1
-                      mv -f -- "$tmp" "$destino" || exit 1
+                      chmod -- "$modo_nuevo" "$tmp" || exit 1
+                      anunciar fase colocando
+                      renombrar || exit 1
+                      anunciar fase colocado
                     fi
                     """)
                 : PlantillaBash.Crear($$"""
-                    chmod "$modo_nuevo" -- "$tmp" || exit 1
-                    if ! ln -- "$tmp" "$destino" 2>/dev/null; then
+                    {{DefinicionEnlazar}}
+                    chmod -- "$modo_nuevo" "$tmp" || exit 1
+                    anunciar fase colocando
+                    if enlazar; then
+                      anunciar fase colocado
+                    else
                       if [ -e "$destino" ] || [ -L "$destino" ]; then
                         {{ErrorYaExiste}}
                       fi
+                      anunciar fase creando
                       (set -C; cat -- "$tmp" > "$destino") || exit 1
+                      anunciar fase creado
                     fi
                     """);
             const string ErrorSinTemporal = """printf 'Error: no se pudo crear el archivo temporal en %s (¿existe el directorio y hay permiso de escritura?).\n' "$dir" >&2; exit 1""";
@@ -1001,6 +1103,8 @@ namespace NativeSsh.Herramientas
                 modo_nuevo=$2
                 sha_leido=$3
                 cksum_leido=$4
+                marca={{idMarcas}}
+                {{DefinicionAnunciar}}
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
@@ -1019,16 +1123,22 @@ namespace NativeSsh.Herramientas
                 fi
                 {{SustitucionLiteral("dir", "dirname -- \"$destino\"")}}
                 {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
+                {{DefinicionAcortarNombre}}
+                acortar_nombre
                 tmp=
                 copia=
                 fuera=0
-                en_curso=0
-                conservar=0
+                fase=
+                {{DefinicionPrivilegios}}
                 {{DefinicionEscrituraEnElSitio}}
                 trap limpiar EXIT
-                if ! tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX" 2>/dev/null); then
+                trap 'interrumpir 129' HUP
+                trap 'interrumpir 130' INT
+                trap 'interrumpir 143' TERM
+                if ! tmp=$(mktemp -- "$dir/.$corto.tmp.XXXXXX" 2>/dev/null); then
                   {{temporalFuera}}
                 fi
+                anunciar_ruta tmp "$tmp"
                 base64 -d > "$tmp" || exit 1
                 {{colocar}}
                 """);
@@ -1039,6 +1149,60 @@ namespace NativeSsh.Herramientas
                 : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella}", payloadBase64);
         }
+
+        // acortar_nombre: deja en 'corto' el nombre del destino ('base') recortado a 242 bytes, para que el temporal
+        // ".<corto>.tmp.XXXXXX" y la copia ".<corto>.orig.XXXXXX" quepan en NAME_MAX (255 bytes) con cualquier nombre válido.
+        // Con LC_ALL=C las longitudes y los recortes de bash son en bytes; tras recortar se quita un carácter UTF-8 que haya
+        // quedado partido al final (bytes de continuación 10xxxxxx sin todos los que pide su byte inicial).
+        private static readonly string DefinicionAcortarNombre = """
+            acortar_nombre() {
+              local LC_ALL=C
+              local i c
+              corto=$base
+              [ "${#corto}" -le 242 ] && return 0
+              corto=${corto:0:242}
+              for (( i = 1; i <= 4; i++ )); do
+                c=${corto: -i:1}
+                case $c in
+                  [$'\x80'-$'\xbf']) continue ;;
+                  [$'\xc0'-$'\xdf']) [ "$i" -lt 2 ] && corto=${corto:0:${#corto}-i} ;;
+                  [$'\xe0'-$'\xef']) [ "$i" -lt 3 ] && corto=${corto:0:${#corto}-i} ;;
+                  [$'\xf0'-$'\xf7']) [ "$i" -lt 4 ] && corto=${corto:0:${#corto}-i} ;;
+                esac
+                break
+              done
+              return 0
+            }
+            """.ReplaceLineEndings("\n");
+
+        // renombrar y enlazar colocan el temporal en el destino con 'mv -T' y 'ln -T' (GNU coreutils), que tratan el destino
+        // como un archivo y nunca meten el temporal dentro de un directorio. Si entre las comprobaciones y la colocación el
+        // destino se ha convertido en un directorio, 'mv -T' falla; si se ha convertido en un enlace simbólico (también a un
+        // directorio), 'mv -T' sustituye el enlace por el archivo nuevo, sin tocar el directorio. 'ln -T' falla en los dos
+        // casos (el destino ya existe). Si mv o ln no admiten -T (p. ej. busybox o BSD), se comprueba justo antes que el
+        // destino no es un directorio ni un enlace a uno (mv) o que no existe (ln); queda una ventana entre esa comprobación
+        // y la colocación que solo -T cierra.
+        private static readonly string DefinicionRenombrar = """
+            renombrar() {
+              if mv -T --help >/dev/null 2>&1; then
+                mv -f -T -- "$tmp" "$destino" && return 0
+              elif [ ! -d "$destino" ]; then
+                mv -f -- "$tmp" "$destino" && return 0
+              fi
+              [ -d "$destino" ] && printf 'Error: %s se ha convertido en un directorio mientras se escribía: no se ha colocado el contenido nuevo.\n' "$ruta" >&2
+              return 1
+            }
+            """.ReplaceLineEndings("\n");
+
+        private static readonly string DefinicionEnlazar = """
+            enlazar() {
+              if ln -T --help >/dev/null 2>&1; then
+                ln -T -- "$tmp" "$destino" 2>/dev/null
+              else
+                [ ! -e "$destino" ] && [ ! -L "$destino" ] && ln -- "$tmp" "$destino" 2>/dev/null
+              fi
+            }
+            """.ReplaceLineEndings("\n");
 
         // sin_cambios: con la huella de lo que leyó ssh_replace_file_content ($sha_leido, $cksum_leido), el destino debe seguir
         // siendo ese archivo: se compara el sha256sum de su contenido (o, si no hay sha256sum, la salida de cksum: suma y
@@ -1061,45 +1225,172 @@ namespace NativeSsh.Herramientas
             }
             """.ReplaceLineEndings("\n");
 
-        // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin poder dejarlo truncado y sin copia. Antes copia el original
+        // anunciar CLAVE [VALOR...] y anunciar_ruta CLAVE RUTA: una línea "__NS_W_<marca>__ ..." en stdout para quien ejecuta
+        // el script (InformeEscritura); la ruta va en base64 porque puede tener saltos de línea o bytes de control. El
+        // marcador se compone con printf: su texto completo no aparece en el script. Un fallo al escribir el anuncio (p. ej.
+        // con el terminal ya cerrado) no cambia el flujo: devuelven siempre 0.
+        private static readonly string DefinicionAnunciar = PlantillaBash.Crear($$"""
+            anunciar() {
+              printf '{{InformeEscritura.PrefijoMarca}}%s__ %s\n' "$marca" "$*" 2>/dev/null
+              return 0
+            }
+            anunciar_ruta() {
+              printf '{{InformeEscritura.PrefijoMarca}}%s__ %s %s\n' "$marca" "$1" "$(printf '%s' "$2" | base64 | tr -d '\n')" 2>/dev/null
+              return 0
+            }
+            """);
+
+        // leer_privilegios y restaurar_privilegios: escribir en un archivo hace que el núcleo le quite el bit setuid y el
+        // setgid (este, si el grupo tiene ejecución; salvo a quien tiene CAP_FSETID) y su security.capability (siempre,
+        // también a root). Se miran antes de escribir en el sitio y se devuelven después, también tras restaurar el
+        // original: los bits con chmod (el propietario no puede poner setgid si no es del grupo del archivo: chmod lo ignora
+        // en silencio) y las capacidades con setfattr (bytes exactos, leídos con getfattr) o, si no hay getfattr, con setcap
+        // (texto de getcap); escribirlas exige privilegios (sudo=true). Todo se comprueba. 'perdidos' queda con lo que no se
+        // pudo devolver (setuid, setgid, capacidades) o comprobar (capacidades?: sin getfattr ni getcap no se puede saber si
+        // el archivo las tenía, sea o no ejecutable); la capacidad original se anuncia para poder devolverla a mano.
+        private static readonly string DefinicionPrivilegios = """
+            leer_capacidad() {
+              local salida
+              case $cap_herramienta in
+                getfattr) getfattr --only-values -n security.capability -- "$destino_abs" 2>/dev/null | od -An -tx1 | tr -d ' \n' ;;
+                getcap)
+                  salida=$(getcap -- "$destino_abs" 2>/dev/null)
+                  salida=${salida#"$destino_abs"}
+                  salida=${salida# = }
+                  printf '%s' "${salida# }" ;;
+              esac
+              return 0
+            }
+            leer_privilegios() {
+              suid=0
+              sgid=0
+              cap=
+              cap_herramienta=
+              cap_desconocida=0
+              case $destino in
+                /*) destino_abs=$destino ;;
+                *) destino_abs=$PWD/$destino ;;
+              esac
+              [ -u "$destino" ] && suid=1
+              [ -g "$destino" ] && sgid=1
+              if command -v getfattr >/dev/null 2>&1; then
+                cap_herramienta=getfattr
+              elif command -v getcap >/dev/null 2>&1; then
+                cap_herramienta=getcap
+              else
+                cap_desconocida=1
+              fi
+              cap=$(leer_capacidad)
+              if [ -n "$cap" ] && [ "$cap_herramienta" = getfattr ]; then
+                anunciar_ruta capacidad "setfattr -n security.capability -v 0x$cap"
+              elif [ -n "$cap" ]; then
+                anunciar_ruta capacidad "setcap '$cap'"
+              fi
+              return 0
+            }
+            restaurar_privilegios() {
+              perdidos=
+              if [ "$suid" = 1 ] && [ ! -u "$destino" ]; then
+                chmod -- u+s "$destino" 2>/dev/null
+                [ -u "$destino" ] || perdidos=$perdidos,setuid
+              fi
+              if [ "$sgid" = 1 ] && [ ! -g "$destino" ]; then
+                chmod -- g+s "$destino" 2>/dev/null
+                [ -g "$destino" ] || perdidos=$perdidos,setgid
+              fi
+              if [ -n "$cap" ]; then
+                if [ "$(leer_capacidad)" != "$cap" ]; then
+                  case $cap_herramienta in
+                    getfattr) setfattr -n security.capability -v "0x$cap" -- "$destino_abs" 2>/dev/null ;;
+                    getcap) setcap "$cap" "$destino_abs" 2>/dev/null ;;
+                  esac
+                fi
+                [ "$(leer_capacidad)" = "$cap" ] || perdidos=$perdidos,capacidades
+              elif [ "$cap_desconocida" = 1 ]; then
+                perdidos=$perdidos,capacidades?
+              fi
+              perdidos=${perdidos#,}
+              return 0
+            }
+            """.ReplaceLineEndings("\n");
+
+        // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin dejarlo nunca truncado sin copia. Antes copia el original
         // a una copia de seguridad (mktemp, 0600) en su directorio o, si no admite escritura, en ${TMPDIR:-/tmp}; si no puede,
-        // no toca nada. Si la escritura falla, o se interrumpe (la trampa de salida 'limpiar' ve en_curso=1), restaura la
-        // copia; si la restauración también falla, no borra nada (conservar=1) y el error da las rutas de la copia del
-        // original y del temporal con el contenido nuevo. Si todo va bien, 'limpiar' borra ambos.
+        // no toca nada. 'fase' sigue el estado del destino: '' (intacto), escribiendo, escrito, restaurando, restaurado o
+        // fallido (no se pudo restaurar). Si la escritura falla, restaura la copia. La trampa de salida 'limpiar' es lo único
+        // que borra la copia y el temporal, y solo con la fase '', escrito o restaurado: si el script se interrumpe
+        // escribiendo o restaurando, la trampa vuelve a restaurar y solo borra si lo consigue. Si la restauración falla, el
+        // error da las rutas de la copia y del temporal, que se conservan.
+        // Interrupciones (Ctrl+C del timeout o de la cancelación, cierre del canal del shell, caída de la conexión, kill):
+        // HUP, INT y TERM tienen trampa ('interrumpir'), que ignora las siguientes y sale por la trampa de salida; 'limpiar'
+        // también las ignora desde su primera orden, aunque se llegue a ella por un 'exit' normal. Una señal ignorada se
+        // hereda: el 'cat' que restaura tampoco muere con ellas. Sin esto, la trampa casi nunca restauraba tras cerrarse el
+        // canal o caer la conexión: al colgarse el terminal, el grupo del script recibe varios SIGHUP casi a la vez (el que
+        // el shell interactivo reenvía a sus trabajos al recibir el suyo, el que el núcleo manda al grupo de primer plano
+        // cuando sale el líder de la sesión y, si el líder es otro proceso, como el shell de login que ejecuta el
+        // ForceCommand, el que este reenvía a su vez); bash, sin trampa para SIGHUP, ejecuta la trampa de salida dentro de
+        // su manejo de una señal mortal, y una segunda señal mortal en ese momento lo mata al instante (kill_shell en su
+        // manejador, termsig_sighandler; medido con bash 5.3), a menudo antes de la primera orden de la trampa, y si no, el
+        // siguiente SIGHUP mataba el 'cat' que restauraba. Tras la interrupción el script sigue hasta dejar el archivo
+        // restaurado (o conservar la copia) aunque ya no haya terminal: solo SIGKILL lo detiene, y una restauración colgada
+        // (p. ej. un sistema de archivos que no responde) sigue ahí hasta que la E/S termine.
         private static readonly string DefinicionEscrituraEnElSitio = """
+            interrumpir() {
+              trap '' HUP INT TERM
+              exit "$1"
+            }
             restaurar() {
+              fase=restaurando
+              anunciar fase restaurando
               if cat -- "$copia" > "$destino"; then
+                restaurar_privilegios
+                fase=restaurado
+                anunciar fase restaurado "${perdidos:--}"
                 printf 'Error: %s de %s; se ha restaurado su contenido original.\n' "$1" "$ruta" >&2
               else
-                conservar=1
-                printf 'Error: %s de %s y no se pudo restaurar: la copia del original está en %s y el contenido nuevo en %s (no se han borrado).\n' "$1" "$ruta" "$copia" "$tmp" >&2
+                fase=fallido
+                anunciar fase fallido
+                printf 'Error: %s de %s y no se pudo restaurar su contenido original: la copia de seguridad del original está en %s y el contenido nuevo en %s (no se han borrado).\n' "$1" "$ruta" "$copia" "$tmp" >&2
               fi
+              return 0
             }
             limpiar() {
-              if [ "$en_curso" = 1 ]; then
-                en_curso=0
-                restaurar 'se interrumpió la escritura en el sitio'
+              trap '' HUP INT TERM
+              case $fase in
+                escribiendo|restaurando) restaurar 'se interrumpió la escritura en el sitio' ;;
+              esac
+              if [ "$fase" = fallido ]; then
+                anunciar conservados
+                return 0
               fi
-              [ "$conservar" = 1 ] && return
-              [ -n "$tmp" ] && rm -f -- "$tmp" 2>/dev/null
-              [ -n "$copia" ] && rm -f -- "$copia" 2>/dev/null
+              rm -f -- "$tmp" "$copia" 2>/dev/null
+              if { [ -n "$tmp" ] && [ -e "$tmp" ]; } || { [ -n "$copia" ] && [ -e "$copia" ]; }; then
+                anunciar restos
+              else
+                anunciar limpio
+              fi
+              return 0
             }
             escribir_en_sitio() {
-              copia=$(mktemp -- "$dir/.$base.orig.XXXXXX" 2>/dev/null) || copia=$(mktemp -- "${TMPDIR:-/tmp}/.ns_original.XXXXXX" 2>/dev/null) || {
+              copia=$(mktemp -- "$dir/.$corto.orig.XXXXXX" 2>/dev/null) || copia=$(mktemp -- "${TMPDIR:-/tmp}/.ns_original.XXXXXX" 2>/dev/null) || {
                 copia=
                 printf 'Error: no se pudo crear la copia de seguridad de %s (ni en su directorio ni en %s): no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" "${TMPDIR:-/tmp}" >&2
                 return 1
               }
+              anunciar_ruta copia "$copia"
               if ! cat -- "$destino" > "$copia"; then
                 printf 'Error: no se pudo hacer la copia de seguridad de %s: no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" >&2
                 return 1
               fi
-              en_curso=1
+              leer_privilegios
+              fase=escribiendo
+              anunciar fase escribiendo
               if cat -- "$tmp" > "$destino"; then
-                en_curso=0
+                restaurar_privilegios
+                fase=escrito
+                anunciar fase escrito "${perdidos:--}"
                 return 0
               fi
-              en_curso=0
               restaurar 'falló la escritura en el sitio'
               return 1
             }
@@ -1169,13 +1460,6 @@ namespace NativeSsh.Herramientas
                 )
                 """);
         }
-
-        private static bool IsEscrituraNoAtomica(string salida) => salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal);
-
-        private static string AvisoEscrituraNoAtomica(string salida) =>
-            IsEscrituraNoAtomica(salida)
-                ? " Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio (con copia de seguridad previa, ya borrada) conservando inodo, enlaces duros y todos sus atributos."
-                : string.Empty;
 
         private const string PrefijoMarcaBase64 = "__NS_B64_";
         private static readonly SearchValues<char> CaracteresBase64 = SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=");
@@ -1536,7 +1820,8 @@ namespace NativeSsh.Herramientas
             return linea.Length <= MaxCaracteresComando ? linea : string.Concat(linea.AsSpan(0, MaxCaracteresComando - 1), "…");
         }
 
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, CancellationToken cancellationToken)
+        // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, string? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
             Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
@@ -1549,15 +1834,73 @@ namespace NativeSsh.Herramientas
                 // Sigue encolada o el shell no respondió al Ctrl+C: se cancela para no bloquear la cola.
                 EstadoPeticionEnum estado = peticion.Estado;
                 _ = peticion.SolicitarCancelacion();
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.");
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia)}");
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 _ = peticion.SolicitarCancelacion();
-                throw;
+                if (consecuencia is null)
+                    throw;
+
+                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia}", ex, cancellationToken);
             }
 
             return peticion;
+        }
+
+        // Escrituras (ssh_write_file, ssh_replace_file_content) por el shell PTY. Si no terminan (timeout, cancelación con
+        // ssh_cancel, ssh_disconnect o el token, conexión perdida), se cancela la petición y se espera a que el script atienda
+        // el Ctrl+C (su trampa de salida restaura el original o conserva las copias) para que el error diga qué pasó con el
+        // archivo según lo que el script anunció (InformeEscritura), con el id de la petición para ssh_output. Con el token
+        // cancelado se lanza OperationCanceledException con ese mismo mensaje. Si terminan, quien llama mira el código.
+        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, CancellationToken cancellationToken)
+        {
+            TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            bool isSinTerminar = false;
+            bool isCancelada = false;
+            try
+            {
+                await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                isSinTerminar = true;
+            }
+            catch (OperationCanceledException)
+            {
+                isCancelada = true;
+            }
+
+            if (isSinTerminar || isCancelada)
+            {
+                _ = peticion.SolicitarCancelacion();
+                await EsperarFinalizacionAsync(peticion).ConfigureAwait(false);
+            }
+
+            // Si se descartó el principio de la salida, pueden faltar anuncios: el informe no da nada por confirmado.
+            InformeEscritura informe = InformeEscritura.Leer(ReconstruirSalida(peticion, out bool hasDatosDescartados), idMarcas, isSalidaCompleta: !hasDatosDescartados);
+            EstadoPeticionEnum estado = peticion.Estado;
+            if (estado == EstadoPeticionEnum.Completado && !isCancelada)
+                return (peticion, informe);
+
+            // Una petición cancelada en la cola nunca empezó a ejecutarse (no tiene instante de inicio).
+            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: peticion.TiempoEjecucion > TimeSpan.Zero);
+            throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
+        }
+
+        // Tras cancelar: el Ctrl+C llega al script y su trampa de salida termina antes de que el shell responda (o, si no
+        // responde a tiempo, se cierra el canal). Acotado: si aun así no termina, el error dirá lo anunciado hasta entonces.
+        private async Task EsperarFinalizacionAsync(Peticion peticion)
+        {
+            try
+            {
+                await peticion.Finalizacion.WaitAsync(opciones.EsperaTrasCtrlC + MargenEsperaHerramienta).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Sigue sin terminar.
+            }
         }
 
         internal const string AvisoContenidoNoUtf8 = "[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]";
@@ -1597,13 +1940,13 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
-        private static void ExigirCompletada(Peticion peticion)
+        // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
+        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
+        private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
         {
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException(peticion.Aviso is { Length: > 0 } aviso
-                    ? $"La operación no se completó (estado: {estado}). {aviso}"
-                    : $"La operación no se completó (estado: {estado}).");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

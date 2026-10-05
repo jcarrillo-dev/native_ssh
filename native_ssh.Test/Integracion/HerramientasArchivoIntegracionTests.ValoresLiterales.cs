@@ -1,3 +1,5 @@
+using System.Linq;
+using System.Text.Json;
 using FluentAssertions;
 using NativeSsh.Herramientas;
 
@@ -56,9 +58,43 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.TamanoBytes.Should().Be(9);
             _ = buscadoEnLaRuta.Should().Contain(":1:OBJETIVO").And.NotContain("SENUELO");
             _ = buscadoPorExtension.Should().StartWith($"{Path.Combine(extension, $"f.t{separador}xt")}:1:OBJETIVO\n\n[motor: ");
-            _ = encontradoPorNombre.Should().Be($"x{separador}y");
+            // ssh_find da entre comillas y escapado como una cadena JSON un nombre con caracteres de control (LS y PS no lo son).
+            _ = encontradoPorNombre.Should().Be(separador switch
+            {
+                "\r" => "\"x\\ry\"",
+                "\r\n" => "\"x\\r\\ny\"",
+                "\f" => "\"x\\fy\"",
+                "\u0085" => "\"x\\u0085y\"",
+                _ => $"x{separador}y"
+            });
             _ = encontradoEnLaCarpeta.Should().Be("dentro.txt");
             _ = listado.Should().Be("dentro.txt");
+        }
+
+        // En ssh_find y ssh_list_dir cada nombre ocupa una sola línea: uno con caracteres de control (aquí un salto de línea,
+        // un retorno de carro y un tabulador) o que empieza por comillas dobles sale entre comillas y escapado como una cadena
+        // JSON, que decodificada da el nombre exacto; los demás, tal cual (también con una barra invertida). Antes, "a\nz.txt"
+        // salía como dos nombres, "a" y "z.txt", ordenados por separado.
+        [Fact]
+        public async Task FindYListDir_NombresConCaracteresDeControl_CadaUnoEnUnaLineaYDecodificable()
+        {
+            // Arrange
+            string carpeta = Ruta("control");
+            _ = Directory.CreateDirectory(carpeta);
+            string[] nombres = ["a\nz.txt", "b\r.txt", "c\t.txt", "\"d\".txt", "e\\f.txt", "m.txt"];
+            foreach (string nombre in nombres)
+                await File.WriteAllTextAsync(Path.Combine(carpeta, nombre), "x\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string[] encontrados = (await herramientas.BuscarPorNombreAsync(Destino, "*", carpeta)).Split('\n');
+            string[] listados = (await herramientas.ListarDirectoriosAsync(Destino, carpeta, incluirArchivos: true)).Split('\n');
+
+            // Assert
+            string[] esperados = ["\"a\\nz.txt\"", "\"b\\r.txt\"", "\"c\\t.txt\"", "\"\\\"d\\\".txt\"", "e\\f.txt", "m.txt"];
+            _ = encontrados.Should().BeEquivalentTo(esperados);
+            _ = listados.Should().BeEquivalentTo(esperados);
+            _ = encontrados.Select(n => n.StartsWith('"') ? JsonDocument.Parse(n).RootElement.GetString() : n).Should().BeEquivalentTo(nombres);
         }
 
         // Un patrón de ssh_search es una regex de una sola línea: el CRLF (que incluye '\n') no puede coincidir.
@@ -136,6 +172,42 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = resultado.Reemplazos.Should().Be(1);
             _ = (await File.ReadAllBytesAsync(archivo)).Should().Equal(System.Text.Encoding.UTF8.GetBytes($"uno{salto}x{Separadores}y{salto}z{salto}w{salto}"));
+        }
+
+        // Blancos y separadores en los extremos: un directorio llamado " " es un nombre más (no el directorio actual ni
+        // $HOME), la extensión no se recorta y los listados conservan los blancos del primer nombre y del último (y el
+        // '\r' de las líneas encontradas). Por canal exec y, para ssh_set_cwd, por el shell PTY.
+        [Fact]
+        public async Task Herramientas_BlancosYSeparadoresEnLosExtremos_SeRespetanDeExtremoAExtremo()
+        {
+            // Arrange: en el directorio " ", nombres que empiezan o terminan en blancos o separadores; fuera, un señuelo.
+            string blanco = Ruta(" ");
+            _ = Directory.CreateDirectory(blanco);
+            string[] nombres = [" a.txt", "b.txt\u2028", "c. txt", "\u2029d.txt "];
+            foreach (string nombre in nombres)
+                await File.WriteAllTextAsync(Path.Combine(blanco, nombre), "  objetivo \r\n");
+            await File.WriteAllTextAsync(Ruta("senuelo.txt"), "objetivo\n");
+            HerramientasSsh herramientas = Herramientas();
+            _ = await herramientas.FijarDirectorioAsync(Destino, _directorio);
+
+            // Act
+            string listado = await herramientas.ListarDirectoriosAsync(Destino, " ", incluirArchivos: true);
+            string encontrados = await herramientas.BuscarPorNombreAsync(Destino, "*", " ");
+            string busqueda = await herramientas.BuscarAsync(Destino, "objetivo", " ");
+            string porExtension = await herramientas.BuscarAsync(Destino, "objetivo", " ", " txt");
+            ResultadoDirectorioTrabajo fijado = await herramientas.FijarDirectorioAsync(Destino, " ");
+            string leido = await herramientas.LeerArchivoAsync(Destino, "\u2029d.txt ");
+
+            // Assert
+            string ordenados = string.Join('\n', nombres.Order(StringComparer.Ordinal));
+            _ = listado.Should().Be(ordenados);
+            _ = encontrados.Should().Be(ordenados);
+            string[] lineas = busqueda[..busqueda.IndexOf("\n\n[motor: ", StringComparison.Ordinal)].Split('\n');
+            _ = lineas.Should().HaveCount(4).And.AllSatisfy(linea => linea.Should().StartWith(" /").And.EndWith(":1:  objetivo \r"));
+            _ = lineas.Order(StringComparer.Ordinal).Should().Equal(nombres.Order(StringComparer.Ordinal).Select(n => $" /{n}:1:  objetivo \r"));
+            _ = porExtension.Should().StartWith(" /c. txt:1:  objetivo \r\n\n[motor: ");
+            _ = fijado.Directorio.Should().Be(blanco);
+            _ = leido.Should().Be("[Líneas 1-1 de 1]\n  objetivo \r\n");
         }
 
         // El directorio de trabajo vuelve del PTY en base64 entre marcadores: LimpiarAnsi quitaría el CR de un CRLF y Trim

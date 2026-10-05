@@ -34,8 +34,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
-            comando.Contains("-o -type d -print") || comando.Contains("-o -print 2>/dev/null") ? SimularListDir(comando) :
-            comando.Contains("-print -prune") ? SimularFind(comando) :
+            comando.Contains("-o -type d -print0") || comando.Contains("-o -print0 2>/dev/null") ? SimularListDir(comando) :
+            comando.Contains("-print0 -prune") ? SimularFind(comando) :
             comando.Contains("find -L . -maxdepth") ? SimularFind(comando) :
             comando.Contains("stat -c") ? SimularStat(comando) :
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
@@ -130,6 +130,9 @@ namespace NativeSsh.Test.Herramientas
             if (comando.Contains("sin_coincidencias"))
                 return new(Motor, 1);
 
+            if (comando.Contains("'extremos'"))
+                return new(Motor + LineasConBlancos + "\n", 0);
+
             if (comando.Contains("muchas_coincidencias"))
             {
                 string muchas = string.Concat(Enumerable.Range(1, 5).Select(i => $"archivo.txt:{i}:coincidencia {i}\n"));
@@ -139,25 +142,35 @@ namespace NativeSsh.Test.Herramientas
             return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 0);
         }
 
+        // Los listados de ssh_list_dir y ssh_find llegan del servidor como nombres terminados en NUL.
+        private static RespuestaFalsa Nombres(params string[] nombres) => new(string.Concat(nombres.Select(nombre => nombre + "\0")), 0);
+
+        // Nombres con caracteres de control, con comillas dobles y con una barra invertida (como una unidad de systemd).
+        private static readonly string[] NombresConControl = ["a\nb.txt", "\"citado\".txt", "medio\"comilla.txt", "dev-disk-by\\x2duuid.swap", "tab\there", "\u0085nel\u007f", "barra\\ y\r"];
+
         private static RespuestaFalsa SimularListDir(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("'extremos'") ? Nombres(NombresConBlancos.Split('\n')) :
+            comando.Contains("'control'") ? Nombres(NombresConControl) :
             comando.Contains("es_archivo.txt") ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1) :
             comando.Contains("vacio") ? new("", 0) :
-            comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print 2>/dev/null")
-                ? new(".git\nnode_modules\nProgram.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0)
-                : new(".git\nnode_modules\nsrc\nsrc/models\nsrc/views\n", 0)) :
-            comando.Contains("-o -print 2>/dev/null") ? new("Program.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0) :
-            new("src\nsrc/models\nsrc/views\n", 0);
+            comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print0 2>/dev/null")
+                ? Nombres(".git", "node_modules", "Program.cs", "README.md", "src", "src/models", "src/views")
+                : Nombres(".git", "node_modules", "src", "src/models", "src/views")) :
+            comando.Contains("-o -print0 2>/dev/null") ? Nombres("Program.cs", "README.md", "src", "src/models", "src/views") :
+            Nombres("src", "src/models", "src/views");
 
         private static RespuestaFalsa SimularFind(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("'extremos'") ? Nombres(NombresConBlancos.Split('\n')) :
+            comando.Contains("'control'") ? Nombres(NombresConControl) :
             comando.Contains("sin_coincidencias") ? new("", 0) :
-            comando.Contains("-name '.git'") ? new(".git\n", 0) :
-            comando.Contains("-name 'node_modules'") ? new("node_modules\n", 0) :
-            comando.Contains("-name '__pycache__'") ? new("__pycache__\n", 0) :
-            comando.Contains("-name '.venv'") ? new(".venv\n", 0) :
-            comando.Contains("-name '*.cs'") ? new("Program.cs\nHerramientas/HerramientasSsh.cs\n", 0) :
-            new("app.service\nnginx.conf\n", 0);
+            comando.Contains("-name '.git'") ? Nombres(".git") :
+            comando.Contains("-name 'node_modules'") ? Nombres("node_modules") :
+            comando.Contains("-name '__pycache__'") ? Nombres("__pycache__") :
+            comando.Contains("-name '.venv'") ? Nombres(".venv") :
+            comando.Contains("-name '*.cs'") ? Nombres("Program.cs", "Herramientas/HerramientasSsh.cs") :
+            Nombres("app.service", "nginx.conf");
 
         private static RespuestaFalsa SimularStat(string comando) =>
             comando.Contains("no_existe.txt")
@@ -166,13 +179,22 @@ namespace NativeSsh.Test.Herramientas
                     ? new("error en stat\n", 1)
                     : comando.Contains("enlace.txt")
                         ? new("enlace simbólico|12|777|2026-10-05 01:00:00|ana|devs\nENLACE:/etc/real.conf\n", 0)
-                        : new("fichero regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
+                        : new("archivo regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
 
-        private static RespuestaFalsa SimularEscritura(string comando) =>
-            comando.Contains("no_atomico.txt") ? new("__NS_ESCRITURA_NO_ATOMICA__\n", 0) :
-            comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
-                ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
-                : new("", 0);
+        // Responde como el script real: los anuncios de InformeEscritura con el id de la petición ('marca=<id>' en el script).
+        private static RespuestaFalsa SimularEscritura(string comando)
+        {
+            const string Asignacion = "\nmarca=";
+            int posicion = comando.IndexOf(Asignacion, StringComparison.Ordinal) + Asignacion.Length;
+            string marca = $"__NS_W_{comando[posicion..(posicion + 32)]}__ ";
+            return comando.Contains("no_atomico.txt") ? new($"{marca}fase escribiendo\n{marca}fase escrito\n{marca}limpio\n", 0) :
+                comando.Contains("salida_desbordada.txt") ? new($"{marca}fase escribiendo\n{new string('r', BytesSalidaEnorme)}\nError: algo falló\n{marca}limpio\n", 1) :
+                comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
+                    ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
+                    : comando.Contains("base64 -d >> ", StringComparison.Ordinal)
+                        ? new($"{marca}fase anexando\n{marca}fase anexado\n", 0)
+                        : new($"{marca}fase colocando\n{marca}fase colocado\n{marca}limpio\n", 0);
+        }
 
         private static RespuestaFalsa SimularLectura(string comando)
         {
@@ -402,6 +424,56 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().NotContain("parcial");
             _ = siguiente.Should().StartWith("[Líneas 1-3 de 10]");
             await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado().Sesiones.Single().CanalesExecActivos == 0);
+        }
+
+        // La lectura previa de ssh_replace_file_content se interrumpe por el timeout: el error dice que el archivo no se tocó y
+        // da el id de la petición (la sesión la finaliza como TiempoAgotado antes de que venza la espera de la herramienta).
+        [Fact]
+        public async Task ReplaceFileContent_LecturaPreviaConTiempoAgotado_DiceQueNoSeModificoYDaElId()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => HerramientasConTimeoutCorto().ReemplazarContenidoArchivoAsync("servidor", "colgado_r.txt", "a", "b"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex("^La operación no se completó \\(estado: TiempoAgotado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. ")
+                .And.EndWith("No se ha modificado 'colgado_r.txt'.");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        // Cancelada con el token durante la lectura previa: la OperationCanceledException también dice que no se tocó.
+        [Fact]
+        public async Task ReplaceFileContent_LecturaPreviaCanceladaPorElToken_DiceQueNoSeModifico()
+        {
+            // Arrange
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
+
+            // Act
+            OperationCanceledException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "colgado_r.txt", "a", "b", cancellationToken: cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex("^Se canceló la operación \\(petición [0-9a-f]{32}\\)\\. No se ha modificado 'colgado_r\\.txt'\\.$");
+        }
+
+        // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
+        // OperationCanceledException dice que el archivo no se modificó y da el id de la petición.
+        [Fact]
+        public async Task WriteFile_EncoladaYCanceladaPorElToken_DiceQueNoSeModifico()
+        {
+            // Arrange
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
+
+            // Act
+            OperationCanceledException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola", cancellationToken: cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a ejecutar: 'nuevo.txt' no se ha modificado\\. Cancelada antes de empezar\\.$");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         [Fact]
@@ -650,6 +722,28 @@ namespace NativeSsh.Test.Herramientas
             _ = fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
         }
 
+        // Una escritura cuya salida supera el máximo por petición pierde su principio, y con él anuncios (aquí, que empezó a
+        // escribir en el sitio): el error no puede apoyarse en lo que queda (el anuncio final) para decir qué pasó con el
+        // archivo, lo dice, y no vuelca la salida entera.
+        [Fact]
+        public async Task WriteFile_SalidaConDatosDescartados_ElErrorNoSeApoyaEnLosAnunciosQueQuedan()
+        {
+            // Arrange
+            (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync("servidor", "salida_desbordada.txt", "x", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición ")
+                .And.Contain("No consta ninguna modificación de 'salida_desbordada.txt'.")
+                .And.Contain("superó el máximo de bytes por petición y se descartó su principio")
+                .And.EndWith("Error: algo falló");
+            _ = error.Message.Length.Should().BeLessThan(3000);
+        }
+
         [Fact]
         public async Task SearchFindListDir_SalidaConDatosDescartados_LanzanErrorExplicito()
         {
@@ -801,6 +895,18 @@ namespace NativeSsh.Test.Herramientas
             _ = escribir.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
             _ = reemplazar.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
             _ = (escribir + reemplazar).Should().NotContain("el contexto SELinux no cuenta");
+
+            // En el sitio no se afirma que se conserva todo: el núcleo quita las capacidades y, salvo a root, los bits setuid
+            // y setgid, que se devuelven y se comprueban (las capacidades, solo con sudo); lo que no se pueda devolver o
+            // comprobar lo dice la respuesta.
+            _ = (escribir + reemplazar).Should().NotContain("conserva inodo, enlaces duros y todos los atributos");
+            _ = escribir.Should().Contain("bits setuid y setgid").And.Contain("salvo si escribe root").And.Contain("security.capability").And.Contain("lo que no se pueda devolver o comprobar lo dice la respuesta");
+            _ = reemplazar.Should().Contain("bits setuid y setgid").And.Contain("salvo si escribe root").And.Contain("security.capability").And.Contain("lo que no se pueda devolver o comprobar lo dice la respuesta");
+
+            // Si no termina (también por ssh_disconnect o una conexión perdida) o el script muere a mitad, el error dice qué pasó
+            // con el archivo y da el id de la petición; interrumpida en el sitio, el script restaura el original por su cuenta.
+            _ = new[] { escribir, reemplazar }.Should().AllSatisfy(descripcion => descripcion.Should()
+                .Contain("ssh_disconnect o conexión perdida").And.Contain("o el script muere a mitad (p. ej. por SIGKILL)").And.Contain("el script restaura el original por su cuenta"));
         }
 
         [Fact]
@@ -823,8 +929,9 @@ namespace NativeSsh.Test.Herramientas
             _ = lectura.Should().Contain("supera el máximo editable");
         }
 
+        // ssh_search corta con head; ssh_find y ssh_list_dir, con el bucle que lee sus nombres terminados en NUL.
         [Fact]
-        public async Task SearchFindListDir_LimitanLaSalidaEnElServidorConHead()
+        public async Task SearchFindListDir_LimitanLaSalidaEnElServidor()
         {
             // Act
             _ = await _herramientas.BuscarAsync("servidor", "patron", maxResultados: 7);
@@ -834,8 +941,8 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             string[] comandos = [.. _fabrica.Ultima!.Comandos];
             _ = comandos.Should().Contain(c => c.Contains("grep -rnI", StringComparison.Ordinal) && c.Contains("| head -n 8", StringComparison.Ordinal));
-            _ = comandos.Should().Contain(c => c.Contains("-name '*.conf'", StringComparison.Ordinal) && c.Contains("| head -n 9", StringComparison.Ordinal));
-            _ = comandos.Should().Contain(c => c.Contains("-type d -print", StringComparison.Ordinal) && c.Contains("| head -n 10", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-name '*.conf'", StringComparison.Ordinal) && c.Contains("sort -z | { n=0; while [ \"$n\" -lt 9 ]", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-type d -print0", StringComparison.Ordinal) && c.Contains("sort -z | { n=0; while [ \"$n\" -lt 10 ]", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -860,7 +967,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task ReadFile_RutaVacia_LanzaExcepcion(string ruta)
         {
             // Act & Assert
@@ -886,7 +992,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task WriteFile_RutaVacia_LanzaExcepcion(string ruta)
         {
             // Act & Assert
@@ -910,7 +1015,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
-            _ = comando.Should().Contain("ln -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("ln -T -- \"$tmp\" \"$destino\"").And.Contain("ln -- \"$tmp\" \"$destino\"");
             _ = comando.Should().Contain("set -C");
             _ = comando.Should().NotContain("mv -f");
         }
@@ -930,10 +1035,11 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("| sudo bash -c '");
             _ = comando.Split("sudo ").Should().HaveCount(2);
             _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
-            _ = comando.Should().Contain("mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
+            _ = comando.Should().Contain("mktemp -- \"$dir/.$corto.tmp.XXXXXX\"").And.Contain("mktemp -- \"$dir/.$corto.orig.XXXXXX\"");
+            _ = comando.IndexOf("\nacortar_nombre\n", StringComparison.Ordinal).Should().BePositive().And.BeLessThan(comando.IndexOf("mktemp -- \"$dir/.$corto.tmp.XXXXXX\"", StringComparison.Ordinal));
             _ = comando.Should().Contain("cp --attributes-only --preserve=mode,ownership,xattr,context -- \"$1\" \"$2\"");
             _ = comando.Should().Contain("conservar_atributos \"$destino\" \"$tmp\"");
-            _ = comando.Should().Contain("mv -f -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("mv -f -T -- \"$tmp\" \"$destino\"").And.Contain("mv -f -- \"$tmp\" \"$destino\"");
             _ = comando.Should().Contain("base64 -d > \"$tmp\"");
         }
 
@@ -1012,7 +1118,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Search_PatronVacio_LanzaExcepcion(string patron)
         {
             // Act & Assert
@@ -1172,7 +1277,7 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.Should().Contain("src");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"\( -name __pycache__ -o -name .cache \) -prune"));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"-o \( -name .git -o -name node_modules"));
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print 2>/dev/null"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print0 2>/dev/null"));
             _ = _fabrica.Ultima!.Comandos.Should().NotContain("-type d -print");
         }
 
@@ -1202,7 +1307,6 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Find_PatronVacio_LanzaExcepcion(string? patron)
         {
             // Act & Assert
@@ -1244,7 +1348,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Should().Be(esperado);
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print0 -prune"));
         }
 
         [Fact]
@@ -1256,13 +1360,12 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Contain("Program.cs");
             _ = resultado.Should().NotContain("node_modules");
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print0 -prune"));
         }
 
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Stat_RutaVacia_LanzaExcepcion(string? ruta)
         {
             // Act & Assert
@@ -1290,9 +1393,14 @@ namespace NativeSsh.Test.Herramientas
             ResultadoMetadatos resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
 
             // Assert: contrato estructurado (no un JSON serializado dentro de un string).
-            _ = resultado.Should().Be(new ResultadoMetadatos("archivo.txt", true, null, "fichero regular", 2048, "2 KiB", "644", "2026-10-05 01:00:00", "ana", "devs", null));
+            _ = resultado.Should().Be(new ResultadoMetadatos("archivo.txt", true, null, "archivo regular", 2048, "2 KiB", "644", "2026-10-05 01:00:00", "ana", "devs", null));
             string json = JsonSerializer.Serialize(resultado, ContextoJsonNativeSsh.OpcionesHerramientas);
             _ = json.Should().Contain("\"tamanoBytes\":2048").And.Contain("\"propietario\":\"ana\"").And.NotContain("destinoEnlace");
+
+            // El tipo lo calcula el script con test (valores fijos), no sale del texto de stat (%F, %HT), que depende del idioma.
+            string comando = _fabrica.Ultima!.Comandos.Single(c => c.Contains("stat -c", StringComparison.Ordinal));
+            _ = comando.Should().Contain("elif [ -f 'archivo.txt' ]; then tipo='archivo regular'").And.Contain("printf '%s|' \"$tipo\"");
+            _ = comando.Should().NotContain("%F").And.NotContain("%HT");
         }
 
         [Fact]
@@ -1311,7 +1419,6 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task SetCwd_RutaVaciaONull_RestableceHome(string? ruta)
         {
             // Act
@@ -1346,7 +1453,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("", "target", 1, 5, "vacía")]
-        [InlineData("   ", "target", 1, 5, "vacía")]
         [InlineData("archivo.txt", "", 1, 5, "targetContent")]
         [InlineData("archivo.txt", "target", 0, 5, "mayor o igual a 1")]
         [InlineData("archivo.txt", "target", 5, 2, "no puede ser menor")]
@@ -1561,6 +1667,138 @@ namespace NativeSsh.Test.Herramientas
             _ = comandos.Should().Contain(c => c.Contains($"-e '{patron}'", StringComparison.Ordinal) && c.Contains($"'*.t{separador}xt'", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains($"-name '{patron}'", StringComparison.Ordinal));
             _ = comandos.Should().NotContain(c => c.Contains("x\ny", StringComparison.Ordinal) || c.Contains("p\nq", StringComparison.Ordinal) || c.Contains("t\nxt", StringComparison.Ordinal));
+        }
+
+        // Solo null o la cadena vacía son «sin valor»: una ruta o un patrón de solo blancos es un valor literal que llega al
+        // servidor tal cual, nunca un error de «vacío» ni el directorio actual o $HOME en su lugar.
+        [Fact]
+        public async Task Herramientas_ValoresDeSoloBlancos_SonLiteralesYNoSeSustituyen()
+        {
+            // Act
+            _ = await _herramientas.LeerArchivoAsync("servidor", " ", 1, 3);
+            _ = await _herramientas.ConsultarMetadatosAsync("servidor", " ");
+            _ = await _herramientas.BuscarAsync("servidor", "  ", " ");
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "  ", " ");
+            _ = await _herramientas.ListarDirectoriosAsync("servidor", " ");
+            _ = await _herramientas.EscribirArchivoAsync("servidor", " ", "c", overwrite: true);
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", " ", "linea 3", "otra");
+            ResultadoDirectorioTrabajo directorio = await _herramientas.FijarDirectorioAsync("servidor", " ");
+
+            // Assert
+            string[] comandos = [.. _fabrica.Ultima!.Comandos];
+            _ = comandos.Should().Contain(c => c.Contains("sed -n '1,3p' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("stat -c", StringComparison.Ordinal) && c.Contains("[ ! -e ' ' ] && [ ! -L ' ' ]", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-e '  ' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Where(c => c.Contains("find -L . -maxdepth", StringComparison.Ordinal)).Should().HaveCount(2)
+                .And.AllSatisfy(c => c.Should().Contain("cd -- ' '"));
+            _ = comandos.Should().Contain(c => c.Contains("-name '  '", StringComparison.Ordinal));
+            _ = comandos.Where(c => c.Contains("base64 -d > \"$tmp\"", StringComparison.Ordinal) || c.Contains("cat -- \"$ruta\" | base64", StringComparison.Ordinal)).Should().HaveCount(3)
+                .And.AllSatisfy(c => c.Should().Contain(" ns ' '"));
+            _ = comandos.Should().Contain(c => c.Contains("ruta=' '", StringComparison.Ordinal) && c.Contains("pwd -P", StringComparison.Ordinal));
+            _ = comandos.Should().NotContain(c => c.Contains("unset __NS_CWD", StringComparison.Ordinal) || c.Contains("'.'", StringComparison.Ordinal));
+            _ = directorio.Directorio.Should().Be("/tmp/trabajo");
+        }
+
+        // La extensión no se recorta: un CR, NEL, LS, tabulador o espacio en un extremo forma parte del filtro, y una
+        // extensión de solo blancos también es un filtro.
+        [Theory]
+        [InlineData("txt\r")]
+        [InlineData("txt ")]
+        [InlineData(" txt")]
+        [InlineData("txt\t")]
+        [InlineData("txt\u2028")]
+        [InlineData("\u0085txt")]
+        [InlineData(" ")]
+        public void Search_ExtensionConBlancosOSeparadoresEnLosExtremos_LlegaTalCualAlFiltro(string extension)
+        {
+            // Act
+            string comando = HerramientasSsh.ConstruirComandoBusqueda("patron", ".", extension, 50);
+
+            // Assert
+            _ = comando.Should().Contain($"-g '*.{extension}' ").And.Contain($"--include='*.{extension}' ");
+        }
+
+        private const string NombresConBlancos = " uno\n\u2028dos\ntres \u2029";
+        private const string LineasConBlancos = " /a.txt:1:  sangría\nb.txt:2:fin \u2029 \r";
+
+        // Los listados solo pierden el salto de línea final: los blancos y separadores al principio del primer nombre (o
+        // de la primera línea encontrada) y al final del último son datos.
+        [Fact]
+        public async Task SearchFindListDir_BlancosEnLosExtremosDelListado_SeConservan()
+        {
+            // Act
+            string busqueda = await _herramientas.BuscarAsync("servidor", "patron", "extremos");
+            string encontrados = await _herramientas.BuscarPorNombreAsync("servidor", "*", "extremos");
+            string listado = await _herramientas.ListarDirectoriosAsync("servidor", "extremos", incluirArchivos: true);
+
+            // Assert
+            _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
+            _ = encontrados.Should().Be(NombresConBlancos);
+            _ = listado.Should().Be(NombresConBlancos);
+        }
+
+        // Un nombre con caracteres de control (categoría Cc: salto de línea, retorno de carro, tabulador, NEL, DEL...) o que
+        // empieza por comillas dobles sale entre comillas dobles y escapado como una cadena JSON, en una sola línea; los
+        // demás salen tal cual (también una barra invertida o unas comillas en medio del nombre). Las descripciones lo dicen.
+        [Fact]
+        public async Task FindYListDir_NombresConCaracteresDeControl_SalenEscapadosEnUnaSolaLinea()
+        {
+            // Act
+            string encontrados = await _herramientas.BuscarPorNombreAsync("servidor", "*", "control");
+            string listado = await _herramientas.ListarDirectoriosAsync("servidor", "control", incluirArchivos: true);
+
+            // Assert
+            string esperado = """
+                "a\nb.txt"
+                "\"citado\".txt"
+                medio"comilla.txt
+                dev-disk-by\x2duuid.swap
+                "tab\there"
+                "\u0085nel\u007F"
+                "barra\\ y\r"
+                """.ReplaceLineEndings("\n");
+            _ = encontrados.Should().Be(esperado);
+            _ = listado.Should().Be(esperado);
+            _ = new[] { DescripcionDe(nameof(HerramientasSsh.BuscarPorNombreAsync)), DescripcionDe(nameof(HerramientasSsh.ListarDirectoriosAsync)) }
+                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
+        }
+
+        // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.
+        [Theory]
+        [InlineData("directorio")]
+        [InlineData("f")]
+        [InlineData(" dir")]
+        public async Task Find_TipoDesconocido_LanzaErrorSinBuscar(string tipo)
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarPorNombreAsync("servidor", "*.txt", tipo: tipo))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain($"'{tipo}'").And.Contain("'file', 'dir' o 'all'");
+            _ = _fabrica.Ultima.Should().BeNull();
+        }
+
+        // El tipo no distingue mayúsculas y admite 'directory' como sinónimo de 'dir': la descripción del parámetro lo dice,
+        // igual que el valor por defecto y que cualquier otro valor da error.
+        [Theory]
+        [InlineData("FILE", "-type f ")]
+        [InlineData("Dir", "-type d ")]
+        [InlineData("directory", "-type d ")]
+        [InlineData("ALL", null)]
+        public async Task Find_TipoEnMayusculasOSinonimo_SeAceptaComoDiceSuDescripcion(string tipo, string? filtro)
+        {
+            // Act
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "*.service", tipo: tipo);
+            string descripcion = typeof(HerramientasSsh).GetMethod(nameof(HerramientasSsh.BuscarPorNombreAsync))!.GetParameters().Single(p => p.Name == "tipo")
+                .GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), false).Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Single(c => c.Contains("-name '*.service'", StringComparison.Ordinal));
+            _ = filtro is null
+                ? comando.Should().NotContain("-type ")
+                : comando.Should().Contain(filtro);
+            _ = descripcion.Should().Contain("'directory'").And.Contain("sin distinguir mayúsculas").And.Contain("Por defecto (o vacío), 'file'").And.Contain("Otro valor").And.Contain("da error");
         }
 
         // Un NUL no puede viajar en un argumento ni sobrevive a '$(... | base64 -d)' (bash lo descarta): la ruta llegaría
