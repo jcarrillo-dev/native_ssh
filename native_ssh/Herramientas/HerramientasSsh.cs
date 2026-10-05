@@ -1766,10 +1766,13 @@ namespace NativeSsh.Herramientas
                 _ = peticion.SolicitarCancelacion();
                 throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia)}");
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 _ = peticion.SolicitarCancelacion();
-                throw;
+                if (consecuencia is null)
+                    throw;
+
+                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia}", ex, cancellationToken);
             }
 
             return peticion;

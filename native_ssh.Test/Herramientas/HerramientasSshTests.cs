@@ -430,6 +430,21 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
         }
 
+        // Cancelada con el token durante la lectura previa: la OperationCanceledException también dice que no se tocó.
+        [Fact]
+        public async Task ReplaceFileContent_LecturaPreviaCanceladaPorElToken_DiceQueNoSeModifico()
+        {
+            // Arrange
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
+
+            // Act
+            OperationCanceledException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "colgado_r.txt", "a", "b", cancellationToken: cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex("^Se canceló la operación \\(petición [0-9a-f]{32}\\)\\. No se ha modificado 'colgado_r\\.txt'\\.$");
+        }
+
         // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
         // OperationCanceledException dice que el archivo no se modificó y da el id de la petición.
         [Fact]
