@@ -56,6 +56,12 @@ namespace NativeSsh.Test.Integracion
         // Conexiones TCP autenticadas desde que arrancó el sshd.
         public int ConexionesAceptadas() => ContarLineasLog("Accepted publickey");
 
+        // Procesos sshd de las conexiones abiertas: los sshd-session que cuelgan del maestro (el monitor y el que atiende
+        // la conexión), sin los procesos de los usuarios.
+        public string[] ProcesosDeConexion() =>
+            BashLocal.Ejecutar($"desc() {{ for c in $(pgrep -P $1); do case \"$(ps -o comm= -p $c)\" in sshd*) echo $c; desc $c;; esac; done; }}; desc {PidMaestro}")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
         public int ContarLineasLog(params string[] textos)
         {
             int total = 0;

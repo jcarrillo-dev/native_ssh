@@ -39,5 +39,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 12, Level = LogLevel.Debug, Message = "Error liberando una conexión caída con {Destino}.")]
         public static partial void ErrorLiberandoConexion(this ILogger logger, Exception ex, string destino);
+
+        [LoggerMessage(EventId = 30, Level = LogLevel.Debug, Message = "Un canal exec de {Destino} abandonado al agotarse su plazo (o cancelarse) terminó de cerrarse.")]
+        public static partial void CanalExecCerradoTrasAbandonarlo(this ILogger logger, Exception ex, string destino);
     }
 }

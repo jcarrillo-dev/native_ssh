@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Text;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -66,7 +68,7 @@ namespace NativeSsh.Test.Integracion
                 int aceptadasDespues = _sshd.ConexionesAceptadas();
 
                 Task<ResultadoCanalExec> enVuelo = ExecAsync($"sleep {sleep + 2}", 30);
-                await Utilidades.EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarSesiones().Single().CanalesExecActivos == 1);
+                await EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarSesiones().Single().CanalesExecActivos == 1);
                 await Task.Delay(300);
                 _ = await _gestor.DesconectarAsync(Destino);
                 NativeSshException cierre = (await FluentActions.Awaiting(() => enVuelo).Should().ThrowAsync<NativeSshException>()).Which;
@@ -87,6 +89,48 @@ namespace NativeSsh.Test.Integracion
                 CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep + 1);
                 CanalesExecIntegracionTests.MatarProcesosSleep(sleep + 2, sleep + 2);
             }
+        }
+
+        [Fact]
+        public async Task ServidorCongelado_LaLecturaFallaAlPlazoLocalYElCanalSeCierraAlDescongelarlo()
+        {
+            // Arrange: los procesos de la conexión de esta prueba (otra anterior podría seguir cerrándose).
+            string[] antes = _sshd.ProcesosDeConexion();
+            _ = await ExecAsync("true", 10);
+            string[] propios = [.. _sshd.ProcesosDeConexion().Except(antes)];
+            _ = propios.Should().NotBeEmpty();
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+            int aceptadas = _sshd.ConexionesAceptadas();
+            int senales = _sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion);
+            Stopwatch reloj;
+            NativeSshException error;
+            int activosCongelado;
+
+            // Act: la apertura del canal no recibe respuesta (antes esperaba los 15 s de ConnectionInfo.Timeout).
+            try
+            {
+                _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
+                reloj = Stopwatch.StartNew();
+                error = (await FluentActions.Awaiting(() => ExecAsync("echo hola", 2)).Should().ThrowAsync<NativeSshException>()).Which;
+                reloj.Stop();
+                activosCongelado = sesion.CanalesExecActivos;
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"kill -CONT {string.Join(' ', propios)}");
+            }
+
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.CanalesExecActivos == 0, TimeSpan.FromSeconds(15));
+            ResultadoCanalExec siguiente = await ExecAsync("echo sigue", 10);
+            await Task.Delay(300);
+
+            // Assert: plazo de 2 s más el margen local de 3 s; el canal conserva su cupo hasta cerrarse.
+            _ = error.Message.Should().Contain("no terminó en 2 s");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(8));
+            _ = activosCongelado.Should().Be(1);
+            _ = Encoding.UTF8.GetString(siguiente.Salida.Span).Should().Be("sigue\n");
+            _ = _sshd.ConexionesAceptadas().Should().Be(aceptadas);
+            _ = (_sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion) - senales).Should().Be(0);
         }
 
         [Fact]

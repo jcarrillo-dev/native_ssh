@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -466,6 +467,37 @@ namespace NativeSsh.Test.Sesion
             _ = await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("sleep 100", TimeSpan.FromSeconds(30), cancelacion.Token))
                 .Should().ThrowAsync<OperationCanceledException>();
             _ = sesion.CanalesExecActivos.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task Exec_AperturaColgada_FallaAlCancelarYNoLiberaElCupoHastaQueElCanalSeCierra()
+        {
+            // Arrange: la apertura de los canales exec no responde ni atiende el token (SSH.NET con el servidor congelado).
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaExec = apertura };
+            await using SesionShell sesion = Crear(fabrica);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Task<ResultadoCanalExec>[] colgadas = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos).Select(_ => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(30), cancelacion.Token))];
+            foreach (Task<ResultadoCanalExec> colgada in colgadas)
+                _ = await FluentActions.Awaiting(() => colgada.WaitAsync(Limite)).Should().ThrowAsync<OperationCanceledException>();
+            TimeSpan espera = reloj.Elapsed;
+            int activosTrasCancelar = sesion.CanalesExecActivos;
+            using CancellationTokenSource cancelacionQuinta = new(TimeSpan.FromMilliseconds(300));
+            _ = await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(30), cancelacionQuinta.Token).WaitAsync(Limite))
+                .Should().ThrowAsync<OperationCanceledException>();
+            int maximoEnLaConexion = fabrica.Ultima!.MaxExecSimultaneos;
+            _ = apertura.Release(SesionShell.MaxCanalesExecSimultaneos + 1);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.CanalesExecActivos == 0);
+            ResultadoCanalExec siguiente = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None).WaitAsync(Limite);
+
+            // Assert: el quinto ni llega a la conexión mientras los cuatro abandonados siguen abriéndose.
+            _ = espera.Should().BeLessThan(TimeSpan.FromSeconds(3));
+            _ = activosTrasCancelar.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
+            _ = maximoEnLaConexion.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
+            _ = siguiente.CodigoSalida.Should().Be(0);
         }
 
         [Fact]

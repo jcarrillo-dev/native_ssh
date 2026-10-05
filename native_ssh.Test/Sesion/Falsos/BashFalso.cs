@@ -49,6 +49,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
 
+        // Si no es null, cada canal exec espera a que se libere ignorando el token, como la apertura síncrona de SSH.NET
+        // con un servidor que no responde; después atiende la cancelación.
+        public SemaphoreSlim? BloqueoAperturaExec { get; set; }
+
         // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH).
         public string PathLogin { get; set; } = "/usr/local/bin:/usr/bin:/bin";
 
@@ -61,7 +65,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 await Task.Delay(RetrasoConexion, cancellationToken);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec, PathLogin = PathLogin };
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec, BloqueoAperturaExec = BloqueoAperturaExec, PathLogin = PathLogin };
             Ultima = conexion;
             return conexion;
         }
@@ -87,6 +91,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int ExecActivos => Volatile.Read(ref _execActivos);
         public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
         public SemaphoreSlim? BloqueoExec { get; init; }
+        public SemaphoreSlim? BloqueoAperturaExec { get; init; }
         public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public CanalFalso? CanalActual { get; private set; }
 
@@ -107,6 +112,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             try
             {
+                if (BloqueoAperturaExec is { } apertura)
+                {
+                    await apertura.WaitAsync(CancellationToken.None);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
                 if (BloqueoExec is { } bloqueo)
                 {
                     await bloqueo.WaitAsync(cancellationToken);

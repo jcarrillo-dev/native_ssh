@@ -191,6 +191,8 @@ namespace NativeSsh.Sesion
 
         // Canal exec sobre la conexión de la sesión, sin pasar por la cola del shell. 'timeout' cubre la espera de cupo,
         // la conexión (si no la hay) y la ejecución; al agotarse se cierra el canal y se lanza NativeSshException.
+        // La operación termina al agotarse el límite local aunque la apertura del canal siga colgada (servidor que no
+        // responde): el canal conserva su cupo hasta que se cierra de verdad, para no superar el MaxSessions del servidor.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string script, TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (Volatile.Read(ref _isDispuesto) != 0)
@@ -203,26 +205,23 @@ namespace NativeSsh.Sesion
             using CancellationTokenSource enlazado = CancellationTokenSource.CreateLinkedTokenSource(limite.Token, cancellationToken, _cierre.Token);
             CancellationToken token = enlazado.Token;
             bool isCupoTomado = false;
+            bool isCanalContado = false;
+            Task<ResultadoCanalExec>? ejecucion = null;
             try
             {
                 await _cupoExec.WaitAsync(token).ConfigureAwait(false);
                 isCupoTomado = true;
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
                 _ = Interlocked.Increment(ref _canalesExecActivos);
-                try
-                {
-                    return await conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token).ConfigureAwait(false);
-                }
-                finally
-                {
-                    _ = Interlocked.Decrement(ref _canalesExecActivos);
-                }
+                isCanalContado = true;
+                ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token);
+                return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 throw _cierre.IsCancellationRequested
                     ? new NativeSshException($"La sesión con {Destino.Clave} se cerró durante la operación.")
-                    : new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se cerró su canal exec.");
+                    : new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se abandona y su canal exec se cierra.");
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -230,9 +229,37 @@ namespace NativeSsh.Sesion
             }
             finally
             {
-                if (isCupoTomado)
-                    _ = _cupoExec.Release();
+                if (ejecucion is { IsCompleted: false })
+                    _ = LiberarCanalExecAlCerrarseAsync(ejecucion);
+                else
+                    LiberarCanalExec(isCupoTomado, isCanalContado);
             }
+        }
+
+        // La tarea de IConexionSsh.EjecutarExecAsync termina cuando el canal está cerrado (si su apertura seguía en curso,
+        // cuando termina y se cierra): hasta entonces sigue contando como canal abierto en la conexión.
+        private async Task LiberarCanalExecAlCerrarseAsync(Task<ResultadoCanalExec> ejecucion)
+        {
+            try
+            {
+                _ = await ejecucion.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.CanalExecCerradoTrasAbandonarlo(ex, Destino.Clave);
+            }
+            finally
+            {
+                LiberarCanalExec(isCupoTomado: true, isCanalContado: true);
+            }
+        }
+
+        private void LiberarCanalExec(bool isCupoTomado, bool isCanalContado)
+        {
+            if (isCanalContado)
+                _ = Interlocked.Decrement(ref _canalesExecActivos);
+            if (isCupoTomado)
+                _ = _cupoExec.Release();
         }
 
         private async Task BucleComandosAsync()
