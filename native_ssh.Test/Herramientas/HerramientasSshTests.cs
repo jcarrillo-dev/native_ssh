@@ -249,6 +249,26 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task Status_DevuelveComoMaximoVeintePeticionesLasMasRecientes()
+        {
+            // Arrange
+            for (int i = 0; i < 25; i++)
+                _ = await _herramientas.EjecutarAsync("uno", $"cmd{i}");
+            _ = await _herramientas.EjecutarAsync("dos", "otro");
+
+            // Act
+            ResultadoEstado todo = _herramientas.Estado();
+            ResultadoEstado filtrado = _herramientas.Estado("uno");
+
+            // Assert
+            _ = todo.Peticiones.Count.Should().Be(20);
+            _ = todo.Peticiones[0].Comando.Should().Be("otro");
+            _ = filtrado.Peticiones.Count.Should().Be(20);
+            _ = filtrado.Peticiones[0].Comando.Should().Be("cmd24");
+            _ = filtrado.Peticiones[^1].Comando.Should().Be("cmd5");
+        }
+
+        [Fact]
         public async Task Disconnect_YReset()
         {
             // Arrange

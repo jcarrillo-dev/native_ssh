@@ -3,10 +3,8 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using JCarrillo.AOT.Core.Extensiones.ValueLINQ;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
-using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Herramientas
@@ -90,15 +88,16 @@ namespace NativeSsh.Herramientas
                 if (clave is null || s.Destino.Clave == clave)
                     sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto));
 
-            List<Peticion> candidatas = [];
-            foreach (Peticion p in gestor.ListarPeticiones())
-                if (clave is null || p.Destino.Clave == clave)
-                    candidatas.Add(p);
-
+            // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
             List<ResumenPeticion> peticiones = [];
-            Peticion[] arrayPeticiones = [.. candidatas];
-            foreach (Peticion p in arrayPeticiones.ToValueQuery().Delay().Take(MaxPeticionesEnEstado))
-                peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
+            foreach (Peticion p in gestor.ListarPeticiones())
+            {
+                if (peticiones.Count == MaxPeticionesEnEstado)
+                    break;
+
+                if (clave is null || p.Destino.Clave == clave)
+                    peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
+            }
 
             return new ResultadoEstado(sesiones, peticiones);
         }

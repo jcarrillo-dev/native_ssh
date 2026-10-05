@@ -1,4 +1,3 @@
-#if NET9_0_OR_GREATER
 using System.Runtime.CompilerServices;
 using JCarrillo.AOT.Core.ValueLINQ.Delay;
 using JCarrillo.AOT.Core.ValueLINQ.Interfaces;
@@ -104,4 +103,3 @@ namespace NativeSsh.Protocolo
         }
     }
 }
-#endif

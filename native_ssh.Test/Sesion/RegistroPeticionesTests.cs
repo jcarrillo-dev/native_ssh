@@ -75,6 +75,36 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public void Podar_PorCantidad_QuitaVariasFinalizadasEnOrdenDeFin()
+        {
+            // Arrange
+            RegistroPeticiones registro = new(new OpcionesNativeSsh { MaxPeticionesRetenidas = 3 }, _reloj);
+            Peticion[] finalizadas = [Nueva(), Nueva(), Nueva()];
+            foreach (Peticion peticion in finalizadas)
+                registro.Registrar(peticion);
+
+            // Se finalizan en orden inverso: la última registrada es la que termina antes.
+            for (int i = finalizadas.Length - 1; i >= 0; i--)
+            {
+                _ = finalizadas[i].TryFinalizar(EstadoPeticionEnum.Completado, 0, null);
+                _reloj.Avanzar(TimeSpan.FromSeconds(1));
+            }
+
+            Peticion enCurso = Nueva();
+            registro.Registrar(enCurso);
+
+            // Act
+            registro.Registrar(Nueva());
+
+            // Assert: sobran 2; se quitan las 2 que terminaron antes y nunca la que está en curso.
+            _ = registro.Buscar(finalizadas[2].IdTexto).Should().BeNull();
+            _ = registro.Buscar(finalizadas[1].IdTexto).Should().BeNull();
+            _ = registro.Buscar(finalizadas[0].IdTexto).Should().NotBeNull();
+            _ = registro.Buscar(enCurso.IdTexto).Should().NotBeNull();
+            _ = registro.Cantidad.Should().Be(3);
+        }
+
+        [Fact]
         public void Podar_NuncaQuitaPeticionesEnCurso()
         {
             // Arrange

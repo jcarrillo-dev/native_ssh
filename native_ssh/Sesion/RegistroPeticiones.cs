@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
-using JCarrillo.AOT.Core.Extensiones.ValueLINQ;
 using NativeSsh.Comun;
-using NativeSsh.Protocolo;
 
 namespace NativeSsh.Sesion
 {
@@ -45,9 +43,9 @@ namespace NativeSsh.Sesion
                     finalizadas.Add(peticion);
 
             finalizadas.Sort(static (a, b) => a.FinTimestamp.CompareTo(b.FinTimestamp));
-            Peticion[] arrayFinalizadas = [.. finalizadas];
-            foreach (Peticion peticion in arrayFinalizadas.ToValueQuery().Delay().Take(exceso))
-                Quitar(peticion.IdTexto);
+            int aQuitar = Math.Min(exceso, finalizadas.Count);
+            for (int i = 0; i < aQuitar; i++)
+                Quitar(finalizadas[i].IdTexto);
         }
 
         private void Quitar(string id)
