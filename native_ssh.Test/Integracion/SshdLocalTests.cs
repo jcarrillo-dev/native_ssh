@@ -104,6 +104,33 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public void Iniciar_DesdeUnProcesoConfinadoAUnaCpu_ElServidorPuedeUsarTodasLasCpu()
+        {
+            // Arrange: como las pruebas de estrés, que confinan su proceso y su carga con taskset; el sshd lo heredaría y,
+            // con su sshd-session en planificación 'idle' (ananicy lo hace), no recibiría CPU mientras dure la carga.
+            string directorioPruebas = SshdLocal.BuscarDirectorioPruebas();
+            string estado = Path.Combine(Path.GetTempPath(), $"ns_afinidad_{Guid.NewGuid():N}");
+            string entorno = $"NATIVE_SSH_DIR_ESTADO='{estado}' NATIVE_SSH_PUERTO_PRUEBAS={PuertoLibre()}";
+
+            try
+            {
+                // Act
+                _ = BashLocal.Ejecutar($"{entorno} taskset -c 0 bash '{directorioPruebas}/sshd-local.sh' iniciar");
+                string permitidas = BashLocal.Ejecutar($"grep Cpus_allowed_list /proc/$(cat '{estado}/sshd.pid')/status | cut -f2");
+                string todas = BashLocal.Ejecutar("echo 0-$(( $(nproc --all) - 1 ))");
+
+                // Assert
+                _ = permitidas.Should().Be(todas);
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"{entorno} bash '{directorioPruebas}/sshd-local.sh' parar");
+                if (Directory.Exists(estado))
+                    Directory.Delete(estado, recursive: true);
+            }
+        }
+
+        [Fact]
         public void Restringido_SiSshdNoArranca_NoDejaSuGranjaDeBinarios()
         {
             // Arrange: el puerto ya está ocupado, así que sshd no puede escuchar en él.

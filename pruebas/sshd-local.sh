@@ -104,7 +104,15 @@ CFG
         printf '%s\n' "$NATIVE_SSH_SSHD_EXTRA" >> "$DIR/sshd_config"
     fi
 
-    "$SSHD" -f "$DIR/sshd_config" -E "$DIR/sshd.log"
+    # El servidor hace de máquina aparte: no hereda el confinamiento de CPU de quien lo arranca (las pruebas de estrés
+    # limitan su proceso y su carga con taskset). Confinado con la carga, un sshd-session al que el sistema baje la
+    # planificación a 'idle' (ananicy-cpp lo hace con sshd-session) no recibiría CPU mientras dure y la conexión entera
+    # se detendría.
+    local lanzar=("$SSHD")
+    if command -v taskset >/dev/null 2>&1; then
+        lanzar=(taskset -c "0-$(($(nproc --all) - 1))" "$SSHD")
+    fi
+    "${lanzar[@]}" -f "$DIR/sshd_config" -E "$DIR/sshd.log"
     for _ in $(seq 1 50); do
         if [[ -f "$DIR/sshd.pid" ]] && (exec 3<>"/dev/tcp/127.0.0.1/$PUERTO") 2>/dev/null; then
             echo "$PUERTO"
