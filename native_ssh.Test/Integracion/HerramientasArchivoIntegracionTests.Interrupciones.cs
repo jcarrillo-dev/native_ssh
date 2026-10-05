@@ -64,9 +64,9 @@ namespace NativeSsh.Test.Integracion
 
         // Tras un Ctrl+C (SIGINT al grupo del terminal) con la escritura en el sitio a medias, la trampa restaura el original;
         // una segunda señal en ese momento (otro SIGINT, SIGTERM o SIGHUP, al script y a sus hijos) no la corta: ni al bash
-        // del script, que sin trampas moría al instante (bash ≥ 5.1 mata al shell que recibe una señal mortal mientras maneja
-        // otra), ni al 'cat' que restaura (aquí tarda 2 s). El script termina con el código 130 tras restaurar y limpiar, y el
-        // error es el suyo.
+        // del script, que sin trampas moría al instante (bash mata al shell que recibe una señal mortal mientras maneja otra),
+        // ni al 'cat' que restaura (aquí tarda 2 s). El script termina con el código 130 tras restaurar y limpiar, y el error
+        // es el suyo.
         [Theory]
         [InlineData("INT")]
         [InlineData("TERM")]

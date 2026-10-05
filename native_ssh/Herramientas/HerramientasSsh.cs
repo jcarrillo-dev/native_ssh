@@ -1329,11 +1329,11 @@ namespace NativeSsh.Herramientas
         // el shell interactivo reenvía a sus trabajos al recibir el suyo, el que el núcleo manda al grupo de primer plano
         // cuando sale el líder de la sesión y, si el líder es otro proceso, como el shell de login que ejecuta el
         // ForceCommand, el que este reenvía a su vez); bash, sin trampa para SIGHUP, ejecuta la trampa de salida dentro de
-        // su manejo de una señal mortal, y desde bash 5.1 una segunda señal mortal en ese momento lo mata al instante (a
-        // menudo antes de la primera orden de la trampa), y si no, el siguiente SIGHUP mataba el 'cat' que restauraba. Tras
-        // la interrupción el script sigue hasta dejar el archivo restaurado (o conservar la copia) aunque ya no haya
-        // terminal: solo SIGKILL lo detiene, y una restauración colgada (p. ej. un sistema de archivos que no responde)
-        // sigue ahí hasta que la E/S termine.
+        // su manejo de una señal mortal, y una segunda señal mortal en ese momento lo mata al instante (kill_shell en su
+        // manejador, termsig_sighandler; medido con bash 5.3), a menudo antes de la primera orden de la trampa, y si no, el
+        // siguiente SIGHUP mataba el 'cat' que restauraba. Tras la interrupción el script sigue hasta dejar el archivo
+        // restaurado (o conservar la copia) aunque ya no haya terminal: solo SIGKILL lo detiene, y una restauración colgada
+        // (p. ej. un sistema de archivos que no responde) sigue ahí hasta que la E/S termine.
         private static readonly string DefinicionEscrituraEnElSitio = """
             interrumpir() {
               trap '' HUP INT TERM
