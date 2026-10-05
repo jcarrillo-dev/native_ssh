@@ -1777,7 +1777,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain($"'{tipo}'").And.Contain("'file', 'dir' o 'all'");
+            _ = error.Message.Should().Be($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.");
             _ = _fabrica.Ultima.Should().BeNull();
         }
 

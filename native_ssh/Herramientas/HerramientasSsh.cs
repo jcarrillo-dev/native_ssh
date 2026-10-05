@@ -694,7 +694,7 @@ namespace NativeSsh.Herramientas
                 "file" => "-type f ",
                 "dir" or "directory" => "-type d ",
                 "all" => string.Empty,
-                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' o 'all'.")
+                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
             string comando = PlantillaBash.Crear($$"""
