@@ -949,6 +949,25 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task EntradaConElCanalCerradoPorElServidorSinQueLaLecturaLoVea_DiceQueElCanalDejoDeAdmitirEscrituras()
+        {
+            // Arrange: el servidor cerró el canal y la conexión sigue viva, pero la lectura aún no ha visto el cierre.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("¿Nombre?"));
+            fabrica.Ultima!.CanalActual!.RechazarEscrituras();
+
+            // Act
+            Action enviar = () => sesion.EnviarEntrada(pregunta, "ana", isEnviarEnter: true);
+
+            // Assert
+            _ = enviar.Should().Throw<NativeSshException>().Which.Message.Should().Contain("dejó de admitir escrituras").And.Contain("parte de la entrada")
+                .And.NotContain("perdió la conexión");
+        }
+
+        [Fact]
         public async Task EntradaColgadaCuyoComandoTerminaComoShellPerdido_AlCerrarLaSesionNoDiceQueTerminaComoCancelado()
         {
             // Arrange: la entrada se queda dentro de la escritura y, mientras tanto, el servidor cierra el canal (el comando

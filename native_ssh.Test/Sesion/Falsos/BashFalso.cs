@@ -332,6 +332,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _escriturasEnCurso;
         private int _escriturasRetenidas;
         private int _cierresConEscrituraEnCurso;
+        private volatile bool _isEscrituraRechazada;
         private ManualResetEventSlim? _liberacionEscrituras;
         private ManualResetEventSlim? _retencionEscrituras;
         private ManualResetEventSlim? _confirmacionCierre;
@@ -420,6 +421,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 retencion.Wait();
             }
 
+            if (_isEscrituraRechazada)
+                throw new InvalidOperationException("The channel is closed.");
+
             lock (_candado)
             {
                 if (IsCerrado)
@@ -462,6 +466,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         // con un servidor que deja de leer un rato (congelado y luego reanudado, o un proceso con el terminal en modo raw
         // que tarda en leer) y después acepta los datos.
         public void RetenerEscrituras(ManualResetEventSlim retencion) => Volatile.Write(ref _retencionEscrituras, retencion);
+
+        // Desde ahora escribir falla sin que la lectura se entere y con la conexión viva: el servidor cerró el canal y la
+        // bomba aún no ha visto el cierre (ShellStream ya liberado al escribir, Read aún sin devolver 0).
+        public void RechazarEscrituras() => _isEscrituraRechazada = true;
 
         // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
         // muere al perder el terminal.
