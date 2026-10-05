@@ -100,7 +100,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert: las aperturas siguen en curso (con su cupo) hasta que el servidor responde; después se cierran y en el
             // servidor solo queda el shell.
-            _ = errores.Should().AllSatisfy(e => e.Should().Contain("no terminó en 1 s"));
+            _ = errores.Should().AllSatisfy(e => e.Should().Contain("no terminó en 1 s").And.Contain("sin que el servidor confirmara la apertura").And.NotContain("como mucho al vencer su plazo"));
             _ = activosCongelado.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
             _ = abiertas.Should().Be(1);
             _ = rafaga.Should().AllBe("sin error");

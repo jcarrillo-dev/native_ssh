@@ -168,7 +168,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public CanalFalso? CanalActual { get; private set; }
 
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
-        public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken)
+        public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
             // Como SshClient tras Dispose.
             ObjectDisposedException.ThrowIf(_isDispuesta, this);
@@ -191,6 +191,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                     await apertura.WaitAsync(CancellationToken.None);
                     cancellationToken.ThrowIfCancellationRequested();
                 }
+
+                alConfirmarseApertura();
 
                 if (BloqueoExec is { } bloqueo)
                 {

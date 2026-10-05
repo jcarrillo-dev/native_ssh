@@ -24,7 +24,9 @@ namespace NativeSsh.Sesion
         // Ejecuta 'comando' tal cual en un canal exec nuevo sobre la misma conexión TCP (lo interpreta el shell de login).
         // Cancelar el token cierra el canal y lanza OperationCanceledException. La tarea termina solo cuando el canal ya
         // está cerrado: si la apertura no atiende el token (la de SSH.NET es síncrona), cuando termine y se cierre.
-        Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken);
+        // 'alConfirmarseApertura' se invoca cuando el servidor ha confirmado la apertura del canal y aceptado el comando
+        // (desde entonces el comando corre en el servidor y lo acota su plazo remoto); no se invoca si no llega a pasar.
+        Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken);
     }
 
     public interface IFabricaConexion

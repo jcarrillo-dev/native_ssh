@@ -128,11 +128,13 @@ namespace NativeSsh.Sesion
             _bucle = Task.Run(BucleComandosAsync);
         }
 
-        // Hasta dónde llegó una lectura cuyo límite local venció.
+        // Hasta dónde llegó una lectura cuyo límite local venció: Apertura es el canal pedido sin que el servidor lo haya
+        // confirmado (puede que la petición ni siquiera haya salido si la conexión no acepta datos); Canal, confirmado.
         private enum EtapaExecEnum
         {
             Cupo,
             Conexion,
+            Apertura,
             Canal
         }
 
@@ -349,6 +351,7 @@ namespace NativeSsh.Sesion
             bool isCanalContado = false;
             EtapaExecEnum etapa = EtapaExecEnum.Cupo;
             Task<ResultadoCanalExec>? ejecucion = null;
+            TaskCompletionSource confirmacion = new(TaskCreationOptions.RunContinuationsAsynchronously);
             try
             {
                 await _cupoExec.WaitAsync(token).ConfigureAwait(false);
@@ -357,8 +360,8 @@ namespace NativeSsh.Sesion
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
-                etapa = EtapaExecEnum.Canal;
-                ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token);
+                etapa = EtapaExecEnum.Apertura;
+                ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, () => confirmacion.TrySetResult(), token);
                 return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
             catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
@@ -369,7 +372,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa, timeout));
+                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa == EtapaExecEnum.Apertura && confirmacion.Task.IsCompleted ? EtapaExecEnum.Canal : etapa, timeout));
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -391,6 +394,7 @@ namespace NativeSsh.Sesion
             {
                 EtapaExecEnum.Cupo => $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, por lecturas en curso o por otras ya abandonadas cuyo proceso remoto aún no ha terminado (el servidor mantiene su sesión hasta entonces, como mucho hasta el plazo de cada una). Reintenta en unos segundos.",
                 EtapaExecEnum.Conexion => $"{plazo} sin llegar a obtener canal: la conexión con {Destino.Clave} no se estableció a tiempo.",
+                EtapaExecEnum.Apertura => $"{plazo} sin que el servidor confirmara la apertura de su canal exec (puede que la petición ni siquiera llegara a salir, si la conexión con {Destino.Clave} no acepta datos): no se sabe si el comando llegó a arrancar. Su canal cuenta para el límite de lecturas simultáneas hasta que la apertura termine: si el servidor la confirma más tarde, el canal se cierra entonces y lo que llegara a arrancar queda acotado por su plazo remoto.",
                 EtapaExecEnum.Canal => $"{plazo}; se abandona y su canal exec se cierra (el servidor lo libera cuando termina su proceso remoto, como mucho al vencer su plazo).",
                 _ => throw new ArgumentOutOfRangeException(nameof(etapa), etapa, null)
             };

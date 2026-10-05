@@ -1041,6 +1041,40 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Exec_QueVenceSinConfirmarseLaApertura_NoPrometeElPlazoRemoto()
+        {
+            // Arrange: el servidor no confirma la apertura del canal (SSH.NET con el servidor congelado o sin leer).
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaExec = apertura };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act: límite local de 1 s + 3 s.
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = apertura.Release();
+
+            // Assert
+            _ = error.Message.Should().Contain("no terminó en 1 s").And.Contain("sin que el servidor confirmara la apertura").And.Contain("no se sabe si el comando llegó a arrancar")
+                .And.NotContain("como mucho al vencer su plazo");
+        }
+
+        [Fact]
+        public async Task Exec_QueVenceConLaAperturaConfirmada_PrometeElPlazoRemoto()
+        {
+            // Arrange: el canal se abre y el comando no termina.
+            using SemaphoreSlim bloqueo = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoExec = bloqueo };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("no terminó en 1 s").And.Contain("como mucho al vencer su plazo").And.NotContain("confirmara");
+        }
+
+        [Fact]
         public async Task Exec_QueVenceEsperandoLaConexion_DiceQueNoLlegoAObtenerCanal()
         {
             // Arrange: la conexión no termina de establecerse antes que el límite local de la lectura (1 s + 3 s).

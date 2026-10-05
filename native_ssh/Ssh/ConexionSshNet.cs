@@ -96,8 +96,8 @@ namespace NativeSsh.Ssh
             return canal;
         }
 
-        public Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken) =>
-            CanalExecSshNet.EjecutarAsync(_cliente, comando, maxBytesSalida, cancellationToken);
+        public Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken) =>
+            CanalExecSshNet.EjecutarAsync(_cliente, comando, maxBytesSalida, alConfirmarseApertura, cancellationToken);
 
         public void Dispose()
         {

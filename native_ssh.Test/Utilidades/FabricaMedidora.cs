@@ -22,9 +22,9 @@ namespace NativeSsh.Test.Utilidades
 
             public ICanalShell AbrirShell() => interna.AbrirShell();
 
-            public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken)
+            public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
             {
-                ResultadoCanalExec resultado = await interna.EjecutarExecAsync(comando, maxBytesSalida, cancellationToken);
+                ResultadoCanalExec resultado = await interna.EjecutarExecAsync(comando, maxBytesSalida, alConfirmarseApertura, cancellationToken);
                 exec.Enqueue((comando, resultado.Salida.Length + resultado.Errores.Length));
                 return resultado;
             }

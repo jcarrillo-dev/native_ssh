@@ -53,7 +53,7 @@ namespace NativeSsh.Ssh
 
         internal const string MensajeCanalRechazado = "El servidor rechazó abrir otro canal en la conexión SSH: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y 4 canales para las herramientas de lectura). La conexión sigue abierta y el shell de ssh_exec sigue disponible: reintenta en unos segundos o lanza menos operaciones a la vez.";
 
-        public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, CancellationToken cancellationToken)
+        public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
             SshCommand orden = cliente.CreateCommand(comando);
             try
@@ -68,6 +68,8 @@ namespace NativeSsh.Ssh
                     throw new NativeSshException(MensajeCanalRechazado, ex);
                 }
 
+                // ExecuteAsync vuelve cuando el servidor ha confirmado la apertura del canal y respondido a la petición exec.
+                alConfirmarseApertura();
                 return await LeerAsync(orden, ejecucion, maxBytesSalida, cancellationToken).ConfigureAwait(false);
             }
             finally
