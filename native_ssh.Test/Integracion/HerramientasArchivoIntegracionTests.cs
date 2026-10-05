@@ -725,5 +725,34 @@ namespace NativeSsh.Test.Integracion
             _ = Stat(archivo).Should().StartWith("444 ");
             _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
         }
+
+        // Un archivo de solo lectura que hay que sobrescribir en el sitio (aquí por un atributo extendido) no se puede
+        // abrir para escritura sin sudo: falla con un mensaje claro y sin tocarlo, en lugar de un "Permiso denegado".
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_SoloLecturaQueHayQueEscribirEnElSitio_FallaSinTocarloConMensajeClaro(bool isReplace)
+        {
+            // Arrange
+            string archivo = Ruta("solo_lectura_xattr.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"setfattr -n user.marca -v valor '{archivo}' && chmod 444 '{archivo}'");
+            string atributos = AclYAtributos(archivo);
+            string stat = Stat(archivo);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => isReplace
+                    ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues")
+                    : herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("no tiene permiso de escritura").And.Contain("No se ha modificado");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("antes\n");
+            _ = AclYAtributos(archivo).Should().Be(atributos);
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
+        }
     }
 }
