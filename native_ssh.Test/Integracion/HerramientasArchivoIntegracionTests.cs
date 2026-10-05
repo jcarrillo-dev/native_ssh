@@ -419,15 +419,17 @@ namespace NativeSsh.Test.Integracion
 
         // Caso del auditor: certificado 0600/0640 root:ssl-cert en un directorio que el usuario no puede atravesar,
         // editado a través de un enlace con sudo=true. Las comprobaciones sin sudo veían "no existe".
+        // Con el grupo primario (mapeado en la simulación) se recorre la rama atómica de producción: chown/chmod --reference
+        // y mv como root. Con un grupo secundario la simulación no puede hacer chown y cae a la escritura en el sitio.
         [Theory]
-        [InlineData("600", false)]
-        [InlineData("640", false)]
-        [InlineData("600", true)]
-        [InlineData("640", true)]
-        public async Task Sobrescribir_ConSudoEnDirectorioNoAtravesable_ConservaEnlaceModoYGrupo(string modo, bool isReplace)
+        [InlineData("600", false, false)]
+        [InlineData("600", false, true)]
+        [InlineData("640", true, false)]
+        [InlineData("640", true, true)]
+        public async Task Sobrescribir_ConSudoEnDirectorioNoAtravesable_ConservaEnlaceModoYGrupo(string modo, bool isGrupoSecundario, bool isReplace)
         {
             // Arrange
-            string grupo = GrupoSecundario();
+            string grupo = isGrupoSecundario ? GrupoSecundario() : Bash("id -gn");
             string privado = Ruta("priv");
             _ = Directory.CreateDirectory(privado);
             string clave = Path.Combine(privado, "clave.pem");
@@ -447,6 +449,8 @@ namespace NativeSsh.Test.Integracion
             // Assert: con el grupo secundario sin mapear la escritura puede ser en el sitio; lo que importa es conservarlo todo.
             _ = grupo.Should().NotBeEmpty();
             _ = resultado.Reemplazos.Should().Be(isReplace ? 1 : null);
+            if (!isGrupoSecundario)
+                _ = resultado.IsAtomica.Should().BeTrue();
             _ = new FileInfo(enlace).LinkTarget.Should().Be("clave.pem");
             _ = (await File.ReadAllTextAsync(clave)).Should().Be("nuevo\n");
             _ = Stat(clave).Should().StartWith($"{modo} {grupo} ");
