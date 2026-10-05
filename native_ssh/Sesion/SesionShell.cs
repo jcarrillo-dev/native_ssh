@@ -685,7 +685,7 @@ namespace NativeSsh.Sesion
                 }
             }
 
-            CerrarCanal(canal);
+            bool isCierreConfirmado = TryCerrarCanal(canal);
             bool isConectada = conexion is { IsConectada: true };
             string siguiente = isConectada
                 ? "El siguiente comando abrirá un shell nuevo sobre la misma conexión y las variables exportadas se perderán."
@@ -695,10 +695,15 @@ namespace NativeSsh.Sesion
                     ? $"El canal del shell ya no admitía escrituras: se cerró. {siguiente}"
                     : $"El canal del shell ya no admitía escrituras porque se perdió la conexión SSH: se cerró. {siguiente}");
 
+            // Que la conexión sigue abierta solo se afirma si el servidor confirmó el cierre del canal: congelado (o con un
+            // bash que no muere al perder el terminal) no lo confirma, y entonces no se sabe si responde.
             string espera = $"{_opciones.EsperaTrasCtrlC.TotalSeconds:0.#} s";
-            return (DetalleCtrlCEnviado, isConectada
+            if (!isConectada)
+                return (DetalleCtrlCEnviado, $"El proceso no respondió a Ctrl+C en {espera} y se perdió la conexión SSH: se cerró el canal del shell. {siguiente}");
+
+            return (DetalleCtrlCEnviado, isCierreConfirmado
                 ? $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell (la conexión TCP sigue abierta). {siguiente}"
-                : $"El proceso no respondió a Ctrl+C en {espera} y se perdió la conexión SSH: se cerró el canal del shell. {siguiente}");
+                : $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell, pero el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s (puede que no responda, o que el proceso siga vivo sin terminal). {siguiente} Si las operaciones siguientes tampoco responden, ssh_disconnect cierra la conexión.");
         }
 
         private static void FinalizarInterrumpida(Peticion peticion, bool isTiempoAgotado, string detalle, string? aviso) =>
@@ -1092,13 +1097,17 @@ namespace NativeSsh.Sesion
                 CerrarCanal(canal);
         }
 
-        private void CerrarCanal(ICanalShell canal)
+        private void CerrarCanal(ICanalShell canal) => _ = TryCerrarCanal(canal);
+
+        // true si el servidor confirmó el cierre en EsperaCierreCanalShell (o la conexión ya no lo exigía); false si sigue
+        // pendiente o si el canal ya no era el vigente (lo cerró otro).
+        private bool TryCerrarCanal(ICanalShell canal)
         {
             TaskCompletionSource<int>? espera;
             lock (_candadoProceso)
             {
                 if (!ReferenceEquals(_canal, canal))
-                    return;
+                    return false;
 
                 _canal = null;
                 _conexionDelCanal = null;
@@ -1114,7 +1123,7 @@ namespace NativeSsh.Sesion
             // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
             // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.
             Task cierre = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            _ = cierre.Wait(EsperaCierreCanalShell);
+            return cierre.Wait(EsperaCierreCanalShell);
         }
 
         private void LiberarCanal(object? estado)

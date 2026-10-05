@@ -855,6 +855,37 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task TiempoAgotado_SinRespuestaACtrlCNiConfirmacionDelCierre_NoAfirmaQueLaConexionSigueAbierta()
+        {
+            // Arrange: el proceso ignora Ctrl+C y el servidor no confirma el cierre del canal (congelado, o su bash no muere
+            // al perder el terminal): no se puede saber si la conexión sigue viva.
+            using ManualResetEventSlim confirmacion = new(false);
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.CanalActual!.RetenerCierre(confirmacion);
+            Peticion terco;
+            Peticion confirmado;
+
+            try
+            {
+                // Act
+                terco = await EjecutarAsync(sesion, "terco", timeoutSegundos: 0.3);
+            }
+            finally
+            {
+                confirmacion.Set();
+            }
+
+            confirmado = await EjecutarAsync(sesion, "terco", timeoutSegundos: 0.3);
+
+            // Assert: solo con el cierre confirmado por el servidor se afirma que la conexión sigue abierta.
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = terco.Aviso.Should().Contain("no respondió a Ctrl+C").And.Contain("no confirmó el cierre").And.NotContain("sigue abierta");
+            _ = confirmado.Aviso.Should().Contain("no respondió a Ctrl+C").And.Contain("sigue abierta");
+        }
+
+        [Fact]
         public async Task EscrituraBloqueada_ElComandoEnCursoLoAvisaHastaQueTermina()
         {
             // Arrange
