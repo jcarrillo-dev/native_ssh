@@ -277,16 +277,29 @@ namespace NativeSsh.Sesion
         private string DescribirCanalCerradoParaEntrada(Peticion peticion) =>
             $"El canal del shell se cerró (exit, cierre desde el servidor o conexión perdida) mientras se ejecutaba el comando {peticion.IdTexto} en {Destino.Clave}: la entrada no se envió. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo.";
 
-        // La escritura de la entrada falló a mitad o al empezar: no se sabe cuánto llegó (SSH.NET no lo dice).
+        // La escritura de la entrada falló a mitad o al empezar: no se sabe cuánto llegó (SSH.NET no lo dice). El comando pudo
+        // terminar mientras tanto (p. ej. como shell perdido, o cancelado sin Ctrl+C): entonces se dice cómo terminó.
         private string DescribirEntradaFallida(Peticion peticion, IConexionSsh? conexion)
         {
             string parcial = "puede que parte de la entrada llegara al proceso y el resto no";
+            string? terminado = DescribirFinal(peticion);
             return IsCerrando
-                ? $"La sesión con {Destino.Clave} se cerró (ssh_disconnect) mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando termina como cancelado y la siguiente operación abrirá una conexión nueva."
+                ? $"La sesión con {Destino.Clave} se cerró (ssh_disconnect) mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. {terminado ?? "El comando termina como cancelado"} y la siguiente operación abrirá una conexión nueva."
                 : conexion is { IsConectada: true }
-                ? $"El canal del shell de {Destino.Clave} dejó de admitir escrituras mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo."
-                : $"Se perdió la conexión SSH con {Destino.Clave} mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando terminará como shell perdido y el siguiente reconectará y abrirá un shell nuevo.";
+                ? $"El canal del shell de {Destino.Clave} dejó de admitir escrituras mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. {terminado ?? "El comando terminará como shell perdido"} y el siguiente abrirá un shell nuevo."
+                : $"Se perdió la conexión SSH con {Destino.Clave} mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. {terminado ?? "El comando terminará como shell perdido"} y el siguiente reconectará y abrirá un shell nuevo.";
         }
+
+        private static string? DescribirFinal(Peticion peticion) => peticion.Estado switch
+        {
+            EstadoPeticionEnum.Completado => "El comando ya había terminado (completado)",
+            EstadoPeticionEnum.Cancelado => "El comando ya había terminado como cancelado",
+            EstadoPeticionEnum.TiempoAgotado => "El comando ya había terminado por tiempo agotado",
+            EstadoPeticionEnum.ShellPerdido => "El comando ya había terminado como shell perdido",
+            EstadoPeticionEnum.Error => "El comando ya había terminado con error",
+            EstadoPeticionEnum.Encolado or EstadoPeticionEnum.Ejecutando => null,
+            _ => null
+        };
 
         // Espera acotada al candado de escritura del canal para quien no es el bucle de su escritura (la interrupción de
         // ssh_cancel): false si vence o si la sesión se está cerrando. Como en la entrada, quien lo retiene puede estar en un

@@ -906,10 +906,10 @@ namespace NativeSsh.Test.Sesion
             NativeSshException fallo = (await entradaAlCerrar.Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => viejo.IsDispuesto);
 
-            // Assert: la entrada falla al cerrarse la conexión.
+            // Assert: la entrada falla al cerrarse la conexión y dice en qué estado terminó ya el comando.
             _ = isDispuestoAntesDeCerrar.Should().BeFalse();
             _ = viejo.CierresConEscrituraEnCurso.Should().Be(0);
-            _ = fallo.Message.Should().Contain("parte de la entrada").And.Contain("ssh_disconnect");
+            _ = fallo.Message.Should().Contain("parte de la entrada").And.Contain("ya había terminado como cancelado").And.NotContain("termina como cancelado");
         }
 
         [Fact]
@@ -946,6 +946,33 @@ namespace NativeSsh.Test.Sesion
             _ = error.Message.Should().Contain("sin llegar a obtener canal").And.Contain("shell abandonado");
             _ = otra.CodigoSalida.Should().Be(0);
             _ = fabrica.Ultima.MaxExecSimultaneos.Should().Be(SesionShell.MaxCanalesExecSimultaneos - 1);
+        }
+
+        [Fact]
+        public async Task EntradaColgadaCuyoComandoTerminaComoShellPerdido_AlCerrarLaSesionNoDiceQueTerminaComoCancelado()
+        {
+            // Arrange: la entrada se queda dentro de la escritura y, mientras tanto, el servidor cierra el canal (el comando
+            // termina como shell perdido); después, ssh_disconnect.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            fabrica.Ultima!.ColgarEscrituras();
+            CanalFalso canal = fabrica.Ultima.CanalActual!;
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => canal.EscriturasColgadas == 1);
+            canal.Cerrar();
+            await colgado.Finalizacion.WaitAsync(Limite);
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+            Func<Task> entradaAlCerrar = () => entrada.WaitAsync(Limite);
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = (await entradaAlCerrar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("ya había terminado como shell perdido")
+                .And.NotContain("termina como cancelado");
         }
 
         [Fact]
