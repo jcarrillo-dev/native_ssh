@@ -534,6 +534,24 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Exec_SiLaSesionSeCierraAlIrAUsarLaConexion_DiceQueSeCerroEnLugarDeUnErrorCrudo()
+        {
+            // Arrange: la lectura obtiene la conexión y, antes de usarla, ssh_disconnect cierra la sesión y la libera.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None);
+            fabrica.Ultima!.AlConsultarConexion = () => sesion.DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("se cerró").And.Contain("ssh_disconnect").And.NotContain("disposed");
+            _ = sesion.CanalesExecActivos.Should().Be(0);
+        }
+
+        [Fact]
         public async Task Exec_CancelacionDelLlamante_PropagaOperationCanceledYLiberaElCupo()
         {
             // Arrange

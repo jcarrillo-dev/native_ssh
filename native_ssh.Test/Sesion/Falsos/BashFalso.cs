@@ -78,8 +78,26 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
         private volatile bool _isCanalHuerfano;
+        private volatile bool _isDispuesta;
+        private Action? _alConsultarConexion;
 
-        public bool IsConectada => _isConectada;
+        // El gancho se ejecuta una vez justo después de leer el estado: simula que la conexión cambia (p. ej. se libera)
+        // entre la comprobación y su uso.
+        public bool IsConectada
+        {
+            get
+            {
+                bool isConectada = _isConectada;
+                Interlocked.Exchange(ref _alConsultarConexion, null)?.Invoke();
+                return isConectada;
+            }
+        }
+
+        public Action? AlConsultarConexion
+        {
+            get => Volatile.Read(ref _alConsultarConexion);
+            set => Volatile.Write(ref _alConsultarConexion, value);
+        }
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
 
@@ -98,6 +116,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken)
         {
+            // Como SshClient tras Dispose.
+            ObjectDisposedException.ThrowIf(_isDispuesta, this);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
 
@@ -177,6 +197,7 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Dispose()
         {
+            _isDispuesta = true;
             if (_isCanalHuerfano)
                 _isConectada = false;
             else

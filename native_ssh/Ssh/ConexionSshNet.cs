@@ -1,11 +1,18 @@
 using Renci.SshNet;
 using Renci.SshNet.Common;
+using NativeSsh.Comun;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Ssh
 {
     public sealed class ConexionSshNet : IConexionSsh
     {
+        internal const string MensajeShellRechazado = "El servidor rechazó abrir el canal del shell de ssh_exec en la conexión SSH: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd), ocupadas ahora por canales de las herramientas de lectura (native_ssh usa como mucho 4 a la vez además del shell). La conexión sigue abierta: reintenta ssh_exec en unos segundos, cuando terminen las lecturas en curso.";
+
+        // Mensaje de SSH.NET 2026.0.0 cuando el servidor responde a CHANNEL_OPEN con un rechazo (Open lanza un
+        // SshException genérico, el mismo tipo que para un pty-req o shell rechazados).
+        private const string PrefijoCanalRechazado = "Failed to open a channel";
+
         // Modos PTY: sin eco desde el primer byte y sin conversión LF→CRLF (D5).
         private static readonly Dictionary<TerminalModes, uint> ModosTerminal = new()
         {
@@ -29,7 +36,17 @@ namespace NativeSsh.Ssh
 
         public ICanalShell AbrirShell()
         {
-            CanalShellSshNet canal = new(_cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal), MarcarPerdida);
+            ShellStream flujo;
+            try
+            {
+                flujo = _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal);
+            }
+            catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoCanalRechazado, StringComparison.Ordinal) && IsConectada)
+            {
+                throw new NativeSshException(MensajeShellRechazado, ex);
+            }
+
+            CanalShellSshNet canal = new(flujo, MarcarPerdida);
             // Si la conexión cayó entre la apertura y la suscripción a ErrorOccurred, nadie cerraría el canal.
             if (!IsConectada)
                 canal.Dispose();

@@ -115,6 +115,9 @@ namespace NativeSsh.Sesion
 
         // Un canal cuya conexión ya se perdió no cuenta como shell activo aunque aún no se haya cerrado: ssh_status nunca
         // muestra un shell activo sin conexión (IsConectada se lee antes que este valor).
+        // Cierre en curso o terminado (DisposeAsync lo marca antes que nada).
+        private bool IsCerrando => Volatile.Read(ref _isDispuesto) != 0;
+
         public bool IsShellActivo
         {
             get
@@ -222,11 +225,15 @@ namespace NativeSsh.Sesion
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token);
                 return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
+            catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
+            {
+                // Con la sesión cerrándose, el fallo del canal (cancelación, objeto liberado, conexión cerrada) es
+                // consecuencia del cierre: no se muestra el error crudo de SSH.NET.
+                throw new NativeSshException($"La sesión con {Destino.Clave} se cerró (ssh_disconnect) durante la operación; vuelve a lanzarla.", ex);
+            }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw _cierre.IsCancellationRequested
-                    ? new NativeSshException($"La sesión con {Destino.Clave} se cerró durante la operación.")
-                    : new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se abandona y su canal exec se cierra.");
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se abandona y su canal exec se cierra.");
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -596,7 +603,7 @@ namespace NativeSsh.Sesion
             {
                 canal = conexion.AbrirShell();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not NativeSshException)
             {
                 throw new NativeSshException($"No se pudo abrir un shell en {Destino.Clave}: {ex.Message}", ex);
             }
