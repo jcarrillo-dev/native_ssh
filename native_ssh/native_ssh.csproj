@@ -30,7 +30,11 @@
     <PackageReference Include="JCarrillo.AOT.Core" Version="1.1.4" />
     <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
-    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- SSH.NET desde su código fuente (submódulo en externo/SSH.NET, rama native-ssh sobre la etiqueta 2026.0.0) para poder corregir sus fallos en origen -->
+    <ProjectReference Include="..\externo\SSH.NET\src\Renci.SshNet\Renci.SshNet.csproj" />
   </ItemGroup>
 
 </Project>
