@@ -15,9 +15,25 @@ namespace NativeSsh.Test.Sesion.Falsos
         Salir
     }
 
+    // Cómo se comporta el shell de login antes de ejecutar el 'exec bash' de la inicialización.
+    public enum LoginFalsoEnum
+    {
+        // Ejecuta cada línea en cuanto llega.
+        Instantaneo,
+
+        // Como bash -l con readline: tarda en arrancar y lee la línea del exec con el TTY en modo crudo.
+        // Al volver a modo canónico el núcleo junta todo lo pendiente en una sola "línea", así que el bash
+        // nuevo lee de una vez todas las líneas recibidas durante el login y las guarda en su búfer interno:
+        // el 'read -r __ns_d' de la primera ya no las ve y consume la siguiente línea que llegue.
+        LentoConReadline,
+
+        // El login se traga todo lo recibido mientras arranca (la inicialización completa).
+        ComeInicializacion
+    }
+
     public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal);
 
-    public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7) : IFabricaConexion
+    public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
         private int _conexiones;
 
@@ -31,13 +47,13 @@ namespace NativeSsh.Test.Sesion.Falsos
                 return Task.FromException<IConexionSsh>(error);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo);
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin);
             Ultima = conexion;
             return Task.FromResult<IConexionSsh>(conexion);
         }
     }
 
-    public sealed class ConexionFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo) : IConexionSsh
+    public sealed class ConexionFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IConexionSsh
     {
         private int _shellsAbiertos;
         private volatile bool _isConectada = true;
@@ -54,7 +70,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 throw new InvalidOperationException("Conexión cerrada.");
 
             _ = Interlocked.Increment(ref _shellsAbiertos);
-            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos);
+            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin);
             return CanalActual;
         }
 
@@ -77,19 +93,35 @@ namespace NativeSsh.Test.Sesion.Falsos
         private readonly Func<string, RespuestaFalsa> _guion;
         private readonly int _tamanoTrozo;
         private readonly ConcurrentQueue<string> _comandos;
+        private readonly Queue<string> _bufferInterno = new();
+        private readonly LoginFalsoEnum _login;
+        private readonly Timer? _finLogin;
         private byte[]? _trozoActual;
         private int _desplazamiento;
         private RespuestaFalsa? _enCurso;
         private string? _idEnCurso;
         private int _sigints;
+        private int _marcadoresInicializacion;
+        private int _sincronizaciones;
+        private bool _isEnLogin;
+        private bool _isReadPendiente;
 
-        public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos)
+        public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
             _guion = guion;
             _tamanoTrozo = tamanoTrozo;
             _comandos = comandos;
+            _login = login;
             Emitir("Bienvenido al servidor de pruebas\r\n");
+            if (login == LoginFalsoEnum.Instantaneo)
+                return;
+
+            _isEnLogin = true;
+            _finLogin = new Timer(_ => TerminarLogin(), null, retrasoLogin, Timeout.InfiniteTimeSpan);
         }
+
+        public int MarcadoresInicializacion => Volatile.Read(ref _marcadoresInicializacion);
+        public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
         public bool IsCerrado => _salida.IsAddingCompleted;
         public int SigintsRecibidos => Volatile.Read(ref _sigints);
@@ -152,7 +184,38 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
-        public void Dispose() => Cerrar();
+        public void Dispose()
+        {
+            _finLogin?.Dispose();
+            Cerrar();
+        }
+
+        private void TerminarLogin()
+        {
+            lock (_candado)
+            {
+                if (IsCerrado || !_isEnLogin)
+                    return;
+
+                _isEnLogin = false;
+                if (_login == LoginFalsoEnum.ComeInicializacion)
+                {
+                    _bufferInterno.Clear();
+                    return;
+                }
+
+                // readline del login lee y ejecuta la línea del exec; el resto queda en el búfer del bash nuevo.
+                _ = _bufferInterno.TryDequeue(out _);
+                Drenar();
+            }
+        }
+
+        // Ejecuta lo que bash ya tiene en su búfer interno mientras ningún 'read' ni comando espere entrada.
+        private void Drenar()
+        {
+            while (!_isReadPendiente && _enCurso is null && _bufferInterno.TryDequeue(out string? linea))
+                EjecutarLinea(linea);
+        }
 
         private void CtrlC()
         {
@@ -163,23 +226,51 @@ namespace NativeSsh.Test.Sesion.Falsos
             _idEnCurso = null;
         }
 
+        // Línea recibida por el canal (lo que el TTY entrega al shell).
         private void ProcesarLinea(string linea)
         {
+            if (_isEnLogin)
+            {
+                _bufferInterno.Enqueue(linea);
+                return;
+            }
+
             if (_enCurso is not null)
             {
                 if (_enCurso.Comportamiento == ComportamientoFalsoEnum.PideEntrada)
                 {
-                    Emitir($"recibido:{linea}\n" + Marcador(_idEnCurso!, 0));
                     _enCurso = null;
+                    EmitirConMarcador($"recibido:{linea}\n", _idEnCurso!, 0);
                     _idEnCurso = null;
                 }
 
+                Drenar();
                 return;
             }
 
+            // Cada marcador va seguido de 'read -r __ns_d': la siguiente línea es un dato, no un comando.
+            if (_isReadPendiente)
+            {
+                _isReadPendiente = false;
+                Drenar();
+                return;
+            }
+
+            _bufferInterno.Enqueue(linea);
+            Drenar();
+        }
+
+        private void EjecutarLinea(string linea)
+        {
             if (linea.StartsWith("PS1=", StringComparison.Ordinal))
             {
-                Emitir(Marcador(ExtraerId(linea), 0));
+                _ = Interlocked.Increment(ref _marcadoresInicializacion);
+                EmitirConMarcador("", ExtraerId(linea), 0);
+            }
+            else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
+            {
+                _ = Interlocked.Increment(ref _sincronizaciones);
+                EmitirConMarcador("", ExtraerId(linea), 0);
             }
             else if (linea.StartsWith("__ns_b='", StringComparison.Ordinal))
             {
@@ -197,7 +288,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
             else if (linea.StartsWith("__ns_rc=130", StringComparison.Ordinal))
             {
-                Emitir(Marcador(ExtraerId(linea), 130));
+                EmitirConMarcador("", ExtraerId(linea), 130);
             }
         }
 
@@ -208,7 +299,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             switch (respuesta.Comportamiento)
             {
                 case ComportamientoFalsoEnum.Normal:
-                    Emitir(respuesta.Salida + Marcador(id, respuesta.Codigo));
+                    EmitirConMarcador(respuesta.Salida, id, respuesta.Codigo);
                     break;
                 case ComportamientoFalsoEnum.Salir:
                     Cerrar();
@@ -225,6 +316,12 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
+        private void EmitirConMarcador(string salida, string id, int codigo)
+        {
+            _isReadPendiente = true;
+            Emitir($"{salida}__NSX_{id}_{codigo}__\n");
+        }
+
         private void Emitir(string texto)
         {
             byte[] bytes = Encoding.UTF8.GetBytes(texto);
@@ -237,7 +334,5 @@ namespace NativeSsh.Test.Sesion.Falsos
             int inicio = linea.IndexOf("'__NSX' '", StringComparison.Ordinal) + 9;
             return linea.Substring(inicio, 32);
         }
-
-        private static string Marcador(string id, int codigo) => $"__NSX_{id}_{codigo}__\n";
     }
 }

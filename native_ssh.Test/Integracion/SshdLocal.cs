@@ -10,17 +10,33 @@ namespace NativeSsh.Test.Integracion
     // Arranca pruebas/sshd-local.sh una vez para toda la colección y lo para al terminar.
     public sealed class SshdLocal : IDisposable
     {
+        private readonly Dictionary<string, string> _entorno = [];
+
         public SshdLocal()
+            : this(null, null, null)
+        {
+        }
+
+        // Instancia adicional con su propio puerto, directorio de estado y ForceCommand (no toca la de por defecto).
+        internal SshdLocal(string? puerto, string? directorioEstado, string? forceCommand)
         {
             DirectorioPruebas = BuscarDirectorioPruebas();
+            DirectorioEstado = Path.Combine(DirectorioPruebas, directorioEstado ?? ".estado");
+            if (puerto is not null)
+                _entorno["NATIVE_SSH_PUERTO_PRUEBAS"] = puerto;
+            if (directorioEstado is not null)
+                _entorno["NATIVE_SSH_DIR_ESTADO"] = DirectorioEstado;
+            if (forceCommand is not null)
+                _entorno["NATIVE_SSH_FORCE_COMMAND"] = forceCommand;
+
             string salida = Ejecutar("iniciar");
             Puerto = int.Parse(salida.Trim().Split('\n')[^1], CultureInfo.InvariantCulture);
-            string estado = Path.Combine(DirectorioPruebas, ".estado");
-            RutaClave = Path.Combine(estado, "cliente_ed25519");
-            RutaKnownHosts = Path.Combine(estado, "known_hosts");
+            RutaClave = Path.Combine(DirectorioEstado, "cliente_ed25519");
+            RutaKnownHosts = Path.Combine(DirectorioEstado, "known_hosts");
         }
 
         public string DirectorioPruebas { get; }
+        public string DirectorioEstado { get; }
         public int Puerto { get; }
         public string RutaClave { get; }
         public string RutaKnownHosts { get; }
@@ -59,6 +75,8 @@ namespace NativeSsh.Test.Integracion
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
+            foreach ((string clave, string valor) in _entorno)
+                inicio.Environment[clave] = valor;
             using Process proceso = Process.Start(inicio)!;
             string salida = proceso.StandardOutput.ReadToEnd();
             string error = proceso.StandardError.ReadToEnd();
@@ -81,9 +99,28 @@ namespace NativeSsh.Test.Integracion
         }
     }
 
+    // sshd cuyo login tarda más que el reenvío de la inicialización (2 s), como un bash -l con un perfil lento.
+    public sealed class SshdLocalLoginLento : IDisposable
+    {
+        public const string ForceCommand = "/bin/bash -c 'sleep 3; exec /bin/bash -l'";
+
+        public SshdLocal Sshd { get; } = new(
+            Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_LENTO") ?? "25022",
+            ".estado-lento",
+            ForceCommand);
+
+        public void Dispose() => Sshd.Dispose();
+    }
+
     [CollectionDefinition(Nombre)]
     public sealed class ColeccionSshd : ICollectionFixture<SshdLocal>
     {
         public const string Nombre = "sshd local";
+    }
+
+    [CollectionDefinition(Nombre)]
+    public sealed class ColeccionSshdLoginLento : ICollectionFixture<SshdLocalLoginLento>
+    {
+        public const string Nombre = "sshd local con login lento";
     }
 }

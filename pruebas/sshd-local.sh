@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # sshd en modo usuario para las pruebas de integración. Nunca toca ~/.ssh ni servidores reales.
 # Uso: pruebas/sshd-local.sh iniciar|parar
-# Deja en pruebas/.estado/: cliente_ed25519, known_hosts, puerto y sshd.log.
+# Deja en pruebas/.estado/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto y sshd.log.
+# NATIVE_SSH_FORCE_COMMAND cambia el shell forzado (por defecto /bin/bash -l), p. ej. para simular un login lento.
 set -euo pipefail
 
-DIR="$(cd "$(dirname "$0")" && pwd)/.estado"
+DIR="${NATIVE_SSH_DIR_ESTADO:-$(cd "$(dirname "$0")" && pwd)/.estado}"
 PUERTO="${NATIVE_SSH_PUERTO_PRUEBAS:-22022}"
+FORCE_COMMAND="${NATIVE_SSH_FORCE_COMMAND:-/bin/bash -l}"
 SSHD="${NATIVE_SSH_SSHD:-$(command -v sshd || echo /usr/sbin/sshd)}"
 
 parar() {
@@ -38,7 +40,7 @@ UsePAM no
 StrictModes no
 PrintMotd no
 # El shell de login del usuario puede no ser bash (p. ej. fish): se fuerza un bash de login, como en producción.
-ForceCommand /bin/bash -l
+ForceCommand $FORCE_COMMAND
 CFG
 
     "$SSHD" -f "$DIR/sshd_config" -E "$DIR/sshd.log"

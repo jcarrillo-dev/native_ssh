@@ -6,4 +6,5 @@ TestResults/
 BenchmarkDotNet.Artifacts/
 artefactos/
 pruebas/.estado/
+pruebas/.estado-lento/
 .agents/

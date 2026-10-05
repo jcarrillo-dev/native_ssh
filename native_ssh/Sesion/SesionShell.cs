@@ -56,6 +56,7 @@ namespace NativeSsh.Sesion
         {
             Inicializacion,
             ReenvioInicializacion,
+            Sincronizacion,
             Comando,
             Interrupcion
         }
@@ -418,10 +419,12 @@ namespace NativeSsh.Sesion
                 }
                 catch (TimeoutException)
                 {
-                    // Si el shell de login consumió la línea antes del exec, se reenvía una vez.
-                    // Si no la consumió, el 'read' final de la primera ejecución absorbe la copia.
+                    // Si el shell de login consumió la línea antes del exec, se reenvía una vez. Si no la consumió,
+                    // pueden ejecutarse las dos: la sincronización posterior deja el shell en un estado conocido.
                     _ = TryEscribir(canal, EscrituraEnum.ReenvioInicializacion, id);
                     codigo = await espera.Task.WaitAsync(limite.Token).ConfigureAwait(false);
+                    if (codigo != CodigoCanalCerrado)
+                        codigo = await SincronizarAsync(canal, id, limite.Token).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
@@ -441,6 +444,35 @@ namespace NativeSsh.Sesion
             bool isRecreado = _isShellInicializadoAlgunaVez;
             _isShellInicializadoAlgunaVez = true;
             return isRecreado ? "Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido." : null;
+        }
+
+        // Un login lento con readline (bash -l) lee la línea del exec en modo crudo; al volver a modo canónico el
+        // núcleo junta en una sola "línea" lo pendiente (la inicialización y su reenvío) y el bash nuevo lo lee de
+        // una vez. La copia queda en su búfer, fuera del alcance del 'read', y se ejecutaría con el primer comando
+        // (repite el marcador viejo y su 'read' se come la primera línea del comando). La línea de sincronización,
+        // con un id nuevo, consume esa copia; su salida y los marcadores repetidos de la inicialización se descartan.
+        private async Task<int> SincronizarAsync(ICanalShell canal, Guid idInicializacion, CancellationToken token)
+        {
+            Guid id = Guid.NewGuid();
+            TaskCompletionSource<int> espera = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_candadoEscritura)
+            {
+                lock (_candadoProceso)
+                {
+                    if (!ReferenceEquals(_canal, canal))
+                        return CodigoCanalCerrado;
+
+                    _escaner.Reiniciar(id, idInicializacion);
+                    _salidaActual = null;
+                    _esperaMarcador = espera;
+                }
+
+                Componer(EscrituraEnum.Sincronizacion, id, null);
+                if (!TryEnviarBajoCandado(canal))
+                    throw new NativeSshException($"No se pudo escribir en el shell de {Destino.Clave}.");
+            }
+
+            return await espera.Task.WaitAsync(token).ConfigureAwait(false);
         }
 
         private void IniciarBomba(ICanalShell canal)
@@ -549,6 +581,9 @@ namespace NativeSsh.Sesion
                     break;
                 case EscrituraEnum.ReenvioInicializacion:
                     ConstructorComando.EscribirLineaInicializacion(id, _escritor);
+                    break;
+                case EscrituraEnum.Sincronizacion:
+                    ConstructorComando.EscribirSincronizacion(id, _escritor);
                     break;
                 case EscrituraEnum.Comando:
                     ConstructorComando.EscribirComando(comando, id, _escritor);

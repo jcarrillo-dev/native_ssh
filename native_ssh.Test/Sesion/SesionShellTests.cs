@@ -31,10 +31,10 @@ namespace NativeSsh.Test.Sesion
             _ => new($"eco:{comando}\n")
         };
 
-        private static OpcionesNativeSsh Opciones(int maxConexiones = 4) => new()
+        private static OpcionesNativeSsh Opciones(int maxConexiones = 4, double timeoutInicializacionSegundos = 3) => new()
         {
             EsperaTrasCtrlC = TimeSpan.FromMilliseconds(300),
-            TimeoutInicializacionShell = TimeSpan.FromSeconds(3),
+            TimeoutInicializacionShell = TimeSpan.FromSeconds(timeoutInicializacionSegundos),
             TimeoutConexion = TimeSpan.FromSeconds(3),
             MaxConexionesPorVentana = maxConexiones
         };
@@ -83,6 +83,59 @@ namespace NativeSsh.Test.Sesion
             _ = fabrica.Conexiones.Should().Be(1);
             _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
             _ = sesion.ComandosEjecutados.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task LoginLentoConReadline_ElPrimerComandoSeEjecutaDeVerdad()
+        {
+            // Arrange: el login tarda más que el reenvío (2 s) y luego ejecuta la línea original y el reenvío.
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.LentoConReadline, retrasoLogin: TimeSpan.FromMilliseconds(2300));
+            await using SesionShell sesion = Crear(fabrica, Opciones(timeoutInicializacionSegundos: 6));
+
+            // Act
+            Peticion primera = await EjecutarAsync(sesion, "export NS_X=1");
+            Peticion segunda = await EjecutarAsync(sesion, "dos");
+
+            // Assert
+            _ = primera.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(primera).Should().Be("eco:export NS_X=1\n");
+            _ = Texto(segunda).Should().Be("eco:dos\n");
+            _ = fabrica.Ultima!.Comandos.Should().Equal(["export NS_X=1", "dos"]);
+            _ = fabrica.Ultima.CanalActual!.MarcadoresInicializacion.Should().Be(2);
+            _ = fabrica.Ultima.CanalActual.Sincronizaciones.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task LoginQueComeLaInicializacion_ElReenvioYLaSincronizacionBastan()
+        {
+            // Arrange: el login se traga la primera escritura; solo se ejecuta el reenvío.
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.ComeInicializacion, retrasoLogin: TimeSpan.FromMilliseconds(300));
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion primera = await EjecutarAsync(sesion, "uno");
+
+            // Assert
+            _ = primera.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(primera).Should().Be("eco:uno\n");
+            _ = fabrica.Ultima!.CanalActual!.MarcadoresInicializacion.Should().Be(1);
+            _ = fabrica.Ultima.CanalActual.Sincronizaciones.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task SinReenvio_NoSeEnviaLineaDeSincronizacion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion primera = await EjecutarAsync(sesion, "uno");
+
+            // Assert
+            _ = Texto(primera).Should().Be("eco:uno\n");
+            _ = fabrica.Ultima!.CanalActual!.MarcadoresInicializacion.Should().Be(1);
+            _ = fabrica.Ultima.CanalActual.Sincronizaciones.Should().Be(0);
         }
 
         [Fact]

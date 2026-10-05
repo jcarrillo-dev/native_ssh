@@ -47,6 +47,15 @@ namespace NativeSsh.Protocolo
             EscribirCola(id, escritor);
         }
 
+        // Tras un reenvío de la inicialización. El primer '\n' satisface el 'read' de la línea que ya respondió;
+        // el segundo, el de la copia que bash pueda tener aún en su búfer (se ejecuta después y repite su marcador).
+        // Si no hay ningún 'read' pendiente, son líneas vacías inocuas.
+        public static void EscribirSincronizacion(Guid id, IBufferWriter<byte> escritor)
+        {
+            escritor.Write("\n\n__ns_rc=0; "u8);
+            EscribirCola(id, escritor);
+        }
+
         public static void EscribirInterrupcion(Guid id, IBufferWriter<byte> escritor)
         {
             escritor.Write("\u0003\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
