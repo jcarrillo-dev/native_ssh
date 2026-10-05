@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -102,8 +103,10 @@ namespace NativeSsh.Test.Integracion
         [Fact]
         public async Task MaxSessionsAlcanzado_MensajeClaroYElShellSigueDisponible()
         {
-            // Arrange: el shell ocupa una de las dos sesiones que admite el servidor.
+            // Arrange: el shell ocupa una de las dos sesiones que admite el servidor (su apertura no va en el bucle de
+            // comandos: se espera a que termine para que las lecturas no se adelanten).
             ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 4; echo fin", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarSesiones().Single().IsShellActivo);
             await File.WriteAllTextAsync(Path.Combine(_directorio, "a.txt"), "uno\n");
 
             // Act: cuatro canales a la vez (el cupo local) con un solo hueco en el servidor.
