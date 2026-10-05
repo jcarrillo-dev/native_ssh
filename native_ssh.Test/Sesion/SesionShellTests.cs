@@ -749,6 +749,81 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task EnviarEntrada_ConElBucleColgadoEnUnaEscritura_NoSeCuelgaYDiceComoLiberarlo()
+        {
+            // Arrange: el bucle se queda dentro de la escritura del comando, con _candadoEscritura tomado.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.ColgarEscrituras();
+            Peticion colgado = Nueva("dos");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.CanalActual!.EscriturasColgadas == 1);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Func<Task> enviar = () => Task.Run(() => sesion.EnviarEntrada(colgado, "x", isEnviarEnter: true)).WaitAsync(Limite);
+
+            // Assert: la entrada se rechaza al vencer su espera, sin quedarse esperando a la escritura del bucle.
+            _ = (await enviar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("ssh_disconnect").And.Contain("no se envió");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+        }
+
+        [Fact]
+        public async Task EnviarEntrada_EsperandoAlCandadoDeEscritura_AtiendeSuTokenYElCierreDeLaSesion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.ColgarEscrituras();
+            Peticion colgado = Nueva("dos");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.CanalActual!.EscriturasColgadas == 1);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(200));
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Func<Task> cancelada = () => Task.Run(() => sesion.EnviarEntrada(colgado, "x", isEnviarEnter: true, cancelacion.Token)).WaitAsync(Limite);
+            Task<bool> durante = Task.Run(() => sesion.EnviarEntrada(colgado, "y", isEnviarEnter: true));
+            _ = await cancelada.Should().ThrowAsync<OperationCanceledException>();
+            TimeSpan tiempoCancelada = reloj.Elapsed;
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+            Func<Task> cerrada = () => durante.WaitAsync(Limite);
+
+            // Assert: ninguna se queda esperando a que el servidor acepte la escritura del bucle.
+            _ = tiempoCancelada.Should().BeLessThan(TimeSpan.FromSeconds(1.5));
+            _ = (await cerrada.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("cerr");
+        }
+
+        [Fact]
+        public async Task EscrituraBloqueada_ElComandoEnCursoLoAvisaHastaQueTermina()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.ColgarEscrituras();
+            Peticion colgado = Nueva("dos");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.CanalActual!.EscriturasColgadas == 1);
+            string? avisoInicial = colgado.Aviso;
+
+            // Act: pasa el umbral del aviso.
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, Limite);
+            string? avisoBloqueado = colgado.Aviso;
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+
+            // Assert: el aviso solo aparece al superar el umbral y desaparece al terminar (el estado final tiene el suyo).
+            _ = avisoInicial.Should().BeNull();
+            _ = avisoBloqueado.Should().Contain("ssh_disconnect").And.Contain("ssh_cancel");
+            _ = sesion.SegundosEnEscritura.Should().BeNull();
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = colgado.Aviso.Should().NotContain("ssh_disconnect");
+        }
+
+        [Fact]
         public async Task Limitador_RechazaLaReconexion()
         {
             // Arrange

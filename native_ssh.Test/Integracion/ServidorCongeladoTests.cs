@@ -108,6 +108,71 @@ namespace NativeSsh.Test.Integracion
             _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
         }
 
+        // R05/R06 de la auditoría del E-quater: con el servidor sin leer, una escritura grande al shell llena el envío TCP y
+        // el bucle se queda dentro de ella, con el candado de escritura de SSH.NET tomado (ssh_write_file de 200 KiB como en
+        // R06; ssh_exec de 1 MiB como en R05). ssh_input no se cuelga, ssh_cancel avisa de la escritura atascada y
+        // ssh_disconnect vuelve en pocos segundos (antes del parche de SSH.NET no volvía nunca); después se reconecta con
+        // una conexión nueva.
+        [Theory]
+        [InlineData(200, true)]
+        [InlineData(1024, false)]
+        public async Task CongeladoConUnaEscrituraAlShellBloqueada_DisconnectVuelveYLaSiguienteReconecta(int kib, bool isEscrituraArchivo)
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = Opciones(TimeSpan.FromSeconds(15)) with { EsperaTrasCtrlC = TimeSpan.FromSeconds(1) };
+            await using GestorSesiones gestor = Gestor(opciones);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            string destino = _sshd.Sshd.Destino.Clave;
+            _ = await herramientas.EjecutarAsync(destino, "true");
+            SesionShell sesion = gestor.ListarSesiones().Single();
+            string[] propios = _sshd.Sshd.ProcesosDeConexion();
+            int aceptadas = _sshd.Sshd.ConexionesAceptadas();
+            string relleno = new('a', kib * 1024);
+            Task operacion;
+            string id;
+            string entrada;
+            ResultadoComando cancelado;
+            bool isDesconectado;
+            TimeSpan duracionDesconexion;
+
+            // Act
+            try
+            {
+                _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
+                operacion = isEscrituraArchivo
+                    ? herramientas.EscribirArchivoAsync(destino, Path.Combine(_sshd.Directorio, "destino.txt"), relleno, overwrite: true)
+                    : herramientas.EjecutarAsync(destino, $": {relleno}; echo grande", timeoutSegundos: 60, esperarSegundos: 0);
+                await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
+                id = sesion.PeticionActual!.IdTexto;
+                entrada = await MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(id, "x", esperarSegundos: 0).WaitAsync(EsperaMaximaCongelado));
+                cancelado = await herramientas.CancelarAsync(id).WaitAsync(EsperaMaximaCongelado);
+                Stopwatch reloj = Stopwatch.StartNew();
+                Task<ResultadoAccion> desconexion = herramientas.DesconectarAsync(destino);
+                isDesconectado = await Task.WhenAny(desconexion, Task.Delay(EsperaMaximaCongelado)) == desconexion;
+                duracionDesconexion = reloj.Elapsed;
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"kill -CONT {string.Join(' ', propios)}");
+            }
+
+            string fallo = await MensajeDeFalloAsync(operacion.WaitAsync(EsperaMaximaCongelado));
+            Peticion peticion = gestor.BuscarPeticion(id);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20);
+
+            // Assert
+            _ = entrada.Should().Contain("no se envió").And.Contain("ssh_disconnect");
+            _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = cancelado.Aviso.Should().Contain("ssh_cancel no puede interrumpir").And.Contain("ssh_disconnect");
+            _ = isDesconectado.Should().BeTrue();
+            _ = duracionDesconexion.Should().BeLessThan(TimeSpan.FromSeconds(8));
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            if (isEscrituraArchivo)
+                _ = fallo.Should().Contain(id);
+            _ = siguiente.Salida.Should().Be("siguiente\n");
+            _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas + 1);
+        }
+
         [Fact]
         public async Task CongeladoAlReabrirElShell_ElComandoVenceASuTiempoYElSiguienteFuncionaSinShellHuerfano()
         {

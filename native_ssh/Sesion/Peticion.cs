@@ -18,6 +18,7 @@ namespace NativeSsh.Sesion
         private volatile bool _isCancelacionSolicitada;
         private int _codigoSalida = -1;
         private string? _aviso;
+        private Func<string?>? _avisoEnCurso;
 
         public Peticion(DestinoSsh destino, string comando, TimeSpan timeout, int maxBytesSalida, TimeProvider reloj)
         {
@@ -41,7 +42,9 @@ namespace NativeSsh.Sesion
 
         // Se escriben antes que el estado final (Volatile.Write): quien lee primero Estado ve valores coherentes.
         public int CodigoSalida => Volatile.Read(ref _codigoSalida);
-        public string? Aviso => Volatile.Read(ref _aviso);
+        // Mientras no termina, el aviso es el de la fuente fijada con FijarAvisoEnCurso (p. ej. una escritura al shell que el
+        // servidor no acepta); al terminar, el del estado final.
+        public string? Aviso => IsFinalizada ? Volatile.Read(ref _aviso) : Volatile.Read(ref _avisoEnCurso)?.Invoke();
         public EstadoPeticionEnum Estado => (EstadoPeticionEnum)Volatile.Read(ref _estado);
         public bool IsFinalizada => Estado.IsFinal();
         public bool IsCancelacionSolicitada => _isCancelacionSolicitada;
@@ -86,6 +89,8 @@ namespace NativeSsh.Sesion
                 return true;
             }
         }
+
+        public void FijarAvisoEnCurso(Func<string?> fuente) => Volatile.Write(ref _avisoEnCurso, fuente);
 
         public bool TryFinalizar(EstadoPeticionEnum estado, int codigo, string? aviso)
         {

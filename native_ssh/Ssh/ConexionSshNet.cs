@@ -41,8 +41,13 @@ namespace NativeSsh.Ssh
         // - apertura de canal y peticiones pty-req, shell y exec (ChannelSession): SesionShell las hace fuera del bucle de
         //   comandos y sin candados, y un canal cuya apertura termina tarde se cierra o se reutiliza;
         // - escribir en el canal del shell con la ventana del servidor agotada (Channel.SendData) y cualquier envío durante
-        //   una renegociación de claves (Session.SendMessage): esperan a que el servidor responda o a que caiga la conexión;
-        //   cerrar la sesión (ssh_disconnect) libera la conexión y las desbloquea;
+        //   una renegociación de claves (Session.SendMessage): esperan a que el servidor responda o a que caiga la conexión.
+        //   No es la única escritura que puede no volver: si el servidor deja de leer, el envío TCP se llena y Socket.Send
+        //   se bloquea sin plazo (eso no depende de Timeout). Liberar la conexión (ssh_disconnect) las desbloquea todas
+        //   gracias al parche de externo/SSH.NET (rama native-ssh, "Do not block Session.Dispose on a send that the server
+        //   does not accept"): Session.Dispose no espera más de 1 s al candado de escritura que retiene el envío bloqueado
+        //   (sin él no envía SSH_MSG_DISCONNECT) y cierra el socket, lo que hace fallar ese Send; sin el parche Dispose se
+        //   quedaba esperando ese candado para siempre;
         // - keepalive: solo durante una renegociación sin respuesta, y los siguientes se saltan mientras tanto.
         // No cambia la desconexión: DisconnectMessage se admite durante una renegociación y la espera del hilo de mensajes
         // no tiene plazo. El hilo de mensajes de SSH.NET no puede quedarse esperando una renegociación: entre KEXINIT y

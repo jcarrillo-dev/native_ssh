@@ -266,7 +266,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         // Desde ahora escribir en el canal del shell no vuelve hasta que se libera la conexión, y entonces falla: como
-        // SSH.NET con la ventana del servidor agotada o una renegociación de claves sin respuesta.
+        // SSH.NET (parcheado en externo/SSH.NET) con el envío TCP lleno porque el servidor no lee, la ventana del canal
+        // agotada o una renegociación de claves sin respuesta. Cerrar solo el canal no la desbloquea, y el propio cierre
+        // espera hasta entonces (Channel.Close necesita el candado de escritura de la sesión para enviar EOF y CLOSE).
         public void ColgarEscrituras() => CanalActual?.ColgarEscrituras(_liberada);
 
         // La siguiente apertura del shell falla porque la conexión cae a mitad.
@@ -440,6 +442,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         public void Dispose()
         {
             _isDispuesto = true;
+            if (Volatile.Read(ref _liberacionEscrituras) is { } liberacion && EscriturasColgadas > 0)
+                liberacion.Wait();
             Volatile.Read(ref _confirmacionCierre)?.Wait();
             _finLogin?.Dispose();
             Cerrar();
