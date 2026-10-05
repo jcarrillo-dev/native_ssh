@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using FluentAssertions;
+using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -71,6 +72,46 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = error.Message.Should().Contain("TiempoAgotado");
             _ = siguiente.Should().Be("[Líneas 1-1 de 1]\nuno\n");
+        }
+
+        [Fact]
+        public async Task ReemplazarContenido_ArchivoMayorQueElMaximoEditable_SeRechazaSinTocarlo()
+        {
+            // Arrange: una línea de más del límite (773 184 bytes con el máximo por defecto).
+            string archivo = Ruta("grande.txt");
+            string contenido = "objetivo\n" + new string('x', 800_000) + "\n";
+            await File.WriteAllTextAsync(archivo, contenido);
+            DateTime modificado = File.GetLastWriteTimeUtc(archivo);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "objetivo", "cambiado", 1, 1))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("supera el máximo editable");
+            _ = error.Message.Should().Contain("773184");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(contenido);
+            _ = File.GetLastWriteTimeUtc(archivo).Should().Be(modificado);
+            _ = Directory.GetFiles(_directorio).Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task LeerArchivo_RangoCuyaSalidaSuperaElMaximo_LanzaErrorSinDevolverLaCola()
+        {
+            // Arrange: 2 000 líneas de 1 000 bytes = 2 MB > 1 MiB por petición.
+            string archivo = Ruta("largo.txt");
+            await File.WriteAllLinesAsync(archivo, Enumerable.Range(1, 2000).Select(i => $"{i:D6}" + new string('y', 993)));
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(Destino, archivo, 1, 2000))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            string parcial = await herramientas.LeerArchivoAsync(Destino, archivo, 1999, 2000);
+
+            // Assert
+            _ = error.Message.Should().Contain("superó el máximo");
+            _ = parcial.Should().StartWith("[Líneas 1999-2000 de 2000]\n001999");
         }
     }
 }

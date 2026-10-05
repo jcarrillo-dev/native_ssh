@@ -27,6 +27,7 @@ namespace NativeSsh.Test.Herramientas
 
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
+            comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
@@ -38,7 +39,7 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
             comando.Contains("unset __NS_CWD") ? new("/home/ana\n", 0) :
             comando.StartsWith("export __NS_CWD=", StringComparison.Ordinal) ? new("", 0) :
-            comando.Contains("base64 <") ? SimularLecturaBase64(comando) :
+            comando.Contains("| base64\n") ? SimularLecturaBase64(comando) :
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
@@ -55,6 +56,26 @@ namespace NativeSsh.Test.Herramientas
                     : comando.Contains("archivo_multiples.txt", StringComparison.Ordinal)
                         ? new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nrepetido\nrepetido\nlinea 4\n")) + "\n", 0)
                         : new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n")) + "\n", 0);
+
+        // Más de 16 KiB por encima de MaxBytesSalidaPorPeticion de las pruebas de descarte: el principio se pierde.
+        private const int BytesSalidaEnorme = 64 * 1024;
+        private const int MaxBytesSalidaPequena = 20_000;
+
+        private static RespuestaFalsa SimularSalidaEnorme(string comando)
+        {
+            string texto = string.Concat(Enumerable.Range(0, BytesSalidaEnorme / 32).Select(i => $"linea {i:D6} xxxxxxxxxxxxxxxxxx\n"));
+            return comando.Contains("base64", StringComparison.Ordinal) && !comando.Contains("base64 -d", StringComparison.Ordinal)
+                ? new(Convert.ToBase64String(Encoding.UTF8.GetBytes(texto), Base64FormattingOptions.InsertLineBreaks).Replace("\r\n", "\n", StringComparison.Ordinal) + "\n", 0)
+                : new(texto, 0);
+        }
+
+        private static (FabricaFalsa Fabrica, GestorSesiones Gestor, HerramientasSsh Herramientas) CrearConSalidaPequena()
+        {
+            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", MaxBytesSalidaPorPeticion = MaxBytesSalidaPequena, EsperaTrasCtrlC = TimeSpan.FromMilliseconds(300) };
+            FabricaFalsa fabrica = new(Guion, tamanoTrozo: 4096);
+            GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            return (fabrica, gestor, new HerramientasSsh(gestor, opciones));
+        }
 
         private static RespuestaFalsa SimularValidacionCwd(string comando) =>
             comando.Contains("ruta_inexistente")
@@ -371,6 +392,105 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("Encolado");
             _ = _gestor.ListarPeticiones().First(p => p.Comando.Contains("grep -rnI", StringComparison.Ordinal)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = await _herramientas.CancelarAsync(colgado.Id);
+        }
+
+        [Fact]
+        public async Task ReadFile_SalidaConDatosDescartados_LanzaErrorSinDevolverLaCola()
+        {
+            // Arrange
+            (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync("servidor", "archivo_enorme.txt", 1, 5000))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("superó");
+            _ = error.Message.Should().NotContain("linea 00");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_LecturaConDatosDescartados_AbortaSinEscribir()
+        {
+            // Arrange
+            (FabricaFalsa fabrica, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_enorme.txt", "linea 002000", "cambiada", 1, 3000))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("superó");
+            _ = error.Message.Should().Contain("No se ha escrito nada");
+            _ = fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task SearchFindListDir_SalidaConDatosDescartados_LanzanErrorExplicito()
+        {
+            // Arrange
+            (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+
+            // Act
+            NativeSshException errorSearch = (await FluentActions.Awaiting(() => herramientas.BuscarAsync("servidor", "enorme"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException errorFind = (await FluentActions.Awaiting(() => herramientas.BuscarPorNombreAsync("servidor", "*.cs", "dir_enorme"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException errorList = (await FluentActions.Awaiting(() => herramientas.ListarDirectoriosAsync("servidor", "dir_enorme"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = errorSearch.Message.Should().Contain("superó");
+            _ = errorFind.Message.Should().Contain("superó");
+            _ = errorList.Message.Should().Contain("superó");
+        }
+
+        [Theory]
+        [InlineData(1024 * 1024)]
+        [InlineData(64 * 1024)]
+        [InlineData(20_000)]
+        [InlineData(4096 + 77)]
+        [InlineData(4096 + 80)]
+        public void MaxBytesArchivoEditable_SuBase64ConSaltosCabeConMargenYUnByteMasNo(int maxBytesSalida)
+        {
+            // Arrange
+            static long Base64ConSaltos(long bytes)
+            {
+                long caracteres = (bytes + 2) / 3 * 4;
+                return caracteres + ((caracteres + 75) / 76);
+            }
+
+            long disponible = maxBytesSalida - HerramientasSsh.MargenSalidaBase64;
+
+            // Act
+            long maximo = HerramientasSsh.CalcularMaxBytesArchivoEditable(maxBytesSalida);
+
+            // Assert
+            _ = Base64ConSaltos(maximo).Should().BeLessThanOrEqualTo(disponible);
+            _ = Base64ConSaltos(maximo + 1).Should().BeGreaterThan(disponible);
+        }
+
+        [Fact]
+        public void MaxBytesArchivoEditable_ValorDocumentadoConElMaximoPorDefecto()
+        {
+            // Act & Assert: 1 MiB de salida por petición => 773 184 bytes (≈755 KiB) de archivo editable.
+            _ = HerramientasSsh.CalcularMaxBytesArchivoEditable(new OpcionesNativeSsh().MaxBytesSalidaPorPeticion).Should().Be(773_184);
+            _ = HerramientasSsh.CalcularMaxBytesArchivoEditable(HerramientasSsh.MargenSalidaBase64).Should().Be(0);
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ComandoDeLectura_CompruebaElTamanoAntesDeLeer()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b", 1, 5);
+
+            // Assert
+            string lectura = _fabrica.Ultima!.Comandos.First(c => c.Contains("base64", StringComparison.Ordinal));
+            _ = lectura.Should().Contain("773184");
+            _ = lectura.Should().Contain("supera el máximo editable");
         }
 
         [Theory]

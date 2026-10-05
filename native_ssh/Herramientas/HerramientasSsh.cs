@@ -24,6 +24,25 @@ namespace NativeSsh.Herramientas
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
 
+        // ssh_replace_file_content lee el archivo con 'base64', que parte en líneas de 76 caracteres + '\n':
+        // cada línea de 77 bytes de salida codifica 57 bytes del archivo. Se reserva un margen para avisos (sudo, stderr).
+        // Con MaxBytesSalidaPorPeticion por defecto (1 MiB) el archivo editable más grande es de 773 184 bytes (≈755 KiB).
+        internal const int MargenSalidaBase64 = 4096;
+        private const int BytesLineaBase64 = 77;
+        private const int BytesArchivoPorLineaBase64 = 57;
+
+        internal static long CalcularMaxBytesArchivoEditable(int maxBytesSalida)
+        {
+            long disponible = (long)maxBytesSalida - MargenSalidaBase64;
+            if (disponible <= 0)
+                return 0;
+
+            // La última línea incompleta admite grupos de 4 caracteres (3 bytes) más su '\n'.
+            long resto = disponible % BytesLineaBase64;
+            long gruposFinales = resto > 0 ? (resto - 1) / 4 : 0;
+            return (disponible / BytesLineaBase64 * BytesArchivoPorLineaBase64) + (gruposFinales * 3);
+        }
+
         // Solo para pruebas: sustituye el timeout de todas las herramientas de archivo y búsqueda.
         internal TimeSpan? TimeoutForzado { get; init; }
 
@@ -176,10 +195,13 @@ namespace NativeSsh.Herramientas
             Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticion);
 
-            string textoCompleto = ReconstruirSalida(peticion);
-            return peticion.CodigoSalida != 0
-                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoCompleto.Trim())
-                : textoCompleto;
+            if (peticion.CodigoSalida != 0)
+            {
+                string textoError = ReconstruirSalida(peticion, out _);
+                throw new NativeSshException(string.IsNullOrWhiteSpace(textoError) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoError.Trim());
+            }
+
+            return ReconstruirSalidaCompleta(peticion, "No se devuelve contenido parcial: lee un rango de líneas menor (lineaInicio/lineaFin).");
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
@@ -245,7 +267,7 @@ namespace NativeSsh.Herramientas
             Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticion);
 
-            string textoCompleto = ReconstruirSalida(peticion);
+            string textoCompleto = ReconstruirSalida(peticion, out _);
             return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim())
                 : append
@@ -304,7 +326,7 @@ namespace NativeSsh.Herramientas
 
             ExigirCompletada(peticion);
 
-            string salida = ReconstruirSalida(peticion).Trim();
+            string salida = ReconstruirSalidaCompleta(peticion, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.").Trim();
             if ((peticion.CodigoSalida == 1 || (peticion.CodigoSalida == 2 && !salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))) && string.IsNullOrEmpty(salida))
                 return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.";
 
@@ -364,7 +386,7 @@ namespace NativeSsh.Herramientas
 
             ExigirCompletada(peticion);
 
-            string salida = ReconstruirSalida(peticion).Trim();
+            string salida = ReconstruirSalidaCompleta(peticion, "Refina la ruta o reduce la profundidad.").Trim();
             if (peticion.CodigoSalida != 0)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al listar directorios (código {peticion.CodigoSalida})." : salida);
 
@@ -428,7 +450,7 @@ namespace NativeSsh.Herramientas
 
             ExigirCompletada(peticion);
 
-            string salida = ReconstruirSalida(peticion).Trim();
+            string salida = ReconstruirSalidaCompleta(peticion, "Refina la ruta, el patrón o la profundidad.").Trim();
             if (peticion.CodigoSalida != 0)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error en búsqueda por nombre (código {peticion.CodigoSalida})." : salida);
 
@@ -472,7 +494,7 @@ namespace NativeSsh.Herramientas
 
             ExigirCompletada(peticion);
 
-            string salida = ReconstruirSalida(peticion).Trim();
+            string salida = ReconstruirSalida(peticion, out _).Trim();
             if (salida == "NO_EXISTE")
                 return JsonSerializer.Serialize(new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe."), ContextoJsonNativeSsh.Default.ResultadoMetadatos);
 
@@ -515,7 +537,7 @@ namespace NativeSsh.Herramientas
 
                 if (peticionReset.CodigoSalida != 0)
                 {
-                    string errorReset = ReconstruirSalida(peticionReset).Trim();
+                    string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
                     throw new NativeSshException(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset);
                 }
 
@@ -542,11 +564,11 @@ namespace NativeSsh.Herramientas
 
             if (peticionValidacion.CodigoSalida != 0)
             {
-                string salidaError = ReconstruirSalida(peticionValidacion).Trim();
+                string salidaError = ReconstruirSalida(peticionValidacion, out _).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError);
             }
 
-            string pwdReal = ReconstruirSalida(peticionValidacion).Trim();
+            string pwdReal = ReconstruirSalida(peticionValidacion, out _).Trim();
             string pwdRealEscapado = "'" + pwdReal.Replace("'", "'\\''") + "'";
             string comandoExport = $"export __NS_CWD={pwdRealEscapado}";
             Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
@@ -554,7 +576,7 @@ namespace NativeSsh.Herramientas
 
             if (peticionExport.CodigoSalida != 0)
             {
-                string errorExport = ReconstruirSalida(peticionExport).Trim();
+                string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport);
             }
 
@@ -587,6 +609,8 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
+            string prefijoSudo = sudo ? "sudo " : string.Empty;
+            long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
             string comandoLectura = $$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
@@ -598,7 +622,17 @@ namespace NativeSsh.Herramientas
                   printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                {{(sudo ? "sudo base64" : "base64")}} < {{rutaEscapada}}
+                tam=$({{prefijoSudo}}stat -L -c %s -- {{rutaEscapada}} 2>/dev/null || {{prefijoSudo}}stat -L -f %z -- {{rutaEscapada}} 2>/dev/null)
+                if [ -z "$tam" ]; then
+                  printf 'Error: no se pudo obtener el tamaño de: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                if [ "$tam" -gt {{maxBytesEditable}} ]; then
+                  printf 'Error: el archivo %s ocupa %s bytes y supera el máximo editable con ssh_replace_file_content ({{maxBytesEditable}} bytes). No se ha modificado.\n' {{rutaEscapada}} "$tam" >&2
+                  exit 1
+                fi
+                set -o pipefail
+                {{prefijoSudo}}cat -- {{rutaEscapada}} | base64
                 )
                 """.ReplaceLineEndings("\n");
 
@@ -607,11 +641,11 @@ namespace NativeSsh.Herramientas
 
             if (peticionLectura.CodigoSalida != 0)
             {
-                string salidaError = ReconstruirSalida(peticionLectura).Trim();
+                string salidaError = ReconstruirSalida(peticionLectura, out _).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al leer el archivo para reemplazo (código {peticionLectura.CodigoSalida})." : salidaError);
             }
 
-            string salidaBase64 = ReconstruirSalida(peticionLectura).Replace("\r", string.Empty, StringComparison.Ordinal).Replace("\n", string.Empty, StringComparison.Ordinal).Trim();
+            string salidaBase64 = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.").Replace("\r", string.Empty, StringComparison.Ordinal).Replace("\n", string.Empty, StringComparison.Ordinal).Trim();
             byte[] bytesArchivo = Convert.FromBase64String(salidaBase64);
             string textoOriginal = Encoding.UTF8.GetString(bytesArchivo);
 
@@ -680,19 +714,30 @@ namespace NativeSsh.Herramientas
             Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionEscritura);
 
-            string salidaEscritura = ReconstruirSalida(peticionEscritura).Trim();
+            string salidaEscritura = ReconstruirSalida(peticionEscritura, out _).Trim();
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
                 : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).";
         }
 
-        private string ReconstruirSalida(Peticion peticion)
+        // Nunca devuelve la cola como si fuera el contenido completo: si se descartó el principio, error.
+        private string ReconstruirSalidaCompleta(Peticion peticion, string consejo)
+        {
+            string texto = ReconstruirSalida(peticion, out bool hasDatosDescartados);
+            return hasDatosDescartados
+                ? throw new NativeSshException($"La salida superó el máximo de {opciones.MaxBytesSalidaPorPeticion} bytes por petición y se descartó su principio. {consejo}")
+                : texto;
+        }
+
+        private string ReconstruirSalida(Peticion peticion, out bool hasDatosDescartados)
         {
             StringBuilder sb = new();
             long desde = 0;
+            hasDatosDescartados = false;
             while (true)
             {
                 PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desde, opciones.MaxBytesPorRespuesta, peticion.Estado.IsFinal());
+                hasDatosDescartados |= pagina.HasDatosDescartados;
                 _ = sb.Append(pagina.Texto);
                 if (!pagina.HasMas)
                     break;
