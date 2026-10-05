@@ -23,7 +23,8 @@ namespace NativeSsh.Herramientas
         long ComandosEjecutados,
         int ConexionesAbiertas,
         int ComandosEnCola,
-        string? PeticionActual);
+        string? PeticionActual,
+        int CanalesExecActivos);
 
     public sealed record ResumenPeticion(
         string Id,

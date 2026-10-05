@@ -35,16 +35,35 @@ namespace NativeSsh.Protocolo
             EscribirCola(id, escritor);
         }
 
-        public static void EscribirInicializacion(Guid id, IBufferWriter<byte> escritor)
+        public static void EscribirInicializacion(Guid id, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
         {
             escritor.Write("exec bash --noediting --norc --noprofile\n"u8);
-            EscribirLineaInicializacion(id, escritor);
+            EscribirLineaInicializacion(id, escritor, directorioTrabajo);
         }
 
-        public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor)
+        // directorioTrabajo (fuente de verdad en C#) se reexporta como __NS_CWD; viaja en base64 para que ninguna ruta
+        // rompa la línea. La llamada lo acota a SesionShell.MaxBytesDirectorioTrabajo.
+        public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
         {
-            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; stty -echo -onlcr; __ns_rc=0; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; stty -echo -onlcr; __ns_rc=0; "u8);
+            if (!string.IsNullOrEmpty(directorioTrabajo))
+            {
+                escritor.Write("export __NS_CWD=\"$(printf '%s' '"u8);
+                EscribirBase64(directorioTrabajo, escritor);
+                escritor.Write("' | base64 -d)\"; "u8);
+            }
+
+            escritor.Write("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, escritor);
+        }
+
+        private static void EscribirBase64(string texto, IBufferWriter<byte> escritor)
+        {
+            using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(texto.Length));
+            int longitud = Encoding.UTF8.GetBytes(texto, utf8.Span);
+            Span<byte> destino = escritor.GetSpan(Base64.GetMaxEncodedToUtf8Length(longitud));
+            _ = Base64.EncodeToUtf8(utf8.Span[..longitud], destino, out _, out int escritos);
+            escritor.Advance(escritos);
         }
 
         // Tras un reenvío de la inicialización. El primer '\n' satisface el 'read' de la línea que ya respondió;

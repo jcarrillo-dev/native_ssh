@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -20,14 +21,16 @@ namespace NativeSsh.Test.Integracion
         private readonly SshdLocal _sshd;
         private readonly string _directorio = Path.Combine(Path.GetTempPath(), $"ns_archivos_{Guid.NewGuid():N}");
         private readonly GestorSesiones _gestor;
+        private readonly FabricaMedidora _fabrica;
 
         public HerramientasArchivoIntegracionTests(SshdLocal sshd)
         {
             _sshd = sshd;
             _ = Directory.CreateDirectory(_directorio);
             OpcionesNativeSsh opciones = sshd.Opciones();
+            _fabrica = new FabricaMedidora(sshd.Fabrica(opciones));
             _gestor = new GestorSesiones(
-                sshd.Fabrica(opciones),
+                _fabrica,
                 new LimitadorConexiones(opciones, TimeProvider.System),
                 new RegistroPeticiones(opciones, TimeProvider.System),
                 opciones,
@@ -76,8 +79,11 @@ namespace NativeSsh.Test.Integracion
             string siguiente = await herramientas.LeerArchivoAsync(Destino, normal);
 
             // Assert
-            _ = error.Message.Should().Contain("TiempoAgotado");
+            _ = error.Message.Should().Contain("tiempo agotado");
             _ = siguiente.Should().Be("[Líneas 1-1 de 1]\nuno\n");
+
+            // Y el lector remoto no queda huérfano: sin lector, abrir la FIFO para escribir no termina (timeout = 124).
+            await EsperasPrueba.EsperarHastaAsync(() => Bash($"timeout 0.5 bash -c \"echo x > '{fifo}'\"; echo $?") == "124", TimeSpan.FromSeconds(10));
         }
 
         [Fact]
@@ -134,11 +140,11 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             string busqueda = await herramientas.BuscarAsync(Destino, "coincidencia_acotada", _directorio, maxResultados: 5);
-            long bytesBusqueda = UltimaPeticion("grep -rnI").Salida.Longitud;
+            long bytesBusqueda = _fabrica.UltimosBytes("grep -rnI");
             string nombres = await herramientas.BuscarPorNombreAsync(Destino, "a*.txt", _directorio, maxResultados: 5);
-            long bytesNombres = UltimaPeticion("-name 'a*.txt'").Salida.Longitud;
+            long bytesNombres = _fabrica.UltimosBytes("-name 'a*.txt'");
             string listado = await herramientas.ListarDirectoriosAsync(Destino, _directorio, profundidadMax: 1, maxResultados: 5);
-            long bytesListado = UltimaPeticion("-type d -print").Salida.Longitud;
+            long bytesListado = _fabrica.UltimosBytes("-type d -print");
 
             // Assert: llegan como mucho limite + 1 líneas y se sigue avisando del límite.
             _ = busqueda.Should().Contain("[Límite alcanzado: se muestran 5 coincidencias");
@@ -389,8 +395,5 @@ namespace NativeSsh.Test.Integracion
             _ = File.Exists(Ruta("no_existe.txt")).Should().BeFalse();
             _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(2);
         }
-
-        private Peticion UltimaPeticion(string fragmentoComando) =>
-            _gestor.ListarPeticiones().First(p => p.Comando.Contains(fragmentoComando, StringComparison.Ordinal));
     }
 }

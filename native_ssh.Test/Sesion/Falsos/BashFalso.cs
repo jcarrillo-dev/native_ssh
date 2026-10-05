@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Sesion.Falsos
 {
@@ -41,28 +42,94 @@ namespace NativeSsh.Test.Sesion.Falsos
         public ConexionFalsa? Ultima { get; private set; }
         public Exception? ErrorAlConectar { get; set; }
 
-        public Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
+        // Ensancha la ventana de carrera entre conexiones simultáneas.
+        public TimeSpan RetrasoConexion { get; set; }
+
+        // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
+        public SemaphoreSlim? BloqueoExec { get; set; }
+
+        public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
-                return Task.FromException<IConexionSsh>(error);
+                throw error;
+
+            if (RetrasoConexion > TimeSpan.Zero)
+                await Task.Delay(RetrasoConexion, cancellationToken);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin);
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec };
             Ultima = conexion;
-            return Task.FromResult<IConexionSsh>(conexion);
+            return conexion;
         }
     }
 
     public sealed class ConexionFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IConexionSsh
     {
         private int _shellsAbiertos;
+        private int _execActivos;
+        private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
 
         public bool IsConectada => _isConectada;
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
+
+        // Comandos ejecutados por el shell PTY y scripts de los canales exec (decodificados).
         public ConcurrentQueue<string> Comandos { get; } = new();
+
+        // Solo los comandos de canal exec, tal cual llegan (sin decodificar).
+        public ConcurrentQueue<string> ComandosExec { get; } = new();
+        public int ExecActivos => Volatile.Read(ref _execActivos);
+        public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
+        public SemaphoreSlim? BloqueoExec { get; init; }
         public CanalFalso? CanalActual { get; private set; }
+
+        // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
+        public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken)
+        {
+            if (!_isConectada)
+                throw new InvalidOperationException("Conexión cerrada.");
+
+            string script = ScriptExec.Decodificar(comando);
+            ComandosExec.Enqueue(comando);
+            Comandos.Enqueue(script);
+            int activos = Interlocked.Increment(ref _execActivos);
+            int maximo;
+            while (activos > (maximo = Volatile.Read(ref _maxExecSimultaneos)) && Interlocked.CompareExchange(ref _maxExecSimultaneos, activos, maximo) != maximo)
+            {
+            }
+
+            try
+            {
+                if (BloqueoExec is { } bloqueo)
+                {
+                    await bloqueo.WaitAsync(cancellationToken);
+                    _ = bloqueo.Release();
+                }
+
+                RespuestaFalsa respuesta = guion(script);
+                if (respuesta.Comportamiento != ComportamientoFalsoEnum.Normal)
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+
+                StringBuilder salida = new();
+                StringBuilder errores = new();
+                foreach (string linea in respuesta.Salida.Split('\n'))
+                {
+                    bool isError = linea.StartsWith("Error:", StringComparison.Ordinal) || linea.StartsWith("grep:", StringComparison.Ordinal) || linea.StartsWith("rg:", StringComparison.Ordinal);
+                    _ = (isError ? errores : salida).Append(linea).Append('\n');
+                }
+
+                byte[] bytesSalida = Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
+                byte[] bytesErrores = Encoding.UTF8.GetBytes(errores.ToString());
+                return bytesSalida.Length + bytesErrores.Length > maxBytesSalida
+                    ? new ResultadoCanalExec(null, null, ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty, true)
+                    : new ResultadoCanalExec(respuesta.Codigo, null, bytesSalida, bytesErrores, false);
+            }
+            finally
+            {
+                _ = Interlocked.Decrement(ref _execActivos);
+            }
+        }
 
         public ICanalShell AbrirShell()
         {
@@ -121,6 +188,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         public int MarcadoresInicializacion => Volatile.Read(ref _marcadoresInicializacion);
+        public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
         public bool IsCerrado => _salida.IsAddingCompleted;
@@ -264,6 +332,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         {
             if (linea.StartsWith("PS1=", StringComparison.Ordinal))
             {
+                Inicializaciones.Enqueue(linea);
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);
                 EmitirConMarcador("", ExtraerId(linea), 0);
             }

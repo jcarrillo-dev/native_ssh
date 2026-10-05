@@ -119,7 +119,7 @@ namespace NativeSsh.Herramientas
             List<EstadoSesion> sesiones = [];
             foreach (SesionShell s in gestor.ListarSesiones())
                 if (isSinFiltro || s.Destino.Clave == clave)
-                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto));
+                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos));
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
             List<ResumenPeticion> peticiones = [];
@@ -136,7 +136,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola. La próxima ssh_exec abrirá una conexión nueva (cuenta para el límite de conexiones del servidor).")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor).")]
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto].")] string destino)
         {
@@ -146,7 +146,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
-        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución.")]
+        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd.")]
         public ResultadoAccion ReiniciarShell(
             [Description("usuario@servidor[:puerto].")] string destino)
         {
@@ -156,7 +156,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -201,7 +201,6 @@ namespace NativeSsh.Herramientas
                     """;
             string comando = $$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -218,16 +217,10 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticion);
-
-            if (peticion.CodigoSalida != 0)
-            {
-                string textoError = ReconstruirSalida(peticion, out _);
-                throw new NativeSshException(string.IsNullOrWhiteSpace(textoError) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoError.Trim());
-            }
-
-            return ReconstruirSalidaCompleta(peticion, "No se devuelve contenido parcial: lee un rango de líneas menor (lineaInicio/lineaFin).");
+            SalidaLectura resultado = await EjecutarLecturaAsync(destino, comando, TimeoutLecturaSegundos, "Lee un rango de líneas menor (lineaInicio/lineaFin).", cancellationToken).ConfigureAwait(false);
+            return resultado.Codigo != 0
+                ? throw new NativeSshException(resultado.Error("El comando de lectura falló"))
+                : resultado.Salida;
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
@@ -278,7 +271,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Mucho más rápido y eficiente en tokens que grep.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
@@ -293,13 +286,8 @@ namespace NativeSsh.Herramientas
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
-
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
-
-            ExigirCompletada(peticion);
-
-            string salida = ReconstruirSalidaCompleta(peticion, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.").Trim();
-            return InterpretarBusqueda(peticion.CodigoSalida, salida, patron, rutaEfectiva, limite);
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.", cancellationToken).ConfigureAwait(false);
+            return InterpretarBusqueda(lectura, patron, rutaEfectiva, limite);
         }
 
         private const string PrefijoMotor = "__NS_MOTOR:";
@@ -332,7 +320,6 @@ namespace NativeSsh.Herramientas
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
             return $$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -359,8 +346,10 @@ namespace NativeSsh.Herramientas
         }
 
         // Códigos de rg y grep: 0 = coincidencias, 1 = ninguna, 2 = error (con -s/--no-messages, archivos ilegibles o regex inválida).
-        private static string InterpretarBusqueda(int codigo, string salida, string patron, string rutaEfectiva, int limite)
+        private static string InterpretarBusqueda(SalidaLectura lectura, string patron, string rutaEfectiva, int limite)
         {
+            int codigo = lectura.Codigo;
+            string salida = lectura.Salida.Trim();
             string motor = "desconocido";
             string resultados = salida;
             if (salida.StartsWith(PrefijoMotor, StringComparison.Ordinal))
@@ -371,16 +360,19 @@ namespace NativeSsh.Herramientas
             }
 
             string pie = $"[motor: {motor}]";
+            string errores = lectura.Errores.Trim();
             bool isVacio = string.IsNullOrEmpty(resultados);
-            bool isErrorMotor = resultados.StartsWith("grep:", StringComparison.OrdinalIgnoreCase) || resultados.StartsWith("rg:", StringComparison.OrdinalIgnoreCase);
-            if (codigo == 2 && isErrorMotor)
-                throw new NativeSshException($"{resultados}\n{pie}");
+            bool hasErrores = !string.IsNullOrEmpty(errores);
+            // Sin resultados y con stderr es un error (ruta inexistente, regex inválida...). Un 2 sin stderr solo indica
+            // archivos ilegibles (silenciados con -s/--no-messages): no hubo coincidencias.
+            if (codigo != 0 && isVacio && hasErrores)
+                throw new NativeSshException(motor == "desconocido" ? errores : $"{errores}\n{pie}");
 
             if (codigo is 1 or 2 && isVacio)
                 return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.\n\n{pie}";
 
             if (codigo is not (0 or 2))
-                throw new NativeSshException(isVacio ? $"Error en búsqueda (código {codigo})." : resultados);
+                throw new NativeSshException(lectura.Error("Error en búsqueda"));
 
             string[] lineas = resultados.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
@@ -394,7 +386,7 @@ namespace NativeSsh.Herramientas
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -411,7 +403,6 @@ namespace NativeSsh.Herramientas
 
             string comando = $$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de exploración no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -428,13 +419,11 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta o reduce la profundidad.", cancellationToken).ConfigureAwait(false);
+            if (lectura.Codigo != 0)
+                throw new NativeSshException(lectura.Error("Error al listar directorios"));
 
-            ExigirCompletada(peticion);
-
-            string salida = ReconstruirSalidaCompleta(peticion, "Refina la ruta o reduce la profundidad.").Trim();
-            if (peticion.CodigoSalida != 0)
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al listar directorios (código {peticion.CodigoSalida})." : salida);
+            string salida = lectura.Salida.Trim();
 
             string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
             if (string.IsNullOrEmpty(salida))
@@ -452,7 +441,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -479,7 +468,6 @@ namespace NativeSsh.Herramientas
 
             string comando = $$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ]; then
                   printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -492,13 +480,11 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
+            if (lectura.Codigo != 0)
+                throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
 
-            ExigirCompletada(peticion);
-
-            string salida = ReconstruirSalidaCompleta(peticion, "Refina la ruta, el patrón o la profundidad.").Trim();
-            if (peticion.CodigoSalida != 0)
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error en búsqueda por nombre (código {peticion.CodigoSalida})." : salida);
+            string salida = lectura.Salida.Trim();
 
             if (string.IsNullOrEmpty(salida))
                 return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
@@ -514,7 +500,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
-        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño.")]
+        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -527,7 +513,6 @@ namespace NativeSsh.Herramientas
 
             string comando = $$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
                 if [ ! -e {{rutaEscapada}} ] && [ ! -L {{rutaEscapada}} ]; then
                   echo "NO_EXISTE"
                   exit 0
@@ -539,18 +524,15 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
-
-            ExigirCompletada(peticion);
-
-            string salida = ReconstruirSalida(peticion, out _).Trim();
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutMetadatosSegundos, "Revisa la ruta.", cancellationToken).ConfigureAwait(false);
+            string salida = lectura.Salida.Trim();
             if (salida == "NO_EXISTE")
                 return JsonSerializer.Serialize(new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe."), ContextoJsonNativeSsh.Default.ResultadoMetadatos);
 
             string[] lineas = salida.Split('\n');
             string[] partes = lineas[0].Split('|');
             if (partes.Length < 4)
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al consultar metadatos de '{ruta}'." : salida);
+                throw new NativeSshException(lectura.Error($"Error al consultar metadatos de '{ruta}'"));
 
             string tipo = partes[0].Trim();
             _ = long.TryParse(partes[1].Trim(), CultureInfo.InvariantCulture, out long tamanoBytes);
@@ -579,7 +561,7 @@ namespace NativeSsh.Herramientas
                         : (bytes / (1024.0 * 1024.0 * 1024.0)).ToString("0.#", CultureInfo.InvariantCulture) + " GiB";
 
         [McpServerTool(Name = "ssh_set_cwd", Destructive = true)]
-        [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes sin necesidad de encadenar 'cd dir &&'. Pasa vacío/null para volver a $HOME.")]
+        [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes (ssh_exec y las rutas relativas de las demás herramientas) sin necesidad de encadenar 'cd dir &&'. Se mantiene aunque el shell se recree (ssh_reset_shell, shell perdido) hasta ssh_disconnect. Pasa vacío/null para volver a $HOME.")]
         public async Task<string> FijarDirectorioAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
@@ -587,6 +569,7 @@ namespace NativeSsh.Herramientas
         {
             if (string.IsNullOrWhiteSpace(ruta))
             {
+                gestor.FijarDirectorioTrabajo(destino, null);
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
                 Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset);
@@ -625,6 +608,8 @@ namespace NativeSsh.Herramientas
             }
 
             string pwdReal = ReconstruirSalida(peticionValidacion, out _).Trim();
+            // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
+            gestor.FijarDirectorioTrabajo(destino, pwdReal);
             string pwdRealEscapado = "'" + pwdReal.Replace("'", "'\\''") + "'";
             string comandoExport = $"export __NS_CWD={pwdRealEscapado}";
             Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
@@ -1195,6 +1180,40 @@ namespace NativeSsh.Herramientas
 
             return peticion;
         }
+
+        private readonly record struct SalidaLectura(int Codigo, string Salida, string Errores)
+        {
+            // Mensaje de error: stderr del script ("Error: ..."), o stdout si no lo hubo, o el código.
+            public string Error(string contexto) =>
+                !string.IsNullOrWhiteSpace(Errores) ? Errores.Trim()
+                : !string.IsNullOrWhiteSpace(Salida) ? Salida.Trim()
+                : $"{contexto} (código {Codigo}).";
+        }
+
+        // Herramientas de solo lectura: canal exec sobre la conexión de la sesión, sin cola, sin PTY ni limpieza ANSI
+        // (la salida llega tal cual, \r incluidos). Salida por encima del tope o sin código = error, nunca parcial.
+        private async Task<SalidaLectura> EjecutarLecturaAsync(string destino, string script, int timeoutSegundos, string consejo, CancellationToken cancellationToken)
+        {
+            TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
+            ResultadoCanalExec resultado = await gestor.EjecutarExecAsync(destino, script, timeout, cancellationToken).ConfigureAwait(false);
+            if (resultado.HasExcedidoTope)
+                throw new NativeSshException($"La salida superó el máximo de {opciones.MaxBytesSalidaPorPeticion} bytes por petición; no se devuelve contenido parcial. {consejo}");
+
+            string salida = Encoding.UTF8.GetString(resultado.Salida.Span);
+            string errores = Encoding.UTF8.GetString(resultado.Errores.Span);
+            return resultado.CodigoSalida switch
+            {
+                null => throw new NativeSshException(resultado.SenalSalida is { Length: > 0 } senal
+                    ? $"La operación terminó por la señal {senal} sin código de salida."
+                    : "La operación terminó sin código de salida (¿se cerró el canal?)."),
+                CodigoTimeoutRemoto or CodigoTimeoutRemotoKill => throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se detuvo en el servidor."),
+                int codigo => new SalidaLectura(codigo, salida, errores)
+            };
+        }
+
+        // Códigos de 'timeout' en el servidor (ConstructorComandoExec): 124 al agotarse, 137 si hubo que matarlo con KILL.
+        private const int CodigoTimeoutRemoto = 124;
+        private const int CodigoTimeoutRemotoKill = 137;
 
         private static void ExigirCompletada(Peticion peticion)
         {

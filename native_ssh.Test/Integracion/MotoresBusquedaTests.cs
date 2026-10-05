@@ -49,7 +49,7 @@ namespace NativeSsh.Test.Integracion
         {
             ProcessStartInfo inicio = new("/bin/bash", ["-c", script]) { RedirectStandardOutput = true, RedirectStandardError = true };
             inicio.Environment["PATH"] = _bin;
-            inicio.Environment["__NS_CWD"] = _datos;
+            inicio.WorkingDirectory = _datos;
             using Process proceso = Process.Start(inicio)!;
             string salida = proceso.StandardOutput.ReadToEnd();
             _ = proceso.StandardError.ReadToEnd();

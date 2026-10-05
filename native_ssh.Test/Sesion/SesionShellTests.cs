@@ -431,5 +431,59 @@ namespace NativeSsh.Test.Sesion
             _ = encolada.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = tardia.Estado.Should().Be(EstadoPeticionEnum.Error);
         }
+
+        [Fact]
+        public async Task Exec_AlCerrarLaSesion_TerminaConErrorYNoAbreOtraConexion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(_ => new RespuestaFalsa("", 0, ComportamientoFalsoEnum.Colgado));
+            SesionShell sesion = Crear(fabrica);
+            Task<ResultadoCanalExec> enCurso = sesion.EjecutarExecAsync("sleep 100", TimeSpan.FromSeconds(30), CancellationToken.None);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.CanalesExecActivos == 1);
+
+            // Act
+            await sesion.DisposeAsync();
+            NativeSshException error = (await FluentActions.Awaiting(() => enCurso).Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException tardio = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("se cerró");
+            _ = tardio.Message.Should().Contain("está cerrada");
+            _ = fabrica.Conexiones.Should().Be(1);
+            _ = fabrica.Ultima!.IsConectada.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task Exec_CancelacionDelLlamante_PropagaOperationCanceledYLiberaElCupo()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(_ => new RespuestaFalsa("", 0, ComportamientoFalsoEnum.Colgado));
+            await using SesionShell sesion = Crear(fabrica);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(200));
+
+            // Act & Assert
+            _ = await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("sleep 100", TimeSpan.FromSeconds(30), cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>();
+            _ = sesion.CanalesExecActivos.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task Exec_ErrorDelCanal_SeConvierteEnNativeSshException()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.ErrorAlConectar = new InvalidOperationException("sin red");
+            fabrica.Ultima!.Caer();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("sin red");
+        }
     }
 }

@@ -8,10 +8,26 @@ using NativeSsh.Protocolo;
 namespace NativeSsh.Sesion
 {
     // Un shell PTY persistente por destino. Bucle async que ejecuta la cola FIFO y un hilo de lectura por canal.
+    // Las herramientas de solo lectura usan canales exec sobre la misma conexión TCP, fuera de la cola (EjecutarExecAsync).
+    //
+    // Conexión compartida: _conexion solo se crea o se sustituye bajo _candadoConexion (ObtenerConexionAsync), tanto
+    // desde el bucle como desde los canales exec, así que nunca hay dos TCP a la vez para el destino y ambos pasan por
+    // el mismo LimitadorConexiones. Se lee sin candado (volatile) en el camino rápido. Solo se libera una conexión que ya
+    // no está conectada (se sustituye) o al cerrar la sesión (DisposeAsync, también bajo el candado); un canal exec que
+    // aún la estuviera usando falla con error y no deja nada a medias.
     public sealed class SesionShell : IAsyncDisposable
     {
         public const int TamanoBloqueLectura = 16 * 1024;
         public const int CodigoCanalCerrado = int.MinValue;
+
+        // Canales exec simultáneos por conexión (más el canal del shell): muy por debajo del MaxSessions 10 de OpenSSH
+        // y de SSH.NET. Los que pasen del cupo esperan su turno dentro de su timeout.
+        public const int MaxCanalesExecSimultaneos = 4;
+
+        // __NS_CWD viaja en base64 en la línea de inicialización del TTY (máximo 4095 bytes por línea).
+        public const int MaxBytesDirectorioTrabajo = 1024;
+
+        private static readonly TimeSpan MargenLimiteLocalExec = TimeSpan.FromSeconds(3);
 
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
@@ -26,6 +42,8 @@ namespace NativeSsh.Sesion
         private readonly ArrayBufferWriter<byte> _escritor = new(4096);
         private readonly EscanerMarcador _escaner = new(TamanoBloqueLectura);
         private readonly Task _bucle;
+        private readonly SemaphoreSlim _candadoConexion = new(1, 1);
+        private readonly SemaphoreSlim _cupoExec = new(MaxCanalesExecSimultaneos, MaxCanalesExecSimultaneos);
 
         private ICanalShell? _canal;
         private BufferSalida? _salidaActual;
@@ -40,7 +58,9 @@ namespace NativeSsh.Sesion
         private int _comandosEnCola;
         private long _comandosEjecutados;
         private int _conexionesAbiertas;
+        private int _canalesExecActivos;
         private int _isDispuesto;
+        private volatile string? _directorioTrabajo;
 
         public SesionShell(DestinoSsh destino, IFabricaConexion fabrica, LimitadorConexiones limitador, OpcionesNativeSsh opciones, ILogger logger)
         {
@@ -67,6 +87,15 @@ namespace NativeSsh.Sesion
         public int ConexionesAbiertas => Volatile.Read(ref _conexionesAbiertas);
         public int ComandosEnCola => Volatile.Read(ref _comandosEnCola);
         public Peticion? PeticionActual => _peticionActual;
+        public int CanalesExecActivos => Volatile.Read(ref _canalesExecActivos);
+
+        // Fuente de verdad de __NS_CWD (ruta absoluta validada por ssh_set_cwd, o null = $HOME). Se reexporta al
+        // (re)inicializar el shell PTY y se pasa explícitamente a cada canal exec.
+        public string? DirectorioTrabajo
+        {
+            get => _directorioTrabajo;
+            set => _directorioTrabajo = string.IsNullOrEmpty(value) ? null : value;
+        }
 
         public bool IsShellActivo
         {
@@ -134,8 +163,63 @@ namespace NativeSsh.Sesion
             }
 
             CerrarCanalActual();
-            _conexion?.Dispose();
-            _conexion = null;
+            // Un canal exec que estuviera conectando ya vio _cierre cancelado; tras el candado nadie crea otra conexión.
+            await _candadoConexion.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                _conexion?.Dispose();
+                _conexion = null;
+            }
+            finally
+            {
+                _ = _candadoConexion.Release();
+            }
+        }
+
+        // Canal exec sobre la conexión de la sesión, sin pasar por la cola del shell. 'timeout' cubre la espera de cupo,
+        // la conexión (si no la hay) y la ejecución; al agotarse se cierra el canal y se lanza NativeSshException.
+        public async Task<ResultadoCanalExec> EjecutarExecAsync(string script, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref _isDispuesto) != 0)
+                throw new NativeSshException($"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar la operación.");
+
+            // El script se acota en el servidor con 'timeout'; el límite local, algo mayor, solo actúa si el servidor
+            // no responde (o no tiene 'timeout') y cubre la espera de cupo y la conexión.
+            string comando = ConstructorComandoExec.Construir(script, _directorioTrabajo, timeout);
+            using CancellationTokenSource limite = new(timeout + MargenLimiteLocalExec);
+            using CancellationTokenSource enlazado = CancellationTokenSource.CreateLinkedTokenSource(limite.Token, cancellationToken, _cierre.Token);
+            CancellationToken token = enlazado.Token;
+            bool isCupoTomado = false;
+            try
+            {
+                await _cupoExec.WaitAsync(token).ConfigureAwait(false);
+                isCupoTomado = true;
+                IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
+                _ = Interlocked.Increment(ref _canalesExecActivos);
+                try
+                {
+                    return await conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _canalesExecActivos);
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw _cierre.IsCancellationRequested
+                    ? new NativeSshException($"La sesión con {Destino.Clave} se cerró durante la operación.")
+                    : new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se cerró su canal exec.");
+            }
+            catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
+            {
+                throw new NativeSshException($"Falló el canal exec en {Destino.Clave}: {ex.Message}", ex);
+            }
+            finally
+            {
+                if (isCupoTomado)
+                    _ = _cupoExec.Release();
+            }
         }
 
         private async Task BucleComandosAsync()
@@ -334,20 +418,42 @@ namespace NativeSsh.Sesion
                 _isShellInicializadoAlgunaVez = false;
             }
 
-            IConexionSsh? conexion = _conexion;
-            bool isConectada = conexion is { IsConectada: true };
+            bool isConectada = _conexion is { IsConectada: true };
             if (isConectada && IsShellActivo)
                 return null;
 
             CerrarCanalActual();
-            if (!isConectada)
-            {
-                conexion?.Dispose();
-                _conexion = null;
-                _conexion = await ConectarAsync(token).ConfigureAwait(false);
-            }
+            IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
+            return await AbrirShellAsync(conexion, token).ConfigureAwait(false);
+        }
 
-            return await AbrirShellAsync(_conexion!, token).ConfigureAwait(false);
+        // Única vía para crear o sustituir _conexion (ver el comentario de la clase).
+        private async Task<IConexionSsh> ObtenerConexionAsync(CancellationToken token)
+        {
+            IConexionSsh? actual = _conexion;
+            if (actual is { IsConectada: true })
+                return actual;
+
+            await _candadoConexion.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                if (Volatile.Read(ref _isDispuesto) != 0)
+                    throw new NativeSshException($"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar la operación.");
+
+                actual = _conexion;
+                if (actual is { IsConectada: true })
+                    return actual;
+
+                actual?.Dispose();
+                _conexion = null;
+                IConexionSsh nueva = await ConectarAsync(token).ConfigureAwait(false);
+                _conexion = nueva;
+                return nueva;
+            }
+            finally
+            {
+                _ = _candadoConexion.Release();
+            }
         }
 
         private async Task<IConexionSsh> ConectarAsync(CancellationToken token)
@@ -577,10 +683,10 @@ namespace NativeSsh.Sesion
             switch (tipo)
             {
                 case EscrituraEnum.Inicializacion:
-                    ConstructorComando.EscribirInicializacion(id, _escritor);
+                    ConstructorComando.EscribirInicializacion(id, _escritor, _directorioTrabajo);
                     break;
                 case EscrituraEnum.ReenvioInicializacion:
-                    ConstructorComando.EscribirLineaInicializacion(id, _escritor);
+                    ConstructorComando.EscribirLineaInicializacion(id, _escritor, _directorioTrabajo);
                     break;
                 case EscrituraEnum.Sincronizacion:
                     ConstructorComando.EscribirSincronizacion(id, _escritor);

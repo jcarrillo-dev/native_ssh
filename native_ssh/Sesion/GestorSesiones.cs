@@ -1,3 +1,4 @@
+using System.Text;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Sesion
@@ -30,6 +31,21 @@ namespace NativeSsh.Sesion
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;
+        }
+
+        // Herramientas de solo lectura: canal exec en la sesión del destino, sin pasar por su cola ni por el registro.
+        public Task<ResultadoCanalExec> EjecutarExecAsync(string destinoTexto, string script, TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            DestinoSsh destino = ParsearDestino(destinoTexto);
+            return ObtenerOCrear(destino).EjecutarExecAsync(script, Ajustar(timeout), cancellationToken);
+        }
+
+        public void FijarDirectorioTrabajo(string destinoTexto, string? directorio)
+        {
+            if (directorio is not null && Encoding.UTF8.GetByteCount(directorio) > SesionShell.MaxBytesDirectorioTrabajo)
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes.");
+
+            ObtenerOCrear(ParsearDestino(destinoTexto)).DirectorioTrabajo = directorio;
         }
 
         public Peticion BuscarPeticion(string id) =>

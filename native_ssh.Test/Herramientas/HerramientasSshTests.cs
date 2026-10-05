@@ -27,6 +27,7 @@ namespace NativeSsh.Test.Herramientas
 
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
+            comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
             comando.Contains("sed -n") ? SimularLectura(comando) :
@@ -350,7 +351,7 @@ namespace NativeSsh.Test.Herramientas
             new(_gestor, new OpcionesNativeSsh { UsuarioPorDefecto = "ana", MaxBytesPorRespuesta = 16, EsperaTrasCtrlC = TimeSpan.FromMilliseconds(300) }) { TimeoutForzado = TimeSpan.FromSeconds(1) };
 
         [Fact]
-        public async Task ReadFile_TiempoAgotadoEnElShell_LanzaConElEstadoYNoDevuelveSalidaParcial()
+        public async Task ReadFile_TiempoAgotado_CierraElCanalExecYLanzaSinSalidaParcial()
         {
             // Arrange
             HerramientasSsh herramientas = HerramientasConTimeoutCorto();
@@ -358,48 +359,171 @@ namespace NativeSsh.Test.Herramientas
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync("servidor", "colgado_lectura.txt"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
+            string siguiente = await herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
 
             // Assert
-            _ = error.Message.Should().Contain("TiempoAgotado");
+            _ = error.Message.Should().Contain("tiempo agotado");
             _ = error.Message.Should().NotContain("parcial");
+            _ = siguiente.Should().StartWith("[Líneas 1-3 de 10]");
+            _ = _herramientas.Estado().Sesiones.Should().ContainSingle().Which.CanalesExecActivos.Should().Be(0);
         }
 
         [Fact]
-        public async Task ReadFile_EncoladaTrasComandoColgado_EsperaSuTimeoutCancelaLaPeticionYLanza()
+        public async Task HerramientasDeSoloLectura_VanPorCanalExecSinAbrirElShell()
+        {
+            // Act
+            _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            _ = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
+            _ = await _herramientas.BuscarAsync("servidor", "algo");
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "*.service");
+            _ = await _herramientas.ListarDirectoriosAsync("servidor", "proyecto");
+
+            // Assert
+            ConexionFalsa conexion = _fabrica.Ultima!;
+            _ = conexion.ComandosExec.Count.Should().Be(5);
+            _ = conexion.ShellsAbiertos.Should().Be(0);
+            _ = _gestor.ListarPeticiones().Should().BeEmpty();
+            _ = conexion.ComandosExec.Should().AllSatisfy(c => c.Should().StartWith("bash --noprofile --norc -c '"));
+        }
+
+        [Fact]
+        public async Task EscriturasSetCwdYExec_SiguenPorElShell()
+        {
+            // Act
+            _ = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola");
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b");
+            _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+
+            // Assert
+            _ = _fabrica.Ultima!.ComandosExec.Should().BeEmpty();
+            _ = _fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task ReadFile_ConComandoColgadoEnElShell_NoEsperaDetras()
         {
             // Arrange
-            HerramientasSsh herramientas = HerramientasConTimeoutCorto();
             ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync("servidor", "archivo.txt"))
-                .Should().ThrowAsync<NativeSshException>()).Which;
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3).WaitAsync(TimeSpan.FromSeconds(5));
+            string busqueda = await _herramientas.BuscarAsync("servidor", "algo").WaitAsync(TimeSpan.FromSeconds(5));
 
-            // Assert: la lectura nunca llegó a ejecutarse, se canceló y no bloquea la cola.
-            _ = error.Message.Should().Contain("Encolado");
-            Peticion lectura = _gestor.ListarPeticiones().First(p => p.Comando.Contains("sed -n", StringComparison.Ordinal));
-            _ = lectura.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            // Assert
+            _ = texto.Should().Be("[Líneas 1-3 de 10]\nlinea 1\nlinea 2\nlinea 3\n");
+            _ = busqueda.Should().StartWith("archivo.txt:1:coincidencia encontrada");
             _ = _gestor.BuscarPeticion(colgado.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = _fabrica.Conexiones.Should().Be(1);
             _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         [Fact]
-        public async Task Search_EncoladaTrasComandoColgado_CancelaLaPeticionYLanza()
+        public async Task ReadFile_DevuelveLaSalidaTalCualConLosRetornosDeCarro()
         {
-            // Arrange
-            HerramientasSsh herramientas = HerramientasConTimeoutCorto();
-            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
-            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
-
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.BuscarAsync("servidor", "patron"))
-                .Should().ThrowAsync<NativeSshException>()).Which;
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "crlf.txt");
 
             // Assert
-            _ = error.Message.Should().Contain("Encolado");
-            _ = _gestor.ListarPeticiones().First(p => p.Comando.Contains("grep -rnI", StringComparison.Ordinal)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
-            _ = await _herramientas.CancelarAsync(colgado.Id);
+            _ = texto.Should().Be("[Líneas 1-2 de 2]\nuno\r\ndos\r\n");
+        }
+
+        [Fact]
+        public async Task LecturasSimultaneas_RespetanElLimiteDeCanalesExecPorConexion()
+        {
+            // Arrange
+            using SemaphoreSlim bloqueo = new(0);
+            _fabrica.BloqueoExec = bloqueo;
+            Task<string>[] lecturas = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos + 2).Select(_ => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3))];
+            await EsperasPrueba.EsperarHastaAsync(() => _fabrica.Ultima?.ExecActivos == SesionShell.MaxCanalesExecSimultaneos);
+            await Task.Delay(200);
+            int activosEnEstado = _herramientas.Estado().Sesiones.Single().CanalesExecActivos;
+
+            // Act
+            _ = bloqueo.Release();
+            string[] resultados = await Task.WhenAll(lecturas).WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Assert
+            _ = activosEnEstado.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
+            _ = _fabrica.Ultima!.MaxExecSimultaneos.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
+            _ = resultados.Should().AllSatisfy(r => r.Should().StartWith("[Líneas 1-3 de 10]"));
+            _ = _fabrica.Conexiones.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task LecturasYComandoSimultaneosSinConexion_AbrenUnaSolaConexion()
+        {
+            // Arrange
+            _fabrica.RetrasoConexion = TimeSpan.FromMilliseconds(200);
+
+            // Act
+            Task<string>[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3))];
+            Task<ResultadoComando> comando = _herramientas.EjecutarAsync("servidor", "hola");
+            Task<string> metadatos = _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
+            _ = await Task.WhenAll(lecturas).WaitAsync(TimeSpan.FromSeconds(5));
+            ResultadoComando resultado = await comando.WaitAsync(TimeSpan.FromSeconds(5));
+            _ = await metadatos.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // Assert
+            _ = resultado.Salida.Should().Be("eco:hola\n");
+            _ = _fabrica.Conexiones.Should().Be(1);
+            _ = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task Lectura_TrasCaerLaConexion_ReconectaYElShellReutilizaLaNueva()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            ConexionFalsa primera = _fabrica.Ultima!;
+            primera.Caer();
+
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b");
+
+            // Assert
+            _ = texto.Should().StartWith("[Líneas 1-3 de 10]");
+            _ = comando.Salida.Should().Be("eco:b\n");
+            _ = _fabrica.Conexiones.Should().Be(2);
+            _ = _fabrica.Ultima!.Should().NotBeSameAs(primera);
+            _ = _fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+            _ = _fabrica.Ultima!.ComandosExec.Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task SetCwd_LoGuardaEnLaSesionYLosCanalesExecLoRecibenExplicitamente()
+        {
+            // Act
+            _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+            _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            string conDirectorio = ScriptExec.Decodificar(_fabrica.Ultima!.ComandosExec.Last());
+            _ = await _herramientas.FijarDirectorioAsync("servidor", null);
+            _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            string sinDirectorio = ScriptExec.Decodificar(_fabrica.Ultima!.ComandosExec.Last());
+
+            // Assert
+            _ = conDirectorio.Should().StartWith("export __NS_CWD='/var/www/proyecto'\ncd \"${__NS_CWD:-$HOME}\"");
+            _ = sinDirectorio.Should().StartWith("cd \"${__NS_CWD:-$HOME}\"");
+            _ = _gestor.ListarSesiones().Single().DirectorioTrabajo.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task SetCwd_AlRecrearElShell_SeReexportaElDirectorio()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+            string base64 = Convert.ToBase64String("/var/www/proyecto"u8);
+
+            // Act
+            _ = _herramientas.ReiniciarShell("servidor");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+
+            // Assert
+            ConexionFalsa conexion = _fabrica.Ultima!;
+            _ = conexion.ShellsAbiertos.Should().Be(2);
+            _ = conexion.CanalActual!.Inicializaciones.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
         }
 
         [Fact]

@@ -30,6 +30,9 @@ namespace NativeSsh.Ssh
         public ICanalShell AbrirShell() =>
             new CanalShellSshNet(cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal));
 
+        public Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, CancellationToken cancellationToken) =>
+            CanalExecSshNet.EjecutarAsync(cliente, comando, maxBytesSalida, cancellationToken);
+
         public void Dispose() => cliente.Dispose();
     }
 }
