@@ -23,6 +23,7 @@ namespace NativeSsh.Herramientas
         private const int TimeoutBusquedaSegundos = 90;
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
+        private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
         private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
         // ssh_replace_file_content lee el archivo con 'base64', que parte en líneas de 76 caracteres + '\n':
@@ -229,14 +230,14 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto de forma segura mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobreescribe si el archivo ya existe.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico; no conserva ACL ni atributos extendidos). Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta. append=true anexa al final con '>>'.")]
         public async Task<string> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Contenido textual o datos a escribir.")] string contenido,
             [Description("Sobrescribir si el archivo ya existe (por defecto false).")] bool overwrite = false,
             [Description("Anexar al final del archivo existente (por defecto false).")] bool append = false,
-            [Description("Ejecutar escritura con permisos elevados usando sudo tee (por defecto false).")] bool sudo = false,
+            [Description("Ejecutar la escritura con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(ruta))
@@ -249,14 +250,6 @@ namespace NativeSsh.Herramientas
             string payloadBase64 = Convert.ToBase64String(bytesUtf8);
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
 
-            string accionEscritura = append
-                ? (sudo
-                    ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -a -- {rutaEscapada} >/dev/null"
-                    : $"printf '%s' '{payloadBase64}' | base64 -d >> {rutaEscapada}")
-                : (sudo
-                    ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -- \"$tmp\" >/dev/null && sudo mv -f -- \"$tmp\" {rutaEscapada}"
-                    : $"printf '%s' '{payloadBase64}' | base64 -d > \"$tmp\" && mv -f -- \"$tmp\" {rutaEscapada}");
-
             string comando = append
                 ? $$"""
                     (
@@ -265,28 +258,12 @@ namespace NativeSsh.Herramientas
                       printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
                       exit 1
                     fi
-                    {{accionEscritura}}
+                    {{(sudo
+                        ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -a -- {rutaEscapada} >/dev/null"
+                        : $"printf '%s' '{payloadBase64}' | base64 -d >> {rutaEscapada}")}}
                     )
                     """.ReplaceLineEndings("\n")
-                : $$"""
-                    (
-                    cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
-                    if [ -d {{rutaEscapada}} ]; then
-                      printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
-                      exit 1
-                    fi
-                    {{(!overwrite ? $$"""
-                    if [ -e {{rutaEscapada}} ]; then
-                      printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' {{rutaEscapada}} >&2
-                      exit 1
-                    fi
-                    """ : string.Empty)}}
-                    dir=$(dirname -- {{rutaEscapada}})
-                    tmp="${dir}/.$(basename -- {{rutaEscapada}}).tmp.$$"
-                    trap 'rm -f -- "$tmp" 2>/dev/null' EXIT;
-                    {{accionEscritura}}
-                    )
-                    """.ReplaceLineEndings("\n");
+                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite);
 
             Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticion);
@@ -296,7 +273,7 @@ namespace NativeSsh.Herramientas
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim())
                 : append
                     ? $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes)."
-                    : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).";
+                    : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{AvisoEscrituraNoAtomica(textoCompleto)}";
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -622,7 +599,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' estrictamente dentro del rango de líneas [lineaInicio, lineaFin] y lo sustituye por 'replacementContent'. Realiza un intercambio atómico con .tmp.$$ preservando permisos.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' estrictamente dentro del rango de líneas [lineaInicio, lineaFin] y lo sustituye por 'replacementContent'. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta.")]
         public async Task<string> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -631,7 +608,7 @@ namespace NativeSsh.Herramientas
             [Description("Línea inicial (1-indexed) del rango donde buscar targetContent.")] int lineaInicio,
             [Description("Línea final (1-indexed, inclusive) del rango donde buscar targetContent.")] int lineaFin,
             [Description("Si es true, permite reemplazar si targetContent aparece múltiples veces en el rango (reemplaza todas). Por defecto false (falla si hay ambigüedad).")] bool allowMultiple = false,
-            [Description("Ejecutar escritura con permisos elevados usando sudo (por defecto false).")] bool sudo = false,
+            [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(ruta))
@@ -734,19 +711,7 @@ namespace NativeSsh.Herramientas
             byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
             string payloadBase64 = Convert.ToBase64String(bytesModificados);
 
-            string accionEscritura = sudo
-                ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -- \"$tmp\" >/dev/null && sudo mv -f -- \"$tmp\" {rutaEscapada}"
-                : $"printf '%s' '{payloadBase64}' | base64 -d > \"$tmp\" && mv -f -- \"$tmp\" {rutaEscapada}";
-
-            string comandoEscritura = $$"""
-                (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
-                dir=$(dirname -- {{rutaEscapada}})
-                tmp="${dir}/.$(basename -- {{rutaEscapada}}).tmp.$$"
-                trap 'rm -f -- "$tmp" 2>/dev/null' EXIT;
-                {{accionEscritura}}
-                )
-                """.ReplaceLineEndings("\n");
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true);
 
             Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionEscritura);
@@ -754,8 +719,102 @@ namespace NativeSsh.Herramientas
             string salidaEscritura = ReconstruirSalida(peticionEscritura, out _).Trim();
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
-                : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).";
+                : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}";
         }
+
+        // Script común de ssh_write_file (sin append) y ssh_replace_file_content:
+        // - un enlace simbólico se resuelve (readlink -f) y se escribe en su destino, nunca se sustituye el enlace;
+        // - el temporal se crea con mktemp (0600) en el directorio del destino resuelto;
+        // - archivo existente: el temporal recibe propietario/grupo y modo (chown/chmod --reference) y se renombra encima;
+        //   si no se puede (propietario ajeno sin sudo, sin --reference) o hay enlaces duros, se escribe en el sitio (no atómico);
+        // - archivo nuevo: permisos por umask; sin sobrescribir, creación exclusiva con ln (o noclobber si no hay enlaces duros).
+        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir)
+        {
+            string s = sudo ? "sudo " : string.Empty;
+            string escribirTemporal = sudo
+                ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -- \"$tmp\" >/dev/null"
+                : $"printf '%s' '{payloadBase64}' | base64 -d > \"$tmp\"";
+            string copiarEnSitio = sudo
+                ? "sudo sh -c 'cat -- \"$1\" > \"$2\"' sh \"$tmp\" \"$destino\""
+                : "cat -- \"$tmp\" > \"$destino\"";
+            string crearExclusivo = sudo
+                ? "sudo sh -c 'set -C; cat -- \"$1\" > \"$2\"' sh \"$tmp\" \"$destino\""
+                : "(set -C; cat -- \"$tmp\" > \"$destino\")";
+            const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
+
+            string comprobarNoExiste = isSobrescribir
+                ? string.Empty
+                : $$"""
+                    if [ -e "$ruta" ] || [ -L "$ruta" ]; then
+                      {{ErrorYaExiste}}
+                    fi
+                    """;
+            const string ModoPorUmask = "chmod \"$(printf '%o' $(( 0666 & ~0$(umask) )))\" -- \"$tmp\" || exit 1";
+            // Sin sobrescribir nunca se mira si el destino existe para decidir: ln falla si apareció entretanto.
+            string colocar = isSobrescribir
+                ? $$"""
+                    if [ -e "$destino" ]; then
+                      en_sitio=0
+                      {{s}}chown --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
+                      {{s}}chmod --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
+                      [ "$(stat -c '%u:%g' -- "$tmp" 2>/dev/null)" = "$(stat -c '%u:%g' -- "$destino" 2>/dev/null)" ] || en_sitio=1
+                      [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
+                      if [ "$en_sitio" = 0 ]; then
+                        {{s}}mv -f -- "$tmp" "$destino" || exit 1
+                      else
+                        {{copiarEnSitio}} || exit 1
+                        echo '{{MarcaEscrituraNoAtomica}}'
+                      fi
+                    else
+                      {{s}}{{ModoPorUmask}}
+                      {{s}}mv -f -- "$tmp" "$destino" || exit 1
+                    fi
+                    """
+                : $$"""
+                    {{s}}{{ModoPorUmask}}
+                    if ! {{s}}ln -- "$tmp" "$destino" 2>/dev/null; then
+                      if [ -e "$destino" ] || [ -L "$destino" ]; then
+                        {{ErrorYaExiste}}
+                      fi
+                      {{crearExclusivo}} || exit 1
+                    fi
+                    """;
+
+            return $$"""
+                (
+                set -o pipefail
+                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
+                ruta={{rutaEscapada}}
+                if [ -d "$ruta" ]; then
+                  printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
+                  exit 1
+                fi
+                {{comprobarNoExiste}}
+                destino=$ruta
+                if [ -L "$ruta" ]; then
+                  destino=$(readlink -f -- "$ruta")
+                  if [ -z "$destino" ]; then
+                    printf 'Error: no se pudo resolver el enlace simbólico: %s\n' "$ruta" >&2
+                    exit 1
+                  fi
+                fi
+                dir=$(dirname -- "$destino")
+                base=$(basename -- "$destino")
+                tmp=$({{s}}mktemp -- "$dir/.$base.tmp.XXXXXX") || {
+                  printf 'Error: no se pudo crear el archivo temporal en %s (¿existe el directorio y hay permiso de escritura?).\n' "$dir" >&2
+                  exit 1
+                }
+                trap '{{s}}rm -f -- "$tmp" 2>/dev/null' EXIT
+                {{escribirTemporal}} || exit 1
+                {{colocar}}
+                )
+                """.ReplaceLineEndings("\n");
+        }
+
+        private static string AvisoEscrituraNoAtomica(string salida) =>
+            salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal)
+                ? " Escritura no atómica: no se podía conservar el propietario o el modo del original (o tiene enlaces duros), así que se sobrescribió en el sitio conservando inodo, modo, propietario y enlaces duros."
+                : string.Empty;
 
         // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
         private static string DecodificarArchivoUtf8(string salidaBase64, string ruta)

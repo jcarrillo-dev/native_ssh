@@ -213,6 +213,163 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllBytesAsync(archivo)).Should().Equal(original);
         }
 
+        // Sustituye un comando del servidor en el shell persistente (PATH exportado) para forzar casos difíciles.
+        private async Task SustituirComandoAsync(HerramientasSsh herramientas, string nombre, string script)
+        {
+            string bin = Ruta("bin");
+            _ = Directory.CreateDirectory(bin);
+            string ruta = Path.Combine(bin, nombre);
+            await File.WriteAllTextAsync(ruta, "#!/bin/bash\n" + script + "\n");
+            _ = Bash($"chmod 700 '{ruta}'");
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{bin}':\"$PATH\"", esperarSegundos: 10);
+            _ = export.CodigoSalida.Should().Be(0);
+        }
+
+        private static string Stat(string ruta) => Bash($"stat -c '%a %G %i %h' -- '{ruta}'");
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_EnlaceSimbolico_EscribeEnElDestinoYConservaElEnlace(bool isReplace)
+        {
+            // Arrange
+            string real = Ruta("real.txt");
+            await File.WriteAllTextAsync(real, "antes\n");
+            string enlace = Ruta("enlace.txt");
+            _ = File.CreateSymbolicLink(enlace, "real.txt");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            _ = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, enlace, "antes", "despues", 1, 1)
+                : await herramientas.EscribirArchivoAsync(Destino, enlace, "despues\n", overwrite: true);
+
+            // Assert
+            _ = new FileInfo(enlace).LinkTarget.Should().Be("real.txt");
+            _ = (await File.ReadAllTextAsync(real)).Should().Be("despues\n");
+            _ = Directory.GetFiles(_directorio).Should().HaveCount(2);
+        }
+
+        [Theory]
+        [InlineData("600", false)]
+        [InlineData("755", false)]
+        [InlineData("600", true)]
+        [InlineData("755", true)]
+        public async Task Sobrescribir_ConservaModoYGrupoDelOriginal(string modo, bool isReplace)
+        {
+            // Arrange: grupo secundario del usuario, distinto del primario que recibiría un archivo nuevo.
+            string grupo = Bash("id -Gn | tr ' ' '\\n' | grep -vx \"$(id -gn)\" | head -n 1");
+            string archivo = Ruta("modo.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"chmod {modo} '{archivo}' && chgrp '{grupo}' '{archivo}'");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues", 1, 1)
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = grupo.Should().NotBeEmpty();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = Stat(archivo).Should().StartWith($"{modo} {grupo} ");
+            _ = resultado.Should().NotContain("no atómica");
+            _ = Directory.GetFiles(_directorio).Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task Sobrescribir_ArchivoConEnlacesDuros_EscribeEnElSitioYAvisa()
+        {
+            // Arrange
+            string archivo = Ruta("duro.txt");
+            string otroNombre = Ruta("duro2.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"ln '{archivo}' '{otroNombre}'");
+            string inodo = Stat(archivo).Split(' ')[2];
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = resultado.Should().Contain("no atómica");
+            _ = (await File.ReadAllTextAsync(otroNombre)).Should().Be("despues\n");
+            _ = Stat(archivo).Split(' ')[2].Should().Be(inodo);
+            _ = Directory.GetFiles(_directorio).Should().HaveCount(2);
+        }
+
+        // Sin sudo no se puede crear un archivo de otro usuario: se fuerza el mismo camino haciendo fallar 'chown'
+        // (exactamente lo que ocurre al intentar 'chown --reference' sobre un archivo ajeno sin privilegios).
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_SinPoderConservarElPropietario_EscribeEnElSitioYAvisa(bool isReplace)
+        {
+            // Arrange
+            string archivo = Ruta("ajeno.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"chmod 640 '{archivo}'");
+            string inodo = Stat(archivo).Split(' ')[2];
+            HerramientasSsh herramientas = Herramientas();
+            await SustituirComandoAsync(herramientas, "chown", "echo 'chown: operación no permitida' >&2; exit 1");
+
+            // Act
+            string resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues", 1, 1)
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = resultado.Should().Contain("no atómica");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            string stat = Stat(archivo);
+            _ = stat.Should().StartWith("640 ");
+            _ = stat.Split(' ')[2].Should().Be(inodo);
+            _ = Directory.GetFiles(_directorio).Should().ContainSingle();
+        }
+
+        // La carrera se fuerza sustituyendo 'dirname', que se ejecuta después de comprobar que el archivo no existe.
+        [Fact]
+        public async Task EscribirSinSobrescribir_ArchivoCreadoDuranteLaEscritura_NoSeMachaca()
+        {
+            // Arrange
+            string archivo = Ruta("carrera.txt");
+            HerramientasSsh herramientas = Herramientas();
+            await SustituirComandoAsync(herramientas, "dirname", $"[ -e '{archivo}' ] || printf 'ajeno' > '{archivo}'\nexec /usr/bin/dirname \"$@\"");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "mio"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("ya existe");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("ajeno");
+            _ = Directory.GetFiles(_directorio).Should().ContainSingle();
+        }
+
+        [Fact]
+        public async Task EscribirSinSobrescribir_ArchivoNuevoConPermisosPorDefectoYEnlaceRotoNoSeSigue()
+        {
+            // Arrange
+            string nuevo = Ruta("nuevo.txt");
+            string enlaceRoto = Ruta("roto.txt");
+            _ = File.CreateSymbolicLink(enlaceRoto, Ruta("no_existe.txt"));
+            HerramientasSsh herramientas = Herramientas();
+            string umask = Bash("umask");
+
+            // Act
+            string resultado = await herramientas.EscribirArchivoAsync(Destino, nuevo, "nuevo\n");
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, enlaceRoto, "x"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = resultado.Should().Contain("Archivo escrito correctamente");
+            _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo\n");
+            _ = Stat(nuevo).Split(' ')[0].Should().Be(Convert.ToString(0x1B6 & ~Convert.ToInt32(umask, 8), 8));
+            _ = error.Message.Should().Contain("ya existe");
+            _ = File.Exists(Ruta("no_existe.txt")).Should().BeFalse();
+            _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(2);
+        }
+
         private Peticion UltimaPeticion(string fragmentoComando) =>
             _gestor.ListarPeticiones().First(p => p.Comando.Contains(fragmentoComando, StringComparison.Ordinal));
     }

@@ -142,6 +142,7 @@ namespace NativeSsh.Test.Herramientas
                         : new("fichero regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
 
         private static RespuestaFalsa SimularEscritura(string comando) =>
+            comando.Contains("no_atomico.txt") ? new("__NS_ESCRITURA_NO_ATOMICA__\n", 0) :
             comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
                 ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
                 : new("", 0);
@@ -575,6 +576,50 @@ namespace NativeSsh.Test.Herramientas
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "ya_existe.txt", "nuevo contenido", overwrite: false, append: false)).Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Contain("ya existe");
+        }
+
+        [Fact]
+        public async Task WriteFile_SinOverwrite_CreacionExclusivaConLnSinMvForzado()
+        {
+            // Act
+            _ = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola");
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = comando.Should().Contain("ln -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("set -C");
+            _ = comando.Should().NotContain("mv -f");
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task WriteFileOverwriteYReplace_ResuelvenEnlacesYCopianModoYPropietarioAlTemporal(bool isReplace)
+        {
+            // Act
+            _ = isReplace
+                ? await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b", 1, 5, sudo: true)
+                : await _herramientas.EscribirArchivoAsync("servidor", "archivo.txt", "hola", overwrite: true, sudo: true);
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
+            _ = comando.Should().Contain("sudo mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
+            _ = comando.Should().Contain("sudo chown --reference=\"$destino\" -- \"$tmp\"");
+            _ = comando.Should().Contain("sudo chmod --reference=\"$destino\" -- \"$tmp\"");
+            _ = comando.Should().Contain("sudo mv -f -- \"$tmp\" \"$destino\"");
+        }
+
+        [Fact]
+        public async Task WriteFile_EscrituraEnElSitio_LoIndicaEnElMensaje()
+        {
+            // Act
+            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "no_atomico.txt", "hola", overwrite: true);
+
+            // Assert
+            _ = resultado.Should().Contain("Archivo escrito correctamente: no_atomico.txt");
+            _ = resultado.Should().Contain("no atómica");
+            _ = resultado.Should().NotContain("__NS_");
         }
 
         [Fact]
