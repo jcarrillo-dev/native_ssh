@@ -272,15 +272,15 @@ namespace NativeSsh.Test.Integracion
             (accionRestauracion is null ? string.Empty : $"  *.orig.*) head -c 3 -- \"$2\"; {accionRestauracion} ;;\n") +
             "esac\nexec /usr/bin/cat \"$@\"";
 
-        // Acción del 'cat' falso que se queda esperando hasta 20 s (un 'read' de bash sobre una FIFO sin escritor, en el
-        // propio proceso del falso, que así se puede localizar con pgrep) y después falla: solo termina antes si una señal
-        // lo mata, y nunca da por buena una copia a medias.
-        private string EsperaInterrumpible()
+        // Acción del 'cat' falso que se queda esperando hasta 'segundos' (un 'read' de bash sobre una FIFO sin escritor, en
+        // el propio proceso del falso, que así se puede localizar con pgrep) y después falla: solo termina antes si una
+        // señal lo mata (no si la hereda ignorada, como en la trampa de salida), y nunca da por buena una copia a medias.
+        private string EsperaInterrumpible(int segundos = 20)
         {
             string fifo = Ruta("espera");
             if (!File.Exists(fifo))
                 _ = Bash($"mkfifo '{fifo}'");
-            return $"read -t 20 -r _ <> '{fifo}'; exit 1";
+            return $"read -t {segundos} -r _ <> '{fifo}'; exit 1";
         }
 
         // Procesos cuya línea de órdenes contiene 'texto' (sin pasar por un shell, que también lo contendría).
@@ -372,9 +372,10 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
-        // Falla la escritura en el sitio y la restauración se interrumpe (Ctrl+C al vencer el timeout; la trampa la reintenta
-        // y también se cuelga, hasta que el cierre del canal lo mata todo): la copia del original no se borra nunca mientras
-        // el destino no esté restaurado, y el error da su ruta, la del contenido nuevo y el id de la petición.
+        // Falla la escritura en el sitio y la restauración se interrumpe (Ctrl+C al vencer el timeout): la trampa la reintenta,
+        // ya sin que la corten las señales (tampoco el cierre del canal cuando el Ctrl+C no responde), y también se cuelga
+        // hasta que el cat falso se rinde (6 s) y falla. La copia del original no se borra nunca mientras el destino no esté
+        // restaurado, y el error da su ruta, la del contenido nuevo y el id de la petición.
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -383,7 +384,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(2));
             (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
-            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", EsperaInterrumpible()));
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1", EsperaInterrumpible(6)));
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => isReplace

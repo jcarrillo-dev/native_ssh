@@ -66,7 +66,7 @@ namespace NativeSsh.Test.Herramientas
         }
 
         private const string NoConfirmado = " El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.";
-        private const string AMedioEscribir = $"'/srv/app/f.txt' puede haber quedado a medio escribir. La copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}': el script solo los borra después de dejar el archivo restaurado por completo (para recuperar el original, copia la primera sobre el archivo).";
+        private const string AMedioEscribir = $"'/srv/app/f.txt' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).";
 
         public static TheoryData<string, string> Interrupciones => new()
         {

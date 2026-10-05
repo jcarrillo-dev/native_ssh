@@ -1084,6 +1084,9 @@ namespace NativeSsh.Herramientas
                 {{DefinicionPrivilegios}}
                 {{DefinicionEscrituraEnElSitio}}
                 trap limpiar EXIT
+                trap 'interrumpir 129' HUP
+                trap 'interrumpir 130' INT
+                trap 'interrumpir 143' TERM
                 if ! tmp=$(mktemp -- "$dir/.$corto.tmp.XXXXXX" 2>/dev/null); then
                   {{temporalFuera}}
                 fi
@@ -1265,11 +1268,27 @@ namespace NativeSsh.Herramientas
         // a una copia de seguridad (mktemp, 0600) en su directorio o, si no admite escritura, en ${TMPDIR:-/tmp}; si no puede,
         // no toca nada. 'fase' sigue el estado del destino: '' (intacto), escribiendo, escrito, restaurando, restaurado o
         // fallido (no se pudo restaurar). Si la escritura falla, restaura la copia. La trampa de salida 'limpiar' es lo único
-        // que borra la copia y el temporal, y solo con la fase '', escrito o restaurado: si el script se interrumpe (Ctrl+C,
-        // cierre del terminal) escribiendo o restaurando, la trampa vuelve a restaurar y solo borra si lo consigue; si una
-        // segunda señal la interrumpe a ella, bash muere sin terminarla y no se borra nada. Si la restauración falla, el
+        // que borra la copia y el temporal, y solo con la fase '', escrito o restaurado: si el script se interrumpe
+        // escribiendo o restaurando, la trampa vuelve a restaurar y solo borra si lo consigue. Si la restauración falla, el
         // error da las rutas de la copia y del temporal, que se conservan.
+        // Interrupciones (Ctrl+C del timeout o de la cancelación, cierre del canal del shell, caída de la conexión, kill):
+        // HUP, INT y TERM tienen trampa ('interrumpir'), que ignora las siguientes y sale por la trampa de salida; 'limpiar'
+        // también las ignora desde su primera orden, aunque se llegue a ella por un 'exit' normal. Una señal ignorada se
+        // hereda: el 'cat' que restaura tampoco muere con ellas. Sin esto, la trampa casi nunca restauraba tras cerrarse el
+        // canal o caer la conexión: al colgarse el terminal, el grupo del script recibe varios SIGHUP casi a la vez (el que
+        // el shell interactivo reenvía a sus trabajos al recibir el suyo, el que el núcleo manda al grupo de primer plano
+        // cuando sale el líder de la sesión y, si el líder es otro proceso, como el shell de login que ejecuta el
+        // ForceCommand, el que este reenvía a su vez); bash, sin trampa para SIGHUP, ejecuta la trampa de salida dentro de
+        // su manejo de una señal mortal, y desde bash 5.1 una segunda señal mortal en ese momento lo mata al instante (a
+        // menudo antes de la primera orden de la trampa), y si no, el siguiente SIGHUP mataba el 'cat' que restauraba. Tras
+        // la interrupción el script sigue hasta dejar el archivo restaurado (o conservar la copia) aunque ya no haya
+        // terminal: solo SIGKILL lo detiene, y una restauración colgada (p. ej. un sistema de archivos que no responde)
+        // sigue ahí hasta que la E/S termine.
         private static readonly string DefinicionEscrituraEnElSitio = """
+            interrumpir() {
+              trap '' HUP INT TERM
+              exit "$1"
+            }
             restaurar() {
               fase=restaurando
               anunciar fase restaurando
@@ -1286,6 +1305,7 @@ namespace NativeSsh.Herramientas
               return 0
             }
             limpiar() {
+              trap '' HUP INT TERM
               case $fase in
                 escribiendo|restaurando) restaurar 'se interrumpió la escritura en el sitio' ;;
               esac

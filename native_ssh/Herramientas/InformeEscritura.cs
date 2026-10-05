@@ -140,7 +140,8 @@ namespace NativeSsh.Herramientas
             "colocado" => $"'{ruta}' ya tiene el contenido nuevo completo (renombrado atómico).",
             "creando" => $"'{ruta}', que no existía, puede haber quedado creado con solo una parte del contenido nuevo.",
             "creado" => $"'{ruta}' ya se creó con el contenido nuevo completo.",
-            "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir. La copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}': el script solo los borra después de dejar el archivo restaurado por completo (para recuperar el original, copia la primera sobre el archivo).",
+            // Interrumpido escribiendo o restaurando, el script sigue (ignora ya las señales) hasta restaurar o rendirse.
+            "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
             "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",
