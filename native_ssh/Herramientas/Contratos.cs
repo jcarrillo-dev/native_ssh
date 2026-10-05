@@ -36,4 +36,14 @@ namespace NativeSsh.Herramientas
     public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
+
+    public sealed record ResultadoMetadatos(
+        string Ruta,
+        bool Existe,
+        string? Mensaje = null,
+        string? Tipo = null,
+        long? TamanoBytes = null,
+        string? TamanoHumano = null,
+        string? Permisos = null,
+        string? UltimaModificacion = null);
 }
