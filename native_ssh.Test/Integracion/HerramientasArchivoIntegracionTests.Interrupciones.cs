@@ -62,6 +62,40 @@ namespace NativeSsh.Test.Integracion
                 .And.NotContain("__NS_");
         }
 
+        // Tras un Ctrl+C (SIGINT al grupo del terminal) con la escritura en el sitio a medias, la trampa restaura el original;
+        // una segunda señal en ese momento (otro SIGINT, SIGTERM o SIGHUP, al script y a sus hijos) no la corta: ni al bash
+        // del script, que sin trampas moría al instante (bash ≥ 5.1 mata al shell que recibe una señal mortal mientras maneja
+        // otra), ni al 'cat' que restaura (aquí tarda 2 s). El script termina con el código 130 tras restaurar y limpiar, y el
+        // error es el suyo.
+        [Theory]
+        [InlineData("INT")]
+        [InlineData("TERM")]
+        [InlineData("HUP")]
+        public async Task EscrituraEnElSitio_SegundaSenalDuranteLaRestauracionDeLaTrampa_NoLaCorta(string senal)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            string stat = Stat(archivo);
+            await SustituirComandoAsync(herramientas, "cat", CatConRestauracionLenta(2));
+
+            // Act
+            Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            string script = Bash($"ps -o ppid= -p \"$(pgrep -f -- '{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.' | head -n 1)\"");
+            _ = Bash($"kill -INT -- -\"$(ps -o pgid= -p {script} | tr -d ' ')\"");
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
+            _ = Bash($"pkill -{senal} -P {script}; kill -{senal} {script}");
+            NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"Error: se interrumpió la escritura en el sitio de {archivo}; se ha restaurado su contenido original.");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(2);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
         // SIGKILL al bash del script (el OOM killer o un kill -9) con la escritura en el sitio a medias: no hay trampa que
         // restaure ni anuncio final, y la petición termina con el código 137 sin un error propio del script. El error debe
         // decir que el archivo puede haber quedado a medio escribir, dónde están la copia del original y el contenido nuevo
