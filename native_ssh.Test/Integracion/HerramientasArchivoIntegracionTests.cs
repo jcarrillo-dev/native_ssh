@@ -44,8 +44,12 @@ namespace NativeSsh.Test.Integracion
         public async Task DisposeAsync()
         {
             await _gestor.DisposeAsync();
+            // Las pruebas de sudo dejan directorios 0000: sin devolver los permisos no se podrían borrar.
             if (Directory.Exists(_directorio))
+            {
+                _ = Bash($"chmod -R u+rwx '{_directorio}'");
                 Directory.Delete(_directorio, recursive: true);
+            }
         }
 
         private HerramientasSsh Herramientas(OpcionesNativeSsh? opciones = null, TimeSpan? timeout = null) =>
@@ -283,7 +287,7 @@ namespace NativeSsh.Test.Integracion
         public async Task Sobrescribir_ConservaModoYGrupoDelOriginal(string modo, bool isReplace)
         {
             // Arrange: grupo secundario del usuario, distinto del primario que recibiría un archivo nuevo.
-            string grupo = Bash("id -Gn | tr ' ' '\\n' | grep -vx \"$(id -gn)\" | head -n 1");
+            string grupo = GrupoSecundario();
             string archivo = Ruta("modo.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
             _ = Bash($"chmod {modo} '{archivo}' && chgrp '{grupo}' '{archivo}'");
@@ -397,6 +401,79 @@ namespace NativeSsh.Test.Integracion
             _ = error.Message.Should().Contain("ya existe");
             _ = File.Exists(Ruta("no_existe.txt")).Should().BeFalse();
             _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(2);
+        }
+
+        // sudo sin contraseña simulado con un espacio de nombres de usuario: 'unshare -r' ejecuta el comando como "root"
+        // (uid 0 mapeado al usuario de las pruebas), que tiene CAP_DAC_OVERRIDE sobre los archivos del usuario y atraviesa
+        // un directorio 0000 suyo, como root atraviesa uno ajeno con sudo real. Diferencias con sudo real: solo están
+        // mapeados el uid y el gid primario (los grupos secundarios aparecen como 65534 y 'chown' a ellos falla, así que
+        // se cae a la escritura en el sitio) y requiere espacios de nombres de usuario sin privilegios en el kernel.
+        private async Task SimularSudoAsync(HerramientasSsh herramientas)
+        {
+            _ = Bash("unshare -r true 2>/dev/null && echo disponible").Should().Be("disponible",
+                "la simulación de sudo necesita 'unshare -r' (espacios de nombres de usuario sin privilegios: kernel.unprivileged_userns_clone=1 y sin restricción de AppArmor)");
+            await SustituirComandoAsync(herramientas, "sudo", "exec unshare -r \"$@\"");
+        }
+
+        private static string GrupoSecundario() => Bash("id -Gn | tr ' ' '\\n' | grep -vx \"$(id -gn)\" | head -n 1");
+
+        // Caso del auditor: certificado 0600/0640 root:ssl-cert en un directorio que el usuario no puede atravesar,
+        // editado a través de un enlace con sudo=true. Las comprobaciones sin sudo veían "no existe".
+        [Theory]
+        [InlineData("600", false)]
+        [InlineData("640", false)]
+        [InlineData("600", true)]
+        [InlineData("640", true)]
+        public async Task Sobrescribir_ConSudoEnDirectorioNoAtravesable_ConservaEnlaceModoYGrupo(string modo, bool isReplace)
+        {
+            // Arrange
+            string grupo = GrupoSecundario();
+            string privado = Ruta("priv");
+            _ = Directory.CreateDirectory(privado);
+            string clave = Path.Combine(privado, "clave.pem");
+            string enlace = Path.Combine(privado, "actual.pem");
+            await File.WriteAllTextAsync(clave, "secreto\n");
+            _ = File.CreateSymbolicLink(enlace, "clave.pem");
+            _ = Bash($"chmod {modo} '{clave}' && chgrp '{grupo}' '{clave}' && chmod 000 '{privado}'");
+            HerramientasSsh herramientas = Herramientas();
+            await SimularSudoAsync(herramientas);
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, enlace, "secreto", "nuevo", sudo: true)
+                : await herramientas.EscribirArchivoAsync(Destino, enlace, "nuevo\n", overwrite: true, sudo: true);
+            _ = Bash($"chmod 700 '{privado}'");
+
+            // Assert: con el grupo secundario sin mapear la escritura puede ser en el sitio; lo que importa es conservarlo todo.
+            _ = grupo.Should().NotBeEmpty();
+            _ = resultado.Reemplazos.Should().Be(isReplace ? 1 : null);
+            _ = new FileInfo(enlace).LinkTarget.Should().Be("clave.pem");
+            _ = (await File.ReadAllTextAsync(clave)).Should().Be("nuevo\n");
+            _ = Stat(clave).Should().StartWith($"{modo} {grupo} ");
+            _ = Directory.GetFileSystemEntries(privado).Should().HaveCount(2);
+        }
+
+        [Fact]
+        public async Task EscribirSinSobrescribir_ConSudoEnDirectorioNoAtravesable_DetectaQueYaExiste()
+        {
+            // Arrange
+            string privado = Ruta("priv");
+            _ = Directory.CreateDirectory(privado);
+            string clave = Path.Combine(privado, "clave.pem");
+            await File.WriteAllTextAsync(clave, "secreto\n");
+            _ = Bash($"chmod 600 '{clave}' && chmod 000 '{privado}'");
+            HerramientasSsh herramientas = Herramientas();
+            await SimularSudoAsync(herramientas);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, clave, "otro\n", sudo: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = Bash($"chmod 700 '{privado}'");
+
+            // Assert
+            _ = error.Message.Should().Contain("ya existe");
+            _ = (await File.ReadAllTextAsync(clave)).Should().Be("secreto\n");
+            _ = Directory.GetFileSystemEntries(privado).Should().ContainSingle();
         }
     }
 }

@@ -40,7 +40,7 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
             comando.Contains("unset __NS_CWD") ? new("/home/ana\n", 0) :
             comando.StartsWith("export __NS_CWD=", StringComparison.Ordinal) ? new("", 0) :
-            comando.Contains("| base64\n") ? SimularLecturaBase64(comando) :
+            comando.Contains("cat -- \"$ruta\" | base64", StringComparison.Ordinal) ? SimularLecturaBase64(comando) :
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
@@ -739,13 +739,29 @@ namespace NativeSsh.Test.Herramientas
                 ? await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b", 1, 5, sudo: true)
                 : await _herramientas.EscribirArchivoAsync("servidor", "archivo.txt", "hola", overwrite: true, sudo: true);
 
-            // Assert
+            // Assert: todo el script, comprobaciones incluidas, en un único 'sudo bash'; el contenido llega por stdin.
             string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = comando.Should().Contain("| sudo bash -c '");
+            _ = comando.Split("sudo ").Should().HaveCount(2);
             _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
-            _ = comando.Should().Contain("sudo mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
-            _ = comando.Should().Contain("sudo chown --reference=\"$destino\" -- \"$tmp\"");
-            _ = comando.Should().Contain("sudo chmod --reference=\"$destino\" -- \"$tmp\"");
-            _ = comando.Should().Contain("sudo mv -f -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
+            _ = comando.Should().Contain("chown --reference=\"$destino\" -- \"$tmp\"");
+            _ = comando.Should().Contain("chmod --reference=\"$destino\" -- \"$tmp\"");
+            _ = comando.Should().Contain("mv -f -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("base64 -d > \"$tmp\"");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ConSudo_LaLecturaPreviaCompruebaTodoConSudo()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b", sudo: true);
+
+            // Assert: existencia, tipo, tamaño y lectura dentro del mismo 'sudo bash'.
+            string lectura = _fabrica.Ultima!.Comandos.First(c => c.Contains("| base64", StringComparison.Ordinal));
+            _ = lectura.Should().Contain("sudo bash -c '");
+            _ = lectura.Split("sudo ").Should().HaveCount(2);
+            _ = lectura.IndexOf("sudo bash", StringComparison.Ordinal).Should().BeLessThan(lectura.IndexOf("[ ! -e \"$ruta\" ]", StringComparison.Ordinal));
         }
 
         [Fact]

@@ -244,18 +244,14 @@ namespace NativeSsh.Herramientas
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
 
             string comando = append
-                ? $$"""
-                    (
-                    cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
-                    if [ -d {{rutaEscapada}} ]; then
-                      printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                ? EnvolverEnBash("""
+                    ruta=$1
+                    if [ -d "$ruta" ]; then
+                      printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
                     fi
-                    {{(sudo
-                        ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -a -- {rutaEscapada} >/dev/null"
-                        : $"printf '%s' '{payloadBase64}' | base64 -d >> {rutaEscapada}")}}
-                    )
-                    """.ReplaceLineEndings("\n")
+                    base64 -d >> "$ruta"
+                    """, sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite);
 
             Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
@@ -655,32 +651,30 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
-            string prefijoSudo = sudo ? "sudo " : string.Empty;
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
-            string comandoLectura = $$"""
-                (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
-                if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
+            // Con sudo=true todas las comprobaciones van con sudo: sin él, un archivo en un directorio que el usuario no
+            // puede atravesar parece no existir.
+            string comandoLectura = EnvolverEnBash($$"""
+                ruta=$1
+                if [ ! -e "$ruta" ]; then
+                  printf 'Error: el archivo no existe: %s\n' "$ruta" >&2
                   exit 1
                 fi
-                if [ -d {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                if [ -d "$ruta" ]; then
+                  printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
-                tam=$({{prefijoSudo}}stat -L -c %s -- {{rutaEscapada}} 2>/dev/null || {{prefijoSudo}}stat -L -f %z -- {{rutaEscapada}} 2>/dev/null)
+                tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 if [ -z "$tam" ]; then
-                  printf 'Error: no se pudo obtener el tamaño de: %s\n' {{rutaEscapada}} >&2
+                  printf 'Error: no se pudo obtener el tamaño de: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 if [ "$tam" -gt {{maxBytesEditable}} ]; then
-                  printf 'Error: el archivo %s ocupa %s bytes y supera el máximo editable con ssh_replace_file_content ({{maxBytesEditable}} bytes). No se ha modificado.\n' {{rutaEscapada}} "$tam" >&2
+                  printf 'Error: el archivo %s ocupa %s bytes y supera el máximo editable con ssh_replace_file_content ({{maxBytesEditable}} bytes). No se ha modificado.\n' "$ruta" "$tam" >&2
                   exit 1
                 fi
-                set -o pipefail
-                {{prefijoSudo}}cat -- {{rutaEscapada}} | base64
-                )
-                """.ReplaceLineEndings("\n");
+                cat -- "$ruta" | base64
+                """, sudo, rutaEscapada);
 
             Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionLectura);
@@ -759,23 +753,14 @@ namespace NativeSsh.Herramientas
         }
 
         // Script común de ssh_write_file (sin append) y ssh_replace_file_content:
+        // - todo el script (comprobaciones incluidas) se ejecuta con el mismo privilegio: con sudo=true, un único 'sudo bash';
         // - un enlace simbólico se resuelve (readlink -f) y se escribe en su destino, nunca se sustituye el enlace;
         // - el temporal se crea con mktemp (0600) en el directorio del destino resuelto;
         // - archivo existente: el temporal recibe propietario/grupo y modo (chown/chmod --reference) y se renombra encima;
         //   si no se puede (propietario ajeno sin sudo, sin --reference) o hay enlaces duros, se escribe en el sitio (no atómico);
-        // - archivo nuevo: permisos por umask; sin sobrescribir, creación exclusiva con ln (o noclobber si no hay enlaces duros).
+        // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber).
         private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir)
         {
-            string s = sudo ? "sudo " : string.Empty;
-            string escribirTemporal = sudo
-                ? $"printf '%s' '{payloadBase64}' | base64 -d | sudo tee -- \"$tmp\" >/dev/null"
-                : $"printf '%s' '{payloadBase64}' | base64 -d > \"$tmp\"";
-            string copiarEnSitio = sudo
-                ? "sudo sh -c 'cat -- \"$1\" > \"$2\"' sh \"$tmp\" \"$destino\""
-                : "cat -- \"$tmp\" > \"$destino\"";
-            string crearExclusivo = sudo
-                ? "sudo sh -c 'set -C; cat -- \"$1\" > \"$2\"' sh \"$tmp\" \"$destino\""
-                : "(set -C; cat -- \"$tmp\" > \"$destino\")";
             const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
 
             string comprobarNoExiste = isSobrescribir
@@ -785,42 +770,39 @@ namespace NativeSsh.Herramientas
                       {{ErrorYaExiste}}
                     fi
                     """;
-            const string ModoPorUmask = "chmod \"$(printf '%o' $(( 0666 & ~0$(umask) )))\" -- \"$tmp\" || exit 1";
             // Sin sobrescribir nunca se mira si el destino existe para decidir: ln falla si apareció entretanto.
             string colocar = isSobrescribir
                 ? $$"""
                     if [ -e "$destino" ]; then
                       en_sitio=0
-                      {{s}}chown --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
-                      {{s}}chmod --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
+                      chown --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
+                      chmod --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
                       [ "$(stat -c '%u:%g' -- "$tmp" 2>/dev/null)" = "$(stat -c '%u:%g' -- "$destino" 2>/dev/null)" ] || en_sitio=1
                       [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
                       if [ "$en_sitio" = 0 ]; then
-                        {{s}}mv -f -- "$tmp" "$destino" || exit 1
+                        mv -f -- "$tmp" "$destino" || exit 1
                       else
-                        {{copiarEnSitio}} || exit 1
+                        cat -- "$tmp" > "$destino" || exit 1
                         echo '{{MarcaEscrituraNoAtomica}}'
                       fi
                     else
-                      {{s}}{{ModoPorUmask}}
-                      {{s}}mv -f -- "$tmp" "$destino" || exit 1
+                      chmod "$modo_nuevo" -- "$tmp" || exit 1
+                      mv -f -- "$tmp" "$destino" || exit 1
                     fi
                     """
                 : $$"""
-                    {{s}}{{ModoPorUmask}}
-                    if ! {{s}}ln -- "$tmp" "$destino" 2>/dev/null; then
+                    chmod "$modo_nuevo" -- "$tmp" || exit 1
+                    if ! ln -- "$tmp" "$destino" 2>/dev/null; then
                       if [ -e "$destino" ] || [ -L "$destino" ]; then
                         {{ErrorYaExiste}}
                       fi
-                      {{crearExclusivo}} || exit 1
+                      (set -C; cat -- "$tmp" > "$destino") || exit 1
                     fi
                     """;
 
-            return $$"""
-                (
-                set -o pipefail
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~;
-                ruta={{rutaEscapada}}
+            string script = $$"""
+                ruta=$1
+                modo_nuevo=$2
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
@@ -836,13 +818,34 @@ namespace NativeSsh.Herramientas
                 fi
                 dir=$(dirname -- "$destino")
                 base=$(basename -- "$destino")
-                tmp=$({{s}}mktemp -- "$dir/.$base.tmp.XXXXXX") || {
+                tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX") || {
                   printf 'Error: no se pudo crear el archivo temporal en %s (¿existe el directorio y hay permiso de escritura?).\n' "$dir" >&2
                   exit 1
                 }
-                trap '{{s}}rm -f -- "$tmp" 2>/dev/null' EXIT
-                {{escribirTemporal}} || exit 1
+                trap 'rm -f -- "$tmp" 2>/dev/null' EXIT
+                base64 -d > "$tmp" || exit 1
                 {{colocar}}
+                """;
+            // La umask se toma del shell del usuario: bajo sudo sería la unión con la de sudoers.
+            const string ModoPorUmask = "\"$(printf '%o' $(( 0666 & ~0$(umask) )))\"";
+            return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
+        }
+
+        // Ejecuta 'script' con bash ("$1", "$2"... = 'argumentos', ya escapados), con 'sudo bash' si sudo=true, de modo
+        // que todas sus comprobaciones (test -e/-d/-L, readlink, stat...) usan el mismo privilegio que la escritura.
+        // - El cd a __NS_CWD se hace fuera de sudo: env_reset descarta __NS_CWD y cambia HOME, pero sudo conserva el cwd.
+        // - El contenido (base64) llega por stdin, nunca como argumento: un argumento no puede pasar de 128 KiB (MAX_ARG_STRLEN).
+        //   sudo pide la contraseña por /dev/tty, no por stdin.
+        // - Es siempre bash (no el shell de login), así que el script puede usar sintaxis de bash como $'\n'.
+        private static string EnvolverEnBash(string script, bool sudo, string argumentos, string? payloadBase64 = null)
+        {
+            string entrada = payloadBase64 is null ? string.Empty : $"printf '%s' '{payloadBase64}' | ";
+            string programa = sudo ? "sudo bash" : "bash";
+            return $$"""
+                (
+                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~
+                set -o pipefail
+                {{entrada}}{{programa}} -c {{Escapar("set -o pipefail\n" + script.ReplaceLineEndings("\n"))}} ns {{argumentos}}
                 )
                 """.ReplaceLineEndings("\n");
         }
