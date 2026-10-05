@@ -4,6 +4,7 @@
 # Deja en pruebas/.estado/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto y sshd.log.
 # NATIVE_SSH_FORCE_COMMAND cambia el shell forzado (por defecto /bin/bash -l), p. ej. para simular un login lento.
 # El ForceCommand real es un envoltorio: los canales exec ejecutan su comando con bash y el shell interactivo, el forzado.
+# NATIVE_SSH_SSHD_EXTRA añade líneas al final de sshd_config (p. ej. "MaxSessions 2").
 set -euo pipefail
 
 DIR="${NATIVE_SSH_DIR_ESTADO:-$(cd "$(dirname "$0")" && pwd)/.estado}"
@@ -54,6 +55,9 @@ PrintMotd no
 # salvo en los canales exec, cuyo comando se ejecuta con bash.
 ForceCommand $DIR/force-command.sh
 CFG
+    if [[ -n "${NATIVE_SSH_SSHD_EXTRA:-}" ]]; then
+        printf '%s\n' "$NATIVE_SSH_SSHD_EXTRA" >> "$DIR/sshd_config"
+    fi
 
     "$SSHD" -f "$DIR/sshd_config" -E "$DIR/sshd.log"
     for _ in $(seq 1 50); do
