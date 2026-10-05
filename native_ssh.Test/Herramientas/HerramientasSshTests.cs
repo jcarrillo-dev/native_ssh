@@ -173,11 +173,19 @@ namespace NativeSsh.Test.Herramientas
                         ? new("enlace simbólico|12|777|2026-10-05 01:00:00|ana|devs\nENLACE:/etc/real.conf\n", 0)
                         : new("archivo regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
 
-        private static RespuestaFalsa SimularEscritura(string comando) =>
-            comando.Contains("no_atomico.txt") ? new("__NS_ESCRITURA_NO_ATOMICA__\n", 0) :
-            comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
-                ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
-                : new("", 0);
+        // Responde como el script real: los anuncios de InformeEscritura con el id de la petición ('marca=<id>' en el script).
+        private static RespuestaFalsa SimularEscritura(string comando)
+        {
+            const string Asignacion = "\nmarca=";
+            int posicion = comando.IndexOf(Asignacion, StringComparison.Ordinal) + Asignacion.Length;
+            string marca = $"__NS_W_{comando[posicion..(posicion + 32)]}__ ";
+            return comando.Contains("no_atomico.txt") ? new($"{marca}fase escribiendo\n{marca}fase escrito\n{marca}limpio\n", 0) :
+                comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
+                    ? new("Error: el archivo ya existe: ya_existe.txt. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n", 1)
+                    : comando.Contains("base64 -d >> ", StringComparison.Ordinal)
+                        ? new($"{marca}fase anexando\n{marca}fase anexado\n", 0)
+                        : new($"{marca}fase colocando\n{marca}fase colocado\n{marca}limpio\n", 0);
+        }
 
         private static RespuestaFalsa SimularLectura(string comando)
         {
@@ -407,6 +415,39 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().NotContain("parcial");
             _ = siguiente.Should().StartWith("[Líneas 1-3 de 10]");
             await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado().Sesiones.Single().CanalesExecActivos == 0);
+        }
+
+        // La lectura previa de ssh_replace_file_content se interrumpe por el timeout: el error dice que el archivo no se tocó.
+        [Fact]
+        public async Task ReplaceFileContent_LecturaPreviaConTiempoAgotado_DiceQueNoSeModifico()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => HerramientasConTimeoutCorto().ReemplazarContenidoArchivoAsync("servidor", "colgado_r.txt", "a", "b"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("TiempoAgotado").And.EndWith("No se ha modificado 'colgado_r.txt'.");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
+        // OperationCanceledException dice que el archivo no se modificó y da el id de la petición.
+        [Fact]
+        public async Task WriteFile_EncoladaYCanceladaPorElToken_DiceQueNoSeModifico()
+        {
+            // Arrange
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
+
+            // Act
+            OperationCanceledException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola", cancellationToken: cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a modificar 'nuevo.txt'\\. Cancelada antes de empezar\\.$");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         [Fact]

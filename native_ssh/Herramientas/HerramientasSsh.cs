@@ -25,7 +25,6 @@ namespace NativeSsh.Herramientas
         private const int TimeoutBusquedaSegundos = 90;
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
-        private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
 
         // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). Para
         // distinguirlos no se lee ningún mensaje (el de stat lleva la ruta dentro, y una ruta inexistente que contenga
@@ -280,7 +279,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos con getfattr o, si no está, con getfacl y ls), lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original y, si tampoco puede, conserva la copia y el contenido nuevo y da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos con getfattr o, si no está, con getfacl y ls), lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado o cancelación), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -301,10 +300,13 @@ namespace NativeSsh.Herramientas
             byte[] bytesUtf8 = Encoding.UTF8.GetBytes(contenido ?? string.Empty);
             string payloadBase64 = Convert.ToBase64String(bytesUtf8);
             string rutaEscapada = Escapar(ruta);
+            string idMarcas = Guid.NewGuid().ToString("N");
 
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
+                    marca={{idMarcas}}
+                    {{DefinicionAnunciar}}
                     if [ -d "$ruta" ]; then
                       printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
@@ -312,21 +314,18 @@ namespace NativeSsh.Herramientas
                     if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
                       {{ErrorNoRegular}}
                     fi
-                    base64 -d >> "$ruta"
+                    anunciar fase anexando
+                    base64 -d >> "$ruta" || exit 1
+                    anunciar fase anexado
                     """), sudo, rutaEscapada, payloadBase64)
-                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite);
+                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
 
-            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticion);
-
-            string textoCompleto = ReconstruirSalida(peticion, out _);
-            if (peticion.CodigoSalida != 0)
-                throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim());
-
-            bool isAtomica = !append && !IsEscrituraNoAtomica(textoCompleto);
-            return append
-                ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
-                : new ResultadoEscritura(ruta, bytesUtf8.Length, null, isAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{AvisoEscrituraNoAtomica(textoCompleto)}");
+            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, cancellationToken).ConfigureAwait(false);
+            return peticion.CodigoSalida != 0
+                ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})."))
+                : append
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
+                    : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -711,7 +710,7 @@ namespace NativeSsh.Herramientas
             {
                 gestor.FijarDirectorioTrabajo(destino, null);
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset);
 
                 if (peticionReset.CodigoSalida != 0)
@@ -749,7 +748,7 @@ namespace NativeSsh.Herramientas
                 )
                 """);
 
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionValidacion);
 
             if (peticionValidacion.CodigoSalida != 0)
@@ -762,7 +761,7 @@ namespace NativeSsh.Herramientas
             // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
             gestor.FijarDirectorioTrabajo(destino, pwdReal);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport);
 
             if (peticionExport.CodigoSalida != 0)
@@ -810,7 +809,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; con copia de seguridad previa que restaura si la escritura falla; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado o cancelación), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -883,8 +882,9 @@ namespace NativeSsh.Herramientas
                 printf '{{PrefijoMarcaBase64}}%s_%s__ %s\n' FIN {{idMarcas}} "$tam"
                 """), sudo, rutaEscapada);
 
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura);
+            string sinModificar = $"No se ha modificado '{ruta}'.";
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, sinModificar, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura, sinModificar);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -949,15 +949,13 @@ namespace NativeSsh.Herramientas
             byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
             string payloadBase64 = Convert.ToBase64String(bytesModificados);
 
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, bytesLeidos);
+            string idEscritura = Guid.NewGuid().ToString("N");
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
 
-            Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionEscritura);
-
-            string salidaEscritura = ReconstruirSalida(peticionEscritura, out _).Trim();
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
             return peticionEscritura.CodigoSalida != 0
-                ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
-                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, !IsEscrituraNoAtomica(salidaEscritura), $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}");
+                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})."))
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
         }
 
         // Solo los saltos '\r\n' y '\n' del texto se adaptan al separador del archivo: FF, NEL, LS, PS y un '\r' suelto son
@@ -979,8 +977,10 @@ namespace NativeSsh.Herramientas
         //   que no se puede asignar...) o hay enlaces duros, se escribe en el sitio (no atómico);
         // - ssh_replace_file_content (contenidoLeido): justo antes de colocar, el destino debe seguir siendo el que se leyó
         //   ($3 = sha256, $4 = suma y bytes de cksum); si cambió o desapareció, no se escribe;
-        // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber).
-        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, byte[]? contenidoLeido = null)
+        // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber);
+        // - anuncia (InformeEscritura, con idMarcas) las rutas del temporal y de la copia de seguridad en cuanto las crea y
+        //   cada fase de la colocación, para que un error por tiempo agotado o cancelación diga qué pasó con el archivo.
+        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, string idMarcas, byte[]? contenidoLeido = null)
         {
             const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
 
@@ -1002,28 +1002,36 @@ namespace NativeSsh.Herramientas
                       [ "$en_sitio" = 1 ] || conservar_atributos "$destino" "$tmp" || en_sitio=1
                       sin_cambios || exit 1
                       if [ "$en_sitio" = 0 ]; then
+                        anunciar fase colocando
                         mv -f -- "$tmp" "$destino" || exit 1
+                        anunciar fase colocado
                       else
                         if [ ! -w "$destino" ]; then
                           printf 'Error: %s no tiene permiso de escritura (¿solo lectura?) y habría que sobrescribirlo en el sitio, porque tiene enlaces duros, su directorio no admite escritura o no se pueden copiar a un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux). No se ha modificado: dale permiso de escritura o usa sudo=true.\n' "$ruta" >&2
                           exit 1
                         fi
                         escribir_en_sitio || exit 1
-                        echo '{{MarcaEscrituraNoAtomica}}'
                       fi
                     else
                       sin_cambios || exit 1
                       chmod "$modo_nuevo" -- "$tmp" || exit 1
+                      anunciar fase colocando
                       mv -f -- "$tmp" "$destino" || exit 1
+                      anunciar fase colocado
                     fi
                     """)
                 : PlantillaBash.Crear($$"""
                     chmod "$modo_nuevo" -- "$tmp" || exit 1
-                    if ! ln -- "$tmp" "$destino" 2>/dev/null; then
+                    anunciar fase colocando
+                    if ln -- "$tmp" "$destino" 2>/dev/null; then
+                      anunciar fase colocado
+                    else
                       if [ -e "$destino" ] || [ -L "$destino" ]; then
                         {{ErrorYaExiste}}
                       fi
+                      anunciar fase creando
                       (set -C; cat -- "$tmp" > "$destino") || exit 1
+                      anunciar fase creado
                     fi
                     """);
             const string ErrorSinTemporal = """printf 'Error: no se pudo crear el archivo temporal en %s (¿existe el directorio y hay permiso de escritura?).\n' "$dir" >&2; exit 1""";
@@ -1045,6 +1053,8 @@ namespace NativeSsh.Herramientas
                 modo_nuevo=$2
                 sha_leido=$3
                 cksum_leido=$4
+                marca={{idMarcas}}
+                {{DefinicionAnunciar}}
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
@@ -1072,6 +1082,7 @@ namespace NativeSsh.Herramientas
                 if ! tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX" 2>/dev/null); then
                   {{temporalFuera}}
                 fi
+                anunciar_ruta tmp "$tmp"
                 base64 -d > "$tmp" || exit 1
                 {{colocar}}
                 """);
@@ -1104,6 +1115,21 @@ namespace NativeSsh.Herramientas
             }
             """.ReplaceLineEndings("\n");
 
+        // anunciar CLAVE [VALOR...] y anunciar_ruta CLAVE RUTA: una línea "__NS_W_<marca>__ ..." en stdout para quien ejecuta
+        // el script (InformeEscritura); la ruta va en base64 porque puede tener saltos de línea o bytes de control. El
+        // marcador se compone con printf: su texto completo no aparece en el script. Un fallo al escribir el anuncio (p. ej.
+        // con el terminal ya cerrado) no cambia el flujo: devuelven siempre 0.
+        private static readonly string DefinicionAnunciar = PlantillaBash.Crear($$"""
+            anunciar() {
+              printf '{{InformeEscritura.PrefijoMarca}}%s__ %s\n' "$marca" "$*" 2>/dev/null
+              return 0
+            }
+            anunciar_ruta() {
+              printf '{{InformeEscritura.PrefijoMarca}}%s__ %s %s\n' "$marca" "$1" "$(printf '%s' "$2" | base64 | tr -d '\n')" 2>/dev/null
+              return 0
+            }
+            """);
+
         // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin dejarlo nunca truncado sin copia. Antes copia el original
         // a una copia de seguridad (mktemp, 0600) en su directorio o, si no admite escritura, en ${TMPDIR:-/tmp}; si no puede,
         // no toca nada. 'fase' sigue el estado del destino: '' (intacto), escribiendo, escrito, restaurando, restaurado o
@@ -1115,11 +1141,14 @@ namespace NativeSsh.Herramientas
         private static readonly string DefinicionEscrituraEnElSitio = """
             restaurar() {
               fase=restaurando
+              anunciar fase restaurando
               if cat -- "$copia" > "$destino"; then
                 fase=restaurado
+                anunciar fase restaurado
                 printf 'Error: %s de %s; se ha restaurado su contenido original.\n' "$1" "$ruta" >&2
               else
                 fase=fallido
+                anunciar fase fallido
                 printf 'Error: %s de %s y no se pudo restaurar su contenido original: la copia de seguridad del original está en %s y el contenido nuevo en %s (no se han borrado).\n' "$1" "$ruta" "$copia" "$tmp" >&2
               fi
               return 0
@@ -1128,8 +1157,16 @@ namespace NativeSsh.Herramientas
               case $fase in
                 escribiendo|restaurando) restaurar 'se interrumpió la escritura en el sitio' ;;
               esac
-              [ "$fase" = fallido ] && return 0
+              if [ "$fase" = fallido ]; then
+                anunciar conservados
+                return 0
+              fi
               rm -f -- "$tmp" "$copia" 2>/dev/null
+              if { [ -n "$tmp" ] && [ -e "$tmp" ]; } || { [ -n "$copia" ] && [ -e "$copia" ]; }; then
+                anunciar restos
+              else
+                anunciar limpio
+              fi
               return 0
             }
             escribir_en_sitio() {
@@ -1138,13 +1175,16 @@ namespace NativeSsh.Herramientas
                 printf 'Error: no se pudo crear la copia de seguridad de %s (ni en su directorio ni en %s): no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" "${TMPDIR:-/tmp}" >&2
                 return 1
               }
+              anunciar_ruta copia "$copia"
               if ! cat -- "$destino" > "$copia"; then
                 printf 'Error: no se pudo hacer la copia de seguridad de %s: no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" >&2
                 return 1
               fi
               fase=escribiendo
+              anunciar fase escribiendo
               if cat -- "$tmp" > "$destino"; then
                 fase=escrito
+                anunciar fase escrito
                 return 0
               fi
               restaurar 'falló la escritura en el sitio'
@@ -1216,13 +1256,6 @@ namespace NativeSsh.Herramientas
                 )
                 """);
         }
-
-        private static bool IsEscrituraNoAtomica(string salida) => salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal);
-
-        private static string AvisoEscrituraNoAtomica(string salida) =>
-            IsEscrituraNoAtomica(salida)
-                ? " Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio (con copia de seguridad previa, ya borrada) conservando inodo, enlaces duros y todos sus atributos."
-                : string.Empty;
 
         private const string PrefijoMarcaBase64 = "__NS_B64_";
         private static readonly SearchValues<char> CaracteresBase64 = SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=");
@@ -1583,7 +1616,8 @@ namespace NativeSsh.Herramientas
             return linea.Length <= MaxCaracteresComando ? linea : string.Concat(linea.AsSpan(0, MaxCaracteresComando - 1), "…");
         }
 
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, CancellationToken cancellationToken)
+        // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, string? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
             Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
@@ -1596,7 +1630,7 @@ namespace NativeSsh.Herramientas
                 // Sigue encolada o el shell no respondió al Ctrl+C: se cancela para no bloquear la cola.
                 EstadoPeticionEnum estado = peticion.Estado;
                 _ = peticion.SolicitarCancelacion();
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.");
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia)}");
             }
             catch (OperationCanceledException)
             {
@@ -1605,6 +1639,59 @@ namespace NativeSsh.Herramientas
             }
 
             return peticion;
+        }
+
+        // Escrituras (ssh_write_file, ssh_replace_file_content) por el shell PTY. Si no terminan (timeout, cancelación con
+        // ssh_cancel, ssh_disconnect o el token, conexión perdida), se cancela la petición y se espera a que el script atienda
+        // el Ctrl+C (su trampa de salida restaura el original o conserva las copias) para que el error diga qué pasó con el
+        // archivo según lo que el script anunció (InformeEscritura), con el id de la petición para ssh_output. Con el token
+        // cancelado se lanza OperationCanceledException con ese mismo mensaje. Si terminan, quien llama mira el código.
+        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, CancellationToken cancellationToken)
+        {
+            TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            bool isSinTerminar = false;
+            bool isCancelada = false;
+            try
+            {
+                await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                isSinTerminar = true;
+            }
+            catch (OperationCanceledException)
+            {
+                isCancelada = true;
+            }
+
+            if (isSinTerminar || isCancelada)
+            {
+                _ = peticion.SolicitarCancelacion();
+                await EsperarFinalizacionAsync(peticion).ConfigureAwait(false);
+            }
+
+            InformeEscritura informe = InformeEscritura.Leer(ReconstruirSalida(peticion, out _), idMarcas);
+            EstadoPeticionEnum estado = peticion.Estado;
+            if (estado == EstadoPeticionEnum.Completado && !isCancelada)
+                return (peticion, informe);
+
+            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso);
+            throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
+        }
+
+        // Tras cancelar: el Ctrl+C llega al script y su trampa de salida termina antes de que el shell responda (o, si no
+        // responde a tiempo, se cierra el canal). Acotado: si aun así no termina, el error dirá lo anunciado hasta entonces.
+        private async Task EsperarFinalizacionAsync(Peticion peticion)
+        {
+            try
+            {
+                await peticion.Finalizacion.WaitAsync(opciones.EsperaTrasCtrlC + MargenEsperaHerramienta).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Sigue sin terminar.
+            }
         }
 
         internal const string AvisoContenidoNoUtf8 = "[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]";
@@ -1644,13 +1731,13 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
-        private static void ExigirCompletada(Peticion peticion)
+        private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
         {
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
                 throw new NativeSshException(peticion.Aviso is { Length: > 0 } aviso
-                    ? $"La operación no se completó (estado: {estado}). {aviso}"
-                    : $"La operación no se completó (estado: {estado}).");
+                    ? $"La operación no se completó (estado: {estado}). {aviso}{(consecuencia is null ? string.Empty : " " + consecuencia)}"
+                    : $"La operación no se completó (estado: {estado}).{(consecuencia is null ? string.Empty : " " + consecuencia)}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)
