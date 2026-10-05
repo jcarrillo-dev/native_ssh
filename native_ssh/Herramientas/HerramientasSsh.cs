@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Text.Unicode;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -155,7 +156,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -217,9 +218,14 @@ namespace NativeSsh.Herramientas
                 """.ReplaceLineEndings("\n");
 
             SalidaLectura resultado = await EjecutarLecturaAsync(destino, comando, TimeoutLecturaSegundos, "Lee un rango de líneas menor (lineaInicio/lineaFin).", cancellationToken).ConfigureAwait(false);
-            return resultado.Codigo != 0
-                ? throw new NativeSshException(resultado.Error("El comando de lectura falló"))
-                : resultado.Salida;
+            if (resultado.Codigo != 0)
+                throw new NativeSshException(resultado.Error("El comando de lectura falló"));
+
+            // Nunca se sustituyen bytes en silencio: si el archivo no es UTF-8, se dice al final.
+            string texto = resultado.Salida;
+            return resultado.IsUtf8Valido
+                ? texto
+                : texto.EndsWith('\n') ? texto + AvisoContenidoNoUtf8 : $"{texto}\n{AvisoContenidoNoUtf8}";
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
@@ -1188,7 +1194,10 @@ namespace NativeSsh.Herramientas
             return peticion;
         }
 
-        private readonly record struct SalidaLectura(int Codigo, string Salida, string Errores)
+        internal const string AvisoContenidoNoUtf8 = "[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]";
+
+        // IsUtf8Valido: stdout era UTF-8 válido (si no, Salida lleva U+FFFD en lugar de los bytes inválidos).
+        private readonly record struct SalidaLectura(int Codigo, string Salida, string Errores, bool IsUtf8Valido = true)
         {
             // Mensaje de error: stderr del script ("Error: ..."), o stdout si no lo hubo, o el código.
             public string Error(string contexto) =>
@@ -1214,7 +1223,7 @@ namespace NativeSsh.Herramientas
                     ? $"La operación terminó por la señal {senal} sin código de salida."
                     : "La operación terminó sin código de salida (¿se cerró el canal?)."),
                 CodigoTimeoutRemoto or CodigoTimeoutRemotoKill => throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se detuvo en el servidor."),
-                int codigo => new SalidaLectura(codigo, salida, errores)
+                int codigo => new SalidaLectura(codigo, salida, errores, Utf8.IsValid(resultado.Salida.Span))
             };
         }
 

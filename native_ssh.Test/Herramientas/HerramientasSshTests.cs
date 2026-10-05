@@ -28,6 +28,7 @@ namespace NativeSsh.Test.Herramientas
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
             comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
+            comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
             comando.Contains("sed -n") ? SimularLectura(comando) :
@@ -439,6 +440,18 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = texto.Should().Be("[Líneas 1-2 de 2]\nuno\r\ndos\r\n");
+        }
+
+        [Fact]
+        public async Task ReadFile_ContenidoNoUtf8_LoSustituyeYAnadeUnAvisoVisible()
+        {
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "latin1_lectura.txt");
+            string valido = await _herramientas.LeerArchivoAsync("servidor", "crlf.txt");
+
+            // Assert
+            _ = texto.Should().Be("[Líneas 1-1 de 1]\na\uFFFDo\n[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]");
+            _ = valido.Should().NotContain("[aviso:");
         }
 
         [Fact]

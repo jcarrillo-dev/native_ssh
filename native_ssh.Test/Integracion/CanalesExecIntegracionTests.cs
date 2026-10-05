@@ -213,6 +213,19 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public async Task Lectura_ArchivoLatin1_AvisaDeQueNoEsUtf8()
+        {
+            // Arrange
+            await File.WriteAllBytesAsync(Ruta("latin1.txt"), [.. "a"u8, 0xF1, .. "o\nsin final"u8]);
+
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync(Destino, Ruta("latin1.txt"));
+
+            // Assert: sin salto final, el aviso va en su propia línea.
+            _ = texto.Should().Be("[Líneas 1-2 de 2]\na\uFFFDo\nsin final\n[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]");
+        }
+
+        [Fact]
         public async Task Lectura_ArchivoCrlf_DevuelveSusRetornosDeCarroYTextoUtf8Fiel()
         {
             // Arrange

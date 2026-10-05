@@ -32,7 +32,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         ComeInicializacion
     }
 
-    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal);
+    // Bytes: stdout exacto de un canal exec (para contenido que no es UTF-8); si es null se usa Salida.
+    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal, byte[]? Bytes = null);
 
     public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
@@ -124,7 +125,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                     _ = (isError ? errores : salida).Append(linea).Append('\n');
                 }
 
-                byte[] bytesSalida = Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
+                byte[] bytesSalida = respuesta.Bytes ?? Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
                 byte[] bytesErrores = Encoding.UTF8.GetBytes(errores.ToString());
                 return bytesSalida.Length + bytesErrores.Length > maxBytesSalida
                     ? new ResultadoCanalExec(null, null, ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty, true)
