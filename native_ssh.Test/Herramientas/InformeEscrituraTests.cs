@@ -53,6 +53,27 @@ namespace NativeSsh.Test.Herramientas
             _ = informe.Texto.Should().Be("ns: línea 3: base64: orden no encontrada\nError: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.");
         }
 
+        // Un error de bash con una ruta del usuario que empieza por dígitos y un espacio («ns: línea 12: 12 x: Permiso
+        // denegado») tiene la misma cabecera que el aviso de un hijo muerto por una señal, pero no es un aviso: se queda en el
+        // texto. Solo se quitan los avisos con su forma completa: tras el PID (con «%5d», alineado con espacios si es corto),
+        // la orden del script tal como la escribió, con sus variables sin expandir («"$destino"»), que una ruta expandida no
+        // contiene.
+        [Theory]
+        [InlineData("ns: línea 12: 12 x: Permiso denegado", true)]
+        [InlineData("ns: line 7: 12 x: Permission denied", true)]
+        [InlineData("ns: línea 12: 4021 Killed: no es un aviso", true)]
+        [InlineData("ns: line 12:   402 Killed                     cat -- \"$copia\" > \"$destino\"", false)]
+        [InlineData("ns: línea 30: 3569366 Terminado (killed)         base64 -d > \"$tmp\"", false)]
+        [InlineData("ns: línea 9: 77777 Violación de segmento     (`core' generado) chmod -- u+s \"$destino\" 2> /dev/null", false)]
+        public void Leer_SoloQuitaLosAvisosDeBashConSuFormaCompleta(string linea, bool isTexto)
+        {
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(linea + "\n", Id);
+
+            // Assert
+            _ = informe.Texto.Should().Be(isTexto ? linea : string.Empty);
+        }
+
         [Theory]
         [InlineData("colocado", true)]
         [InlineData("escrito", false)]

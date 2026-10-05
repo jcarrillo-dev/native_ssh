@@ -119,10 +119,16 @@ namespace NativeSsh.Herramientas
         }
 
         // Aviso que el bash del script ("ns", su $0) escribe en su stderr al recoger un hijo que murió por una señal: «ns: línea
-        // 155: 2904918 Superado el límite de tamaño de fichero (`core' generado) cat -- ...» (la palabra «línea» y la
-        // descripción van en el idioma del servidor). No es un error del script: no pasa al texto del informe. Los demás
-        // avisos de bash ("ns: línea 3: base64: orden no encontrada") no llevan un PID tras el número de línea y se quedan.
-        [GeneratedRegex(@"^ns: [^:]+ [0-9]+: [0-9]+ ", RegexOptions.CultureInvariant)]
+        // 155: 2904918 Superado el límite de tamaño de fichero (`core' generado) cat -- "$tmp" > "$destino"» (la palabra
+        // «línea» y la descripción van en el idioma del servidor). No es un error del script: no pasa al texto del informe.
+        // Forma completa (pretty_print_job de bash): tras el número de línea, el PID con «%5ld» (alineado con espacios si es
+        // corto), la descripción y la orden tal como está escrita en el script, con sus variables sin expandir. Todas las
+        // órdenes del script que pueden morir así nombran sus archivos con una variable entre comillas ("$tmp", "$destino",
+        // "$1"...), y eso es lo que distingue el aviso de un error de bash con una ruta del usuario, que va expandida: «ns:
+        // línea 12: 12 x: Permiso denegado» (ruta relativa que empieza por dígitos y un espacio) se queda en el texto, como
+        // «ns: línea 3: base64: orden no encontrada». Solo se perdería el error de una ruta que, además de empezar por dígitos
+        // y un espacio, contenga literalmente comillas, '$' y una letra.
+        [GeneratedRegex(@"^ns: [^:]+ [0-9]+: +[0-9]+ .*""\$[{A-Za-z0-9_]", RegexOptions.CultureInvariant)]
         private static partial Regex RegexAvisoDeBash();
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
