@@ -75,11 +75,17 @@ namespace NativeSsh.Protocolo
             EscribirCola(id, escritor);
         }
 
-        // Tras inicializar: el PATH que dejó el shell de login (lo hereda el bash del PTY), en base64 y en una sola línea,
-        // para los canales exec (que solo reciben el PATH por defecto de sshd). El primer '\n' satisface el 'read'.
+        // Tras inicializar: el PATH que dejó el shell de login (lo hereda el bash del PTY), para los canales exec (que solo
+        // reciben el PATH por defecto de sshd). Va en base64, en una sola línea, entre "__NSP_<id>_\n" y "\n__NSQ_<id>_\n"
+        // (LectorCapturaPath): otro proceso que escriba en el terminal a la vez no se confunde con él. Los marcadores se
+        // imprimen con printf '%s_%s', así que el texto de la línea no los contiene. El primer '\n' satisface el 'read'.
         public static void EscribirCapturaPath(Guid id, IBufferWriter<byte> escritor)
         {
-            escritor.Write("\n__ns_rc=0; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; echo; "u8);
+            escritor.Write("\n__ns_rc=0; printf '%s_%s_\\n' '__NSP' '"u8);
+            MarcadorFin.EscribirId(id, escritor);
+            escritor.Write("'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '"u8);
+            MarcadorFin.EscribirId(id, escritor);
+            escritor.Write("'; "u8);
             EscribirCola(id, escritor);
         }
 

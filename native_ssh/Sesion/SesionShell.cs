@@ -694,8 +694,9 @@ namespace NativeSsh.Sesion
             return await espera.Task.WaitAsync(token).ConfigureAwait(false);
         }
 
-        // Con el shell ya en un estado conocido. Si la captura no da un PATH válido se conserva el anterior: nunca hace
-        // fallar la inicialización (salvo que el canal se cierre o no responda, como cualquier otra línea).
+        // Con el shell ya en un estado conocido. Si la captura no da un PATH válido (LectorCapturaPath) se descarta: los
+        // canales exec vuelven al PATH por defecto de sshd y se registra el motivo. Nunca hace fallar la inicialización
+        // (salvo que el canal se cierre o no responda, como cualquier otra línea).
         private async Task<int> CapturarPathAsync(ICanalShell canal, CancellationToken token)
         {
             Guid id = Guid.NewGuid();
@@ -721,9 +722,12 @@ namespace NativeSsh.Sesion
                 }
 
                 int codigo = await espera.Task.WaitAsync(token).ConfigureAwait(false);
-                if (codigo == 0 && TryLeerPath(captura, out string? path))
-                    _pathLogin = path;
+                if (codigo != 0)
+                    return codigo;
 
+                if (!TryLeerPath(captura, id, out string? path, out string? motivo))
+                    _logger.PathLoginDescartado(Destino.Clave, motivo);
+                _pathLogin = path;
                 return codigo;
             }
             finally
@@ -732,24 +736,16 @@ namespace NativeSsh.Sesion
             }
         }
 
-        private static bool TryLeerPath(BufferSalida captura, [NotNullWhen(true)] out string? path)
+        private static bool TryLeerPath(BufferSalida captura, Guid id, [NotNullWhen(true)] out string? path, [NotNullWhen(false)] out string? motivo)
         {
-            path = null;
             byte[] bytes = new byte[(int)Math.Min(captura.Longitud, MaxBytesCapturaPath)];
             LecturaSalida lectura = captura.Leer(0, bytes);
-            if (lectura.HasDatosDescartados || lectura.Fin > bytes.Length)
-                return false;
+            if (!lectura.HasDatosDescartados && lectura.Fin <= bytes.Length)
+                return LectorCapturaPath.TryLeer(bytes.AsSpan(0, lectura.Copiados), id, out path, out motivo);
 
-            try
-            {
-                path = Encoding.UTF8.GetString(Convert.FromBase64String(Encoding.ASCII.GetString(bytes, 0, lectura.Copiados).Trim()));
-            }
-            catch (FormatException)
-            {
-                return false;
-            }
-
-            return path.Length > 0 && !path.Contains('\n', StringComparison.Ordinal);
+            path = null;
+            motivo = $"la salida de la captura superó {MaxBytesCapturaPath} bytes";
+            return false;
         }
 
         private void IniciarBomba(ICanalShell canal)

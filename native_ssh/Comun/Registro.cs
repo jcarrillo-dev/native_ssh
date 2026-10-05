@@ -42,5 +42,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 30, Level = LogLevel.Debug, Message = "Un canal exec de {Destino} abandonado al agotarse su plazo (o cancelarse) terminó de cerrarse.")]
         public static partial void CanalExecCerradoTrasAbandonarlo(this ILogger logger, Exception ex, string destino);
+
+        [LoggerMessage(EventId = 31, Level = LogLevel.Warning, Message = "Se descarta el PATH del shell de login de {Destino}: {Motivo}. Los canales exec usarán el PATH por defecto de sshd.")]
+        public static partial void PathLoginDescartado(this ILogger logger, string destino, string motivo);
     }
 }

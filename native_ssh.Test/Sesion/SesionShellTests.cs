@@ -2,6 +2,7 @@ using FluentAssertions;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Buffers;
 using NativeSsh.Comun;
@@ -40,10 +41,10 @@ namespace NativeSsh.Test.Sesion
             MaxConexionesPorVentana = maxConexiones
         };
 
-        private static SesionShell Crear(FabricaFalsa fabrica, OpcionesNativeSsh? opciones = null)
+        private static SesionShell Crear(FabricaFalsa fabrica, OpcionesNativeSsh? opciones = null, ILogger? logger = null)
         {
             opciones ??= Opciones();
-            return new SesionShell(Destino, fabrica, new LimitadorConexiones(opciones, TimeProvider.System), opciones, NullLogger.Instance);
+            return new SesionShell(Destino, fabrica, new LimitadorConexiones(opciones, TimeProvider.System), opciones, logger ?? NullLogger.Instance);
         }
 
         private static Peticion Nueva(string comando, double timeoutSegundos = 10) =>
@@ -137,6 +138,77 @@ namespace NativeSsh.Test.Sesion
             _ = Texto(primera).Should().Be("eco:uno\n");
             _ = fabrica.Ultima!.CanalActual!.MarcadoresInicializacion.Should().Be(1);
             _ = fabrica.Ultima.CanalActual.Sincronizaciones.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task CapturaPath_ConRuidoQueEsBase64Antes_NoAceptaUnPathCorrupto()
+        {
+            // Arrange: otro proceso escribe en el terminal justo antes de la salida de la captura.
+            FabricaFalsa fabrica = new(Guion) { PathLogin = "/opt/herramientas/bin:/usr/bin", RuidoAntesCapturaPath = "QUJD\n" };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            _ = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = sesion.PathLogin.Should().Be("/opt/herramientas/bin:/usr/bin");
+        }
+
+        [Fact]
+        public async Task CapturaPath_ConRuidoAntesYDespues_SeLeeEntreSusMarcadores()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion)
+            {
+                PathLogin = "/opt/mi dir/bin:/usr/bin",
+                RuidoAntesCapturaPath = "Mensaje de difusión: reinicio a las 22:00\n",
+                RuidoTrasCapturaPath = "[1]+  Hecho    sleep 1\n"
+            };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            _ = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = sesion.PathLogin.Should().Be("/opt/mi dir/bin:/usr/bin");
+        }
+
+        [Theory]
+        [InlineData("/usr/bin:bin", "entrada relativa")]
+        [InlineData("/usr/bin::/bin", "entrada vacía")]
+        [InlineData("/usr/bin:", "entrada vacía")]
+        [InlineData("/usr/bin:/opt/a\u0007b", "caracteres de control")]
+        [InlineData("", "PATH vacío")]
+        public async Task CapturaPath_PathNoValido_SeDescartaYSeRegistra(string path, string motivo)
+        {
+            // Arrange
+            using LoggerPrueba logger = new();
+            FabricaFalsa fabrica = new(Guion) { PathLogin = path };
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "hola");
+
+            // Assert: el shell funciona igual; los canales exec usarán el PATH de sshd.
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = sesion.PathLogin.Should().BeNull();
+            _ = logger.Entradas.Should().ContainSingle(e => e.Evento == 31 && e.Nivel == LogLevel.Warning).Which.Mensaje.Should().Contain(motivo);
+        }
+
+        [Fact]
+        public async Task CapturaPath_PathQueNoEsUtf8_SeDescartaYSeRegistra()
+        {
+            // Arrange
+            using LoggerPrueba logger = new();
+            FabricaFalsa fabrica = new(Guion) { BytesPathLogin = [.. "/usr/bin:/opt/"u8, 0xFF, .. "x"u8] };
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+
+            // Act
+            _ = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = sesion.PathLogin.Should().BeNull();
+            _ = logger.Entradas.Should().ContainSingle(e => e.Evento == 31).Which.Mensaje.Should().Contain("UTF-8");
         }
 
         [Fact]
