@@ -20,25 +20,18 @@ namespace NativeSsh.Test.Herramientas
         [InlineData(256)]
         [InlineData(65_537)]
         [InlineData(773_184)]
-        public void Calcular_CoincideConElCksumDelSistema(int longitud)
+        public async Task Calcular_CoincideConElCksumDelSistema(int longitud)
         {
-            // Arrange
+            // Arrange: los datos llegan a cksum por su entrada estándar, sin archivos temporales.
             byte[] datos = new byte[longitud];
             new Random(longitud).NextBytes(datos);
-            string archivo = Path.Combine(Path.GetTempPath(), $"ns_cksum_{Guid.NewGuid():N}");
-            File.WriteAllBytes(archivo, datos);
-            string sistema;
-            try
-            {
-                ProcessStartInfo inicio = new("bash", ["-c", "cksum < \"$1\"", "ns", archivo]) { RedirectStandardOutput = true };
-                using Process proceso = Process.Start(inicio)!;
-                sistema = proceso.StandardOutput.ReadToEnd().Trim();
-                proceso.WaitForExit();
-            }
-            finally
-            {
-                File.Delete(archivo);
-            }
+            ProcessStartInfo inicio = new("cksum") { RedirectStandardInput = true, RedirectStandardOutput = true };
+            using Process proceso = Process.Start(inicio)!;
+            Task<string> salida = proceso.StandardOutput.ReadToEndAsync();
+            await proceso.StandardInput.BaseStream.WriteAsync(datos);
+            proceso.StandardInput.Close();
+            await proceso.WaitForExitAsync();
+            string sistema = (await salida).Trim();
 
             // Act
             uint suma = CksumPosix.Calcular(datos);
