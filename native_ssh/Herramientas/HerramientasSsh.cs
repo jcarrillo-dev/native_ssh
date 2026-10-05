@@ -27,8 +27,6 @@ namespace NativeSsh.Herramientas
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
         private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
 
-        // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
-        // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
         // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). El
         // mensaje de stat en el locale C los distingue (strerror: "Permission denied" en GNU, BSD y busybox): sin_acceso
         // informa del segundo caso y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
@@ -43,6 +41,8 @@ namespace NativeSsh.Herramientas
             }
             """.ReplaceLineEndings("\n");
 
+        // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
+        // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
         private const string ErrorNoRegular = """printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
         private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
