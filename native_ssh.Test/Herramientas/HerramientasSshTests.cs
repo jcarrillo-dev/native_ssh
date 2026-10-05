@@ -937,6 +937,25 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("base64 -d > \"$tmp\"");
         }
 
+        // La escritura de ssh_replace_file_content recibe la huella de lo que se leyó (sha256 y "suma bytes" de cksum) para
+        // comprobar en el servidor que el archivo no cambió; ssh_write_file no compara nada.
+        [Fact]
+        public async Task ReplaceFileContent_LaEscrituraRecibeLaHuellaDeLoLeido()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b");
+            _ = await _herramientas.EscribirArchivoAsync("servidor", "otro.txt", "x", overwrite: true);
+
+            // Assert
+            byte[] leidos = Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n");
+            string sha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(leidos));
+            string[] escrituras = [.. _fabrica.Ultima!.Comandos.Where(c => c.Contains("base64 -d > \"$tmp\"", StringComparison.Ordinal))];
+            _ = escrituras.Should().HaveCount(2);
+            _ = escrituras[0].Should().Contain($" {sha} '{CksumPosix.Calcular(leidos)} {leidos.Length}'\n)");
+            _ = escrituras[1].Should().Contain(" '' ''\n)");
+            _ = escrituras[0].Should().Contain("sin_cambios || exit 1");
+        }
+
         [Fact]
         public async Task ReplaceFileContent_ConSudo_LaLecturaPreviaCompruebaTodoConSudo()
         {

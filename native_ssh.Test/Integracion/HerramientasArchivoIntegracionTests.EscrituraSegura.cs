@@ -296,6 +296,71 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
+        // Concurrencia en ssh_replace_file_content: si el archivo cambia (o desaparece) entre la lectura y la escritura, no
+        // se escribe. La modificación se inyecta con un 'mktemp' falso, que solo usa el paso de escritura (una sola vez).
+        // Sin sha256sum en el PATH se compara con cksum.
+        [Theory]
+        [InlineData("modificado", "", false)]
+        [InlineData("modificado", "", true)]
+        [InlineData("modificado", "sha256sum", false)]
+        [InlineData("borrado", "", false)]
+        [InlineData("borrado", "sha256sum", false)]
+        [SupportedOSPlatform("linux")]
+        public async Task ReemplazarContenido_ArchivoQueCambiaEntreLaLecturaYLaEscritura_NoEscribe(string cambio, string excluidas, bool isSudo)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "objetivo\nsegunda\n");
+            HerramientasSsh herramientas = Herramientas();
+            if (excluidas.Length > 0)
+                await QuitarDelPathAsync(herramientas, excluidas);
+            if (isSudo)
+                await SimularSudoAsync(herramientas);
+            string accion = cambio == "modificado" ? $"printf 'concurrente\\n' >> '{archivo}'" : $"rm -f -- '{archivo}'";
+            string marca = Ruta("marca");
+            await SustituirComandoAsync(herramientas, "mktemp", $"[ -e '{marca}' ] || {{ {accion}; : > '{marca}'; }}\nexec /usr/bin/mktemp \"$@\"");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "objetivo", "cambiado", sudo: isSudo))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("cambió desde la lectura").And.Contain("No se ha modificado");
+            _ = File.Exists(marca).Should().BeTrue();
+            if (cambio == "modificado")
+                _ = (await File.ReadAllTextAsync(archivo)).Should().Be("objetivo\nsegunda\nconcurrente\n");
+            else
+                _ = File.Exists(archivo).Should().BeFalse();
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(cambio == "modificado" ? 1 : 0);
+        }
+
+        // Sin sha256sum, la comprobación con cksum deja pasar el archivo que no cambió.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        [SupportedOSPlatform("linux")]
+        public async Task ReemplazarContenido_SinSha256sumEnElPath_CompruebaConCksumYEscribe(bool isEnElSitio)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "objetivo\nsegunda ñ\n");
+            if (isEnElSitio)
+                _ = Bash($"ln '{archivo}' '{Path.Combine(carpeta, "f2.txt")}'");
+            HerramientasSsh herramientas = Herramientas();
+            await QuitarDelPathAsync(herramientas, "sha256sum");
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "objetivo", "cambiado");
+
+            // Assert
+            _ = resultado.IsAtomica.Should().Be(!isEnElSitio);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("cambiado\nsegunda ñ\n");
+        }
+
         private static readonly string[] HerramientasDeConservarAtributos = ["bash", "grep", "sort", "ls", "cut"];
 
         // Lógica de conservar_atributos aislada, con un PATH mínimo: el 'cp' de cada caso (real o falso) y las herramientas

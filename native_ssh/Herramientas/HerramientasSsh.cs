@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.ComponentModel;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Unicode;
@@ -747,7 +748,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; con copia de seguridad previa que restaura si la escritura falla; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros y todos los atributos; con copia de seguridad previa que restaura si la escritura falla; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -828,7 +829,8 @@ namespace NativeSsh.Herramientas
             }
 
             string salidaLectura = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.");
-            string textoOriginal = DecodificarArchivoUtf8(ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta), ruta);
+            byte[] bytesLeidos = ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta);
+            string textoOriginal = DecodificarArchivoUtf8(bytesLeidos, ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
             string targetNormalizado = AdaptarSaltos(targetContent, separador);
@@ -883,7 +885,7 @@ namespace NativeSsh.Herramientas
             byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
             string payloadBase64 = Convert.ToBase64String(bytesModificados);
 
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true);
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, bytesLeidos);
 
             Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionEscritura);
@@ -911,8 +913,10 @@ namespace NativeSsh.Herramientas
         // - archivo existente: el temporal recibe todos los atributos del original (conservar_atributos) y se renombra
         //   encima; si no se pueden copiar y comprobar (propietario ajeno sin sudo, cp que no es de GNU, contexto SELinux
         //   que no se puede asignar...) o hay enlaces duros, se escribe en el sitio (no atómico);
+        // - ssh_replace_file_content (contenidoLeido): justo antes de colocar, el destino debe seguir siendo el que se leyó
+        //   ($3 = sha256, $4 = suma y bytes de cksum); si cambió o desapareció, no se escribe;
         // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber).
-        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir)
+        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, byte[]? contenidoLeido = null)
         {
             const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
 
@@ -927,10 +931,12 @@ namespace NativeSsh.Herramientas
             string colocar = isSobrescribir
                 ? PlantillaBash.Crear($$"""
                     {{DefinicionConservarAtributos}}
+                    {{DefinicionSinCambios}}
                     if [ -e "$destino" ]; then
                       en_sitio=$fuera
                       [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
                       [ "$en_sitio" = 1 ] || conservar_atributos "$destino" "$tmp" || en_sitio=1
+                      sin_cambios || exit 1
                       if [ "$en_sitio" = 0 ]; then
                         mv -f -- "$tmp" "$destino" || exit 1
                       else
@@ -942,6 +948,7 @@ namespace NativeSsh.Herramientas
                         echo '{{MarcaEscrituraNoAtomica}}'
                       fi
                     else
+                      sin_cambios || exit 1
                       chmod "$modo_nuevo" -- "$tmp" || exit 1
                       mv -f -- "$tmp" "$destino" || exit 1
                     fi
@@ -972,6 +979,8 @@ namespace NativeSsh.Herramientas
             string script = PlantillaBash.Crear($$"""
                 ruta=$1
                 modo_nuevo=$2
+                sha_leido=$3
+                cksum_leido=$4
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
@@ -1005,8 +1014,32 @@ namespace NativeSsh.Herramientas
                 """);
             // La umask se toma del shell del usuario: bajo sudo sería la unión con la de sudoers.
             const string ModoPorUmask = "\"$(printf '%o' $(( 0666 & ~0$(umask) )))\"";
-            return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
+            string huella = contenidoLeido is null
+                ? "'' ''"
+                : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
+            return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella}", payloadBase64);
         }
+
+        // sin_cambios: con la huella de lo que leyó ssh_replace_file_content ($sha_leido, $cksum_leido), el destino debe seguir
+        // siendo ese archivo: se compara el sha256sum de su contenido (o, si no hay sha256sum, la salida de cksum: suma y
+        // bytes); si cambió o ya no existe, no se escribe. Sin huella (ssh_write_file) no compara nada; sin ninguna de las
+        // dos herramientas, no se puede comprobar y no se escribe.
+        private static readonly string DefinicionSinCambios = """
+            sin_cambios() {
+              [ -z "$sha_leido" ] && return 0
+              local actual
+              if [ -f "$destino" ] && command -v sha256sum >/dev/null 2>&1; then
+                actual=$(sha256sum < "$destino") && [ "${actual%% *}" = "$sha_leido" ] && return 0
+              elif [ -f "$destino" ] && command -v cksum >/dev/null 2>&1; then
+                actual=$(cksum < "$destino") && [ "$actual" = "$cksum_leido" ] && return 0
+              elif [ -f "$destino" ]; then
+                printf 'Error: no se puede comprobar que %s no cambió desde la lectura (faltan sha256sum y cksum). No se ha modificado.\n' "$ruta" >&2
+                return 1
+              fi
+              printf 'Error: el archivo %s cambió desde la lectura; vuelve a intentarlo. No se ha modificado.\n' "$ruta" >&2
+              return 1
+            }
+            """.ReplaceLineEndings("\n");
 
         // escribir_en_sitio: sobrescribe "$destino" con "$tmp" sin poder dejarlo truncado y sin copia. Antes copia el original
         // a una copia de seguridad (mktemp, 0600) en su directorio o, si no admite escritura, en ${TMPDIR:-/tmp}; si no puede,
