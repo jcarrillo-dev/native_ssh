@@ -1,5 +1,6 @@
 using FluentAssertions;
 using System.Linq;
+using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -10,6 +11,9 @@ namespace NativeSsh.Test.Sesion
     public class GestorSesionesTests
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(5);
+
+        // Destinos que el gestor resuelve a la misma sesión (el usuario por defecto es "ana").
+        private static readonly string[] DestinosEquivalentes = ["servidor", "ana@servidor", "ana@servidor:22", " ana@servidor "];
 
         private static GestorSesiones Crear(FabricaFalsa fabrica)
         {
@@ -172,6 +176,61 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = gestor.ListarSesiones().Should().ContainSingle();
             _ = fabrica.Conexiones.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task Concurrencia_HilosQueSalenALaVezConComandosYCanalesExec_UnaSolaSesionYUnaSolaConexion()
+        {
+            // Arrange: hilos propios que salen a la vez de una barrera mientras la primera conexión tarda en establecerse;
+            // la mitad encola comandos en el shell y la otra mitad abre canales exec, sobre destinos equivalentes.
+            FabricaFalsa fabrica = Fabrica();
+            fabrica.RetrasoConexion = TimeSpan.FromMilliseconds(200);
+            await using GestorSesiones gestor = Crear(fabrica);
+            const int hilos = 48;
+            using Barrier barrera = new(hilos);
+            Task[] tareas = new Task[hilos];
+
+            // Act
+            for (int i = 0; i < hilos; i++)
+            {
+                int indice = i;
+                string destino = DestinosEquivalentes[indice % DestinosEquivalentes.Length];
+                tareas[indice] = Task.Factory.StartNew(
+                    () =>
+                    {
+                        _ = barrera.SignalAndWait(Limite);
+                        return indice % 2 == 0
+                            ? ComprobarComandoAsync(gestor, destino, $"cmd{indice}")
+                            : ComprobarExecAsync(gestor, destino, $"lectura{indice}");
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default).Unwrap();
+            }
+
+            await Task.WhenAll(tareas).WaitAsync(TimeSpan.FromSeconds(15));
+
+            // Assert
+            _ = gestor.ListarSesiones().Should().ContainSingle().Which.ConexionesAbiertas.Should().Be(1);
+            _ = fabrica.Conexiones.Should().Be(1);
+        }
+
+        private static async Task ComprobarComandoAsync(GestorSesiones gestor, string destino, string comando)
+        {
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(10));
+            await peticion.Finalizacion.WaitAsync(TimeSpan.FromSeconds(10));
+            byte[] salida = new byte[64];
+            int copiados = peticion.Salida.Leer(0, salida).Copiados;
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Encoding.UTF8.GetString(salida, 0, copiados).Should().Be($"eco:{comando}\n");
+        }
+
+        // El falso responde "eco:" y el script que le llega: el del llamante tras el 'cd' al directorio de trabajo.
+        private static async Task ComprobarExecAsync(GestorSesiones gestor, string destino, string script)
+        {
+            ResultadoCanalExec resultado = await gestor.EjecutarExecAsync(destino, script, TimeSpan.FromSeconds(10), CancellationToken.None);
+            _ = resultado.CodigoSalida.Should().Be(0);
+            _ = Encoding.UTF8.GetString(resultado.Salida.Span).Should().StartWith("eco:").And.EndWith($"\n{script}\n");
         }
 
         [Fact]

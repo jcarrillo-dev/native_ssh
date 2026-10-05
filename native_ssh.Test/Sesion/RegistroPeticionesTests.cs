@@ -119,6 +119,32 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public void Podar_ConRelojLejosDeCero_NoQuitaPorRetencionLasPeticionesEnCurso()
+        {
+            // Arrange: el reloj real (Stopwatch) no empieza en 0 y una petición sin terminar tiene FinTimestamp 0: medida
+            // desde ahí, cualquier retención está vencida. Solo su estado la protege.
+            _reloj.Avanzar(TimeSpan.FromDays(30));
+            RegistroPeticiones registro = new(new OpcionesNativeSsh { RetencionPeticionesFinalizadas = TimeSpan.FromMinutes(30) }, _reloj);
+            Peticion encolada = Nueva();
+            Peticion enEjecucion = Nueva();
+            Peticion terminada = Nueva();
+            registro.Registrar(encolada);
+            registro.Registrar(enEjecucion);
+            registro.Registrar(terminada);
+            _ = enEjecucion.TryMarcarEjecutando();
+            _ = terminada.TryFinalizar(EstadoPeticionEnum.Completado, 0, null);
+
+            // Act
+            _reloj.Avanzar(TimeSpan.FromMinutes(31));
+            registro.Podar();
+
+            // Assert
+            _ = registro.Buscar(terminada.IdTexto).Should().BeNull();
+            _ = registro.Buscar(encolada.IdTexto).Should().BeSameAs(encolada);
+            _ = registro.Buscar(enEjecucion.IdTexto).Should().BeSameAs(enEjecucion);
+        }
+
+        [Fact]
         public void ListarRecientes_MasRecientePrimero()
         {
             // Arrange

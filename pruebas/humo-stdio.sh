@@ -13,19 +13,52 @@ trap '"$RAIZ/pruebas/sshd-local.sh" parar' EXIT
 NATIVE_SSH_DIRECTORIO_SSH="$ESTADO" \
 NATIVE_SSH_IDENTIDADES="$ESTADO/cliente_ed25519" \
 python3 - "$BINARIO" "$USER@127.0.0.1:$PUERTO" <<'PY'
-import json, subprocess, sys, threading
+import json, os, shutil, subprocess, sys, tempfile, threading
 
 binario, destino = sys.argv[1], sys.argv[2]
-proceso = subprocess.Popen([binario], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
-lineas_stderr = []
 
-def drenar_stderr():
-    for linea in proceso.stderr:
-        lineas_stderr.append(linea)
+# Segundos que se espera cada respuesta antes de matar el servidor (como el timeout de humo-http.sh).
+PLAZO_RESPUESTA = 60
 
-hilo_stderr = threading.Thread(target=drenar_stderr, daemon=True)
-hilo_stderr.start()
+# Todo lo de esta ejecución vive en un directorio propio que se borra al terminar: el stderr del servidor y los archivos
+# de las herramientas de archivo, que nunca buscan en todo /tmp (sus restos ajenos cambiarían el resultado).
+trabajo = os.path.realpath(tempfile.mkdtemp(prefix="ns_humo_"))
+ruta_stderr = os.path.join(trabajo, "servidor.stderr")
+directorio = os.path.join(trabajo, "archivos")
+os.mkdir(directorio)
+archivo = os.path.join(directorio, "ns_humo_test.txt")
+
+# El stderr va a un archivo abierto en modo append (cada escritura del servidor va al final): por mucho que escriba no se
+# bloquea en una tubería llena ni depende de un hilo lector. La cola se lee con un descriptor aparte en los fallos.
+with open(ruta_stderr, "ab") as salida_errores:
+    proceso = subprocess.Popen([binario], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=salida_errores, encoding="utf-8", bufsize=1)
+
+plazo_vencido = threading.Event()
 siguiente_id = 0
+
+def cola_stderr(lineas=40):
+    with open(ruta_stderr, "rb") as fichero:
+        texto = fichero.read().decode("utf-8", errors="replace")
+    return "\n".join(texto.splitlines()[-lineas:])
+
+def terminar_servidor():
+    if proceso.poll() is None:
+        proceso.kill()
+    proceso.wait()
+
+def fallar(mensaje):
+    terminar_servidor()
+    raise SystemExit(f"FALLO: {mensaje}\n--- últimas líneas del stderr del servidor ---\n{cola_stderr()}")
+
+def leer_json(texto, contexto):
+    try:
+        return json.loads(texto)
+    except json.JSONDecodeError as error:
+        fallar(f"{contexto} no es JSON válido ({error}): {texto!r}")
+
+def vencer_plazo():
+    plazo_vencido.set()
+    proceso.kill()
 
 def enviar(metodo, parametros=None, notificacion=False):
     global siguiente_id
@@ -39,13 +72,20 @@ def enviar(metodo, parametros=None, notificacion=False):
     proceso.stdin.flush()
     if notificacion:
         return None
-    while True:
-        linea = proceso.stdout.readline()
-        if not linea:
-            raise SystemExit("stdout cerrado. stderr:\n" + "".join(lineas_stderr))
-        respuesta = json.loads(linea)  # Cualquier línea que no sea JSON (un log) rompe aquí.
-        if respuesta.get("id") == siguiente_id:
-            return respuesta
+    vigilante = threading.Timer(PLAZO_RESPUESTA, vencer_plazo)
+    vigilante.daemon = True
+    vigilante.start()
+    try:
+        while True:
+            linea = proceso.stdout.readline()
+            if not linea:
+                fallar(f"sin respuesta a {metodo} en {PLAZO_RESPUESTA} s" if plazo_vencido.is_set() else f"stdout cerrado sin respuesta a {metodo}")
+            # Cualquier línea que no sea JSON (p. ej. un log escrito en stdout) es un fallo.
+            respuesta = leer_json(linea, f"La línea recibida en respuesta a {metodo}")
+            if respuesta.get("id") == siguiente_id:
+                return respuesta
+    finally:
+        vigilante.cancel()
 
 def llamar(nombre, argumentos):
     resultado = enviar("tools/call", {"name": nombre, "arguments": argumentos})["result"]
@@ -54,77 +94,89 @@ def llamar(nombre, argumentos):
 
 def comprobar(condicion, mensaje):
     if not condicion:
-        proceso.kill()
-        raise SystemExit("FALLO: " + mensaje)
+        fallar(mensaje)
     print("ok -", mensaje)
 
-inicio = enviar("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "humo", "version": "1"}})
-comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize")
-enviar("notifications/initialized", notificacion=True)
+def principal():
+    inicio = enviar("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "humo", "version": "1"}})
+    comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize")
+    enviar("notifications/initialized", notificacion=True)
 
-herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
-comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_find", "ssh_input", "ssh_list_dir", "ssh_output", "ssh_read_file", "ssh_replace_file_content", "ssh_reset_shell", "ssh_search", "ssh_set_cwd", "ssh_stat", "ssh_status", "ssh_write_file"], f"tools/list: {herramientas}")
+    herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
+    comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_find", "ssh_input", "ssh_list_dir", "ssh_output", "ssh_read_file", "ssh_replace_file_content", "ssh_reset_shell", "ssh_search", "ssh_set_cwd", "ssh_stat", "ssh_status", "ssh_write_file"], f"tools/list: {herramientas}")
 
-es_error, texto = llamar("ssh_exec", {"destino": destino, "comando": "export NS_HUMO=1; echo hola"})
-datos = json.loads(texto)
-comprobar(not es_error and datos["estado"] == "Completado" and datos["salida"] == "hola\n" and datos["codigoSalida"] == 0, f"ssh_exec: {texto}")
+    es_error, texto = llamar("ssh_exec", {"destino": destino, "comando": "export NS_HUMO=1; echo hola"})
+    datos = leer_json(texto, "ssh_exec")
+    comprobar(not es_error and datos["estado"] == "Completado" and datos["salida"] == "hola\n" and datos["codigoSalida"] == 0, f"ssh_exec: {texto}")
 
-_, texto = llamar("ssh_exec", {"destino": destino, "comando": "echo $NS_HUMO"})
-comprobar(json.loads(texto)["salida"] == "1\n", "variables persistentes")
+    _, texto = llamar("ssh_exec", {"destino": destino, "comando": "echo $NS_HUMO"})
+    comprobar(leer_json(texto, "ssh_exec")["salida"] == "1\n", "variables persistentes")
 
-es_error, texto_write = llamar("ssh_write_file", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "contenido": "linea1\nlinea2\nlinea3\nlinea4\n", "overwrite": True})
-datos_write = json.loads(texto_write)
-comprobar(not es_error and datos_write["ruta"] == "/tmp/ns_humo_test.txt" and datos_write["bytes"] == 28 and datos_write["isAtomica"] and "reemplazos" not in datos_write and "Archivo escrito correctamente" in datos_write["mensaje"], f"ssh_write_file: {texto_write}")
+    es_error, texto_write = llamar("ssh_write_file", {"destino": destino, "ruta": archivo, "contenido": "linea1\nlinea2\nlinea3\nlinea4\n", "overwrite": True})
+    datos_write = leer_json(texto_write, "ssh_write_file")
+    comprobar(not es_error and datos_write["ruta"] == archivo and datos_write["bytes"] == 28 and datos_write["isAtomica"] and "reemplazos" not in datos_write and "Archivo escrito correctamente" in datos_write["mensaje"], f"ssh_write_file: {texto_write}")
 
-es_error, contenido = llamar("ssh_read_file", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 3})
-comprobar(not es_error and contenido == "[Líneas 2-3 de 4]\nlinea2\nlinea3\n", f"ssh_read_file: {contenido}")
+    es_error, contenido = llamar("ssh_read_file", {"destino": destino, "ruta": archivo, "lineaInicio": 2, "lineaFin": 3})
+    comprobar(not es_error and contenido == "[Líneas 2-3 de 4]\nlinea2\nlinea3\n", f"ssh_read_file: {contenido}")
 
-es_error, texto_search = llamar("ssh_search", {"destino": destino, "ruta": "/tmp", "patron": "linea3"})
-comprobar(not es_error and "/tmp/ns_humo_test.txt" in texto_search and "linea3" in texto_search and "\n[motor: " in texto_search, f"ssh_search: {texto_search}")
+    # En el directorio propio la búsqueda solo puede encontrar el archivo del humo: la coincidencia exacta y el motor.
+    es_error, texto_search = llamar("ssh_search", {"destino": destino, "ruta": directorio, "patron": "linea3"})
+    resultados, _, pie = texto_search.rpartition("\n\n")
+    comprobar(not es_error and resultados == f"{archivo}:3:linea3" and pie.startswith("[motor: "), f"ssh_search: {texto_search}")
 
-es_error, texto_replace = llamar("ssh_replace_file_content", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 2, "targetContent": "linea2\n", "replacementContent": "linea2_modificada\n"})
-datos_replace = json.loads(texto_replace)
-comprobar(not es_error and datos_replace["reemplazos"] == 1 and datos_replace["bytes"] == 39 and datos_replace["isAtomica"] and "modificado quirúrgicamente" in datos_replace["mensaje"], f"ssh_replace_file_content: {texto_replace}")
+    es_error, texto_replace = llamar("ssh_replace_file_content", {"destino": destino, "ruta": archivo, "lineaInicio": 2, "lineaFin": 2, "targetContent": "linea2\n", "replacementContent": "linea2_modificada\n"})
+    datos_replace = leer_json(texto_replace, "ssh_replace_file_content")
+    comprobar(not es_error and datos_replace["reemplazos"] == 1 and datos_replace["bytes"] == 39 and datos_replace["isAtomica"] and "modificado quirúrgicamente" in datos_replace["mensaje"], f"ssh_replace_file_content: {texto_replace}")
 
-es_error, contenido_mod = llamar("ssh_read_file", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 3})
-comprobar(not es_error and contenido_mod == "[Líneas 2-3 de 4]\nlinea2_modificada\nlinea3\n", f"ssh_read_file post-replace: {contenido_mod}")
+    es_error, contenido_mod = llamar("ssh_read_file", {"destino": destino, "ruta": archivo, "lineaInicio": 2, "lineaFin": 3})
+    comprobar(not es_error and contenido_mod == "[Líneas 2-3 de 4]\nlinea2_modificada\nlinea3\n", f"ssh_read_file post-replace: {contenido_mod}")
 
-es_error, texto_find = llamar("ssh_find", {"destino": destino, "ruta": "/tmp", "patron": "*.txt"})
-comprobar(not es_error and "ns_humo_test.txt" in texto_find, f"ssh_find: {texto_find}")
+    es_error, texto_find = llamar("ssh_find", {"destino": destino, "ruta": directorio, "patron": "*.txt"})
+    comprobar(not es_error and texto_find == "ns_humo_test.txt", f"ssh_find: {texto_find}")
 
-es_error, texto_stat = llamar("ssh_stat", {"destino": destino, "ruta": "/tmp"})
-datos_stat = json.loads(texto_stat)
-comprobar(not es_error and datos_stat["existe"] and datos_stat["ruta"] == "/tmp" and "propietario" in datos_stat, f"ssh_stat: {texto_stat}")
+    es_error, texto_stat = llamar("ssh_stat", {"destino": destino, "ruta": directorio})
+    datos_stat = leer_json(texto_stat, "ssh_stat")
+    comprobar(not es_error and datos_stat["existe"] and datos_stat["ruta"] == directorio and datos_stat["tipo"] == "directorio" and "propietario" in datos_stat, f"ssh_stat: {texto_stat}")
 
-llamar("ssh_exec", {"destino": destino, "comando": "rm -f /tmp/ns_humo_test.txt"})
+    es_error, texto_cwd = llamar("ssh_set_cwd", {"destino": destino, "ruta": directorio})
+    datos_cwd = leer_json(texto_cwd, "ssh_set_cwd")
+    comprobar(not es_error and datos_cwd["directorio"] == directorio and datos_cwd["destino"] == destino, f"ssh_set_cwd fijar: {texto_cwd}")
 
-es_error, texto_cwd = llamar("ssh_set_cwd", {"destino": destino, "ruta": "/tmp"})
-datos_cwd = json.loads(texto_cwd)
-comprobar(not es_error and datos_cwd["directorio"] == "/tmp" and datos_cwd["destino"] == destino, f"ssh_set_cwd fijar: {texto_cwd}")
+    _, texto_pwd = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
+    comprobar(leer_json(texto_pwd, "ssh_exec")["salida"].strip() == directorio, f"ssh_exec en el cwd fijado: {texto_pwd}")
 
-_, texto_pwd = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
-comprobar(json.loads(texto_pwd)["salida"].strip() == "/tmp", f"ssh_exec en cwd /tmp: {texto_pwd}")
+    es_error, texto_cwd_reset = llamar("ssh_set_cwd", {"destino": destino, "ruta": None})
+    datos_cwd_reset = leer_json(texto_cwd_reset, "ssh_set_cwd")
+    comprobar(not es_error and "directorio" not in datos_cwd_reset and "restablecido" in datos_cwd_reset["mensaje"], f"ssh_set_cwd reset: {texto_cwd_reset}")
 
-es_error, texto_cwd_reset = llamar("ssh_set_cwd", {"destino": destino, "ruta": None})
-datos_cwd_reset = json.loads(texto_cwd_reset)
-comprobar(not es_error and "directorio" not in datos_cwd_reset and "restablecido" in datos_cwd_reset["mensaje"], f"ssh_set_cwd reset: {texto_cwd_reset}")
+    _, texto_pwd_reset = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
+    comprobar(leer_json(texto_pwd_reset, "ssh_exec")["salida"].strip() != directorio, f"ssh_exec en cwd reset: {texto_pwd_reset}")
 
-_, texto_pwd_reset = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
-comprobar(json.loads(texto_pwd_reset)["salida"].strip() != "/tmp", f"ssh_exec en cwd reset: {texto_pwd_reset}")
+    _, texto = llamar("ssh_exec", {"destino": destino, "comando": "sleep 30", "esperarSegundos": 0})
+    id_lento = leer_json(texto, "ssh_exec")["id"]
+    _, texto = llamar("ssh_cancel", {"id": id_lento})
+    comprobar(leer_json(texto, "ssh_cancel")["estado"] == "Cancelado", "ssh_cancel")
 
-_, texto = llamar("ssh_exec", {"destino": destino, "comando": "sleep 30", "esperarSegundos": 0})
-id_lento = json.loads(texto)["id"]
-_, texto = llamar("ssh_cancel", {"id": id_lento})
-comprobar(json.loads(texto)["estado"] == "Cancelado", "ssh_cancel")
+    _, texto = llamar("ssh_status", {})
+    estado = leer_json(texto, "ssh_status")
+    comprobar(estado["sesiones"][0]["conexionesAbiertas"] == 1, "una sola conexión TCP")
 
-_, texto = llamar("ssh_status", {})
-estado = json.loads(texto)
-comprobar(estado["sesiones"][0]["conexionesAbiertas"] == 1, "una sola conexión TCP")
+    es_error, texto = llamar("ssh_exec", {"destino": "ana@", "comando": "ls"})
+    comprobar(es_error and "no válido" in texto, "error de destino como isError")
 
-es_error, texto = llamar("ssh_exec", {"destino": "ana@", "comando": "ls"})
-comprobar(es_error and "no válido" in texto, "error de destino como isError")
+    proceso.stdin.close()
+    proceso.wait(timeout=10)
 
-proceso.stdin.close()
-proceso.wait(timeout=10)
+# Cualquier salida que no sea la correcta (comprobación fallida, JSON inválido, KeyError, tubería rota, plazo vencido,
+# Ctrl+C) mata el servidor; y el directorio propio se borra siempre.
+try:
+    principal()
+except SystemExit:
+    raise
+except BaseException as error:
+    fallar(f"{type(error).__name__}: {error}")
+finally:
+    terminar_servidor()
+    shutil.rmtree(trabajo, ignore_errors=True)
 print("Humo correcto.")
 PY
