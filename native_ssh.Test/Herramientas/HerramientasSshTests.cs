@@ -493,6 +493,21 @@ namespace NativeSsh.Test.Herramientas
             _ = lectura.Should().Contain("supera el máximo editable");
         }
 
+        [Fact]
+        public async Task SearchFindListDir_LimitanLaSalidaEnElServidorConHead()
+        {
+            // Act
+            _ = await _herramientas.BuscarAsync("servidor", "patron", maxResultados: 7);
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "*.conf", maxResultados: 8);
+            _ = await _herramientas.ListarDirectoriosAsync("servidor", maxResultados: 9);
+
+            // Assert
+            string[] comandos = [.. _fabrica.Ultima!.Comandos];
+            _ = comandos.Should().Contain(c => c.Contains("grep -rnI", StringComparison.Ordinal) && c.Contains("| head -n 8", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-name '*.conf'", StringComparison.Ordinal) && c.Contains("| head -n 9", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-type d -print", StringComparison.Ordinal) && c.Contains("| head -n 10", StringComparison.Ordinal));
+        }
+
         [Theory]
         [InlineData("")]
         [InlineData("   ")]

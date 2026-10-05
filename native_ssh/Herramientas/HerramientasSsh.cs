@@ -318,7 +318,11 @@ namespace NativeSsh.Herramientas
                   --exclude={'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'} \
                   -m {{limite}} \
                   -E -e {{patronEscapado}} \
-                  -- {{rutaEscapada}} 2>&1
+                  -- {{rutaEscapada}} 2>&1 | head -n {{limite + 1}}
+                # Código de grep, no de head; 141 (SIGPIPE) = head ya tenía suficientes líneas.
+                rc=${PIPESTATUS[0]}
+                [ "$rc" -eq 141 ] && rc=0
+                exit "$rc"
                 )
                 """.ReplaceLineEndings("\n");
 
@@ -378,7 +382,7 @@ namespace NativeSsh.Herramientas
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name __pycache__ -o -name .cache \) -prune \
                   -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print -prune \
-                  -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort
+                  -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
                 )
                 """.ReplaceLineEndings("\n");
 
@@ -442,7 +446,7 @@ namespace NativeSsh.Herramientas
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
                   \( {{filtroTipo}}-name {{patronEscapado}} -print -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort
+                  -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
                 )
                 """.ReplaceLineEndings("\n");
 

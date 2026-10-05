@@ -113,5 +113,38 @@ namespace NativeSsh.Test.Integracion
             _ = error.Message.Should().Contain("superó el máximo");
             _ = parcial.Should().StartWith("[Líneas 1999-2000 de 2000]\n001999");
         }
+
+        [Fact]
+        public async Task BuscarFindYListar_ResultadosAcotadosEnElServidorConAvisoDeLimite()
+        {
+            // Arrange: 300 archivos con una coincidencia cada uno y 300 subdirectorios.
+            for (int i = 0; i < 300; i++)
+            {
+                await File.WriteAllTextAsync(Ruta($"a{i:D3}.txt"), "coincidencia_acotada\n");
+                _ = Directory.CreateDirectory(Ruta($"d{i:D3}"));
+            }
+
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string busqueda = await herramientas.BuscarAsync(Destino, "coincidencia_acotada", _directorio, maxResultados: 5);
+            long bytesBusqueda = UltimaPeticion("grep -rnI").Salida.Longitud;
+            string nombres = await herramientas.BuscarPorNombreAsync(Destino, "a*.txt", _directorio, maxResultados: 5);
+            long bytesNombres = UltimaPeticion("-name 'a*.txt'").Salida.Longitud;
+            string listado = await herramientas.ListarDirectoriosAsync(Destino, _directorio, profundidadMax: 1, maxResultados: 5);
+            long bytesListado = UltimaPeticion("-type d -print").Salida.Longitud;
+
+            // Assert: llegan como mucho limite + 1 líneas y se sigue avisando del límite.
+            _ = busqueda.Should().Contain("[Límite alcanzado: se muestran 5 coincidencias");
+            _ = busqueda.Split('\n').Count(l => l.Contains("coincidencia_acotada", StringComparison.Ordinal) && !l.StartsWith('[')).Should().Be(5);
+            _ = bytesBusqueda.Should().BeLessThan(6 * 200);
+            _ = nombres.Should().StartWith("a000.txt\na001.txt\na002.txt\na003.txt\na004.txt\n\n[Límite alcanzado: se muestran 5 resultados");
+            _ = bytesNombres.Should().BeLessThan(6 * 20);
+            _ = listado.Should().StartWith("d000\nd001\nd002\nd003\nd004\n\n[Límite alcanzado: se muestran 5 directorios");
+            _ = bytesListado.Should().BeLessThan(6 * 20);
+        }
+
+        private Peticion UltimaPeticion(string fragmentoComando) =>
+            _gestor.ListarPeticiones().First(p => p.Comando.Contains(fragmentoComando, StringComparison.Ordinal));
     }
 }
