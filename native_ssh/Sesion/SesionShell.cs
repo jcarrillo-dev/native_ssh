@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Threading.Channels;
 using NativeSsh.Buffers;
@@ -15,6 +16,8 @@ namespace NativeSsh.Sesion
     // el mismo LimitadorConexiones. Se lee sin candado (volatile) en el camino rápido. Solo se libera una conexión que ya
     // no está conectada (se sustituye) o al cerrar la sesión (DisposeAsync, también bajo el candado); un canal exec que
     // aún la estuviera usando falla con error y no deja nada a medias.
+    // El canal del shell queda ligado a la conexión que lo abrió (_conexionDelCanal): al sustituirla se cierra (SSH.NET
+    // no siempre lo cierra cuando cae el TCP) y AsegurarShellAsync solo da por bueno un canal de la conexión vigente.
     public sealed class SesionShell : IAsyncDisposable
     {
         public const int TamanoBloqueLectura = 16 * 1024;
@@ -28,6 +31,9 @@ namespace NativeSsh.Sesion
         public const int MaxBytesDirectorioTrabajo = 1024;
 
         private static readonly TimeSpan MargenLimiteLocalExec = TimeSpan.FromSeconds(3);
+
+        // Base64 del PATH del login: muy por encima de cualquier PATH real.
+        private const int MaxBytesCapturaPath = 16 * 1024;
 
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
@@ -46,6 +52,7 @@ namespace NativeSsh.Sesion
         private readonly SemaphoreSlim _cupoExec = new(MaxCanalesExecSimultaneos, MaxCanalesExecSimultaneos);
 
         private ICanalShell? _canal;
+        private IConexionSsh? _conexionDelCanal;
         private BufferSalida? _salidaActual;
         private TaskCompletionSource<int>? _esperaMarcador;
         private bool _isInterrumpiendo;
@@ -61,6 +68,7 @@ namespace NativeSsh.Sesion
         private int _canalesExecActivos;
         private int _isDispuesto;
         private volatile string? _directorioTrabajo;
+        private volatile string? _pathLogin;
 
         public SesionShell(DestinoSsh destino, IFabricaConexion fabrica, LimitadorConexiones limitador, OpcionesNativeSsh opciones, ILogger logger)
         {
@@ -77,6 +85,7 @@ namespace NativeSsh.Sesion
             Inicializacion,
             ReenvioInicializacion,
             Sincronizacion,
+            CapturaPath,
             Comando,
             Interrupcion
         }
@@ -88,6 +97,10 @@ namespace NativeSsh.Sesion
         public int ComandosEnCola => Volatile.Read(ref _comandosEnCola);
         public Peticion? PeticionActual => _peticionActual;
         public int CanalesExecActivos => Volatile.Read(ref _canalesExecActivos);
+
+        // PATH del shell de login, capturado por el shell PTY al (re)inicializarse. Hasta la primera inicialización es
+        // null y los canales exec usan el PATH por defecto de sshd (no se abre un PTY solo para averiguarlo).
+        public string? PathLogin => _pathLogin;
 
         // Fuente de verdad de __NS_CWD (ruta absoluta validada por ssh_set_cwd, o null = $HOME). Se reexporta al
         // (re)inicializar el shell PTY y se pasa explícitamente a cada canal exec.
@@ -185,7 +198,7 @@ namespace NativeSsh.Sesion
 
             // El script se acota en el servidor con 'timeout'; el límite local, algo mayor, solo actúa si el servidor
             // no responde (o no tiene 'timeout') y cubre la espera de cupo y la conexión.
-            string comando = ConstructorComandoExec.Construir(script, _directorioTrabajo, timeout);
+            string comando = ConstructorComandoExec.Construir(script, _directorioTrabajo, timeout, _pathLogin);
             using CancellationTokenSource limite = new(timeout + MargenLimiteLocalExec);
             using CancellationTokenSource enlazado = CancellationTokenSource.CreateLinkedTokenSource(limite.Token, cancellationToken, _cierre.Token);
             CancellationToken token = enlazado.Token;
@@ -418,13 +431,19 @@ namespace NativeSsh.Sesion
                 _isShellInicializadoAlgunaVez = false;
             }
 
-            bool isConectada = _conexion is { IsConectada: true };
-            if (isConectada && IsShellActivo)
+            IConexionSsh? conexion = _conexion;
+            if (conexion is { IsConectada: true } && IsShellDe(conexion))
                 return null;
 
             CerrarCanalActual();
-            IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
-            return await AbrirShellAsync(conexion, token).ConfigureAwait(false);
+            IConexionSsh vigente = await ObtenerConexionAsync(token).ConfigureAwait(false);
+            return await AbrirShellAsync(vigente, token).ConfigureAwait(false);
+        }
+
+        private bool IsShellDe(IConexionSsh conexion)
+        {
+            lock (_candadoProceso)
+                return _canal is not null && ReferenceEquals(_conexionDelCanal, conexion);
         }
 
         // Única vía para crear o sustituir _conexion (ver el comentario de la clase).
@@ -434,6 +453,7 @@ namespace NativeSsh.Sesion
             if (actual is { IsConectada: true })
                 return actual;
 
+            IConexionSsh? caida = null;
             await _candadoConexion.WaitAsync(token).ConfigureAwait(false);
             try
             {
@@ -444,7 +464,7 @@ namespace NativeSsh.Sesion
                 if (actual is { IsConectada: true })
                     return actual;
 
-                actual?.Dispose();
+                caida = actual;
                 _conexion = null;
                 IConexionSsh nueva = await ConectarAsync(token).ConfigureAwait(false);
                 _conexion = nueva;
@@ -453,6 +473,30 @@ namespace NativeSsh.Sesion
             finally
             {
                 _ = _candadoConexion.Release();
+                // Fuera del candado: liberar una conexión muerta (y su canal) puede tardar.
+                if (caida is not null)
+                    DescartarConexion(caida);
+            }
+        }
+
+        // Una conexión sustituida se lleva su canal de shell: si siguiera en _canal, el siguiente comando se escribiría
+        // en un canal muerto (ShellPerdido sin ejecutarse) en lugar de abrir un shell nuevo sobre la conexión vigente.
+        private void DescartarConexion(IConexionSsh conexion)
+        {
+            ICanalShell? canal;
+            lock (_candadoProceso)
+                canal = ReferenceEquals(_conexionDelCanal, conexion) ? _canal : null;
+
+            if (canal is not null)
+                CerrarCanal(canal);
+
+            try
+            {
+                conexion.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorLiberandoConexion(ex, Destino.Clave);
             }
         }
 
@@ -504,6 +548,7 @@ namespace NativeSsh.Sesion
             lock (_candadoProceso)
             {
                 _canal = canal;
+                _conexionDelCanal = conexion;
                 _escaner.Reiniciar(id);
                 _salidaActual = null;
                 _esperaMarcador = espera;
@@ -532,6 +577,9 @@ namespace NativeSsh.Sesion
                     if (codigo != CodigoCanalCerrado)
                         codigo = await SincronizarAsync(canal, id, limite.Token).ConfigureAwait(false);
                 }
+
+                if (codigo != CodigoCanalCerrado)
+                    codigo = await CapturarPathAsync(canal, limite.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
@@ -579,6 +627,64 @@ namespace NativeSsh.Sesion
             }
 
             return await espera.Task.WaitAsync(token).ConfigureAwait(false);
+        }
+
+        // Con el shell ya en un estado conocido. Si la captura no da un PATH válido se conserva el anterior: nunca hace
+        // fallar la inicialización (salvo que el canal se cierre o no responda, como cualquier otra línea).
+        private async Task<int> CapturarPathAsync(ICanalShell canal, CancellationToken token)
+        {
+            Guid id = Guid.NewGuid();
+            BufferSalida captura = new(MaxBytesCapturaPath, TimeProvider.System);
+            TaskCompletionSource<int> espera = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            try
+            {
+                lock (_candadoEscritura)
+                {
+                    lock (_candadoProceso)
+                    {
+                        if (!ReferenceEquals(_canal, canal))
+                            return CodigoCanalCerrado;
+
+                        _escaner.Reiniciar(id);
+                        _salidaActual = captura;
+                        _esperaMarcador = espera;
+                    }
+
+                    Componer(EscrituraEnum.CapturaPath, id, null);
+                    if (!TryEnviarBajoCandado(canal))
+                        throw new NativeSshException($"No se pudo escribir en el shell de {Destino.Clave}.");
+                }
+
+                int codigo = await espera.Task.WaitAsync(token).ConfigureAwait(false);
+                if (codigo == 0 && TryLeerPath(captura, out string? path))
+                    _pathLogin = path;
+
+                return codigo;
+            }
+            finally
+            {
+                captura.Liberar();
+            }
+        }
+
+        private static bool TryLeerPath(BufferSalida captura, [NotNullWhen(true)] out string? path)
+        {
+            path = null;
+            byte[] bytes = new byte[(int)Math.Min(captura.Longitud, MaxBytesCapturaPath)];
+            LecturaSalida lectura = captura.Leer(0, bytes);
+            if (lectura.HasDatosDescartados || lectura.Fin > bytes.Length)
+                return false;
+
+            try
+            {
+                path = Encoding.UTF8.GetString(Convert.FromBase64String(Encoding.ASCII.GetString(bytes, 0, lectura.Copiados).Trim()));
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+
+            return path.Length > 0 && !path.Contains('\n', StringComparison.Ordinal);
         }
 
         private void IniciarBomba(ICanalShell canal)
@@ -650,6 +756,7 @@ namespace NativeSsh.Sesion
                     return;
 
                 _canal = null;
+                _conexionDelCanal = null;
                 espera = _esperaMarcador;
                 _esperaMarcador = null;
                 _salidaActual = null;
@@ -690,6 +797,9 @@ namespace NativeSsh.Sesion
                     break;
                 case EscrituraEnum.Sincronizacion:
                     ConstructorComando.EscribirSincronizacion(id, _escritor);
+                    break;
+                case EscrituraEnum.CapturaPath:
+                    ConstructorComando.EscribirCapturaPath(id, _escritor);
                     break;
                 case EscrituraEnum.Comando:
                     ConstructorComando.EscribirComando(comando, id, _escritor);

@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
 using NativeSsh.Ssh;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -17,8 +19,9 @@ namespace NativeSsh.Test.Integracion
         {
         }
 
-        // Instancia adicional con su propio puerto, directorio de estado y ForceCommand (no toca la de por defecto).
-        internal SshdLocal(string? puerto, string? directorioEstado, string? forceCommand)
+        // Instancia adicional con su propio puerto, directorio de estado, ForceCommand y líneas extra de sshd_config
+        // (no toca la de por defecto).
+        internal SshdLocal(string? puerto, string? directorioEstado, string? forceCommand, string? configuracionExtra = null)
         {
             DirectorioPruebas = BuscarDirectorioPruebas();
             DirectorioEstado = Path.Combine(DirectorioPruebas, directorioEstado ?? ".estado");
@@ -28,6 +31,8 @@ namespace NativeSsh.Test.Integracion
                 _entorno["NATIVE_SSH_DIR_ESTADO"] = DirectorioEstado;
             if (forceCommand is not null)
                 _entorno["NATIVE_SSH_FORCE_COMMAND"] = forceCommand;
+            if (configuracionExtra is not null)
+                _entorno["NATIVE_SSH_SSHD_EXTRA"] = configuracionExtra;
 
             string salida = Ejecutar("iniciar");
             Puerto = int.Parse(salida.Trim().Split('\n')[^1], CultureInfo.InvariantCulture);
@@ -112,6 +117,43 @@ namespace NativeSsh.Test.Integracion
         public void Dispose() => Sshd.Dispose();
     }
 
+    // sshd con un shell de login cuyo PATH no es el de los canales exec: una granja de /usr/bin sin 'timeout' ni 'rg',
+    // más un 'rg' falso y una sonda. Y MaxSessions 2: el shell y un único canal exec a la vez.
+    [SupportedOSPlatform("linux")]
+    public sealed class SshdLocalRestringido : IDisposable
+    {
+        public const string LineaRgFalso = "rg_del_login:1:PATH del shell de login";
+
+        public SshdLocalRestringido()
+        {
+            DirectorioLogin = GranjaBinarios.Crear(Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"), "timeout", "rg");
+            CrearEjecutable("rg", $"echo '{LineaRgFalso}'");
+            CrearEjecutable("ns_sonda_path", "echo sonda");
+            Sshd = new SshdLocal(
+                Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022",
+                ".estado-restringido",
+                $"/usr/bin/env PATH={DirectorioLogin} /usr/bin/bash --norc --noprofile",
+                "MaxSessions 2");
+        }
+
+        public SshdLocal Sshd { get; }
+        public string DirectorioLogin { get; }
+
+        public void Dispose()
+        {
+            Sshd.Dispose();
+            if (Directory.Exists(DirectorioLogin))
+                Directory.Delete(DirectorioLogin, recursive: true);
+        }
+
+        private void CrearEjecutable(string nombre, string cuerpo)
+        {
+            string ruta = Path.Combine(DirectorioLogin, nombre);
+            File.WriteAllText(ruta, $"#!/usr/bin/bash\n{cuerpo}\n");
+            File.SetUnixFileMode(ruta, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     [CollectionDefinition(Nombre)]
     public sealed class ColeccionSshd : ICollectionFixture<SshdLocal>
     {
@@ -122,5 +164,12 @@ namespace NativeSsh.Test.Integracion
     public sealed class ColeccionSshdLoginLento : ICollectionFixture<SshdLocalLoginLento>
     {
         public const string Nombre = "sshd local con login lento";
+    }
+
+    [CollectionDefinition(Nombre)]
+    [SupportedOSPlatform("linux")]
+    public sealed class ColeccionSshdRestringido : ICollectionFixture<SshdLocalRestringido>
+    {
+        public const string Nombre = "sshd local restringido";
     }
 }

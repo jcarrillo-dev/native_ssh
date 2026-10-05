@@ -28,6 +28,7 @@ namespace NativeSsh.Test.Herramientas
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
             comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
+            comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
             comando.Contains("sed -n") ? SimularLectura(comando) :
@@ -450,6 +451,18 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task ReadFile_ContenidoNoUtf8_LoSustituyeYAnadeUnAvisoVisible()
+        {
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "latin1_lectura.txt");
+            string valido = await _herramientas.LeerArchivoAsync("servidor", "crlf.txt");
+
+            // Assert
+            _ = texto.Should().Be("[Líneas 1-1 de 1]\na\uFFFDo\n[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]");
+            _ = valido.Should().NotContain("[aviso:");
+        }
+
+        [Fact]
         public async Task LecturasSimultaneas_RespetanElLimiteDeCanalesExecPorConexion()
         {
             // Arrange
@@ -492,6 +505,30 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task Lectura_TrasCaidaQueNoCierraElCanal_ElSiguienteExecRecreaElShellEnLaNuevaConexion()
+        {
+            // Arrange: shell vivo en la primera conexión; la caída no cierra su canal (como SSH.NET con un TCP muerto).
+            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            ConexionFalsa primera = _fabrica.Ultima!;
+            CanalFalso canalViejo = primera.CanalActual!;
+            primera.CaerSinCerrarCanal();
+
+            // Act: la lectura reconecta por su canal exec y después llega un ssh_exec.
+            string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            bool isCanalViejoCerradoTrasLectura = canalViejo.IsCerrado;
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b");
+
+            // Assert: el canal muere con la conexión que lo abrió y el shell se recrea sobre la nueva.
+            _ = texto.Should().StartWith("[Líneas 1-3 de 10]");
+            _ = isCanalViejoCerradoTrasLectura.Should().BeTrue();
+            _ = comando.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = comando.Salida.Should().Be("eco:b\n");
+            _ = comando.Aviso.Should().Contain("Shell remoto recreado");
+            _ = _fabrica.Conexiones.Should().Be(2);
+            _ = _fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
         public async Task Lectura_TrasCaerLaConexion_ReconectaYElShellReutilizaLaNueva()
         {
             // Arrange
@@ -527,6 +564,25 @@ namespace NativeSsh.Test.Herramientas
             _ = conDirectorio.Should().StartWith("export __NS_CWD='/var/www/proyecto'\ncd \"${__NS_CWD:-$HOME}\"");
             _ = sinDirectorio.Should().StartWith("cd \"${__NS_CWD:-$HOME}\"");
             _ = _gestor.ListarSesiones().Single().DirectorioTrabajo.Should().BeNull();
+        }
+
+        [Fact]
+        public async Task CanalesExec_UsanElPathDelLoginCapturadoAlInicializarElShell()
+        {
+            // Arrange: el login falso exporta otro PATH (p. ej. con ~/.cargo/bin) que el de un canal exec.
+            _fabrica.PathLogin = "/home/ana/.cargo/bin:/usr/local/bin:/usr/bin";
+
+            // Act: antes de que exista el shell PTY no hay PATH capturado; después, sí.
+            _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
+            string? antes = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
+            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.BuscarAsync("servidor", "algo");
+            string? despues = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
+
+            // Assert
+            _ = antes.Should().BeNull();
+            _ = despues.Should().Be("/home/ana/.cargo/bin:/usr/local/bin:/usr/bin");
+            _ = _gestor.ListarSesiones().Single().PathLogin.Should().Be("/home/ana/.cargo/bin:/usr/local/bin:/usr/bin");
         }
 
         [Fact]
@@ -927,6 +983,18 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.Should().Contain("coincidencia 3");
             _ = resultado.Should().NotContain("coincidencia 4");
             _ = resultado.Should().EndWith("Refina el patrón o subdirectorio para acotar la búsqueda.]\n[motor: grep -P]");
+        }
+
+        [Fact]
+        public async Task Search_CompruebaQueLaRutaPedidaSeLeeAntesDeBuscar()
+        {
+            // Act
+            _ = await _herramientas.BuscarAsync("servidor", "patron", "src");
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("grep -rnI", StringComparison.Ordinal));
+            _ = comando.Should().Contain("if [ ! -r 'src' ] || { [ -d 'src' ] && [ ! -x 'src' ]; }; then");
+            _ = comando.IndexOf("sin permiso de lectura", StringComparison.Ordinal).Should().BeLessThan(comando.IndexOf("command -v rg", StringComparison.Ordinal));
         }
 
         [Fact]

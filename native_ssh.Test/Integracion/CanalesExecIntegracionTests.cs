@@ -76,6 +76,155 @@ namespace NativeSsh.Test.Integracion
             _ = (await _herramientas.CancelarAsync(largo.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
+        // Mata los procesos sshd de las conexiones abiertas con el sshd local sin tocar el proceso maestro: el TCP se
+        // corta como en una caída de red.
+        private void MatarConexionesDelSshd()
+        {
+            string maestro = File.ReadAllText(Path.Combine(_sshd.DirectorioEstado, "sshd.pid")).Trim();
+            _ = Bash($"matar() {{ for c in $(pgrep -P $1); do matar $c; done; case \"$(ps -o comm= -p $1)\" in sshd*) kill -9 $1;; esac; }}; for c in $(pgrep -P {maestro}); do matar $c; done");
+        }
+
+        private static string Bash(string comando)
+        {
+            ProcessStartInfo inicio = new("bash", ["-c", comando]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            using Process proceso = Process.Start(inicio)!;
+            string salida = proceso.StandardOutput.ReadToEnd();
+            _ = proceso.StandardError.ReadToEnd();
+            proceso.WaitForExit();
+            return salida.Trim();
+        }
+
+        [Fact]
+        public async Task CaidaDeLaConexion_ConOSinLecturaPrevia_ElSiguienteExecRecreaElShellYSeEjecuta()
+        {
+            // Arrange: cada caída obliga a reconectar; el limitador no debe frenar la prueba.
+            OpcionesNativeSsh opciones = _sshd.Opciones(maxConexiones: 1000);
+            await using GestorSesiones gestor = new(
+                _sshd.Fabrica(opciones),
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            await File.WriteAllTextAsync(Ruta("a.txt"), "uno\n");
+            _ = await herramientas.EjecutarAsync(Destino, "echo previo");
+            List<string> fallos = [];
+
+            // Act: con el shell vivo, caída y luego ssh_exec directo, o una lectura (reconecta por exec) y ssh_exec.
+            for (int i = 0; i < 10; i++)
+            {
+                bool isConLectura = i % 2 == 1;
+                MatarConexionesDelSshd();
+                await EsperasPrueba.EsperarHastaAsync(() => !gestor.ListarSesiones().Single().IsConectada);
+                string lectura = isConLectura ? await herramientas.LeerArchivoAsync(Destino, Ruta("a.txt")) : "[Líneas 1-1 de 1]\nuno\n";
+                ResultadoComando comando = await herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                if (lectura != "[Líneas 1-1 de 1]\nuno\n" || comando.Estado != EstadoPeticionEnum.Completado || comando.Salida != $"tras_{i}\n" || comando.Aviso?.Contains("Shell remoto recreado", StringComparison.Ordinal) != true)
+                    fallos.Add($"{i} (lectura previa: {isConLectura}): lectura='{lectura}' estado={comando.Estado} salida='{comando.Salida}' aviso='{comando.Aviso}'");
+            }
+
+            // Assert
+            _ = fallos.Should().BeEmpty();
+            _ = gestor.ListarSesiones().Single().ConexionesAbiertas.Should().Be(11);
+        }
+
+        // Procesos 'sleep <n>' vivos en el servidor (es la misma máquina). Se filtra por el nombre exacto del programa:
+        // un 'pgrep -f' encontraría también el propio shell que ejecuta la comprobación.
+        internal static string ProcesosSleepVivos(long primero, long segundo) =>
+            Bash($"ps -eo args= | awk -v a={primero} -v b={segundo} '$1==\"sleep\" && ($2==a || $2==b)'");
+
+        // Espera hasta 5 s a que no quede ninguno y devuelve los que sigan vivos.
+        internal static async Task<string> EsperarSinProcesosSleepAsync(long primero, long segundo)
+        {
+            string vivos = ProcesosSleepVivos(primero, segundo);
+            for (int i = 0; i < 50 && vivos.Length > 0; i++)
+            {
+                await Task.Delay(100);
+                vivos = ProcesosSleepVivos(primero, segundo);
+            }
+
+            return vivos;
+        }
+
+        internal static void MatarProcesosSleep(long primero, long segundo) =>
+            _ = Bash($"pkill -KILL -f 'sleep ({primero}|{segundo})$' || true");
+
+        [Fact]
+        public async Task ExecConTiempoAgotado_MataElProcesoRemotoYSusHijosAunqueIgnorenTerm()
+        {
+            // Arrange: un hijo en segundo plano y un proceso principal que ignora TERM (su 'sleep' hereda la señal ignorada).
+            long hijo = 700_000 + Random.Shared.Next(100_000);
+            long principal = hijo + 100_000;
+            string script = $"sleep {hijo} & trap '' TERM; sleep {principal}; wait";
+            string resultado;
+
+            // Act
+            try
+            {
+                try
+                {
+                    ResultadoCanalExec ejecucion = await _gestor.EjecutarExecAsync(Destino, script, TimeSpan.FromSeconds(2), CancellationToken.None);
+                    resultado = $"código {ejecucion.CodigoSalida}";
+                }
+                catch (NativeSshException ex)
+                {
+                    resultado = ex.Message;
+                }
+
+                string vivos = await EsperarSinProcesosSleepAsync(hijo, principal);
+
+                // Assert: 'timeout' manda TERM a los 2 s (muere el hijo) y KILL 2 s después (el resto), antes que el límite local.
+                _ = vivos.Should().BeEmpty();
+                _ = resultado.Should().BeOneOf("código 124", "código 137");
+            }
+            finally
+            {
+                MatarProcesosSleep(hijo, principal);
+            }
+        }
+
+        [Theory]
+        [InlineData("archivo", "000")]
+        [InlineData("directorio", "000")]
+        [InlineData("directorio", "600")]
+        public async Task Buscar_RutaExplicitaSinPermisoDeLectura_LanzaErrorEnLugarDeSinCoincidencias(string tipo, string modo)
+        {
+            // Arrange
+            string ruta = Ruta($"protegido_{tipo}");
+            if (tipo == "archivo")
+                await File.WriteAllTextAsync(ruta, "secreto\n");
+            else
+                await File.WriteAllTextAsync(Path.Combine(Directory.CreateDirectory(ruta).FullName, "dentro.txt"), "secreto\n");
+            _ = Bash($"chmod {modo} '{ruta}'");
+
+            try
+            {
+                // Act
+                NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync(Destino, "secreto", ruta))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert
+                _ = error.Message.Should().Contain("sin permiso de lectura").And.Contain(ruta);
+            }
+            finally
+            {
+                _ = Bash($"chmod 700 '{ruta}'");
+            }
+        }
+
+        [Fact]
+        public async Task Lectura_ArchivoLatin1_AvisaDeQueNoEsUtf8()
+        {
+            // Arrange
+            await File.WriteAllBytesAsync(Ruta("latin1.txt"), [.. "a"u8, 0xF1, .. "o\nsin final"u8]);
+
+            // Act
+            string texto = await _herramientas.LeerArchivoAsync(Destino, Ruta("latin1.txt"));
+
+            // Assert: sin salto final, el aviso va en su propia línea.
+            _ = texto.Should().Be("[Líneas 1-2 de 2]\na\uFFFDo\nsin final\n[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]");
+        }
+
         [Fact]
         public async Task Lectura_ArchivoCrlf_DevuelveSusRetornosDeCarroYTextoUtf8Fiel()
         {

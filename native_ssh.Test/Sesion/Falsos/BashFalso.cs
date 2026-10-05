@@ -32,7 +32,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         ComeInicializacion
     }
 
-    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal);
+    // Bytes: stdout exacto de un canal exec (para contenido que no es UTF-8); si es null se usa Salida.
+    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal, byte[]? Bytes = null);
 
     public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
@@ -48,6 +49,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
 
+        // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH).
+        public string PathLogin { get; set; } = "/usr/local/bin:/usr/bin:/bin";
+
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
@@ -57,7 +61,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 await Task.Delay(RetrasoConexion, cancellationToken);
 
             _ = Interlocked.Increment(ref _conexiones);
-            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec };
+            ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin) { BloqueoExec = BloqueoExec, PathLogin = PathLogin };
             Ultima = conexion;
             return conexion;
         }
@@ -69,6 +73,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _execActivos;
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
+        private volatile bool _isCanalHuerfano;
 
         public bool IsConectada => _isConectada;
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
@@ -82,6 +87,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int ExecActivos => Volatile.Read(ref _execActivos);
         public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
         public SemaphoreSlim? BloqueoExec { get; init; }
+        public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public CanalFalso? CanalActual { get; private set; }
 
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
@@ -119,7 +125,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                     _ = (isError ? errores : salida).Append(linea).Append('\n');
                 }
 
-                byte[] bytesSalida = Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
+                byte[] bytesSalida = respuesta.Bytes ?? Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
                 byte[] bytesErrores = Encoding.UTF8.GetBytes(errores.ToString());
                 return bytesSalida.Length + bytesErrores.Length > maxBytesSalida
                     ? new ResultadoCanalExec(null, null, ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty, true)
@@ -137,7 +143,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 throw new InvalidOperationException("Conexión cerrada.");
 
             _ = Interlocked.Increment(ref _shellsAbiertos);
-            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin);
+            CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin) { PathLogin = PathLogin };
             return CanalActual;
         }
 
@@ -148,7 +154,23 @@ namespace NativeSsh.Test.Sesion.Falsos
             CanalActual?.Cerrar();
         }
 
-        public void Dispose() => Caer();
+        // Caída como la de SSH.NET con un TCP muerto: la conexión deja de estar activa, pero el canal del shell no se
+        // entera (Leer sigue bloqueado y nunca devuelve 0) y escribir en él falla. Ni liberar la conexión lo cierra:
+        // solo SesionShell puede descartarlo.
+        public void CaerSinCerrarCanal()
+        {
+            _isCanalHuerfano = true;
+            _isConectada = false;
+            CanalActual?.Zombificar();
+        }
+
+        public void Dispose()
+        {
+            if (_isCanalHuerfano)
+                _isConectada = false;
+            else
+                Caer();
+        }
     }
 
     public sealed class CanalFalso : ICanalShell
@@ -172,6 +194,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _sincronizaciones;
         private bool _isEnLogin;
         private bool _isReadPendiente;
+        private volatile bool _isZombi;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
@@ -188,6 +211,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         public int MarcadoresInicializacion => Volatile.Read(ref _marcadoresInicializacion);
+        public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
@@ -220,6 +244,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 if (IsCerrado)
                     throw new InvalidOperationException("Canal cerrado.");
 
+                if (_isZombi)
+                    throw new InvalidOperationException("La conexión del canal se cayó.");
+
                 foreach (byte actual in datos)
                 {
                     if (IsCerrado)
@@ -242,6 +269,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 }
             }
         }
+
+        public void Zombificar() => _isZombi = true;
 
         public void Cerrar()
         {
@@ -335,6 +364,10 @@ namespace NativeSsh.Test.Sesion.Falsos
                 Inicializaciones.Enqueue(linea);
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);
                 EmitirConMarcador("", ExtraerId(linea), 0);
+            }
+            else if (linea.Contains("\"$PATH\" | base64", StringComparison.Ordinal))
+            {
+                EmitirConMarcador(Convert.ToBase64String(Encoding.UTF8.GetBytes(PathLogin)) + "\n", ExtraerId(linea), 0);
             }
             else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
             {

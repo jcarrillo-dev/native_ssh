@@ -36,5 +36,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 11, Level = LogLevel.Information, Message = "MCP escuchando en http://localhost:{Puerto}/mcp (solo loopback).")]
         public static partial void HttpLoopback(this ILogger logger, int puerto);
+
+        [LoggerMessage(EventId = 12, Level = LogLevel.Debug, Message = "Error liberando una conexión caída con {Destino}.")]
+        public static partial void ErrorLiberandoConexion(this ILogger logger, Exception ex, string destino);
     }
 }

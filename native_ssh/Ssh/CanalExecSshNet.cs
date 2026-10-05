@@ -1,5 +1,7 @@
 using System.Buffers;
 using Renci.SshNet;
+using Renci.SshNet.Common;
+using NativeSsh.Comun;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Ssh
@@ -10,17 +12,31 @@ namespace NativeSsh.Ssh
     // - OutputStream y ExtendedOutputStream son PipeStream sin límite: SSH.NET encola todo lo que llega aunque nadie
     //   lea. Se leen a la vez (lectura bloqueante, un hilo dedicado por flujo) contando los bytes de ambos; al superar
     //   el tope se cancela el comando y se cierra el canal en lugar de seguir acumulando.
-    // - Cancelar: CancelAsync (señal KILL, sin esperar respuesta: OpenSSH puede ignorarla) completa el comando y cierra
-    //   los flujos; Dispose cierra el canal. El script remoto va además acotado por 'timeout' (ConstructorComandoExec).
+    // - Cancelar (token o tope): CancelAsync(forceKill, 0) solo sirve para que SSH.NET dé el comando por terminado y
+    //   cierre los flujos, y Dispose cierra el canal. No mata nada en el servidor: OpenSSH no aplica la señal KILL
+    //   que pide (comprobado con OpenSSH 10.5, con y sin ForceCommand) y cerrar el canal no termina un proceso que no
+    //   escribe. La barrera real es el plazo remoto del propio script ('timeout' o el watchdog, ConstructorComandoExec).
     // - Con el token de ExecuteAsync SSH.NET esperaría 500 ms de forma síncrona dentro del callback: no se usa.
+    // - Si el servidor rechaza abrir el canal (MaxSessions de sshd), Open lanza un SshException genérico ("Failed to
+    //   open a channel after N attempts.") con la conexión intacta: se traduce a un mensaje que lo explica.
     internal static class CanalExecSshNet
     {
         private const int TamanoBloque = 16 * 1024;
 
+        internal const string MensajeCanalRechazado = "El servidor rechazó abrir otro canal en la conexión SSH: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y 4 canales para las herramientas de lectura). La conexión sigue abierta y el shell de ssh_exec sigue disponible: reintenta en unos segundos o lanza menos operaciones a la vez.";
+
         public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, CancellationToken cancellationToken)
         {
             using SshCommand orden = cliente.CreateCommand(comando);
-            Task ejecucion = await Task.Factory.StartNew(() => orden.ExecuteAsync(CancellationToken.None), cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).ConfigureAwait(false);
+            Task ejecucion;
+            try
+            {
+                ejecucion = await Task.Factory.StartNew(() => orden.ExecuteAsync(CancellationToken.None), cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).ConfigureAwait(false);
+            }
+            catch (SshException ex) when (ex.GetType() == typeof(SshException) && IsConectado(cliente))
+            {
+                throw new NativeSshException(MensajeCanalRechazado, ex);
+            }
 
             ContadorTope contador = new(maxBytesSalida, orden);
             Task<MemoryStream> salida = Task.Factory.StartNew(() => Leer(orden.OutputStream, contador), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
@@ -44,6 +60,18 @@ namespace NativeSsh.Ssh
             return contador.HasExcedido
                 ? new ResultadoCanalExec(null, null, ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty, true)
                 : new ResultadoCanalExec(orden.ExitStatus, orden.ExitSignal, bytesSalida.GetBuffer().AsMemory(0, (int)bytesSalida.Length), bytesErrores.GetBuffer().AsMemory(0, (int)bytesErrores.Length), false);
+        }
+
+        private static bool IsConectado(SshClient cliente)
+        {
+            try
+            {
+                return cliente.IsConnected;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
         }
 
         // Read bloquea hasta que hay datos y devuelve 0 cuando SSH.NET cierra el flujo (fin del comando o cancelación).
@@ -93,6 +121,7 @@ namespace NativeSsh.Ssh
                 return false;
             }
 
+            // Solo libera el lado local (ver la cabecera): el proceso remoto lo acota el plazo del script.
             public void Cancelar()
             {
                 if (Interlocked.Exchange(ref _isCancelado, 1) != 0)
