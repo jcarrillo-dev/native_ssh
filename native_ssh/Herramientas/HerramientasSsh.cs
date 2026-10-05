@@ -16,6 +16,17 @@ namespace NativeSsh.Herramientas
         private const int MaxPeticionesEnEstado = 20;
         private const int MaxCaracteresComando = 120;
 
+        // Timeouts de las herramientas de archivo y búsqueda. La herramienta espera el timeout completo
+        // (más el margen del Ctrl+C) y, si la petición sigue sin terminar (p. ej. encolada tras otro comando), la cancela.
+        private const int TimeoutLecturaSegundos = 60;
+        private const int TimeoutEscrituraSegundos = 60;
+        private const int TimeoutBusquedaSegundos = 90;
+        private const int TimeoutMetadatosSegundos = 30;
+        private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
+
+        // Solo para pruebas: sustituye el timeout de todas las herramientas de archivo y búsqueda.
+        internal TimeSpan? TimeoutForzado { get; init; }
+
         private const string AvisoGrepDisco = "Sugerencia de rendimiento: Has ejecutado 'grep' sobre el sistema de archivos vía ssh_exec. Utiliza la herramienta especializada 'ssh_search' para excluir automáticamente binarios (.pyc), directorios pesados (.venv, node_modules) y optimizar el consumo de contexto.";
         private const string AvisoFindDisco = "Sugerencia de rendimiento: Has ejecutado 'find' vía ssh_exec. Utiliza la herramienta especializada 'ssh_find' para localizar archivos por nombre/glob o 'ssh_list_dir' para explorar la topología de carpetas con poda automática.";
         private const string AvisoCdEncadenado = "Sugerencia de rendimiento: Has encadenado 'cd <ruta> &&' en ssh_exec. Utiliza 'ssh_set_cwd(destino, ruta)' para fijar el directorio de trabajo persistente de forma automática y operar con rutas relativas limpias.";
@@ -162,11 +173,11 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticion);
 
             string textoCompleto = ReconstruirSalida(peticion);
-            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
+            return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"El comando de lectura falló con código {peticion.CodigoSalida}." : textoCompleto.Trim())
                 : textoCompleto;
         }
@@ -231,17 +242,15 @@ namespace NativeSsh.Herramientas
                     )
                     """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticion);
 
             string textoCompleto = ReconstruirSalida(peticion);
-            return peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado
+            return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim())
-                : peticion.Estado != EstadoPeticionEnum.Completado
-                    ? throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).")
-                    : append
-                        ? $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes)."
-                        : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).";
+                : append
+                    ? $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes)."
+                    : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).";
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -291,11 +300,9 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
 
-            if (peticion.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).");
+            ExigirCompletada(peticion);
 
             string salida = ReconstruirSalida(peticion).Trim();
             if ((peticion.CodigoSalida == 1 || (peticion.CodigoSalida == 2 && !salida.StartsWith("grep:", StringComparison.OrdinalIgnoreCase))) && string.IsNullOrEmpty(salida))
@@ -353,14 +360,12 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
 
-            if (peticion.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).");
+            ExigirCompletada(peticion);
 
             string salida = ReconstruirSalida(peticion).Trim();
-            if (peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado)
+            if (peticion.CodigoSalida != 0)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al listar directorios (código {peticion.CodigoSalida})." : salida);
 
             string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
@@ -419,14 +424,12 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutBusquedaSegundos, cancellationToken).ConfigureAwait(false);
 
-            if (peticion.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).");
+            ExigirCompletada(peticion);
 
             string salida = ReconstruirSalida(peticion).Trim();
-            if (peticion.CodigoSalida != 0 && peticion.Estado == EstadoPeticionEnum.Completado)
+            if (peticion.CodigoSalida != 0)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error en búsqueda por nombre (código {peticion.CodigoSalida})." : salida);
 
             if (string.IsNullOrEmpty(salida))
@@ -465,11 +468,9 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticion = await EjecutarHerramientaAsync(destino, comando, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
 
-            if (peticion.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {peticion.Estado}).");
+            ExigirCompletada(peticion);
 
             string salida = ReconstruirSalida(peticion).Trim();
             if (salida == "NO_EXISTE")
@@ -509,10 +510,10 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(ruta))
             {
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = gestor.Ejecutar(destino, comandoReset, TimeSpan.FromSeconds(60));
-                await EsperarAsync(peticionReset.Finalizacion, 10, cancellationToken).ConfigureAwait(false);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset);
 
-                if (peticionReset.Estado != EstadoPeticionEnum.Completado || peticionReset.CodigoSalida != 0)
+                if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset).Trim();
                     throw new NativeSshException(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset);
@@ -536,25 +537,22 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticionValidacion = gestor.Ejecutar(destino, comandoValidacion, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticionValidacion.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion);
 
-            if (peticionValidacion.CodigoSalida != 0 && peticionValidacion.Estado == EstadoPeticionEnum.Completado)
+            if (peticionValidacion.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionValidacion).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError);
             }
 
-            if (peticionValidacion.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La validación no se completó (estado: {peticionValidacion.Estado}).");
-
             string pwdReal = ReconstruirSalida(peticionValidacion).Trim();
             string pwdRealEscapado = "'" + pwdReal.Replace("'", "'\\''") + "'";
             string comandoExport = $"export __NS_CWD={pwdRealEscapado}";
-            Peticion peticionExport = gestor.Ejecutar(destino, comandoExport, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticionExport.Finalizacion, 10, cancellationToken).ConfigureAwait(false);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport);
 
-            if (peticionExport.Estado != EstadoPeticionEnum.Completado || peticionExport.CodigoSalida != 0)
+            if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport);
@@ -604,17 +602,14 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticionLectura = gestor.Ejecutar(destino, comandoLectura, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticionLectura.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura);
 
-            if (peticionLectura.CodigoSalida != 0 && peticionLectura.Estado == EstadoPeticionEnum.Completado)
+            if (peticionLectura.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionLectura).Trim();
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al leer el archivo para reemplazo (código {peticionLectura.CodigoSalida})." : salidaError);
             }
-
-            if (peticionLectura.Estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La lectura para reemplazo no se completó (estado: {peticionLectura.Estado}).");
 
             string salidaBase64 = ReconstruirSalida(peticionLectura).Replace("\r", string.Empty, StringComparison.Ordinal).Replace("\n", string.Empty, StringComparison.Ordinal).Trim();
             byte[] bytesArchivo = Convert.FromBase64String(salidaBase64);
@@ -682,15 +677,13 @@ namespace NativeSsh.Herramientas
                 )
                 """.ReplaceLineEndings("\n");
 
-            Peticion peticionEscritura = gestor.Ejecutar(destino, comandoEscritura, TimeSpan.FromSeconds(60));
-            await EsperarAsync(peticionEscritura.Finalizacion, 20, cancellationToken).ConfigureAwait(false);
+            Peticion peticionEscritura = await EjecutarHerramientaAsync(destino, comandoEscritura, TimeoutEscrituraSegundos, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionEscritura);
 
             string salidaEscritura = ReconstruirSalida(peticionEscritura).Trim();
-            return peticionEscritura.CodigoSalida != 0 && peticionEscritura.Estado == EstadoPeticionEnum.Completado
+            return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
-                : peticionEscritura.Estado != EstadoPeticionEnum.Completado
-                    ? throw new NativeSshException($"La escritura del archivo modificado no se completó (estado: {peticionEscritura.Estado}).")
-                    : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).";
+                : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).";
         }
 
         private string ReconstruirSalida(Peticion peticion)
@@ -962,6 +955,39 @@ namespace NativeSsh.Herramientas
         {
             string linea = comando.ReplaceLineEndings(" ");
             return linea.Length <= MaxCaracteresComando ? linea : string.Concat(linea.AsSpan(0, MaxCaracteresComando - 1), "…");
+        }
+
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, CancellationToken cancellationToken)
+        {
+            TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            try
+            {
+                await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Sigue encolada o el shell no respondió al Ctrl+C: se cancela para no bloquear la cola.
+                EstadoPeticionEnum estado = peticion.Estado;
+                _ = peticion.SolicitarCancelacion();
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.");
+            }
+            catch (OperationCanceledException)
+            {
+                _ = peticion.SolicitarCancelacion();
+                throw;
+            }
+
+            return peticion;
+        }
+
+        private static void ExigirCompletada(Peticion peticion)
+        {
+            EstadoPeticionEnum estado = peticion.Estado;
+            if (estado != EstadoPeticionEnum.Completado)
+                throw new NativeSshException(peticion.Aviso is { Length: > 0 } aviso
+                    ? $"La operación no se completó (estado: {estado}). {aviso}"
+                    : $"La operación no se completó (estado: {estado}).");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

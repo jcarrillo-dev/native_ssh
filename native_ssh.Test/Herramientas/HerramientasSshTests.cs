@@ -26,6 +26,7 @@ namespace NativeSsh.Test.Herramientas
         }
 
         private static RespuestaFalsa Guion(string comando) =>
+            comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
@@ -315,6 +316,62 @@ namespace NativeSsh.Test.Herramientas
             _ = texto.Should().Be("[Líneas 1-3 de 10]\nlinea 1\nlinea 2\nlinea 3\n");
         }
 
+
+        private HerramientasSsh HerramientasConTimeoutCorto() =>
+            new(_gestor, new OpcionesNativeSsh { UsuarioPorDefecto = "ana", MaxBytesPorRespuesta = 16, EsperaTrasCtrlC = TimeSpan.FromMilliseconds(300) }) { TimeoutForzado = TimeSpan.FromSeconds(1) };
+
+        [Fact]
+        public async Task ReadFile_TiempoAgotadoEnElShell_LanzaConElEstadoYNoDevuelveSalidaParcial()
+        {
+            // Arrange
+            HerramientasSsh herramientas = HerramientasConTimeoutCorto();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync("servidor", "colgado_lectura.txt"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("TiempoAgotado");
+            _ = error.Message.Should().NotContain("parcial");
+        }
+
+        [Fact]
+        public async Task ReadFile_EncoladaTrasComandoColgado_EsperaSuTimeoutCancelaLaPeticionYLanza()
+        {
+            // Arrange
+            HerramientasSsh herramientas = HerramientasConTimeoutCorto();
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync("servidor", "archivo.txt"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert: la lectura nunca llegó a ejecutarse, se canceló y no bloquea la cola.
+            _ = error.Message.Should().Contain("Encolado");
+            Peticion lectura = _gestor.ListarPeticiones().First(p => p.Comando.Contains("sed -n", StringComparison.Ordinal));
+            _ = lectura.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = _gestor.BuscarPeticion(colgado.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+        }
+
+        [Fact]
+        public async Task Search_EncoladaTrasComandoColgado_CancelaLaPeticionYLanza()
+        {
+            // Arrange
+            HerramientasSsh herramientas = HerramientasConTimeoutCorto();
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.BuscarAsync("servidor", "patron"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("Encolado");
+            _ = _gestor.ListarPeticiones().First(p => p.Comando.Contains("grep -rnI", StringComparison.Ordinal)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = await _herramientas.CancelarAsync(colgado.Id);
+        }
 
         [Theory]
         [InlineData("")]
