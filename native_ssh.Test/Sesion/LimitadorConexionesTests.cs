@@ -74,6 +74,30 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public void Exito_BorraLaEsperaPorFallosPeroLaVentanaSigueContandoTodosLosIntentos()
+        {
+            // Arrange: ufw cuenta cada TCP nuevo, haya ido bien o mal. Un intento fallido y tres con éxito llenan la ventana.
+            _ = _limitador.TryReservar("a", out _).Should().BeTrue();
+            _limitador.RegistrarFallo("a");
+            _reloj.Avanzar(TimeSpan.FromSeconds(2));
+            for (int i = 0; i < 3; i++)
+            {
+                _ = _limitador.TryReservar("a", out _).Should().BeTrue();
+                _limitador.RegistrarExito("a");
+                _reloj.Avanzar(TimeSpan.FromSeconds(1));
+            }
+
+            // Act
+            bool isReservada = _limitador.TryReservar("a", out TimeSpan espera);
+
+            // Assert: RegistrarExito no vacía la ventana; el primer intento caduca a los 30 s.
+            _ = isReservada.Should().BeFalse();
+            _ = espera.Should().Be(TimeSpan.FromSeconds(25));
+            _reloj.Avanzar(TimeSpan.FromSeconds(25));
+            _ = _limitador.TryReservar("a", out _).Should().BeTrue();
+        }
+
+        [Fact]
         public void DestinosEquivalentes_MismoServidorYDistintoUsuarioOMayusculas_CompartenClaveServidor()
         {
             // Arrange
