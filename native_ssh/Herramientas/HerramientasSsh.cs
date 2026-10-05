@@ -115,9 +115,10 @@ namespace NativeSsh.Herramientas
             [Description("Filtrar por destino (opcional).")] string? destino = null)
         {
             string? clave = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino).Clave;
+            bool isSinFiltro = clave is null;
             List<EstadoSesion> sesiones = [];
             foreach (SesionShell s in gestor.ListarSesiones())
-                if (clave is null || s.Destino.Clave == clave)
+                if (isSinFiltro || s.Destino.Clave == clave)
                     sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto));
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
@@ -127,7 +128,7 @@ namespace NativeSsh.Herramientas
                 if (peticiones.Count == MaxPeticionesEnEstado)
                     break;
 
-                if (clave is null || p.Destino.Clave == clave)
+                if (isSinFiltro || p.Destino.Clave == clave)
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
