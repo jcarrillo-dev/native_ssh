@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
 using FluentAssertions;
+using NativeSsh.Sesion;
 using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
@@ -64,6 +65,40 @@ namespace NativeSsh.Test.Integracion
             finally
             {
                 _ = BashLocal.Ejecutar($"kill -KILL {pid} 2>/dev/null || true");
+                BorrarEstado(estado);
+            }
+        }
+
+        [Fact]
+        public async Task Parar_ConSesionesDetenidasConSigstop_NoLasDejaVivas()
+        {
+            // Arrange: una conexión con sus sshd-session detenidos, como los deja una prueba que muere antes de reanudarlos.
+            int puerto = PuertoLibre();
+            string estado = $".estado-sesiones-{Guid.NewGuid():N}";
+            SshdLocal sshd = new(puerto.ToString(CultureInfo.InvariantCulture), estado, null);
+            string[] sesiones = [];
+
+            try
+            {
+                await using (SesionShell sesion = sshd.Sesion())
+                {
+                    _ = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(10), CancellationToken.None);
+                    sesiones = sshd.ProcesosDeConexion();
+                    _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', sesiones)}");
+
+                    // Act
+                    sshd.Dispose();
+                }
+
+                string restos = BashLocal.Ejecutar($"for p in {string.Join(' ', sesiones)}; do ps -o pid=,stat= -p $p; done");
+
+                // Assert: ni detenidas ni vivas (como mucho, pendientes de que alguien las recoja).
+                _ = sesiones.Should().NotBeEmpty();
+                _ = restos.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().NotContain(l => !l.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[1].StartsWith('Z'));
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"for p in {string.Join(' ', sesiones)}; do kill -CONT $p; kill -KILL $p; done 2>/dev/null; true");
                 BorrarEstado(estado);
             }
         }

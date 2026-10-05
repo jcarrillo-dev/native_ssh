@@ -29,18 +29,34 @@ esperar_fin() {
     ! vivo "$1"
 }
 
+# Procesos que cuelgan del maestro: los sshd-session de cada conexión y lo que ejecutan.
+descendientes() {
+    local hijo
+    for hijo in $(pgrep -P "$1"); do
+        echo "$hijo"
+        descendientes "$hijo"
+    done
+}
+
 # No vuelve hasta que el sshd ha terminado (TERM y, si en 3 s no basta, KILL) y su puerto ya no acepta conexiones:
-# quien lo arranque justo después (otra instancia de las pruebas, la siguiente pasada) lo encuentra libre.
+# quien lo arranque justo después (otra instancia de las pruebas, la siguiente pasada) lo encuentra libre. Las sesiones
+# que quedaran detenidas (una prueba que muere con el servidor congelado con SIGSTOP antes de reanudarlo) no terminan
+# solas al morir el maestro: se reanudan y se matan.
 parar() {
     [[ -f "$DIR/sshd.pid" ]] || return 0
-    local pid puerto i
+    local pid puerto i sesiones
     pid="$(cat "$DIR/sshd.pid")"
     puerto="$(cat "$DIR/puerto" 2>/dev/null || echo "$PUERTO")"
+    sesiones="$(descendientes "$pid" || true)"
     kill "$pid" 2>/dev/null || true
     if ! esperar_fin "$pid" 30; then
         kill -KILL "$pid" 2>/dev/null || true
         esperar_fin "$pid" 20 || { echo "sshd ($pid) no terminó" >&2; return 1; }
     fi
+    for i in $sesiones; do
+        kill -CONT "$i" 2>/dev/null || true
+        kill -KILL "$i" 2>/dev/null || true
+    done
     for i in $(seq 1 50); do
         (exec 3<>"/dev/tcp/127.0.0.1/$puerto") 2>/dev/null || break
         sleep 0.1
