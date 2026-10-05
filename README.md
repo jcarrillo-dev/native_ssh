@@ -286,6 +286,7 @@ No deben aplicarse correcciones automatizadas globales procedentes de `dotnet fo
 - **Agentes y claves cifradas:** No existe soporte para reenvío de credenciales vía `ssh-agent` ni descifrado de claves privadas con frase de paso.
 - **Túneles SSH:** No se contempla el reenvío de puertos locales o remotos (*port forwarding*).
 - **Seguridad en HTTP:** El transporte HTTP no implementa mecanismos integrados de autenticación ni autorización.
+- **Renegociación de claves con strict-kex (SSH.NET 2026.0.0):** SSH.NET aplica la regla estricta de *strict key exchange* («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, 1.10) la limita al intercambio inicial. OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar, y SSH.NET corta entonces la conexión: se pierde el shell (y sus `export`) y se gasta una conexión del cupo de `ufw limit`. Medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s. Con el `RekeyLimit` por defecto de OpenSSH (renegociar tras 1–4 GB, sin límite de tiempo) es raro; con un límite por tiempo (p. ej. `RekeyLimit 1G 1h`) ocurriría en cada renegociación por tiempo. Para saber si un servidor está afectado: `sshd -T | grep -i rekeylimit` (solo lectura). La corrección en origen está preparada en la rama `native-ssh-strict-kex` del submódulo `externo/SSH.NET`, sin integrar: la regla estricta solo en el intercambio inicial, manteniendo el reinicio de los números de secuencia tras cada `NEWKEYS`.
 
 ---
 
