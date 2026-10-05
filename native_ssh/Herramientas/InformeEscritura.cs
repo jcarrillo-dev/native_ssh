@@ -19,6 +19,24 @@ namespace NativeSsh.Herramientas
         Conservados
     }
 
+    // Lo que el script anunció del candado del archivo ("candado <estado>", ver HerramientasSsh.DefinicionCandado).
+    internal enum CandadoEscrituraEnum
+    {
+        // Sin anuncio: el archivo no existía (escritura nueva), no se pudo abrir para leer o el script no llegó a tomarlo.
+        SinAnuncio,
+
+        // "tomado": excluye a las demás operaciones sobre el archivo mientras el script siga en marcha.
+        Tomado,
+
+        // "sin_comprobar": tomado, pero no se pudo comprobar que esté sobre el archivo que sigue en la ruta (sin /proc ni
+        // stat de GNU coreutils, python3 o perl en el servidor).
+        SinComprobar,
+
+        // "ninguno": ninguna herramienta pudo tomarlo (no hay flock, python3 ni perl que funcionen, o el sistema de
+        // archivos no admite flock).
+        SinHerramienta
+    }
+
     // Lo que el script de una escritura (ssh_write_file, ssh_replace_file_content) anuncia mientras trabaja, en líneas
     // "__NS_W_<id>__ <clave> [<valor>]" de su salida con el id de la petición (nada ajeno puede imitarlo):
     // - "tmp <base64>" y "copia <base64>": rutas del temporal con el contenido nuevo y de la copia de seguridad del
@@ -29,9 +47,10 @@ namespace NativeSsh.Herramientas
     //   Tras escrito y restaurado, lo que el núcleo quitó al escribir y no se pudo devolver: setuid, setgid, capacidades,
     //   o capacidades? (no se pudo comprobar si las tenía), separados por comas, o '-'. Solo si no falta nada se dice que
     //   todo se devolvió y se comprobó;
-    // - "candado tomado" o "candado ninguno": si tomó el candado del archivo (flock, ver DefinicionCandado) antes de tocar
-    //   nada o si no hubo herramienta que lo tomara (sigue sin exclusión); sin anuncio, el archivo no existía o no se pudo
-    //   abrir para leer;
+    // - "candado <estado>": qué pasó al tomar el candado del archivo (flock, ver DefinicionCandado) antes de tocar nada:
+    //   tomado, sin_comprobar (tomado sin poder comprobar que esté sobre el archivo de la ruta) o ninguno (no hubo
+    //   herramienta que lo tomara: sigue sin exclusión) (CandadoEscrituraEnum). Sin anuncio, el archivo no existía o no
+    //   se pudo abrir para leer;
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
@@ -57,8 +76,8 @@ namespace NativeSsh.Herramientas
 
         public bool IsSalidaIncompleta { get; init; }
 
-        // "tomado", "ninguno" o null (ver el anuncio "candado").
-        public string? Candado { get; init; }
+        // Ver el anuncio "candado".
+        public CandadoEscrituraEnum Candado { get; init; }
 
         public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
@@ -69,7 +88,7 @@ namespace NativeSsh.Herramientas
             string? temporal = null;
             string? copia = null;
             string? capacidad = null;
-            string? candado = null;
+            CandadoEscrituraEnum candado = CandadoEscrituraEnum.SinAnuncio;
             LimpiezaEscrituraEnum limpieza = LimpiezaEscrituraEnum.Desconocida;
             foreach (string linea in salida.Split('\n'))
             {
@@ -99,7 +118,7 @@ namespace NativeSsh.Herramientas
                         capacidad = DecodificarRuta(partes[1]);
                         break;
                     case "candado" when hasValor:
-                        candado = partes[1];
+                        candado = LeerCandado(partes[1]);
                         break;
                     case "fase" when hasValor:
                         fase = partes[1];
@@ -134,6 +153,14 @@ namespace NativeSsh.Herramientas
         // y un espacio, contenga literalmente comillas, '$' y una letra.
         [GeneratedRegex(@"^ns: [^:]+ [0-9]+: +[0-9]+ .*""\$[{A-Za-z0-9_]", RegexOptions.CultureInvariant)]
         private static partial Regex RegexAvisoDeBash();
+
+        private static CandadoEscrituraEnum LeerCandado(string estado) => estado switch
+        {
+            "tomado" => CandadoEscrituraEnum.Tomado,
+            "sin_comprobar" => CandadoEscrituraEnum.SinComprobar,
+            "ninguno" => CandadoEscrituraEnum.SinHerramienta,
+            _ => CandadoEscrituraEnum.SinAnuncio
+        };
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
         public bool IsAtomica => Fase == "colocado";
@@ -237,15 +264,27 @@ namespace NativeSsh.Herramientas
         // nueva sobre el mismo archivo.
         private string AvisoCandadoEnCurso => Candado switch
         {
-            "tomado" => " Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.",
-            "ninguno" => $" {SinCandado} Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.",
+            CandadoEscrituraEnum.Tomado => $" {CandadoTomadoEnCurso}",
+            CandadoEscrituraEnum.SinComprobar => $" {CandadoTomadoEnCurso} Pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, no excluye a nadie.",
+            CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} {SinCandadoEnCurso}",
+            CandadoEscrituraEnum.SinAnuncio => string.Empty,
             _ => string.Empty
         };
 
-        private const string SinCandado = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+        private const string CandadoTomadoEnCurso = "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.";
+        private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos)";
+        private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+        private const string SinCandadoEnCurso = "Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.";
+        private const string SinProteccion = "no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
 
-        // Lo que se añade al éxito de una escritura que no tuvo candado.
-        public string AvisoSinCandado() => Candado == "ninguno" ? $" {SinCandado} La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo." : string.Empty;
+        // Lo que se añade al éxito de una escritura que no tuvo un candado comprobado.
+        public string AvisoSinCandado() => Candado switch
+        {
+            CandadoEscrituraEnum.SinComprobar => $" El script tomó el candado del archivo (flock), pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, la escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} La escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinAnuncio or CandadoEscrituraEnum.Tomado => string.Empty,
+            _ => string.Empty
+        };
 
         // Temporales que pueden seguir en el servidor, salvo los que ya se nombraron como conservados.
         private string Restos

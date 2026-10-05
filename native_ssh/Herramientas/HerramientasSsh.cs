@@ -64,19 +64,31 @@ namespace NativeSsh.Herramientas
         // (que sigue sola, ignorando HUP, INT y TERM) no puede pisar ni mezclarse con una escritura posterior.
         // tomar_candado MODO (-x exclusivo, -s compartido): abre "$destino" (ya resuelto) para leer en un descriptor
         // ('candado') que el script mantiene abierto hasta salir, después de su trampa de salida, y toma sobre él un flock
-        // sin esperar. Deja en 'estado_candado': 'tomado', 'ninguno' (ninguna herramienta pudo tomarlo: no hay flock,
-        // python3 ni perl que funcionen, o el sistema de archivos no admite flock; se sigue sin exclusión y la respuesta lo
-        // avisa) o '' (no se puede abrir para leer: sin permiso de lectura tampoco se puede escribir en el sitio, que necesita
-        // la copia de seguridad, y es lo único que restaura; las escrituras atómicas no se mezclan). Si otro proceso lo tiene,
-        // da el error y devuelve 1 sin haber tocado nada.
+        // sin esperar. Deja en 'estado_candado' (lo anuncia la escritura; ver InformeEscritura): 'tomado'; 'sin_comprobar'
+        // (tomado, pero no se pudo comprobar que esté sobre el archivo que sigue en la ruta, ver abajo; la respuesta lo
+        // avisa); 'ninguno' (ninguna herramienta pudo tomarlo: no hay flock, python3 ni perl que funcionen, o el sistema de
+        // archivos no admite flock; se sigue sin exclusión y la respuesta lo avisa) o '' (no se puede abrir para leer: sin
+        // permiso de lectura tampoco se puede escribir en el sitio, que necesita la copia de seguridad, y es lo único que
+        // restaura; las escrituras atómicas no se mezclan). Si otro proceso lo tiene, da el error y devuelve 1 sin haber
+        // tocado nada.
         // - No puede quedar huérfano: un flock pertenece a la descripción de archivo abierta y el núcleo lo suelta al
         //   cerrarse su último descriptor, es decir, al terminar el script y los hijos que lo heredan (también por SIGKILL o
         //   tras caer la conexión, cuando el script acaba su restauración). No se crea ningún archivo de candado (no hace
         //   falta permiso de escritura en el directorio ni hay nada que borrar). Los hijos heredan el descriptor a propósito:
         //   un 'cat' que restaura sigue excluyendo aunque maten al bash del script, hasta que termina él.
-        // - Ligado al archivo actual: tras tomarlo se comprueba que el descriptor y "$destino" son el mismo inodo (-ef); si
-        //   entretanto se sustituyó el archivo (un renombrado encima), se reintenta, porque el candado de un inodo que ya
-        //   no está en la ruta no excluye a nadie.
+        // - Ligado al archivo actual: tras tomarlo, mismo_inodo comprueba que el descriptor y "$destino" son el mismo
+        //   archivo (dispositivo e inodo); si entretanto se sustituyó (un renombrado encima), se reintenta, porque el
+        //   candado de un inodo que ya no está en la ruta no excluye a nadie. Solo se afirma que se sustituyó si la
+        //   comparación se hizo y dio distinto. Si no se puede hacer, se conserva el candado ('sin_comprobar') en vez de
+        //   soltarlo: excluye igual a la restauración y a las escrituras en el sitio, que no cambian de inodo (el caso para
+        //   el que existe), y lo único que queda sin cubrir es un renombrado encima justo entre abrir y bloquear, la misma
+        //   ventana que sin comprobar nada; la respuesta lo dice.
+        // - mismo_inodo FD: 0 mismo archivo, 1 distinto, 2 no se puede saber. Con /proc, el '-ef' de bash sobre /dev/fd/FD
+        //   (bash lo resuelve en /proc/self/fd/FD). Sin /proc (chroot tipo jailkit, contenedores mínimos), '-ef' sería
+        //   siempre falso: se compara dispositivo e inodo de los dos con stat de GNU coreutils ('-' es su entrada estándar,
+        //   con fstat; otro stat podría tomar '-' por un nombre de archivo), python3 (os.fstat) o perl (stat del
+        //   descriptor). Cada herramienta compara por su cuenta y sale con 0 (mismo) o 3 (distinto): cualquier otro código
+        //   es que no funcionó, nunca «distinto».
         // - bloquear FD MODO: flock(1) de util-linux con -E 75 para distinguir «ocupado» (75) de «no funciona» (otro
         //   código); si no, python3 o perl, que toman el flock sobre el descriptor heredado (el candado queda en la
         //   descripción compartida con el bash del script al salir ellos). Una herramienta que no funciona nunca cuenta como
@@ -100,6 +112,39 @@ namespace NativeSsh.Herramientas
               { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
               perl -MFcntl=:flock -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; flock($f, ($ARGV[1] eq "-s" ? LOCK_SH : LOCK_EX) | LOCK_NB) and exit 0; exit($!{EWOULDBLOCK} ? 75 : 2)' "$1" "$2" 2>/dev/null
             }
+            mismo_inodo() {
+              local del_fd de_ruta
+              if [ -e "/dev/fd/$1" ]; then
+                [ "/dev/fd/$1" -ef "$destino" ]
+                return
+              fi
+              case $(stat --version 2>/dev/null) in
+                *'GNU coreutils'*)
+                  if del_fd=$(stat -L -c '%d:%i' - <&"$1" 2>/dev/null) && [ -n "$del_fd" ]; then
+                    de_ruta=$(stat -L -c '%d:%i' -- "$destino" 2>/dev/null)
+                    [ "$del_fd" = "$de_ruta" ]
+                    return
+                  fi ;;
+              esac
+              python3 -c 'if 1:
+                import os, sys
+                fd = os.fstat(int(sys.argv[1]))
+                try:
+                    ruta = os.stat(sys.argv[2])
+                except FileNotFoundError:
+                    sys.exit(3)
+                sys.exit(0 if (fd.st_dev, fd.st_ino) == (ruta.st_dev, ruta.st_ino) else 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              perl -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; my @fd = stat($f) or exit 2; my @ruta = stat($ARGV[1]) or exit($!{ENOENT} ? 3 : 2); exit($fd[0] == $ruta[0] && $fd[1] == $ruta[1] ? 0 : 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              return 2
+            }
             tomar_candado() {
               local intento
               estado_candado=
@@ -107,7 +152,12 @@ namespace NativeSsh.Herramientas
                 { exec {candado}<"$destino"; } 2>/dev/null || return 0
                 bloquear "$candado" "$1"
                 case $? in
-                  0) [ "/dev/fd/$candado" -ef "$destino" ] && { estado_candado=tomado; return 0; } ;;
+                  0)
+                    mismo_inodo "$candado"
+                    case $? in
+                      0) estado_candado=tomado; return 0 ;;
+                      2) estado_candado=sin_comprobar; return 0 ;;
+                    esac ;;
                   75)
                     printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
                     return 1 ;;
