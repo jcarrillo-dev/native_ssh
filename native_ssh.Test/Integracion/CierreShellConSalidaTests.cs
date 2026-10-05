@@ -17,6 +17,9 @@ namespace NativeSsh.Test.Integracion
     // (ConexionSshNet), un interbloqueo de toda la conexión. Corregido en externo/SSH.NET (el canal se cierra fuera del
     // candado); la prueba determinista está en la suite de SSH.NET (ShellStreamTest), aquí se comprueba de extremo a
     // extremo que cada cierre vuelve y que la conexión sigue atendiendo.
+    // En la colección del sshd compartido aunque usa uno propio: así no corre a la vez que la prueba de estrés de los
+    // canales exec, cuya carga de CPU (con sshd-session en planificación idle) dejaría sin salida al shell.
+    [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd se libera en IAsyncLifetime.DisposeAsync.")]
