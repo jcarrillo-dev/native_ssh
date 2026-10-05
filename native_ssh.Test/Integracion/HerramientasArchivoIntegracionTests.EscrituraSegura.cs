@@ -188,6 +188,66 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
+        // Archivo con ACL propia en un directorio con ACL por defecto: el temporal hereda la del directorio, pero cp le pone la
+        // del original y la comprobación ve que coinciden: atómica, con la ACL y el modo del original.
+        [Fact]
+        public async Task Sobrescribir_ArchivoConAclEnDirectorioConAclPorDefecto_ConservaSuAclYEsAtomica()
+        {
+            // Arrange
+            string carpeta = Ruta("con_acl_defecto");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"chmod 640 '{archivo}' && setfacl -m u:nobody:r '{archivo}' && setfacl -d -m u:nobody:rwx '{carpeta}'");
+            string atributos = AclYAtributos(archivo);
+            string stat = Stat(archivo);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = atributos.Should().Contain("user:nobody:r--").And.NotContain("rwx");
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = AclYAtributos(archivo).Should().Be(atributos);
+            _ = Stat(archivo).Split(' ')[..2].Should().Equal(stat.Split(' ')[..2]);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
+        // Interrumpida antes de colocar el temporal (un 'cp' lento; Ctrl+C al vencer el timeout o al cancelar el token):
+        // el original no se toca y la trampa de salida borra el temporal.
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        [InlineData(true, true)]
+        public async Task Sobrescribir_InterrumpidaAntesDeColocarElTemporal_NoTocaElArchivoNiDejaTemporales(bool isSudo, bool isPorToken)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            string stat = Stat(archivo);
+            HerramientasSsh herramientas = Herramientas(timeout: isPorToken ? null : TimeSpan.FromSeconds(2));
+            string marca = Ruta("marca");
+            await SustituirComandoAsync(herramientas, "cp", $"case \" $* \" in *' --attributes-only '*) : > '{marca}'; sleep 30 ;; esac\nexec /usr/bin/cp \"$@\"");
+            if (isSudo)
+                await SimularSudoAsync(herramientas);
+            using CancellationTokenSource cancelacion = new(isPorToken ? TimeSpan.FromSeconds(2) : Timeout.InfiniteTimeSpan);
+
+            // Act
+            Exception? error = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true, sudo: isSudo, cancellationToken: cancelacion.Token));
+
+            // Assert
+            _ = error.Should().BeAssignableTo(isPorToken ? typeof(OperationCanceledException) : typeof(NativeSshException));
+            _ = File.Exists(marca).Should().BeTrue("el temporal ya existía cuando se interrumpió");
+            await EsperasPrueba.EsperarHastaAsync(() => Directory.GetFileSystemEntries(carpeta).Length == 1, TimeSpan.FromSeconds(10));
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("antes\n");
+            _ = Stat(archivo).Should().Be(stat);
+        }
+
         // Archivo con un enlace duro (se sobrescribe en el sitio) en su propia carpeta, con TMPDIR propio.
         private async Task<(string Carpeta, string Archivo, string Tmpdir)> PrepararEscrituraEnElSitioAsync(HerramientasSsh herramientas)
         {

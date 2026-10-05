@@ -487,8 +487,9 @@ namespace NativeSsh.Test.Integracion
 
         // Rama atómica con sudo sobre un archivo de OTRO usuario (con los subuid de la simulación; sin ellos, del propio
         // usuario): directorio ajeno 0700 que el usuario de las pruebas no puede atravesar y certificado 0640 de otro uid
-        // y de un tercer grupo, editado a través de una cadena de enlaces. Todo corre como root: la escritura es atómica
-        // y conserva propietario, grupo y modo del certificado, los enlaces y el modo del directorio.
+        // y de un tercer grupo, con un atributo extendido, editado a través de una cadena de enlaces. Todo corre como root:
+        // la escritura es atómica y conserva propietario, grupo, modo y atributo del certificado, los enlaces y el modo
+        // del directorio.
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -506,10 +507,11 @@ namespace NativeSsh.Test.Integracion
                 chown -h {(isAjeno ? "1:2" : "0:0")} -- "$1" "$1/clave.pem" "$1/actual.pem" "$1/cadena.pem"
                 chgrp {(isAjeno ? "3" : "0")} -- "$1/clave.pem"
                 chmod 640 -- "$1/clave.pem"
+                setfattr -n user.marca -v valor -- "$1/clave.pem"
                 chmod 700 -- "$1"
                 """, privado);
-            const string Inspeccion = "stat -c '%u:%g %a' -- \"$1/clave.pem\" \"$1\"; cat -- \"$1/clave.pem\"; readlink -- \"$1/actual.pem\" \"$1/cadena.pem\"; ls -A -- \"$1\"";
-            string esperadoSinContenido = $"{(isAjeno ? "1:3" : "0:0")} 640\n{(isAjeno ? "1:2" : "0:0")} 700\n";
+            const string Inspeccion = "stat -c '%u:%g %a' -- \"$1/clave.pem\" \"$1\"; getfattr -n user.marca --only-values -- \"$1/clave.pem\"; echo; cat -- \"$1/clave.pem\"; readlink -- \"$1/actual.pem\" \"$1/cadena.pem\"; ls -A -- \"$1\"";
+            string esperadoSinContenido = $"{(isAjeno ? "1:3" : "0:0")} 640\n{(isAjeno ? "1:2" : "0:0")} 700\nvalor\n";
             HerramientasSsh herramientas = Herramientas();
             await SimularSudoAsync(herramientas);
 
