@@ -136,6 +136,34 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        public async Task CancelarUnaLectura_NoRetieneAQuienCancelaMientrasSuCanalSeCierra()
+        {
+            // Arrange: lectura muda con plazo remoto de 3 s; su canal no termina de cerrarse hasta que el servidor mata el
+            // proceso, y quien cancela no debe esperar a eso (el cierre nunca va en el callback del token).
+            long sleep = 630_000 + Random.Shared.Next(10_000);
+            using CancellationTokenSource cancelacion = new();
+            Task<ResultadoCanalExec> lectura = ExecAsync($"sleep {sleep}", 3, cancelacion.Token);
+
+            try
+            {
+                await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep).Length > 0);
+
+                // Act
+                Stopwatch reloj = Stopwatch.StartNew();
+                cancelacion.Cancel();
+                TimeSpan duracion = reloj.Elapsed;
+                _ = await FluentActions.Awaiting(() => lectura).Should().ThrowAsync<OperationCanceledException>();
+
+                // Assert
+                _ = duracion.Should().BeLessThan(TimeSpan.FromMilliseconds(500));
+            }
+            finally
+            {
+                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+            }
+        }
+
+        [Fact]
         public async Task AbortoLocal_ElProcesoRemotoMuereAlVencerSuPlazoRemoto()
         {
             // Arrange
