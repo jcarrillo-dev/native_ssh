@@ -203,7 +203,7 @@ namespace NativeSsh.Herramientas
             [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -284,7 +284,7 @@ namespace NativeSsh.Herramientas
             [Description("Ejecutar la escritura con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             if (overwrite && append)
@@ -333,14 +333,14 @@ namespace NativeSsh.Herramientas
             [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(patron))
+            if (string.IsNullOrEmpty(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
             ExigirValorLiteral(patron, "El patrón");
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             ExigirValorLiteral(extension ?? string.Empty, "La extensión");
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.", cancellationToken).ConfigureAwait(false);
             return InterpretarBusqueda(lectura, patron, rutaEfectiva, limite);
@@ -359,14 +359,13 @@ namespace NativeSsh.Herramientas
             string patronEscapado = Escapar(patron);
             string filtroRg = string.Empty;
             string filtroGrep = string.Empty;
-            if (!string.IsNullOrWhiteSpace(extension))
+            if (!string.IsNullOrEmpty(extension))
             {
-                string extensionLimpia = extension.Trim();
-                string filtro = extensionLimpia.StartsWith("*.", StringComparison.Ordinal)
-                    ? extensionLimpia
-                    : extensionLimpia.StartsWith('.')
-                        ? "*" + extensionLimpia
-                        : "*." + extensionLimpia;
+                string filtro = extension.StartsWith("*.", StringComparison.Ordinal)
+                    ? extension
+                    : extension.StartsWith('.')
+                        ? "*" + extension
+                        : "*." + extension;
                 string filtroEscapado = Escapar(filtro);
                 filtroRg = $"-g {filtroEscapado} ";
                 filtroGrep = $"--include={filtroEscapado} ";
@@ -412,15 +411,17 @@ namespace NativeSsh.Herramientas
         private static string InterpretarBusqueda(SalidaLectura lectura, string patron, string rutaEfectiva, int limite)
         {
             int codigo = lectura.Codigo;
-            string salida = lectura.Salida.Trim();
+            string salida = lectura.Salida;
             string motor = "desconocido";
             string resultados = salida;
             if (salida.StartsWith(PrefijoMotor, StringComparison.Ordinal))
             {
                 int finLinea = salida.IndexOf('\n', StringComparison.Ordinal);
-                motor = (finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea]).Trim();
-                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..].Trim();
+                motor = finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea];
+                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..];
             }
+
+            resultados = QuitarSaltoFinal(resultados);
 
             string pie = $"[motor: {motor}]";
             string errores = lectura.Errores.Trim();
@@ -437,7 +438,7 @@ namespace NativeSsh.Herramientas
             if (codigo is not (0 or 2))
                 throw new NativeSshException(lectura.Error("Error en búsqueda"));
 
-            string[] lineas = resultados.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string[] lineas = resultados.Split('\n');
             string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
             return lineas.Length > limite
                 ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{pie}"
@@ -447,6 +448,10 @@ namespace NativeSsh.Herramientas
         }
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
+
+        // Solo se quita el salto de línea que cierra la última línea de un listado: los blancos y separadores al principio
+        // del primer nombre (o línea encontrada) y al final del último son datos.
+        private static string QuitarSaltoFinal(string salida) => salida.EndsWith('\n') ? salida[..^1] : salida;
 
         // Un valor que va dentro del script debe llegar al servidor tal cual. Un NUL no cabe en un argumento y bash lo
         // descarta al decodificar el script con '$(... | base64 -d)': la ruta o el patrón serían otros. Se rechaza antes de
@@ -486,7 +491,7 @@ namespace NativeSsh.Herramientas
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 10);
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string rutaEscapada = Escapar(rutaEfectiva);
             string filtroTipo = incluirArchivos ? string.Empty : "-type d ";
 
@@ -518,13 +523,13 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error al listar directorios"));
 
-            string salida = lectura.Salida.Trim();
+            string salida = QuitarSaltoFinal(lectura.Salida);
 
             string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
             if (string.IsNullOrEmpty(salida))
                 return $"No se encontraron {etiquetaVacio} en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string[] lineas = salida.Split('\n');
             if (lineas.Length > limite)
             {
                 string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
@@ -541,26 +546,28 @@ namespace NativeSsh.Herramientas
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
             [Description("Ruta base donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
-            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' (directorios) o 'all' (ambos). Por defecto 'file'.")] string tipo = "file",
+            [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' (directorios) o 'all' (ambos). Por defecto 'file'. Otro valor da error.")] string tipo = "file",
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(patron))
+            if (string.IsNullOrEmpty(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
             ExigirValorLiteral(patron, "El patrón");
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
-            string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
+            string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string rutaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
-            string filtroTipo = tipo.ToLowerInvariant() switch
+            // Sin tipo, 'file'; un tipo desconocido es un error, no una búsqueda de archivos.
+            string filtroTipo = (string.IsNullOrEmpty(tipo) ? "file" : tipo.ToLowerInvariant()) switch
             {
+                "file" => "-type f ",
                 "dir" or "directory" => "-type d ",
                 "all" => string.Empty,
-                _ => "-type f "
+                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' o 'all'.")
             };
 
             string comando = PlantillaBash.Crear($$"""
@@ -587,12 +594,12 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
 
-            string salida = lectura.Salida.Trim();
+            string salida = QuitarSaltoFinal(lectura.Salida);
 
             if (string.IsNullOrEmpty(salida))
                 return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            string[] lineas = salida.Split('\n');
             if (lineas.Length > limite)
             {
                 string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
@@ -609,7 +616,7 @@ namespace NativeSsh.Herramientas
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta no puede estar vacía.");
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -682,7 +689,7 @@ namespace NativeSsh.Herramientas
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
             {
                 gestor.FijarDirectorioTrabajo(destino, null);
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
@@ -797,7 +804,7 @@ namespace NativeSsh.Herramientas
             [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(ruta))
+            if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
             if (string.IsNullOrEmpty(targetContent))

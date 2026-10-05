@@ -130,6 +130,9 @@ namespace NativeSsh.Test.Herramientas
             if (comando.Contains("sin_coincidencias"))
                 return new(Motor, 1);
 
+            if (comando.Contains("'extremos'"))
+                return new(Motor + LineasConBlancos + "\n", 0);
+
             if (comando.Contains("muchas_coincidencias"))
             {
                 string muchas = string.Concat(Enumerable.Range(1, 5).Select(i => $"archivo.txt:{i}:coincidencia {i}\n"));
@@ -141,6 +144,7 @@ namespace NativeSsh.Test.Herramientas
 
         private static RespuestaFalsa SimularListDir(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("'extremos'") ? new(NombresConBlancos + "\n", 0) :
             comando.Contains("es_archivo.txt") ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1) :
             comando.Contains("vacio") ? new("", 0) :
             comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print 2>/dev/null")
@@ -151,6 +155,7 @@ namespace NativeSsh.Test.Herramientas
 
         private static RespuestaFalsa SimularFind(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1) :
+            comando.Contains("'extremos'") ? new(NombresConBlancos + "\n", 0) :
             comando.Contains("sin_coincidencias") ? new("", 0) :
             comando.Contains("-name '.git'") ? new(".git\n", 0) :
             comando.Contains("-name 'node_modules'") ? new("node_modules\n", 0) :
@@ -860,7 +865,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task ReadFile_RutaVacia_LanzaExcepcion(string ruta)
         {
             // Act & Assert
@@ -886,7 +890,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task WriteFile_RutaVacia_LanzaExcepcion(string ruta)
         {
             // Act & Assert
@@ -1012,7 +1015,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Search_PatronVacio_LanzaExcepcion(string patron)
         {
             // Act & Assert
@@ -1202,7 +1204,6 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Find_PatronVacio_LanzaExcepcion(string? patron)
         {
             // Act & Assert
@@ -1262,7 +1263,6 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task Stat_RutaVacia_LanzaExcepcion(string? ruta)
         {
             // Act & Assert
@@ -1311,7 +1311,6 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(null)]
         [InlineData("")]
-        [InlineData("   ")]
         public async Task SetCwd_RutaVaciaONull_RestableceHome(string? ruta)
         {
             // Act
@@ -1346,7 +1345,6 @@ namespace NativeSsh.Test.Herramientas
 
         [Theory]
         [InlineData("", "target", 1, 5, "vacía")]
-        [InlineData("   ", "target", 1, 5, "vacía")]
         [InlineData("archivo.txt", "", 1, 5, "targetContent")]
         [InlineData("archivo.txt", "target", 0, 5, "mayor o igual a 1")]
         [InlineData("archivo.txt", "target", 5, 2, "no puede ser menor")]
@@ -1561,6 +1559,90 @@ namespace NativeSsh.Test.Herramientas
             _ = comandos.Should().Contain(c => c.Contains($"-e '{patron}'", StringComparison.Ordinal) && c.Contains($"'*.t{separador}xt'", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains($"-name '{patron}'", StringComparison.Ordinal));
             _ = comandos.Should().NotContain(c => c.Contains("x\ny", StringComparison.Ordinal) || c.Contains("p\nq", StringComparison.Ordinal) || c.Contains("t\nxt", StringComparison.Ordinal));
+        }
+
+        // Solo null o la cadena vacía son «sin valor»: una ruta o un patrón de solo blancos es un valor literal que llega al
+        // servidor tal cual, nunca un error de «vacío» ni el directorio actual o $HOME en su lugar.
+        [Fact]
+        public async Task Herramientas_ValoresDeSoloBlancos_SonLiteralesYNoSeSustituyen()
+        {
+            // Act
+            _ = await _herramientas.LeerArchivoAsync("servidor", " ", 1, 3);
+            _ = await _herramientas.ConsultarMetadatosAsync("servidor", " ");
+            _ = await _herramientas.BuscarAsync("servidor", "  ", " ");
+            _ = await _herramientas.BuscarPorNombreAsync("servidor", "  ", " ");
+            _ = await _herramientas.ListarDirectoriosAsync("servidor", " ");
+            _ = await _herramientas.EscribirArchivoAsync("servidor", " ", "c", overwrite: true);
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", " ", "linea 3", "otra");
+            ResultadoDirectorioTrabajo directorio = await _herramientas.FijarDirectorioAsync("servidor", " ");
+
+            // Assert
+            string[] comandos = [.. _fabrica.Ultima!.Comandos];
+            _ = comandos.Should().Contain(c => c.Contains("sed -n '1,3p' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("stat -c", StringComparison.Ordinal) && c.Contains("[ ! -e ' ' ] && [ ! -L ' ' ]", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-e '  ' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Where(c => c.Contains("find -L . -maxdepth", StringComparison.Ordinal)).Should().HaveCount(2)
+                .And.AllSatisfy(c => c.Should().Contain("cd -- ' '"));
+            _ = comandos.Should().Contain(c => c.Contains("-name '  '", StringComparison.Ordinal));
+            _ = comandos.Where(c => c.Contains("base64 -d > \"$tmp\"", StringComparison.Ordinal) || c.Contains("cat -- \"$ruta\" | base64", StringComparison.Ordinal)).Should().HaveCount(3)
+                .And.AllSatisfy(c => c.Should().Contain(" ns ' '"));
+            _ = comandos.Should().Contain(c => c.Contains("ruta=' '", StringComparison.Ordinal) && c.Contains("pwd -P", StringComparison.Ordinal));
+            _ = comandos.Should().NotContain(c => c.Contains("unset __NS_CWD", StringComparison.Ordinal) || c.Contains("'.'", StringComparison.Ordinal));
+            _ = directorio.Directorio.Should().Be("/tmp/trabajo");
+        }
+
+        // La extensión no se recorta: un CR, NEL, LS, tabulador o espacio en un extremo forma parte del filtro, y una
+        // extensión de solo blancos también es un filtro.
+        [Theory]
+        [InlineData("txt\r")]
+        [InlineData("txt ")]
+        [InlineData(" txt")]
+        [InlineData("txt\t")]
+        [InlineData("txt\u2028")]
+        [InlineData("\u0085txt")]
+        [InlineData(" ")]
+        public void Search_ExtensionConBlancosOSeparadoresEnLosExtremos_LlegaTalCualAlFiltro(string extension)
+        {
+            // Act
+            string comando = HerramientasSsh.ConstruirComandoBusqueda("patron", ".", extension, 50);
+
+            // Assert
+            _ = comando.Should().Contain($"-g '*.{extension}' ").And.Contain($"--include='*.{extension}' ");
+        }
+
+        private const string NombresConBlancos = " uno\n\u2028dos\ntres \u2029";
+        private const string LineasConBlancos = " /a.txt:1:  sangría\nb.txt:2:fin \u2029 \r";
+
+        // Los listados solo pierden el salto de línea final: los blancos y separadores al principio del primer nombre (o
+        // de la primera línea encontrada) y al final del último son datos.
+        [Fact]
+        public async Task SearchFindListDir_BlancosEnLosExtremosDelListado_SeConservan()
+        {
+            // Act
+            string busqueda = await _herramientas.BuscarAsync("servidor", "patron", "extremos");
+            string encontrados = await _herramientas.BuscarPorNombreAsync("servidor", "*", "extremos");
+            string listado = await _herramientas.ListarDirectoriosAsync("servidor", "extremos", incluirArchivos: true);
+
+            // Assert
+            _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
+            _ = encontrados.Should().Be(NombresConBlancos);
+            _ = listado.Should().Be(NombresConBlancos);
+        }
+
+        // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.
+        [Theory]
+        [InlineData("directorio")]
+        [InlineData("f")]
+        [InlineData(" dir")]
+        public async Task Find_TipoDesconocido_LanzaErrorSinBuscar(string tipo)
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarPorNombreAsync("servidor", "*.txt", tipo: tipo))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain($"'{tipo}'").And.Contain("'file', 'dir' o 'all'");
+            _ = _fabrica.Ultima.Should().BeNull();
         }
 
         // Un NUL no puede viajar en un argumento ni sobrevive a '$(... | base64 -d)' (bash lo descarta): la ruta llegaría

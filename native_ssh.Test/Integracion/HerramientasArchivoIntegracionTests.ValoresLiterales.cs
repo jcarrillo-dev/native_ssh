@@ -1,3 +1,4 @@
+using System.Linq;
 using FluentAssertions;
 using NativeSsh.Herramientas;
 
@@ -136,6 +137,42 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = resultado.Reemplazos.Should().Be(1);
             _ = (await File.ReadAllBytesAsync(archivo)).Should().Equal(System.Text.Encoding.UTF8.GetBytes($"uno{salto}x{Separadores}y{salto}z{salto}w{salto}"));
+        }
+
+        // Blancos y separadores en los extremos: un directorio llamado " " es un nombre más (no el directorio actual ni
+        // $HOME), la extensión no se recorta y los listados conservan los blancos del primer nombre y del último (y el
+        // '\r' de las líneas encontradas). Por canal exec y, para ssh_set_cwd, por el shell PTY.
+        [Fact]
+        public async Task Herramientas_BlancosYSeparadoresEnLosExtremos_SeRespetanDeExtremoAExtremo()
+        {
+            // Arrange: en el directorio " ", nombres que empiezan o terminan en blancos o separadores; fuera, un señuelo.
+            string blanco = Ruta(" ");
+            _ = Directory.CreateDirectory(blanco);
+            string[] nombres = [" a.txt", "b.txt\u2028", "c. txt", "\u2029d.txt "];
+            foreach (string nombre in nombres)
+                await File.WriteAllTextAsync(Path.Combine(blanco, nombre), "  objetivo \r\n");
+            await File.WriteAllTextAsync(Ruta("senuelo.txt"), "objetivo\n");
+            HerramientasSsh herramientas = Herramientas();
+            _ = await herramientas.FijarDirectorioAsync(Destino, _directorio);
+
+            // Act
+            string listado = await herramientas.ListarDirectoriosAsync(Destino, " ", incluirArchivos: true);
+            string encontrados = await herramientas.BuscarPorNombreAsync(Destino, "*", " ");
+            string busqueda = await herramientas.BuscarAsync(Destino, "objetivo", " ");
+            string porExtension = await herramientas.BuscarAsync(Destino, "objetivo", " ", " txt");
+            ResultadoDirectorioTrabajo fijado = await herramientas.FijarDirectorioAsync(Destino, " ");
+            string leido = await herramientas.LeerArchivoAsync(Destino, "\u2029d.txt ");
+
+            // Assert
+            string ordenados = string.Join('\n', nombres.Order(StringComparer.Ordinal));
+            _ = listado.Should().Be(ordenados);
+            _ = encontrados.Should().Be(ordenados);
+            string[] lineas = busqueda[..busqueda.IndexOf("\n\n[motor: ", StringComparison.Ordinal)].Split('\n');
+            _ = lineas.Should().HaveCount(4).And.AllSatisfy(linea => linea.Should().StartWith(" /").And.EndWith(":1:  objetivo \r"));
+            _ = lineas.Order(StringComparer.Ordinal).Should().Equal(nombres.Order(StringComparer.Ordinal).Select(n => $" /{n}:1:  objetivo \r"));
+            _ = porExtension.Should().StartWith(" /c. txt:1:  objetivo \r\n\n[motor: ");
+            _ = fijado.Directorio.Should().Be(blanco);
+            _ = leido.Should().Be("[Líneas 1-1 de 1]\n  objetivo \r\n");
         }
 
         // El directorio de trabajo vuelve del PTY en base64 entre marcadores: LimpiarAnsi quitaría el CR de un CRLF y Trim
