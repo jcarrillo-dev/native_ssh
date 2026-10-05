@@ -960,7 +960,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
-            _ = comando.Should().Contain("ln -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("ln -T -- \"$tmp\" \"$destino\"").And.Contain("ln -- \"$tmp\" \"$destino\"");
             _ = comando.Should().Contain("set -C");
             _ = comando.Should().NotContain("mv -f");
         }
@@ -983,7 +983,7 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("mktemp -- \"$dir/.$base.tmp.XXXXXX\"");
             _ = comando.Should().Contain("cp --attributes-only --preserve=mode,ownership,xattr,context -- \"$1\" \"$2\"");
             _ = comando.Should().Contain("conservar_atributos \"$destino\" \"$tmp\"");
-            _ = comando.Should().Contain("mv -f -- \"$tmp\" \"$destino\"");
+            _ = comando.Should().Contain("mv -f -T -- \"$tmp\" \"$destino\"").And.Contain("mv -f -- \"$tmp\" \"$destino\"");
             _ = comando.Should().Contain("base64 -d > \"$tmp\"");
         }
 

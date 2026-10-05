@@ -279,7 +279,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; el núcleo quita al escribir los bits setuid y setgid y las capacidades, security.capability, y se le devuelven y se comprueban: las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver lo dice la respuesta, con el valor original de las capacidades) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado o cancelación), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; el núcleo quita al escribir los bits setuid y setgid y las capacidades, security.capability, y se le devuelven y se comprueban: las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver lo dice la respuesta, con el valor original de las capacidades) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado o cancelación), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -996,6 +996,7 @@ namespace NativeSsh.Herramientas
                 ? PlantillaBash.Crear($$"""
                     {{DefinicionConservarAtributos}}
                     {{DefinicionSinCambios}}
+                    {{DefinicionRenombrar}}
                     if [ -e "$destino" ]; then
                       en_sitio=$fuera
                       [ "$(stat -c '%h' -- "$destino" 2>/dev/null)" = 1 ] || en_sitio=1
@@ -1003,7 +1004,7 @@ namespace NativeSsh.Herramientas
                       sin_cambios || exit 1
                       if [ "$en_sitio" = 0 ]; then
                         anunciar fase colocando
-                        mv -f -- "$tmp" "$destino" || exit 1
+                        renombrar || exit 1
                         anunciar fase colocado
                       else
                         if [ ! -w "$destino" ]; then
@@ -1014,16 +1015,17 @@ namespace NativeSsh.Herramientas
                       fi
                     else
                       sin_cambios || exit 1
-                      chmod "$modo_nuevo" -- "$tmp" || exit 1
+                      chmod -- "$modo_nuevo" "$tmp" || exit 1
                       anunciar fase colocando
-                      mv -f -- "$tmp" "$destino" || exit 1
+                      renombrar || exit 1
                       anunciar fase colocado
                     fi
                     """)
                 : PlantillaBash.Crear($$"""
-                    chmod "$modo_nuevo" -- "$tmp" || exit 1
+                    {{DefinicionEnlazar}}
+                    chmod -- "$modo_nuevo" "$tmp" || exit 1
                     anunciar fase colocando
-                    if ln -- "$tmp" "$destino" 2>/dev/null; then
+                    if enlazar; then
                       anunciar fase colocado
                     else
                       if [ -e "$destino" ] || [ -L "$destino" ]; then
@@ -1094,6 +1096,33 @@ namespace NativeSsh.Herramientas
                 : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella}", payloadBase64);
         }
+
+        // renombrar y enlazar colocan el temporal en el destino con 'mv -T' y 'ln -T' (GNU coreutils), que tratan el destino
+        // como un archivo: si se ha convertido en un directorio (o en un enlace a uno) entre las comprobaciones y la
+        // colocación, fallan en lugar de meter el temporal dentro. Si mv o ln no admiten -T (p. ej. busybox o BSD), se
+        // comprueba justo antes que el destino no es un directorio ni existe (ln); queda una ventana entre esa comprobación
+        // y la colocación que solo -T cierra.
+        private static readonly string DefinicionRenombrar = """
+            renombrar() {
+              if mv -T --help >/dev/null 2>&1; then
+                mv -f -T -- "$tmp" "$destino" && return 0
+              elif [ ! -d "$destino" ]; then
+                mv -f -- "$tmp" "$destino" && return 0
+              fi
+              [ -d "$destino" ] && printf 'Error: %s se ha convertido en un directorio mientras se escribía: no se ha colocado el contenido nuevo.\n' "$ruta" >&2
+              return 1
+            }
+            """.ReplaceLineEndings("\n");
+
+        private static readonly string DefinicionEnlazar = """
+            enlazar() {
+              if ln -T --help >/dev/null 2>&1; then
+                ln -T -- "$tmp" "$destino" 2>/dev/null
+              else
+                [ ! -e "$destino" ] && [ ! -L "$destino" ] && ln -- "$tmp" "$destino" 2>/dev/null
+              fi
+            }
+            """.ReplaceLineEndings("\n");
 
         // sin_cambios: con la huella de lo que leyó ssh_replace_file_content ($sha_leido, $cksum_leido), el destino debe seguir
         // siendo ese archivo: se compara el sha256sum de su contenido (o, si no hay sha256sum, la salida de cksum: suma y

@@ -549,6 +549,63 @@ namespace NativeSsh.Test.Integracion
                 : resultado.Mensaje.Should().NotContain("ATENCIÓN");
         }
 
+        // Si el destino se convierte en un directorio entre las comprobaciones y la colocación, el temporal no puede acabar
+        // dentro de él: mv -T y ln -T (GNU) fallan. La sustitución se inyecta con un 'mv' falso (justo antes del renombrado
+        // de un archivo existente) o con un 'chmod' falso (justo antes de colocar un archivo nuevo, tras darle su modo).
+        [Theory]
+        [InlineData("sobrescribir_existente")]
+        [InlineData("sobrescribir_nuevo")]
+        [InlineData("crear")]
+        public async Task Colocacion_DestinoConvertidoEnDirectorioJustoAntes_NoMeteElTemporalDentro(string caso)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            if (caso == "sobrescribir_existente")
+                await File.WriteAllTextAsync(archivo, "antes\n");
+            HerramientasSsh herramientas = Herramientas();
+            if (caso == "sobrescribir_existente")
+                await SustituirComandoAsync(herramientas, "mv", $"case \" $* \" in *' --help '*) exec /usr/bin/mv \"$@\" ;; esac\nrm -f -- '{archivo}'; mkdir -- '{archivo}'\nexec /usr/bin/mv \"$@\"");
+            else
+                await SustituirComandoAsync(herramientas, "chmod", $"[ -e '{archivo}' ] || mkdir -- '{archivo}'\nexec /usr/bin/chmod \"$@\"");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: caso != "crear"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert: el directorio sigue vacío y en la carpeta no queda ningún temporal.
+            _ = error.Message.Should().Contain(caso == "crear" ? "ya existe" : "se ha convertido en un directorio");
+            _ = Directory.Exists(archivo).Should().BeTrue();
+            _ = Directory.GetFileSystemEntries(archivo).Should().BeEmpty();
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
+        // Con un mv o un ln sin -T (no de GNU) se comprueba justo antes de colocar que el destino no es un directorio (queda
+        // una ventana entre esa comprobación y el renombrado, que solo -T cierra).
+        [Theory]
+        [InlineData("mv", true)]
+        [InlineData("ln", false)]
+        public async Task Colocacion_SinOpcionT_CompruebaJustoAntesQueElDestinoNoEsUnDirectorio(string programa, bool isSobrescribir)
+        {
+            // Arrange
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            HerramientasSsh herramientas = Herramientas();
+            await SustituirComandoAsync(herramientas, programa, $"case \" $* \" in *' -T '*) echo \"{programa}: invalid option -- 'T'\" >&2; exit 1 ;; esac\nexec /usr/bin/{programa} \"$@\"");
+            await SustituirComandoAsync(herramientas, "chmod", $"[ -e '{archivo}' ] || mkdir -- '{archivo}'\nexec /usr/bin/chmod \"$@\"");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: isSobrescribir))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain(isSobrescribir ? "se ha convertido en un directorio" : "ya existe");
+            _ = Directory.GetFileSystemEntries(archivo).Should().BeEmpty();
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
         // Sin copia de seguridad no se escribe en el sitio: si no se puede crear (ni en el directorio ni en TMPDIR), error
         // sin tocar nada.
         [Fact]
