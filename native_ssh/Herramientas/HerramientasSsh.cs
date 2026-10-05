@@ -552,14 +552,15 @@ namespace NativeSsh.Herramientas
         }
 
         // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
-        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL) o empieza por comillas dobles; entonces va entre
-        // comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se puede pegar tal
-        // cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad; una barra
-        // invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
+        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL), los separadores de línea y de párrafo de Unicode
+        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles;
+        // entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se
+        // puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
+        // una barra invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
         private static void EscaparNombre(StringBuilder listado, string nombre)
         {
             ReadOnlySpan<char> caracteres = nombre;
-            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f');
+            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f') || caracteres.ContainsAnyInRange('\u2028', '\u2029');
             if (!hasControl && !nombre.StartsWith('"'))
             {
                 _ = listado.Append(nombre);
@@ -577,7 +578,7 @@ namespace NativeSsh.Herramientas
                     '\t' => listado.Append("\\t"),
                     '\f' => listado.Append("\\f"),
                     '\b' => listado.Append("\\b"),
-                    _ when char.IsControl(c) => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
+                    _ when char.IsControl(c) || c is '\u2028' or '\u2029' => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
                     _ => listado.Append(c)
                 };
             _ = listado.Append('"');
@@ -609,7 +610,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -666,7 +667,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,

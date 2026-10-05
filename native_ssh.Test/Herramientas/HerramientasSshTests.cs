@@ -1722,7 +1722,8 @@ namespace NativeSsh.Test.Herramientas
         private const string LineasConBlancos = " /a.txt:1:  sangría\nb.txt:2:fin \u2029 \r";
 
         // Los listados solo pierden el salto de línea final: los blancos y separadores al principio del primer nombre (o
-        // de la primera línea encontrada) y al final del último son datos.
+        // de la primera línea encontrada) y al final del último son datos. En ssh_find y ssh_list_dir, un nombre con un
+        // separador de línea o de párrafo de Unicode (U+2028, U+2029) sale escapado como una cadena JSON, entero.
         [Fact]
         public async Task SearchFindListDir_BlancosEnLosExtremosDelListado_SeConservan()
         {
@@ -1733,8 +1734,9 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
-            _ = encontrados.Should().Be(NombresConBlancos);
-            _ = listado.Should().Be(NombresConBlancos);
+            const string NombresEscapados = " uno\n\"\\u2028dos\"\n\"tres \\u2029\"";
+            _ = encontrados.Should().Be(NombresEscapados);
+            _ = listado.Should().Be(NombresEscapados);
         }
 
         // Un nombre con caracteres de control (categoría Cc: salto de línea, retorno de carro, tabulador, NEL, DEL...) o que
@@ -1760,7 +1762,7 @@ namespace NativeSsh.Test.Herramientas
             _ = encontrados.Should().Be(esperado);
             _ = listado.Should().Be(esperado);
             _ = new[] { DescripcionDe(nameof(HerramientasSsh.BuscarPorNombreAsync)), DescripcionDe(nameof(HerramientasSsh.ListarDirectoriosAsync)) }
-                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
+                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("U+2028, U+2029").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
         }
 
         // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.
