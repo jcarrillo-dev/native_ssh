@@ -12,6 +12,11 @@ namespace NativeSsh.Test.Integracion
     // Arranca pruebas/sshd-local.sh una vez para toda la colección y lo para al terminar.
     public sealed class SshdLocal : IDisposable
     {
+        // Rastro en el log de sshd (nivel INFO, con ForceCommand) de una petición 'signal' recibida ("refusing to send
+        // signal", "no pid for session", "no session N req signal") o de una conexión cortada por un mensaje dirigido a
+        // un canal ya liberado ("unknown channel", "nonexistent channel").
+        public static readonly string[] LineasSenalODesconexion = ["refusing to send signal", "no pid for session", "req signal", "unknown channel", "nonexistent channel"];
+
         private readonly Dictionary<string, string> _entorno = [];
 
         public SshdLocal()
@@ -45,6 +50,20 @@ namespace NativeSsh.Test.Integracion
         public int Puerto { get; }
         public string RutaClave { get; }
         public string RutaKnownHosts { get; }
+        public string RutaLog => Path.Combine(DirectorioEstado, "sshd.log");
+        public string PidMaestro => File.ReadAllText(Path.Combine(DirectorioEstado, "sshd.pid")).Trim();
+
+        // Conexiones TCP autenticadas desde que arrancó el sshd.
+        public int ConexionesAceptadas() => ContarLineasLog("Accepted publickey");
+
+        public int ContarLineasLog(params string[] textos)
+        {
+            int total = 0;
+            foreach (string linea in File.ReadLines(RutaLog))
+                if (Array.Exists(textos, t => linea.Contains(t, StringComparison.Ordinal)))
+                    total++;
+            return total;
+        }
 
         public DestinoSsh Destino
         {
