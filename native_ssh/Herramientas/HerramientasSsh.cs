@@ -28,6 +28,20 @@ namespace NativeSsh.Herramientas
 
         // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
         // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
+        // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). El
+        // mensaje de stat en el locale C los distingue (strerror: "Permission denied" en GNU, BSD y busybox): sin_acceso
+        // informa del segundo caso y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
+        private static readonly string DefinicionSinAcceso = """
+            sin_acceso() {
+              case "$(LC_ALL=C stat -- "$1" 2>&1 >/dev/null)" in
+                *'Permission denied'*)
+                  printf 'Error: sin permiso para acceder a la ruta: %s (algún directorio de la ruta no se puede atravesar).\n' "$1" >&2
+                  return 0 ;;
+              esac
+              return 1
+            }
+            """.ReplaceLineEndings("\n");
+
         private const string ErrorNoRegular = """printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
         private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
@@ -161,7 +175,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar o si no hay permiso de lectura. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -207,12 +221,17 @@ namespace NativeSsh.Herramientas
                     """);
             string comando = PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} || printf 'Error: el archivo no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 if [ -d {{rutaEscapada}} ]; then
                   printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                if [ ! -r {{rutaEscapada}} ]; then
+                  printf 'Error: sin permiso de lectura: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 total=$(wc -l < {{rutaEscapada}}) || exit 1
@@ -336,8 +355,9 @@ namespace NativeSsh.Herramientas
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
             return PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 # La ruta pedida debe poder leerse (y recorrerse si es un directorio): los motores silencian los errores
@@ -416,7 +436,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -434,12 +454,18 @@ namespace NativeSsh.Herramientas
 
             string comando = PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta de exploración no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de exploración no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 if [ ! -d {{rutaEscapada}} ]; then
                   printf 'Error: la ruta no es un directorio: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                # find descarta sus errores: sin poder leer y recorrer el directorio, "No se encontraron" engañaría.
+                if [ ! -r {{rutaEscapada}} ] || [ ! -x {{rutaEscapada}} ]; then
+                  printf 'Error: sin permiso para listar el directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 cd -- {{rutaEscapada}} && \
@@ -472,7 +498,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -501,8 +527,14 @@ namespace NativeSsh.Herramientas
 
             string comando = PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                # find descarta sus errores: sin poder leer y recorrer el directorio, "No se encontraron" engañaría.
+                if [ -d {{rutaEscapada}} ] && { [ ! -r {{rutaEscapada}} ] || [ ! -x {{rutaEscapada}} ]; }; then
+                  printf 'Error: sin permiso para recorrer la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 cd -- {{rutaEscapada}} && \
@@ -533,7 +565,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
-        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<ResultadoMetadatos> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -547,7 +579,9 @@ namespace NativeSsh.Herramientas
 
             string comando = PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ] && [ ! -L {{rutaEscapada}} ]; then
+                  sin_acceso {{rutaEscapada}} && exit 1
                   echo "NO_EXISTE"
                   exit 0
                 fi
@@ -563,6 +597,9 @@ namespace NativeSsh.Herramientas
             // Sin Trim ni Split por líneas sobre la salida completa: el destino del enlace puede contener o terminar en
             // saltos de línea, '\r' o espacios. Primera línea = stat; resto = "ENLACE:" + destino + el '\n' de readlink.
             string salida = lectura.Salida;
+            if (lectura.Codigo != 0)
+                throw new NativeSshException(lectura.Error($"Error al consultar metadatos de '{ruta}'"));
+
             if (salida.Trim() == "NO_EXISTE")
                 return new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe.");
 
@@ -629,13 +666,18 @@ namespace NativeSsh.Herramientas
             // los blancos finales (NEL, LS, PS...): viaja en base64 en una línea marcada con un id aleatorio por petición.
             string comandoValidacion = PlantillaBash.Crear($$"""
                 (
+                {{DefinicionSinAcceso}}
                 ruta={{Escapar(ruta)}}
                 if [ ! -e "$ruta" ]; then
-                  printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
+                  sin_acceso "$ruta" || printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 if [ ! -d "$ruta" ]; then
                   printf 'Error: la ruta no es un directorio: %s\n' "$ruta" >&2
+                  exit 1
+                fi
+                if [ ! -x "$ruta" ]; then
+                  printf 'Error: sin permiso para entrar en el directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 cd -- "$ruta" || exit 1
@@ -745,8 +787,9 @@ namespace NativeSsh.Herramientas
             // componen con printf para que su texto literal no aparezca en el propio script.
             string comandoLectura = EnvolverEnBash(PlantillaBash.Crear($$"""
                 ruta=$1
+                {{DefinicionSinAcceso}}
                 if [ ! -e "$ruta" ]; then
-                  printf 'Error: el archivo no existe: %s\n' "$ruta" >&2
+                  sin_acceso "$ruta" || printf 'Error: el archivo no existe: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 if [ -d "$ruta" ]; then
@@ -755,6 +798,10 @@ namespace NativeSsh.Herramientas
                 fi
                 if [ ! -f "$ruta" ]; then
                   {{ErrorNoRegular}}
+                fi
+                if [ ! -r "$ruta" ]; then
+                  printf 'Error: sin permiso de lectura: %s (prueba con sudo=true).\n' "$ruta" >&2
+                  exit 1
                 fi
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 if [ -z "$tam" ]; then
