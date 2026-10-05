@@ -21,14 +21,16 @@ namespace NativeSsh.Herramientas
     // Lo que el script de una escritura (ssh_write_file, ssh_replace_file_content) anuncia mientras trabaja, en líneas
     // "__NS_W_<id>__ <clave> [<valor>]" de su salida con el id de la petición (nada ajeno puede imitarlo):
     // - "tmp <base64>" y "copia <base64>": rutas del temporal con el contenido nuevo y de la copia de seguridad del
-    //   original, en cuanto se crean;
-    // - "fase <nombre>": colocando/colocado (renombrado atómico del temporal, o enlace del archivo nuevo), creando/creado
-    //   (archivo nuevo copiado sin enlace), escribiendo/escrito (escritura en el sitio), restaurando/restaurado (vuelta
-    //   al original desde la copia), fallido (ni escrito ni restaurado), anexando/anexado (append);
+    //   original, en cuanto se crean; "capacidad <base64>": cómo devolver a mano la security.capability original;
+    // - "fase <nombre> [perdidos]": colocando/colocado (renombrado atómico del temporal, o enlace del archivo nuevo),
+    //   creando/creado (archivo nuevo copiado sin enlace), escribiendo/escrito (escritura en el sitio), restaurando/
+    //   restaurado (vuelta al original desde la copia), fallido (ni escrito ni restaurado), anexando/anexado (append).
+    //   Tras escrito y restaurado, lo que el núcleo quitó al escribir y no se pudo devolver: setuid, setgid, capacidades,
+    //   o capacidades? (no se pudo comprobar), separados por comas, o '-';
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. Texto: la salida sin los anuncios.
-    internal sealed record InformeEscritura(string? Fase, string? Temporal, string? Copia, LimpiezaEscrituraEnum Limpieza, string Texto)
+    internal sealed record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
 
@@ -37,8 +39,10 @@ namespace NativeSsh.Herramientas
             string marca = $"{PrefijoMarca}{idMarcas}__ ";
             StringBuilder texto = new();
             string? fase = null;
+            string[] perdidos = [];
             string? temporal = null;
             string? copia = null;
+            string? capacidad = null;
             LimpiezaEscrituraEnum limpieza = LimpiezaEscrituraEnum.Desconocida;
             foreach (string linea in salida.Split('\n'))
             {
@@ -63,8 +67,12 @@ namespace NativeSsh.Herramientas
                     case "copia" when hasValor:
                         copia = DecodificarRuta(partes[1]);
                         break;
+                    case "capacidad" when hasValor:
+                        capacidad = DecodificarRuta(partes[1]);
+                        break;
                     case "fase" when hasValor:
                         fase = partes[1];
+                        perdidos = partes.Length > 2 && partes[2] != "-" ? partes[2].Split(',') : [];
                         break;
                     case "conservados":
                         limpieza = LimpiezaEscrituraEnum.Conservados;
@@ -80,7 +88,7 @@ namespace NativeSsh.Herramientas
                 }
             }
 
-            return new InformeEscritura(fase, temporal, copia, limpieza, texto.ToString().Trim());
+            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim());
         }
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
@@ -90,13 +98,14 @@ namespace NativeSsh.Herramientas
         public string AvisoExito() => Fase switch
         {
             "colocado" => string.Empty,
-            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, modo, ACL, atributos extendidos y contexto SELinux.",
+            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Count == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo, se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid y las capacidades (security.capability): se devolvieron y se comprobaron, salvo lo que sigue.")}{AvisoPerdidos}",
             "creado" => " Escritura no atómica: el sistema de archivos no admite enlaces duros, así que el archivo nuevo se creó copiando el contenido.",
             _ => " No se recibió del servidor la confirmación de cómo se colocó el contenido: no se puede asegurar que la escritura fuera atómica."
         };
 
-        // Error de una escritura que terminó con un código distinto de 0: el que dio el script (sin los anuncios).
-        public string MensajeError(string porDefecto) => Texto.Length == 0 ? porDefecto : Texto;
+        // Error de una escritura que terminó con un código distinto de 0: el que dio el script (sin los anuncios) y, si se
+        // restauró el original, lo que no se le pudo devolver.
+        public string MensajeError(string porDefecto) => (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
         // Error de una escritura que no terminó: estado y id de la petición, qué pasó con el archivo y qué queda en el servidor.
         public string MensajeInterrupcion(string ruta, EstadoPeticionEnum estado, string idPeticion, string? aviso)
@@ -119,8 +128,8 @@ namespace NativeSsh.Herramientas
             "creado" => $"'{ruta}' ya se creó con el contenido nuevo completo.",
             "escribiendo" or "restaurando" => $"'{ruta}' puede haber quedado a medio escribir: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
-            "restaurado" => $"Se restauró el contenido original de '{ruta}'.",
-            "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).",
+            "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
+            "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",
             "anexando" => $"Al final de '{ruta}' puede haberse anexado solo una parte del contenido.",
             "anexado" => $"El contenido ya se anexó completo al final de '{ruta}'.",
             _ => $"No se sabe en qué estado quedó '{ruta}' (fase anunciada: '{Fase}')."
@@ -140,6 +149,28 @@ namespace NativeSsh.Herramientas
                     : Limpieza == LimpiezaEscrituraEnum.Restos
                         ? $" No se pudieron borrar del servidor {rutas}."
                         : $" Si la limpieza no llegó a ejecutarse, pueden quedar en el servidor {rutas}.";
+            }
+        }
+
+        // Lo que el núcleo quitó al escribir en el sitio (o al restaurar) y no se pudo devolver.
+        private string AvisoPerdidos
+        {
+            get
+            {
+                if (Perdidos.Count == 0)
+                    return string.Empty;
+
+                StringBuilder aviso = new(" ATENCIÓN:");
+                foreach (string perdido in Perdidos)
+                    _ = aviso.Append(' ').Append(perdido switch
+                    {
+                        "setuid" => "el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true).",
+                        "setgid" => "el núcleo quitó al escribir el bit setgid y no se pudo devolver (chmod g+s: sin sudo=true, el propietario solo puede ponerlo si pertenece al grupo del archivo).",
+                        "capacidades" => $"el núcleo borró al escribir las capacidades del archivo (security.capability) y no se pudieron devolver: hace falta sudo=true y setfattr o setcap.{(Capacidad is null ? string.Empty : $" Para devolverlas, con privilegios: «{Capacidad} <archivo>».")}",
+                        "capacidades?" => "no se pudo comprobar si el archivo tenía capacidades (security.capability): en el servidor no hay getfattr ni getcap; si las tenía, el núcleo las borró al escribir.",
+                        _ => $"no se pudo devolver '{perdido}'."
+                    });
+                return aviso.ToString();
             }
         }
 

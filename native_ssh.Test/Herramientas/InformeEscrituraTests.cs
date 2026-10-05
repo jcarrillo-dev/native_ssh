@@ -31,7 +31,7 @@ namespace NativeSsh.Test.Herramientas
             InformeEscritura informe = InformeEscritura.Leer(salida, Id);
 
             // Assert
-            _ = informe.Should().Be(new InformeEscritura("escrito", temporal, Copia, LimpiezaEscrituraEnum.Limpio, "aviso de sudo\nruido\n__NS_W_ffffffffffffffffffffffffffffffff__ fase fallido\nError: algo"));
+            _ = informe.Should().BeEquivalentTo(new InformeEscritura("escrito", [], temporal, Copia, null, LimpiezaEscrituraEnum.Limpio, "aviso de sudo\nruido\n__NS_W_ffffffffffffffffffffffffffffffff__ fase fallido\nError: algo"));
         }
 
         [Theory]
@@ -104,6 +104,30 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = sinAnuncios.Should().EndWith("No se llegó a modificar 'f.txt'. Cancelado: se envió Ctrl+C al proceso. Salida del script: [sudo] password for ana:");
             _ = conAnuncios.Should().EndWith("'f.txt' ya tiene el contenido nuevo completo (renombrado atómico).");
+        }
+
+        // Lo que el núcleo quita al escribir en el sitio y no se pudo devolver se dice explícitamente, con el valor original
+        // de las capacidades para poder devolverlas; si se devolvió todo, se dice que se comprobó.
+        [Fact]
+        public void Perdidos_SeDicenExplicitamenteEnElExitoEnElErrorYEnLaInterrupcion()
+        {
+            // Arrange
+            string anuncios = RutasCreadas + Anuncios($"capacidad {Base64("setfattr -n security.capability -v 0x0100000200")}", "fase escribiendo");
+
+            // Act
+            string exito = InformeEscritura.Leer(anuncios + Anuncios("fase escrito setuid,setgid,capacidades", "limpio"), Id).AvisoExito();
+            string sinComprobar = InformeEscritura.Leer(anuncios + Anuncios("fase escrito capacidades?", "limpio"), Id).AvisoExito();
+            string todoDevuelto = InformeEscritura.Leer(anuncios + Anuncios("fase escrito -", "limpio"), Id).AvisoExito();
+            string error = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado setuid") + "Error: falló.\n", Id).MensajeError("x");
+            string interrupcion = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado capacidades", "limpio"), Id).MensajeInterrupcion("f", EstadoPeticionEnum.TiempoAgotado, Id, null);
+
+            // Assert
+            _ = exito.Should().Contain("salvo lo que sigue. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true). el núcleo quitó al escribir el bit setgid")
+                .And.EndWith("hace falta sudo=true y setfattr o setcap. Para devolverlas, con privilegios: «setfattr -n security.capability -v 0x0100000200 <archivo>».");
+            _ = sinComprobar.Should().EndWith("ATENCIÓN: no se pudo comprobar si el archivo tenía capacidades (security.capability): en el servidor no hay getfattr ni getcap; si las tenía, el núcleo las borró al escribir.");
+            _ = todoDevuelto.Should().EndWith("El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo, se devolvieron y se comprobaron.").And.NotContain("ATENCIÓN");
+            _ = error.Should().Be("Error: falló. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true).");
+            _ = interrupcion.Should().EndWith("Se restauró el contenido original de 'f'. ATENCIÓN: el núcleo borró al escribir las capacidades del archivo (security.capability) y no se pudieron devolver: hace falta sudo=true y setfattr o setcap. Para devolverlas, con privilegios: «setfattr -n security.capability -v 0x0100000200 <archivo>».");
         }
 
         [Fact]

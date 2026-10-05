@@ -847,6 +847,12 @@ namespace NativeSsh.Test.Herramientas
             _ = escribir.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
             _ = reemplazar.Should().Contain("ACL, propietario, grupo, atributos extendidos y contexto SELinux").And.Contain("enlaces duros");
             _ = (escribir + reemplazar).Should().NotContain("el contexto SELinux no cuenta");
+
+            // En el sitio no se afirma que se conserva todo: el núcleo quita los bits setuid y setgid y las capacidades, que
+            // se devuelven y se comprueban (las capacidades, solo con sudo).
+            _ = (escribir + reemplazar).Should().NotContain("conserva inodo, enlaces duros y todos los atributos");
+            _ = escribir.Should().Contain("bits setuid y setgid").And.Contain("security.capability").And.Contain("lo dice la respuesta");
+            _ = reemplazar.Should().Contain("bits setuid y setgid").And.Contain("security.capability").And.Contain("lo dice la respuesta");
         }
 
         [Fact]

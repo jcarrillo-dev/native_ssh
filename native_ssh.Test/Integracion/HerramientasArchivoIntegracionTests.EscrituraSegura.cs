@@ -426,6 +426,129 @@ namespace NativeSsh.Test.Integracion
             _ = (await herramientas.LeerSalidaAsync(IdDelError(error.Message))).Estado.Should().Be(isPorToken ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
         }
 
+        // Al escribir en un archivo, el núcleo le quita los bits setuid y setgid (este, si el grupo tiene ejecución): la
+        // escritura en el sitio los devuelve (chmod) y lo comprueba. Un setgid sin ejecución de grupo no se toca.
+        [Theory]
+        [InlineData("4755", false)]
+        [InlineData("6755", false)]
+        [InlineData("2755", true)]
+        [InlineData("2745", false)]
+        [InlineData("4750", true)]
+        public async Task EscrituraEnElSitio_ArchivoSetuidOSetgid_LeDevuelveElModo(string modo, bool isReplace)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = Bash($"chmod {modo} '{archivo}'");
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original", "nuevo")
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true);
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
+            _ = Stat(archivo).Should().StartWith($"{modo} ");
+            _ = resultado.Mensaje.Should().Contain("setuid y setgid").And.NotContain("ATENCIÓN");
+        }
+
+        // Si la escritura en el sitio falla y se restaura el original, también se le devuelven los bits que el núcleo le
+        // quitó al restaurarlo.
+        [Fact]
+        public async Task EscrituraEnElSitio_FallaEnUnArchivoSetuid_RestauraContenidoYModo()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = Bash($"chmod 4755 '{archivo}'");
+            await SustituirComandoAsync(herramientas, "cat", CatFalso("exit 1"));
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("se ha restaurado su contenido original").And.NotContain("ATENCIÓN");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Stat(archivo).Should().StartWith("4755 ");
+        }
+
+        // Sin sudo, el propietario no puede devolver el setgid de un archivo de un grupo al que no pertenece (chmod lo ignora
+        // en silencio): la respuesta lo dice. Necesita los subgid de la simulación de sudo para tener un grupo ajeno.
+        [Fact]
+        public async Task EscrituraEnElSitio_SetgidQueNoSePuedeDevolver_LoDiceLaRespuesta()
+        {
+            // Arrange: el archivo es del usuario y de un grupo ajeno (gid 2 de la simulación), 2775.
+            if (!SudoSimulado.HasOtrosUsuarios)
+                return;
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = SudoSimulado.ComoRoot("chgrp 2 -- \"$1\" && chmod 2775 -- \"$1\"", archivo);
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true);
+
+            // Assert
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
+            _ = Stat(archivo).Should().StartWith("775 ");
+            _ = resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("bit setgid").And.NotContain("bit setuid");
+        }
+
+        // El núcleo borra security.capability al escribir, incluso como root. Con sudo se devuelve (setfattr) y se comprueba;
+        // sin sudo no se puede, y la respuesta lo dice con el valor original para poder devolverlo.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task EscrituraEnElSitio_ArchivoConCapacidades_LasDevuelveConSudoOAvisaDeQueSePerdieron(bool isSudo)
+        {
+            // Arrange: un ejecutable con una capacidad (puesta como "root" de la simulación) y un enlace duro.
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = Bash($"chmod 755 '{archivo}'");
+            _ = SudoSimulado.ComoRoot("setcap cap_net_bind_service+ep \"$1\"", archivo);
+            string capacidad = Bash($"getcap '{archivo}'");
+            if (isSudo)
+                await SimularSudoAsync(herramientas);
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true, sudo: isSudo);
+
+            // Assert
+            _ = capacidad.Should().Be($"{archivo} cap_net_bind_service=ep");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
+            _ = Bash($"getcap '{archivo}'").Should().Be(isSudo ? capacidad : string.Empty);
+            _ = Stat(archivo).Should().StartWith("755 ");
+            _ = isSudo
+                ? resultado.Mensaje.Should().NotContain("ATENCIÓN")
+                : resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("security.capability").And.Contain("setfattr -n security.capability -v 0x01000003");
+        }
+
+        // Sin getfattr ni getcap no se puede saber si un ejecutable tenía capacidades: la respuesta lo dice. Un archivo que no
+        // es ejecutable no las usa y no se avisa.
+        [Theory]
+        [InlineData("755", true)]
+        [InlineData("644", false)]
+        [SupportedOSPlatform("linux")]
+        public async Task EscrituraEnElSitio_SinGetfattrNiGetcap_AvisaSoloSiEsEjecutable(string modo, bool isAviso)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = Bash($"chmod {modo} '{archivo}'");
+            await QuitarDelPathAsync(herramientas, "getfattr", "getcap");
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true);
+
+            // Assert
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
+            _ = isAviso
+                ? resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("no se pudo comprobar si el archivo tenía capacidades")
+                : resultado.Mensaje.Should().NotContain("ATENCIÓN");
+        }
+
         // Sin copia de seguridad no se escribe en el sitio: si no se puede crear (ni en el directorio ni en TMPDIR), error
         // sin tocar nada.
         [Fact]
