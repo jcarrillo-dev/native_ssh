@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
 using FluentAssertions;
@@ -96,6 +97,42 @@ namespace NativeSsh.Test.Integracion
             {
                 CanalesExecIntegracionTests.MatarProcesosSleep(hijo, principal);
             }
+        }
+
+        [Fact]
+        public async Task MaxSessionsAlcanzado_MensajeClaroYElShellSigueDisponible()
+        {
+            // Arrange: el shell ocupa una de las dos sesiones que admite el servidor.
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 4; echo fin", esperarSegundos: 0);
+            await File.WriteAllTextAsync(Path.Combine(_directorio, "a.txt"), "uno\n");
+
+            // Act: cuatro canales a la vez (el cupo local) con un solo hueco en el servidor.
+            Task<ResultadoCanalExec>[] intentos = [.. Enumerable.Range(0, 4).Select(_ => _gestor.EjecutarExecAsync(Destino, "sleep 1; echo ok", TimeSpan.FromSeconds(30), CancellationToken.None))];
+            List<string> rechazos = [];
+            int correctos = 0;
+            foreach (Task<ResultadoCanalExec> intento in intentos)
+            {
+                try
+                {
+                    correctos += (await intento).CodigoSalida == 0 ? 1 : 0;
+                }
+                catch (NativeSshException ex)
+                {
+                    rechazos.Add(ex.Message);
+                }
+            }
+
+            ResultadoComando fin = await _herramientas.LeerSalidaAsync(largo.Id, esperarSegundos: 20);
+            ResultadoComando otro = await _herramientas.EjecutarAsync(Destino, "echo sigue");
+            string lectura = await _herramientas.LeerArchivoAsync(Destino, Path.Combine(_directorio, "a.txt"));
+
+            // Assert
+            _ = correctos.Should().Be(1);
+            _ = rechazos.Should().HaveCount(3).And.AllSatisfy(m => m.Should().Contain("límite de sesiones").And.Contain("MaxSessions").And.Contain("sigue disponible"));
+            _ = fin.Salida.Should().Be("fin\n");
+            _ = otro.Salida.Should().Be("sigue\n");
+            _ = lectura.Should().Be("[Líneas 1-1 de 1]\nuno\n");
+            _ = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas.Should().Be(1);
         }
     }
 }
