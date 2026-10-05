@@ -34,6 +34,25 @@ namespace NativeSsh.Test.Herramientas
             _ = informe.Should().BeEquivalentTo(new InformeEscritura("escrito", [], temporal, Copia, null, LimpiezaEscrituraEnum.Limpio, "aviso de sudo\nruido\n__NS_W_ffffffffffffffffffffffffffffffff__ fase fallido\nError: algo"));
         }
 
+        // El aviso de bash al recoger un hijo que murió por una señal («ns: línea N: PID Superado el límite... (`core'
+        // generado) orden», en el idioma del servidor) no es un error del script y no forma parte del texto; otros avisos de
+        // bash con el nombre del script sí.
+        [Fact]
+        public void Leer_QuitaDelTextoLosAvisosDeBashDeHijosMuertosPorUnaSenal()
+        {
+            // Arrange
+            string salida = "ns: línea 155: 2904918 Superado el límite de tamaño de fichero              (`core' generado) cat -- \"$tmp\" > \"$destino\"\n"
+                + "ns: line 12: 4021 Killed                  cat -- \"$copia\" > \"$destino\"\n"
+                + "ns: línea 3: base64: orden no encontrada\n"
+                + "Error: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.\n";
+
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(salida, Id);
+
+            // Assert
+            _ = informe.Texto.Should().Be("ns: línea 3: base64: orden no encontrada\nError: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.");
+        }
+
         [Theory]
         [InlineData("colocado", true)]
         [InlineData("escrito", false)]

@@ -326,6 +326,35 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
+        // El 'cat' que escribe en el sitio muere por una señal que genera core (SIGXFSZ al superar 'ulimit -f 1', como en un
+        // disco con cuota o un servicio con LimitFSIZE): bash avisa en su stderr de la muerte del hijo («línea N: PID
+        // Superado el límite de tamaño de fichero (`core' generado) cat ...»), pero ese aviso no llega al error, que es el
+        // del script: escritura fallida y original restaurado.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task EscrituraEnElSitio_CatMuertoPorUnaSenalConCore_ElErrorNoLlevaElAvisoDeBash(bool isSudo)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            string stat = Stat(archivo);
+            await SustituirComandoAsync(herramientas, "cat", "case \"$2\" in *.tmp.*) ulimit -f 1 ;; esac\nexec /usr/bin/cat \"$@\"");
+            if (isSudo)
+                await SimularSudoAsync(herramientas);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, new string('n', 6000) + "\n", overwrite: true, sudo: isSudo))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"Error: falló la escritura en el sitio de {archivo}; se ha restaurado su contenido original.");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(2);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
         // Si tampoco se puede restaurar, no se borra nada: el error da las rutas de la copia del original y del contenido
         // nuevo, que siguen ahí.
         [Fact]

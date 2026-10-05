@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Herramientas
@@ -35,7 +36,7 @@ namespace NativeSsh.Herramientas
     // cerrarse el canal o perderse la conexión, o el script sigue en marcha) el script pudo seguir después, y el error lo
     // dice. Texto: la salida sin los anuncios. Si la salida superó el máximo por petición y se descartó su principio
     // (IsSalidaIncompleta), pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
-    internal sealed record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
+    internal sealed partial record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
 
@@ -61,7 +62,8 @@ namespace NativeSsh.Herramientas
                 int posicion = linea.IndexOf(marca, StringComparison.Ordinal);
                 if (posicion < 0)
                 {
-                    _ = texto.Append(linea).Append('\n');
+                    if (!RegexAvisoDeBash().IsMatch(linea))
+                        _ = texto.Append(linea).Append('\n');
                     continue;
                 }
 
@@ -102,6 +104,13 @@ namespace NativeSsh.Herramientas
 
             return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta };
         }
+
+        // Aviso que el bash del script ("ns", su $0) escribe en su stderr al recoger un hijo que murió por una señal: «ns: línea
+        // 155: 2904918 Superado el límite de tamaño de fichero (`core' generado) cat -- ...» (la palabra «línea» y la
+        // descripción van en el idioma del servidor). No es un error del script: no pasa al texto del informe. Los demás
+        // avisos de bash ("ns: línea 3: base64: orden no encontrada") no llevan un PID tras el número de línea y se quedan.
+        [GeneratedRegex(@"^ns: [^:]+ [0-9]+: [0-9]+ ", RegexOptions.CultureInvariant)]
+        private static partial Regex RegexAvisoDeBash();
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
         public bool IsAtomica => Fase == "colocado";
