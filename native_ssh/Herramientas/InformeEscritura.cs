@@ -29,6 +29,9 @@ namespace NativeSsh.Herramientas
     //   Tras escrito y restaurado, lo que el núcleo quitó al escribir y no se pudo devolver: setuid, setgid, capacidades,
     //   o capacidades? (no se pudo comprobar si las tenía), separados por comas, o '-'. Solo si no falta nada se dice que
     //   todo se devolvió y se comprobó;
+    // - "candado tomado" o "candado ninguno": si tomó el candado del archivo (flock, ver DefinicionCandado) antes de tocar
+    //   nada o si no hubo herramienta que lo tomara (sigue sin exclusión); sin anuncio, el archivo no existía o no se pudo
+    //   abrir para leer;
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
@@ -50,6 +53,9 @@ namespace NativeSsh.Herramientas
 
         public bool IsSalidaIncompleta { get; init; }
 
+        // "tomado", "ninguno" o null (ver el anuncio "candado").
+        public string? Candado { get; init; }
+
         public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
             string marca = $"{PrefijoMarca}{idMarcas}__ ";
@@ -59,6 +65,7 @@ namespace NativeSsh.Herramientas
             string? temporal = null;
             string? copia = null;
             string? capacidad = null;
+            string? candado = null;
             LimpiezaEscrituraEnum limpieza = LimpiezaEscrituraEnum.Desconocida;
             foreach (string linea in salida.Split('\n'))
             {
@@ -87,6 +94,9 @@ namespace NativeSsh.Herramientas
                     case "capacidad" when hasValor:
                         capacidad = DecodificarRuta(partes[1]);
                         break;
+                    case "candado" when hasValor:
+                        candado = partes[1];
+                        break;
                     case "fase" when hasValor:
                         fase = partes[1];
                         perdidos = partes.Length > 2 && partes[2] != "-" ? partes[2].Split(',') : [];
@@ -105,7 +115,7 @@ namespace NativeSsh.Herramientas
                 }
             }
 
-            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta };
+            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta, Candado = candado };
         }
 
         // Aviso que el bash del script ("ns", su $0) escribe en su stderr al recoger un hijo que murió por una señal: «ns: línea
@@ -119,7 +129,7 @@ namespace NativeSsh.Herramientas
         public bool IsAtomica => Fase == "colocado";
 
         // Lo que se añade al mensaje de una escritura terminada con éxito.
-        public string AvisoExito() => IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase();
+        public string AvisoExito() => (IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase()) + AvisoSinCandado();
 
         private string AvisoExitoSegunFase() => Fase switch
         {
@@ -200,7 +210,7 @@ namespace NativeSsh.Herramientas
             // terminó sin confirmarlo, murió a mitad y la copia sigue en su sitio.
             "escribiendo" or "restaurando" => isScriptTerminado
                 ? $"'{ruta}' puede haber quedado a medio escribir y el script ya no lo restaurará: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo)."
-                : $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).",
+                : $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).{AvisoCandadoEnCurso}",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
             "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",
@@ -208,6 +218,20 @@ namespace NativeSsh.Herramientas
             "anexado" => $"El contenido ya se anexó completo al final de '{ruta}'.",
             _ => $"No se sabe en qué estado quedó '{ruta}' (fase anunciada: '{Fase}')."
         };
+
+        // Interrumpido escribiendo o restaurando en el sitio, el script sigue en marcha: qué pasa mientras con una escritura
+        // nueva sobre el mismo archivo.
+        private string AvisoCandadoEnCurso => Candado switch
+        {
+            "tomado" => " Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.",
+            "ninguno" => $" {SinCandado} Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.",
+            _ => string.Empty
+        };
+
+        private const string SinCandado = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+
+        // Lo que se añade al éxito de una escritura que no tuvo candado.
+        public string AvisoSinCandado() => Candado == "ninguno" ? $" {SinCandado} La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo." : string.Empty;
 
         // Temporales que pueden seguir en el servidor, salvo los que ya se nombraron como conservados.
         private string Restos

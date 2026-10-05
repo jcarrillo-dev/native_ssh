@@ -235,5 +235,46 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = mensaje.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). 'f.txt' puede haber quedado a medio escribir").And.EndWith(" Salida del script: cat: error de escritura");
         }
+
+        // Interrumpida escribiendo o restaurando en el sitio, el script sigue en marcha: con el candado tomado, el error dice
+        // que las operaciones nuevas sobre el archivo fallan hasta que termine; sin candado, que no se escriba en él hasta
+        // comprobar que terminó; sin anuncio del candado (archivo que no se pudo abrir para leer), nada.
+        [Theory]
+        [InlineData("candado tomado", "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.")]
+        [InlineData("candado ninguno", "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock. Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.")]
+        [InlineData(null, null)]
+        public void MensajeInterrupcion_EscribiendoEnElSitio_DiceQuePasaConLasEscriturasNuevas(string? anuncio, string? esperado)
+        {
+            // Arrange
+            string anuncios = (anuncio is null ? string.Empty : Anuncios(anuncio)) + RutasCreadas + Anuncios("fase escribiendo");
+
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(anuncios, Id);
+            string mensaje = informe.MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, null, isEjecutada: true);
+            string trasSigkill = informe.MensajeError("x", "f.txt", 137, Id);
+
+            // Assert
+            _ = informe.Candado.Should().Be(anuncio?.Split(' ')[1]);
+            _ = esperado is null
+                ? mensaje.Should().NotContain("candado")
+                : mensaje.Should().Contain($"(para recuperar el original, copia la primera sobre el archivo). {esperado} El script no confirmó");
+            _ = trasSigkill.Should().NotContain("candado", "con el script muerto ya no hay restauración en curso");
+        }
+
+        // Una escritura terminada sin candado (ninguna herramienta pudo tomarlo) lo avisa; con el candado, nada.
+        [Theory]
+        [InlineData("candado ninguno", true)]
+        [InlineData("candado tomado", false)]
+        public void AvisoSinCandado_SoloSiNoSePudoTomar(string anuncio, bool isAviso)
+        {
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(Anuncios(anuncio, "fase colocado", "limpio"), Id);
+
+            // Assert
+            _ = informe.AvisoExito().Should().Be(informe.AvisoSinCandado());
+            _ = (informe.AvisoSinCandado().Length > 0).Should().Be(isAviso);
+            if (isAviso)
+                _ = informe.AvisoSinCandado().Should().EndWith("La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.");
+        }
     }
 }
