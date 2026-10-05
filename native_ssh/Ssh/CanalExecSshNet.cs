@@ -25,6 +25,11 @@ namespace NativeSsh.Ssh
     //   remoto de N s si el proceso no escribe (uno que escribe muere enseguida por SIGPIPE). Se hace en un hilo propio
     //   para no retener un hilo del pool, y la tarea de esta operación no termina hasta entonces, así que el cupo del
     //   canal en SesionShell sigue ocupado mientras el servidor mantiene su sesión.
+    //   Hasta entonces una lectura abortada retiene 3 hilos dedicados: el del Dispose y los dos lectores, que siguen en
+    //   PipeStream.Read porque SshCommand.Dispose no cierra los flujos hasta después de cerrar el canal. Se acepta: el
+    //   cupo lo limita a 3 × MaxCanalesExecSimultaneos (12) y son hilos bloqueados, sin trabajo. Liberar antes los
+    //   lectores exigiría cerrar los flujos antes que el canal, y el hilo de mensajes de SSH.NET escribiría en un
+    //   PipeStream ya liberado (ObjectDisposedException por cada paquete de datos que llegara hasta el CLOSE).
     //   SshCommand.CancelAsync enviaba antes una petición 'signal', y SSH.NET puede sacarla después del CLOSE:
     //   Channel.Close envía CHANNEL_CLOSE antes de marcar IsOpen=false y SendMessage comprueba IsOpen sin candado. Si el
     //   servidor ya había cerrado su lado, OpenSSH libera el canal al recibir el CLOSE y corta la conexión entera al
