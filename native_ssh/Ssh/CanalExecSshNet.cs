@@ -7,25 +7,31 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Ssh
 {
     // Canal exec con SshCommand de SSH.NET 2026.0.0 (CreateCommand + ExecuteAsync):
-    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions, hasta
-    //   ConnectionInfo.Timeout, sin atender ningún token): se invoca en el pool (Task.Factory.StartNew) y se espera
-    //   después la tarea que devuelve. Si el token se cancela durante la apertura, esta tarea espera a que termine y
-    //   cierra el canal: solo acaba con el canal cerrado (contrato de IConexionSsh), y SesionShell falla la operación
-    //   al momento sin liberar su cupo hasta entonces. Si la apertura agota ConnectionInfo.Timeout, SSH.NET la da por
-    //   fallida e ignora una confirmación posterior: ese canal queda abierto en el servidor hasta que se cierre la
-    //   conexión. Si se abre tarde, el comando llega a arrancar y lo acota su plazo remoto.
+    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions sin atender
+    //   ningún token y, tras conectar, sin plazo: ConexionSshNet quita ConnectionInfo.Timeout para que SSH.NET no dé por
+    //   fallida una apertura que el servidor confirmará después, lo que dejaba el canal abierto en el servidor sin que
+    //   nadie lo cerrara): se invoca en el pool (Task.Factory.StartNew) y se espera después la tarea que devuelve. Si el
+    //   token se cancela durante la apertura, esta tarea espera a que termine (confirmación, rechazo o caída de la
+    //   conexión) y cierra el canal: solo acaba con el canal cerrado (contrato de IConexionSsh), y SesionShell falla la
+    //   operación al momento sin liberar su cupo hasta entonces. Si se abre tarde, el comando llega a arrancar y lo acota
+    //   su plazo remoto.
     // - OutputStream y ExtendedOutputStream son PipeStream sin límite: SSH.NET encola todo lo que llega aunque nadie
     //   lea. Se leen a la vez (lectura bloqueante, un hilo dedicado por flujo) contando los bytes de ambos; al superar
     //   el tope se aborta en lugar de seguir acumulando.
     // - Abortar (tope, plazo local, token del llamante o cierre de la sesión) no envía señales: se deja de leer y se
     //   cierra el canal con SshCommand.Dispose (EOF si procede y CLOSE, bajo el candado del canal), que también cierra
-    //   los flujos y despierta a los lectores. SshCommand.CancelAsync enviaba antes una petición 'signal', y SSH.NET
-    //   puede sacarla después del CLOSE: Channel.Close envía CHANNEL_CLOSE antes de marcar IsOpen=false y SendMessage
-    //   comprueba IsOpen sin candado. Si el servidor ya había cerrado su lado, OpenSSH libera el canal al recibir el
-    //   CLOSE y corta la conexión entera al llegar la señal ("server_input_channel_req: unknown channel N"): se pierden
-    //   el shell PTY (y sus 'export') y las lecturas en vuelo, y se gasta una conexión del cupo de 'ufw limit'.
-    //   El Dispose se hace en la continuación, nunca en el callback del token: Close espera hasta ChannelCloseTimeout
-    //   (1 s) el CLOSE del servidor y el callback corre en el hilo de quien cancela.
+    //   los flujos y despierta a los lectores. Ese Dispose vuelve cuando llega el CLOSE del servidor (ChannelCloseTimeout
+    //   infinito, ConexionSshNet), que OpenSSH no envía hasta que termina el proceso de la sesión: hasta N+2 s con el plazo
+    //   remoto de N s si el proceso no escribe (uno que escribe muere enseguida por SIGPIPE). Se hace en un hilo propio
+    //   para no retener un hilo del pool, y la tarea de esta operación no termina hasta entonces, así que el cupo del
+    //   canal en SesionShell sigue ocupado mientras el servidor mantiene su sesión.
+    //   SshCommand.CancelAsync enviaba antes una petición 'signal', y SSH.NET puede sacarla después del CLOSE:
+    //   Channel.Close envía CHANNEL_CLOSE antes de marcar IsOpen=false y SendMessage comprueba IsOpen sin candado. Si el
+    //   servidor ya había cerrado su lado, OpenSSH libera el canal al recibir el CLOSE y corta la conexión entera al
+    //   llegar la señal ("server_input_channel_req: unknown channel N"): se pierden el shell PTY (y sus 'export') y las
+    //   lecturas en vuelo, y se gasta una conexión del cupo de 'ufw limit'.
+    //   El Dispose nunca va en el callback del token: Close espera el CLOSE del servidor (hasta el plazo remoto) y el
+    //   callback corre en el hilo de quien cancela, que quedaría bloqueado todo ese tiempo.
     // - Tras nuestro CLOSE, SSH.NET solo puede enviar por este canal un WINDOW_ADJUST (al recibir datos; con la ventana
     //   local de 2 GiB de SSH.NET no llega a ocurrir) o un CHANNEL_FAILURE (respuesta a una petición con want_reply), y
     //   OpenSSH 10.5 los descarta con un aviso en su log si el canal ya no existe. Los mensajes que sí cortan la
@@ -81,7 +87,7 @@ namespace NativeSsh.Ssh
 
             if (control.IsAbortado)
             {
-                orden.Dispose();
+                await Task.Factory.StartNew(orden.Dispose, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default).ConfigureAwait(false);
                 try
                 {
                     await ejecucion.ConfigureAwait(false);

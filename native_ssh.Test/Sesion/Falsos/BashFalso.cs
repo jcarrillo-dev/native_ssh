@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
@@ -38,13 +39,21 @@ namespace NativeSsh.Test.Sesion.Falsos
     public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
         private int _conexiones;
+        private int _conexionesRetenidas;
 
         public int Conexiones => Volatile.Read(ref _conexiones);
+
+        // Conexiones detenidas ahora mismo en BloqueoConexion.
+        public int ConexionesRetenidas => Volatile.Read(ref _conexionesRetenidas);
         public ConexionFalsa? Ultima { get; private set; }
         public Exception? ErrorAlConectar { get; set; }
 
         // Ensancha la ventana de carrera entre conexiones simultáneas.
         public TimeSpan RetrasoConexion { get; set; }
+
+        // Si no es null, cada conexión espera a que se libere (atendiendo el token): quien conecta retiene mientras tanto
+        // el candado de conexión de la sesión.
+        public SemaphoreSlim? BloqueoConexion { get; set; }
 
         // Si no es null, cada canal exec espera a que se libere antes de responder (para medir la concurrencia).
         public SemaphoreSlim? BloqueoExec { get; set; }
@@ -52,6 +61,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Si no es null, cada canal exec espera a que se libere ignorando el token, como la apertura síncrona de SSH.NET
         // con un servidor que no responde; después atiende la cancelación.
         public SemaphoreSlim? BloqueoAperturaExec { get; set; }
+
+        // Si no es null, cada apertura del canal del shell espera a que se libere sin atender ningún token, como la de
+        // SSH.NET con un servidor que no responde (que solo termina al responder o al caer la conexión).
+        public SemaphoreSlim? BloqueoAperturaShell { get; set; }
 
         // PATH que el shell de login falso exporta (lo que imprime la línea de captura del PATH). BytesPathLogin, si no es
         // null, lo sustituye byte a byte (para un PATH que no es UTF-8).
@@ -70,11 +83,25 @@ namespace NativeSsh.Test.Sesion.Falsos
             if (RetrasoConexion > TimeSpan.Zero)
                 await Task.Delay(RetrasoConexion, cancellationToken);
 
+            if (BloqueoConexion is { } bloqueo)
+            {
+                _ = Interlocked.Increment(ref _conexionesRetenidas);
+                try
+                {
+                    await bloqueo.WaitAsync(cancellationToken);
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _conexionesRetenidas);
+                }
+            }
+
             _ = Interlocked.Increment(ref _conexiones);
             ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin)
             {
                 BloqueoExec = BloqueoExec,
                 BloqueoAperturaExec = BloqueoAperturaExec,
+                BloqueoAperturaShell = BloqueoAperturaShell,
                 PathLogin = PathLogin,
                 BytesPathLogin = BytesPathLogin,
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
@@ -87,11 +114,15 @@ namespace NativeSsh.Test.Sesion.Falsos
 
     public sealed class ConexionFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IConexionSsh
     {
+        private readonly ManualResetEventSlim _liberada = new(false);
         private int _shellsAbiertos;
+        private int _aperturasShell;
+        private int _aperturasShellRetenidas;
         private int _execActivos;
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
         private volatile bool _isCanalHuerfano;
+        private volatile bool _isCaidaAlAbrirShell;
         private volatile bool _isDispuesta;
         private Action? _alConsultarConexion;
 
@@ -114,6 +145,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         public int ShellsAbiertos => Volatile.Read(ref _shellsAbiertos);
+        public int AperturasShellRetenidas => Volatile.Read(ref _aperturasShellRetenidas);
+
+        // Llamadas a AbrirShell (abran o no el canal).
+        public int AperturasShell => Volatile.Read(ref _aperturasShell);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
 
         // Comandos ejecutados por el shell PTY y scripts de los canales exec (decodificados).
@@ -125,6 +160,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int MaxExecSimultaneos => Volatile.Read(ref _maxExecSimultaneos);
         public SemaphoreSlim? BloqueoExec { get; init; }
         public SemaphoreSlim? BloqueoAperturaExec { get; init; }
+        public SemaphoreSlim? BloqueoAperturaShell { get; init; }
         public string PathLogin { get; init; } = "/usr/local/bin:/usr/bin:/bin";
         public byte[]? BytesPathLogin { get; init; }
         public string RuidoAntesCapturaPath { get; init; } = "";
@@ -186,10 +222,37 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
+        [SuppressMessage("Usage", "CA2208:Instantiate argument exceptions correctly", Justification = "Reproduce el ArgumentNullException de WaitOnHandle de SSH.NET.")]
         public ICanalShell AbrirShell()
         {
+            _ = Interlocked.Increment(ref _aperturasShell);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
+
+            // Lo que llega de SSH.NET cuando la conexión cae a mitad de abrir el shell (Session_Disconnected libera el
+            // canal y su espera recibe un handle nulo); el adaptador da entonces la conexión por perdida.
+            if (_isCaidaAlAbrirShell)
+            {
+                _isConectada = false;
+                throw new ArgumentNullException("waitHandle");
+            }
+
+            if (BloqueoAperturaShell is { } apertura)
+            {
+                _ = Interlocked.Increment(ref _aperturasShellRetenidas);
+                try
+                {
+                    apertura.Wait();
+                }
+                finally
+                {
+                    _ = Interlocked.Decrement(ref _aperturasShellRetenidas);
+                }
+
+                // Como SSH.NET: si la conexión se liberó o cayó mientras tanto, la apertura falla.
+                if (_isDispuesta || !_isConectada)
+                    throw new InvalidOperationException("Conexión cerrada.");
+            }
 
             _ = Interlocked.Increment(ref _shellsAbiertos);
             CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin)
@@ -201,6 +264,13 @@ namespace NativeSsh.Test.Sesion.Falsos
             };
             return CanalActual;
         }
+
+        // Desde ahora escribir en el canal del shell no vuelve hasta que se libera la conexión, y entonces falla: como
+        // SSH.NET con la ventana del servidor agotada o una renegociación de claves sin respuesta.
+        public void ColgarEscrituras() => CanalActual?.ColgarEscrituras(_liberada);
+
+        // La siguiente apertura del shell falla porque la conexión cae a mitad.
+        public void CaerAlAbrirShell() => _isCaidaAlAbrirShell = true;
 
         // Simula una caída de red: la conexión deja de estar activa y el canal se cierra.
         public void Caer()
@@ -226,6 +296,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _isConectada = false;
             else
                 Caer();
+            _liberada.Set();
         }
     }
 
@@ -251,6 +322,11 @@ namespace NativeSsh.Test.Sesion.Falsos
         private bool _isEnLogin;
         private bool _isReadPendiente;
         private volatile bool _isZombi;
+        private volatile bool _isDispuesto;
+        private int _escriturasColgadas;
+        private int _escriturasTrasCerrar;
+        private ManualResetEventSlim? _liberacionEscrituras;
+        private ManualResetEventSlim? _confirmacionCierre;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
@@ -275,7 +351,12 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
         public bool IsCerrado => _salida.IsAddingCompleted;
+        public bool IsDispuesto => _isDispuesto;
         public int SigintsRecibidos => Volatile.Read(ref _sigints);
+        public int EscriturasColgadas => Volatile.Read(ref _escriturasColgadas);
+
+        // Intentos de escribir con el canal ya cerrado.
+        public int EscriturasTrasCerrar => Volatile.Read(ref _escriturasTrasCerrar);
 
         public int Leer(Span<byte> destino)
         {
@@ -298,10 +379,20 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Escribir(ReadOnlySpan<byte> datos)
         {
+            if (Volatile.Read(ref _liberacionEscrituras) is { } liberacion)
+            {
+                _ = Interlocked.Increment(ref _escriturasColgadas);
+                liberacion.Wait();
+                throw new InvalidOperationException("Client not connected.");
+            }
+
             lock (_candado)
             {
                 if (IsCerrado)
+                {
+                    _ = Interlocked.Increment(ref _escriturasTrasCerrar);
                     throw new InvalidOperationException("Canal cerrado.");
+                }
 
                 if (_isZombi)
                     throw new InvalidOperationException("La conexión del canal se cayó.");
@@ -331,6 +422,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Zombificar() => _isZombi = true;
 
+        public void ColgarEscrituras(ManualResetEventSlim liberacion) => Volatile.Write(ref _liberacionEscrituras, liberacion);
+
+        // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
+        // muere al perder el terminal.
+        public void RetenerCierre(ManualResetEventSlim confirmacion) => Volatile.Write(ref _confirmacionCierre, confirmacion);
+
         public void Cerrar()
         {
             lock (_candado)
@@ -342,6 +439,8 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Dispose()
         {
+            _isDispuesto = true;
+            Volatile.Read(ref _confirmacionCierre)?.Wait();
             _finLogin?.Dispose();
             Cerrar();
         }

@@ -20,8 +20,14 @@ namespace NativeSsh.Sesion
     // no siempre lo cierra cuando cae el TCP) y AsegurarShellAsync solo da por bueno un canal de la conexión vigente.
     // Además el adaptador lo cierra en cuanto SSH.NET avisa de la caída (CanalShellSshNet): el comando en curso termina
     // al momento como ShellPerdido y la cola no queda bloqueada hasta su plazo.
-    // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que está cerrado de verdad, aunque la operación
-    // ya haya fallado por su plazo local (apertura sin respuesta del servidor).
+    // Tras conectar, SSH.NET no abandona ninguna espera mientras la conexión viva (ConexionSshNet): la apertura del canal
+    // del shell se hace fuera del bucle y cada comando la espera solo hasta su propio límite (ObtenerCanalShellAsync), y
+    // una escritura que el servidor no acepta solo se desbloquea liberando la conexión (DisposeAsync lo hace si el bucle
+    // no termina al cerrar la sesión).
+    // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que el servidor lo cierra de verdad (o cae la
+    // conexión), aunque la operación ya haya fallado por su plazo local, su tope o una cancelación: cerrar un canal espera
+    // el CLOSE del servidor (ConexionSshNet), y OpenSSH no lo envía, ni libera la plaza de su MaxSessions, hasta que
+    // termina el proceso de la sesión (uno que no escribe vive hasta su plazo remoto, N s y 2 más si ignora TERM).
     public sealed class SesionShell : IAsyncDisposable
     {
         public const int TamanoBloqueLectura = 16 * 1024;
@@ -41,7 +47,16 @@ namespace NativeSsh.Sesion
 
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
+        // Lo que DisposeAsync espera al bucle antes de liberar la conexión para sacarlo de una escritura que el servidor no
+        // acepta (sin ConnectionInfo.Timeout, SSH.NET espera ahí a que responda o caiga la conexión).
+        private static readonly TimeSpan EsperaFinBucleAlCerrar = TimeSpan.FromSeconds(2);
+
+        // Lo que quien cierra el canal del shell espera a que el servidor confirme el cierre (lo que hacía SSH.NET con su
+        // ChannelCloseTimeout por defecto); después el cierre sigue en segundo plano.
+        private static readonly TimeSpan EsperaCierreCanalShell = TimeSpan.FromSeconds(1);
+
         private const string DetalleComandoNoEnviado = "el comando no llegó a enviarse.";
+        private const string AvisoAperturaShellPendiente = "El servidor aún no ha respondido a la apertura del shell: el siguiente comando esperará a esa misma apertura en lugar de abrir otro canal.";
         private const string DetalleCtrlCEnviado = "se envió Ctrl+C al proceso.";
 
         private readonly IFabricaConexion _fabrica;
@@ -64,8 +79,17 @@ namespace NativeSsh.Sesion
         private TaskCompletionSource<int>? _esperaMarcador;
         private bool _isInterrumpiendo;
 
+        // Salida del comando que estaba en curso cuando se cerró el canal del shell: hasta que el bucle lo da por perdido,
+        // su entrada se rechaza diciendo por qué.
+        private BufferSalida? _salidaConCanalCerrado;
+
         private volatile IConexionSsh? _conexion;
         private bool _isShellInicializadoAlgunaVez;
+
+        // Apertura del canal del shell aún en curso (la de un comando que venció antes) y su conexión. Solo el bucle (y
+        // DisposeAsync cuando el bucle ya terminó).
+        private Task<ICanalShell>? _aperturaShell;
+        private IConexionSsh? _conexionAperturaShell;
 
         private volatile Peticion? _peticionActual;
         private volatile bool _isResetSolicitado;
@@ -85,6 +109,14 @@ namespace NativeSsh.Sesion
             _opciones = opciones;
             _logger = logger;
             _bucle = Task.Run(BucleComandosAsync);
+        }
+
+        // Hasta dónde llegó una lectura cuyo límite local venció.
+        private enum EtapaExecEnum
+        {
+            Cupo,
+            Conexion,
+            Canal
         }
 
         private enum EscrituraEnum
@@ -142,16 +174,30 @@ namespace NativeSsh.Sesion
             _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, $"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar el comando.");
         }
 
+        // Una vez observado el cierre del canal del shell (CerrarCanal) no se escribe nada más en él: el comando que estaba
+        // en curso rechaza su entrada con un mensaje propio hasta que el bucle lo da por perdido. La carrera de fondo es de
+        // SSH.NET y no se puede cerrar desde aquí: cuando el servidor cierra el canal (exit), su hilo de mensajes contesta
+        // con nuestro CLOSE y Channel.SendData comprueba IsOpen fuera de _messagingLock, así que una escritura que ya había
+        // pasado esa comprobación puede salir después del CLOSE y OpenSSH corta la conexión ("data packet referred to
+        // nonexistent channel"). ShellStream no avisa del EOF del servidor y su evento Closed llega cuando nuestro CLOSE ya
+        // salió: lo primero que se puede observar es el propio cierre.
         public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter)
         {
             lock (_candadoEscritura)
             {
                 ICanalShell? canal;
+                bool isCanalCerrado;
                 lock (_candadoProceso)
                 {
-                    bool isAdmiteEntrada = peticion.Estado == EstadoPeticionEnum.Ejecutando && !_isInterrumpiendo && ReferenceEquals(_salidaActual, peticion.Salida);
+                    // Durante una interrupción (Ctrl+C o el cierre del canal que la sigue) no se admite entrada, como siempre.
+                    bool isAdmisible = peticion.Estado == EstadoPeticionEnum.Ejecutando && !_isInterrumpiendo;
+                    isCanalCerrado = isAdmisible && ReferenceEquals(_salidaConCanalCerrado, peticion.Salida);
+                    bool isAdmiteEntrada = isAdmisible && ReferenceEquals(_salidaActual, peticion.Salida);
                     canal = isAdmiteEntrada ? _canal : null;
                 }
+
+                if (isCanalCerrado)
+                    throw new NativeSshException($"El canal del shell se cerró (exit, cierre desde el servidor o conexión perdida) mientras se ejecutaba el comando {peticion.IdTexto} en {Destino.Clave}: la entrada no se envió. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo.");
 
                 if (canal is null)
                     return false;
@@ -177,8 +223,21 @@ namespace NativeSsh.Sesion
             if (Interlocked.Exchange(ref _isDispuesto, 1) != 0)
                 return;
 
+            // Desde aquí cualquier fallo de un comando o de una lectura se atribuye al cierre (IsCerrando), aunque _cierre
+            // aún no esté cancelado.
+            _logger.CerrandoSesion(Destino.Clave);
             _ = _cola.Writer.TryComplete();
             _cierre.Cancel();
+
+            // Una escritura en el shell que el servidor no acepta (ventana agotada, renegociación de claves sin respuesta)
+            // no atiende ningún token: si el bucle sigue dentro, solo liberar la conexión lo saca (y el comando termina
+            // como Cancelado).
+            if (await Task.WhenAny(_bucle, Task.Delay(EsperaFinBucleAlCerrar)).ConfigureAwait(false) != _bucle)
+            {
+                _logger.BucleBloqueadoAlCerrar(Destino.Clave);
+                await LiberarConexionAsync().ConfigureAwait(false);
+            }
+
             try
             {
                 await _bucle.ConfigureAwait(false);
@@ -189,7 +248,13 @@ namespace NativeSsh.Sesion
             }
 
             CerrarCanalActual();
-            // Un canal exec que estuviera conectando ya vio _cierre cancelado; tras el candado nadie crea otra conexión.
+            DescartarAperturaShell();
+            await LiberarConexionAsync().ConfigureAwait(false);
+        }
+
+        // Un canal exec que estuviera conectando ya vio la sesión cerrada; tras el candado nadie crea otra conexión.
+        private async Task LiberarConexionAsync()
+        {
             await _candadoConexion.WaitAsync().ConfigureAwait(false);
             try
             {
@@ -204,8 +269,10 @@ namespace NativeSsh.Sesion
 
         // Canal exec sobre la conexión de la sesión, sin pasar por la cola del shell. 'timeout' cubre la espera de cupo,
         // la conexión (si no la hay) y la ejecución; al agotarse se cierra el canal y se lanza NativeSshException.
-        // La operación termina al agotarse el límite local aunque la apertura del canal siga colgada (servidor que no
-        // responde): el canal conserva su cupo hasta que se cierra de verdad, para no superar el MaxSessions del servidor.
+        // La operación termina al agotarse el límite local aunque la apertura del canal siga sin respuesta del servidor o
+        // su proceso remoto siga vivo: el canal conserva su cupo hasta que el servidor lo cierra de verdad (como mucho al
+        // vencer su plazo remoto), para no superar el MaxSessions del servidor con canales que ya nadie usa. Las lecturas
+        // que esperan ese cupo fallan al vencer su propio límite y lo dicen.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string script, TimeSpan timeout, CancellationToken cancellationToken)
         {
             if (IsCerrando)
@@ -219,14 +286,17 @@ namespace NativeSsh.Sesion
             CancellationToken token = enlazado.Token;
             bool isCupoTomado = false;
             bool isCanalContado = false;
+            EtapaExecEnum etapa = EtapaExecEnum.Cupo;
             Task<ResultadoCanalExec>? ejecucion = null;
             try
             {
                 await _cupoExec.WaitAsync(token).ConfigureAwait(false);
                 isCupoTomado = true;
+                etapa = EtapaExecEnum.Conexion;
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
+                etapa = EtapaExecEnum.Canal;
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, token);
                 return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
@@ -238,7 +308,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado); se abandona y su canal exec se cierra.");
+                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa, timeout));
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -251,6 +321,18 @@ namespace NativeSsh.Sesion
                 else
                     LiberarCanalExec(isCupoTomado, isCanalContado);
             }
+        }
+
+        private string DescribirTiempoAgotadoExec(EtapaExecEnum etapa, TimeSpan timeout)
+        {
+            string plazo = $"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado)";
+            return etapa switch
+            {
+                EtapaExecEnum.Cupo => $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, por lecturas en curso o por otras ya abandonadas cuyo proceso remoto aún no ha terminado (el servidor mantiene su sesión hasta entonces, como mucho hasta el plazo de cada una). Reintenta en unos segundos.",
+                EtapaExecEnum.Conexion => $"{plazo} sin llegar a obtener canal: la conexión con {Destino.Clave} no se estableció a tiempo.",
+                EtapaExecEnum.Canal => $"{plazo}; se abandona y su canal exec se cierra (el servidor lo libera cuando termina su proceso remoto, como mucho al vencer su plazo).",
+                _ => throw new ArgumentOutOfRangeException(nameof(etapa), etapa, null)
+            };
         }
 
         // La tarea de IConexionSsh.EjecutarExecAsync termina cuando el canal está cerrado (si su apertura seguía en curso,
@@ -341,7 +423,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!IsCerrando)
             {
-                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, null);
+                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, _aperturaShell is { IsCompleted: false } ? AvisoAperturaShellPendiente : null);
                 return;
             }
             catch (NativeSshException ex) when (!IsCerrando)
@@ -368,6 +450,7 @@ namespace NativeSsh.Sesion
                 {
                     canal = _canal;
                     conexionDelCanal = _conexionDelCanal;
+                    _salidaConCanalCerrado = null;
                     if (canal is not null)
                     {
                         _escaner.Reiniciar(peticion.Id);
@@ -387,6 +470,11 @@ namespace NativeSsh.Sesion
             {
                 if (canal is not null)
                     CerrarCanal(canal);
+
+                // DisposeAsync liberó la conexión para sacar al bucle de la escritura.
+                if (IsCerrando)
+                    throw new OperationCanceledException(token);
+
                 string motivo = conexionDelCanal is { IsConectada: true }
                     ? "No se pudo enviar el comando: el canal del shell se cerró. El siguiente comando abrirá uno nuevo."
                     : $"No se pudo enviar el comando: se perdió la conexión SSH con {Destino.Clave}. El siguiente comando reconectará y abrirá un shell nuevo.";
@@ -405,6 +493,8 @@ namespace NativeSsh.Sesion
                 if (!espera.Task.IsCompletedSuccessfully)
                 {
                     (string detalle, string? avisoInterrupcion) = await InterrumpirAsync(canal, peticion).ConfigureAwait(false);
+                    if (IsCerrando)
+                        throw new OperationCanceledException(token);
                     FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(avisoShell, avisoInterrupcion));
                     return;
                 }
@@ -417,10 +507,11 @@ namespace NativeSsh.Sesion
                 : peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
         }
 
-        // Con la conexión perdida (el adaptador la marca así antes de cerrar el canal) se dice explícitamente.
+        // Con la conexión perdida (el adaptador la marca así antes de cerrar el canal) se dice explícitamente. No se afirma
+        // que el comando llegara a ejecutarse: el canal pudo cerrarse antes de que el shell lo leyera.
         private string DescribirShellPerdido(IConexionSsh? conexion) => conexion is { IsConectada: true }
-            ? "El canal del shell se cerró durante el comando (exit o cierre desde el servidor). El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."
-            : $"Se perdió la conexión SSH con {Destino.Clave} durante el comando: el shell remoto se cerró y las variables exportadas se perdieron. El siguiente comando reconectará y abrirá un shell nuevo.";
+            ? "El canal del shell se cerró antes de que terminara el comando (exit o cierre desde el servidor), así que puede que no llegara a ejecutarse o que se interrumpiera a medias. El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."
+            : $"Se perdió la conexión SSH con {Destino.Clave} antes de que terminara el comando, así que puede que no llegara a ejecutarse o que se interrumpiera a medias: el shell remoto se cerró y las variables exportadas se perdieron. El siguiente comando reconectará y abrirá un shell nuevo.";
 
         // Devuelve qué se hizo con el proceso (para el estado final) y el aviso sobre el shell. Solo afirma que se envió
         // Ctrl+C, que no respondió o que la conexión sigue abierta cuando es cierto.
@@ -610,11 +701,14 @@ namespace NativeSsh.Sesion
             ICanalShell canal;
             try
             {
-                canal = conexion.AbrirShell();
+                canal = await ObtenerCanalShellAsync(conexion, token).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not NativeSshException)
+            catch (Exception ex) when (ex is not (NativeSshException or OperationCanceledException))
             {
-                throw new NativeSshException($"No se pudo abrir un shell en {Destino.Clave}: {ex.Message}", ex);
+                // Con la conexión caída, el texto de SSH.NET ("Client not connected.", un handle nulo...) no dice nada útil.
+                throw new NativeSshException(conexion.IsConectada
+                    ? $"No se pudo abrir un shell en {Destino.Clave}: {ex.Message}"
+                    : $"Se perdió la conexión SSH con {Destino.Clave} mientras se abría el shell: el comando no llegó a enviarse. El siguiente comando reconectará y abrirá un shell nuevo.", ex);
             }
 
             Guid id = Guid.NewGuid();
@@ -658,7 +752,7 @@ namespace NativeSsh.Sesion
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 CerrarCanal(canal);
-                throw new NativeSshException($"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s. El servidor necesita bash, stty y base64.");
+                throw new NativeSshException($"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s: el login tardó más que ese plazo, el servidor no respondió o al shell le falta bash, stty o base64 (los necesita el shell de ssh_exec).");
             }
             catch
             {
@@ -672,6 +766,64 @@ namespace NativeSsh.Sesion
             bool isRecreado = _isShellInicializadoAlgunaVez;
             _isShellInicializadoAlgunaVez = true;
             return isRecreado ? "Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido." : null;
+        }
+
+        // La apertura de SSH.NET es síncrona, no atiende ningún token y, sin ConnectionInfo.Timeout, espera a que el servidor
+        // responda o a que caiga la conexión: se hace fuera del bucle y el comando la espera hasta su propio límite. Si vence
+        // antes, la apertura sigue en curso y el siguiente comando la espera (sobre la misma conexión) en lugar de abrir otro
+        // canal, que dejaría en el servidor uno sin usar; si ya no es de la conexión vigente, su canal se cierra al abrirse.
+        private async Task<ICanalShell> ObtenerCanalShellAsync(IConexionSsh conexion, CancellationToken token)
+        {
+            Task<ICanalShell>? apertura = _aperturaShell;
+            if (apertura is null || apertura.IsFaulted || apertura.IsCanceled || !ReferenceEquals(_conexionAperturaShell, conexion))
+            {
+                DescartarAperturaShell();
+                apertura = Task.Factory.StartNew(conexion.AbrirShell, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                _aperturaShell = apertura;
+                _conexionAperturaShell = conexion;
+            }
+
+            try
+            {
+                ICanalShell canal = await apertura.WaitAsync(token).ConfigureAwait(false);
+                _aperturaShell = null;
+                _conexionAperturaShell = null;
+                return canal;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+            {
+                // Falló la propia apertura (no venció el comando): no se reutiliza.
+                _aperturaShell = null;
+                _conexionAperturaShell = null;
+                throw;
+            }
+        }
+
+        // Solo el bucle (o DisposeAsync cuando el bucle ya terminó).
+        private void DescartarAperturaShell()
+        {
+            Task<ICanalShell>? apertura = _aperturaShell;
+            _aperturaShell = null;
+            _conexionAperturaShell = null;
+            if (apertura is not null)
+                _ = CerrarAperturaDescartadaAsync(apertura);
+        }
+
+        private async Task CerrarAperturaDescartadaAsync(Task<ICanalShell> apertura)
+        {
+            ICanalShell canal;
+            try
+            {
+                canal = await apertura.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.AperturaShellAbandonada(ex, Destino.Clave);
+                return;
+            }
+
+            _logger.AperturaShellAbandonada(null, Destino.Clave);
+            _ = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         // Un login lento con readline (bash -l) lee la línea del exec en modo crudo; al volver a modo canónico el
@@ -829,14 +981,24 @@ namespace NativeSsh.Sesion
                 _conexionDelCanal = null;
                 espera = _esperaMarcador;
                 _esperaMarcador = null;
+                _salidaConCanalCerrado = _salidaActual;
                 _salidaActual = null;
                 _escaner.Desactivar();
             }
 
+            _logger.CanalShellCerrado(Destino.Clave);
             _ = (espera?.TrySetResult(CodigoCanalCerrado));
+            // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
+            // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.
+            Task cierre = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            _ = cierre.Wait(EsperaCierreCanalShell);
+        }
+
+        private void LiberarCanal(object? estado)
+        {
             try
             {
-                canal.Dispose();
+                ((ICanalShell)estado!).Dispose();
             }
             catch (Exception ex)
             {

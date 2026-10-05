@@ -317,6 +317,39 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task CierreDelCanalQueElServidorNoConfirma_NoDetieneLaCola()
+        {
+            // Arrange: cerrar el canal no vuelve hasta que el servidor confirma, y no confirma (su bash no muere al perder
+            // el terminal); el proceso en curso ignora Ctrl+C, así que hay que cerrar el canal.
+            using ManualResetEventSlim confirmacion = new(false);
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.CanalActual!.RetenerCierre(confirmacion);
+            Stopwatch reloj = Stopwatch.StartNew();
+            Peticion terco;
+            Peticion siguiente;
+
+            try
+            {
+                // Act
+                terco = await EjecutarAsync(sesion, "terco", timeoutSegundos: 1);
+                siguiente = await EjecutarAsync(sesion, "dos");
+            }
+            finally
+            {
+                confirmacion.Set();
+            }
+
+            // Assert: quien cierra espera como mucho un segundo y la cola sigue con un shell nuevo.
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:dos\n");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(2);
+        }
+
+        [Fact]
         public async Task EntradaInteractiva()
         {
             // Arrange
@@ -367,6 +400,58 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task EntradaConElCanalDelShellYaCerrado_SeRechazaConMensajeClaroSinEscribirEnEl()
+        {
+            // Arrange: el comando espera entrada y el servidor cierra el canal (exit); el cierre se detiene justo después de
+            // observarse, con la petición aún en ejecución.
+            using LoggerPrueba logger = new() { EventoBloqueante = 43 };
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("Nombre", StringComparison.Ordinal));
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            canal.Cerrar();
+            await logger.Bloqueado.WaitAsync(Limite);
+            Action enviar = () => sesion.EnviarEntrada(pregunta, "hola", isEnviarEnter: true);
+            NativeSshException error = enviar.Should().Throw<NativeSshException>().Which;
+            EstadoPeticionEnum estadoAlRechazar = pregunta.Estado;
+            logger.Liberar();
+            await pregunta.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = estadoAlRechazar.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = error.Message.Should().Contain("canal del shell se cerró").And.Contain("no se envió");
+            _ = canal.EscriturasTrasCerrar.Should().Be(0);
+            _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+        }
+
+        [Fact]
+        public async Task EntradaMientrasLaInterrupcionCierraElCanal_SeRechazaSinAtribuirElCierreAlServidor()
+        {
+            // Arrange: el proceso ignora Ctrl+C y la interrupción escala al cierre del canal, que se detiene recién observado.
+            using LoggerPrueba logger = new() { EventoBloqueante = 43 };
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+            Peticion terco = Nueva("terco", timeoutSegundos: 1);
+            sesion.Encolar(terco);
+
+            // Act
+            await logger.Bloqueado.WaitAsync(Limite);
+            bool isEnviada = sesion.EnviarEntrada(terco, "hola", isEnviarEnter: true);
+            logger.Liberar();
+            await terco.Finalizacion.WaitAsync(Limite);
+
+            // Assert: como en cualquier momento de la interrupción, la entrada se rechaza sin más.
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = isEnviada.Should().BeFalse();
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+        }
+
+        [Fact]
         public async Task EntradaTardia_NoPasaAComandoPosterior()
         {
             // Arrange
@@ -401,8 +486,9 @@ namespace NativeSsh.Test.Sesion
             Peticion salir = await EjecutarAsync(sesion, "exit");
             Peticion siguiente = await EjecutarAsync(sesion, "hola");
 
-            // Assert
+            // Assert: no se sabe si el comando llegó a ejecutarse (el canal pudo cerrarse antes), así que no lo afirma.
             _ = salir.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = salir.Aviso.Should().Contain("antes de que terminara el comando").And.NotContain("durante el comando");
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Aviso.Should().Contain("recreado");
             _ = fabrica.Conexiones.Should().Be(1);
@@ -445,10 +531,47 @@ namespace NativeSsh.Test.Sesion
 
             // Assert
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
-            _ = colgado.Aviso.Should().Contain("Se perdió la conexión SSH");
+            _ = colgado.Aviso.Should().Contain("Se perdió la conexión SSH").And.NotContain("durante el comando");
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Aviso.Should().Contain("recreado");
             _ = fabrica.Conexiones.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task ReabrirElShellSobreUnaConexionQueCae_NoDevuelveElErrorCrudoDeSshNet()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            sesion.SolicitarReset();
+            fabrica.Ultima!.CaerAlAbrirShell();
+
+            // Act
+            Peticion fallido = await EjecutarAsync(sesion, "dos");
+            Peticion siguiente = await EjecutarAsync(sesion, "tres");
+
+            // Assert
+            _ = fallido.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = fallido.Aviso.Should().Contain("Se perdió la conexión SSH").And.Contain("no llegó a enviarse").And.NotContain("waitHandle").And.NotContain("Value cannot be null");
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:tres\n");
+            _ = fabrica.Conexiones.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task InicializacionQueNoTerminaASuTiempo_LaPistaNombraLasCausasPosibles()
+        {
+            // Arrange: un login que tarda más que el plazo de inicialización y se come lo que recibe mientras tanto.
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.ComeInicializacion, retrasoLogin: TimeSpan.FromSeconds(5));
+            await using SesionShell sesion = Crear(fabrica, Opciones(timeoutInicializacionSegundos: 1));
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = peticion.Aviso.Should().Contain("no completó la inicialización en 1 s").And.Contain("login").And.Contain("no respondió");
         }
 
         [Fact]
@@ -532,6 +655,97 @@ namespace NativeSsh.Test.Sesion
             _ = resultado.CodigoSalida.Should().Be(0);
             _ = fabrica.Conexiones.Should().Be(2);
             _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task AperturaDelShellSinRespuesta_ElComandoVenceASuTiempoYElSiguienteEsperaEsaMismaApertura()
+        {
+            // Arrange: la apertura del canal del shell no responde ni atiende ningún token (SSH.NET con el servidor
+            // congelado: solo termina cuando responde o cae la conexión).
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaShell = apertura };
+            await using SesionShell sesion = Crear(fabrica);
+            Stopwatch reloj = Stopwatch.StartNew();
+            Peticion primero;
+            TimeSpan duracion;
+            Peticion segundo;
+
+            try
+            {
+                // Act
+                primero = await EjecutarAsync(sesion, "uno", timeoutSegundos: 1);
+                duracion = reloj.Elapsed;
+                segundo = Nueva("dos");
+                sesion.Encolar(segundo);
+                await EsperasPrueba.EsperarHastaAsync(() => segundo.Estado == EstadoPeticionEnum.Ejecutando);
+                await Task.Delay(200);
+            }
+            finally
+            {
+                _ = apertura.Release(2);
+            }
+
+            await segundo.Finalizacion.WaitAsync(Limite);
+
+            // Assert: el primero vence sin llegar al shell y lo dice; el segundo usa el canal de aquella apertura.
+            _ = primero.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = primero.Aviso.Should().Contain("no llegó a enviarse").And.Contain("apertura del shell");
+            _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(3));
+            _ = segundo.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(segundo).Should().Be("eco:dos\n");
+            _ = fabrica.Ultima!.AperturasShell.Should().Be(1);
+            _ = fabrica.Ultima.Comandos.Should().Equal(["dos"]);
+        }
+
+        [Fact]
+        public async Task AperturaDelShellAbandonadaQueTerminaDespues_SuCanalSeCierraAlCerrarLaSesion()
+        {
+            // Arrange: el comando vence mientras se abre el shell; la apertura termina después y nadie la usa.
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaShell = apertura };
+            SesionShell sesion = Crear(fabrica);
+            Peticion comando;
+            try
+            {
+                comando = await EjecutarAsync(sesion, "uno", timeoutSegundos: 1);
+            }
+            finally
+            {
+                _ = apertura.Release();
+            }
+
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.CanalActual is not null);
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+
+            // Assert
+            _ = comando.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            await EsperasPrueba.EsperarHastaAsync(() => canal.IsDispuesto);
+        }
+
+        [Fact]
+        public async Task Dispose_ConElBucleColgadoEnUnaEscritura_LiberaLaConexionYElComandoTerminaCancelado()
+        {
+            // Arrange: escribir en el shell no vuelve hasta que se libera la conexión (SSH.NET con la ventana del servidor
+            // agotada); el bucle se queda dentro al enviar el comando.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.ColgarEscrituras();
+            Peticion colgado = Nueva("dos");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.CanalActual!.EscriturasColgadas == 1);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+
+            // Assert
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = fabrica.Ultima.IsConectada.Should().BeFalse();
         }
 
         [Fact]
@@ -636,6 +850,37 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Dispose_EnLaVentanaEntreMarcarElCierreYCancelarlo_ElComandoQueIbaAConectarTerminaCancelado()
+        {
+            // Arrange: una lectura está conectando y retiene el candado de conexión; un comando espera ese candado.
+            using LoggerPrueba logger = new() { EventoBloqueante = 40 };
+            using SemaphoreSlim conexion = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoConexion = conexion };
+            SesionShell sesion = Crear(fabrica, logger: logger);
+            Task<ResultadoCanalExec> lectura = sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(10), CancellationToken.None);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.ConexionesRetenidas == 1);
+            Peticion comando = Nueva("hola");
+            sesion.Encolar(comando);
+            await EsperasPrueba.EsperarHastaAsync(() => comando.Estado == EstadoPeticionEnum.Ejecutando);
+
+            // Act: el cierre se detiene recién marcado, con _cierre aún sin cancelar; en esa ventana la lectura termina de
+            // conectar y el comando obtiene el candado, ve la sesión cerrada y falla.
+            Task cierre = Task.Run(() => sesion.DisposeAsync().AsTask());
+            await logger.Bloqueado.WaitAsync(Limite);
+            _ = conexion.Release();
+            await comando.Finalizacion.WaitAsync(Limite);
+            EstadoPeticionEnum estadoEnLaVentana = comando.Estado;
+            logger.Liberar();
+            await cierre.WaitAsync(Limite);
+            _ = await Record.ExceptionAsync(() => lectura);
+
+            // Assert: el fallo se atribuye al cierre aunque _cierre no estuviera cancelado.
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = estadoEnLaVentana.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = comando.Aviso.Should().Contain("se cerró");
+        }
+
+        [Fact]
         public async Task Exec_AlCerrarLaSesion_TerminaConErrorYNoAbreOtraConexion()
         {
             // Arrange
@@ -718,6 +963,30 @@ namespace NativeSsh.Test.Sesion
             _ = activosTrasCancelar.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
             _ = maximoEnLaConexion.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
             _ = siguiente.CodigoSalida.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task Exec_QueVenceEsperandoLaConexion_DiceQueNoLlegoAObtenerCanal()
+        {
+            // Arrange: la conexión no termina de establecerse antes que el límite local de la lectura (1 s + 3 s).
+            using SemaphoreSlim conexion = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoConexion = conexion };
+            await using SesionShell sesion = Crear(fabrica, Opciones() with { TimeoutConexion = TimeSpan.FromSeconds(30) });
+            NativeSshException error;
+
+            try
+            {
+                // Act
+                error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+            }
+            finally
+            {
+                _ = conexion.Release();
+            }
+
+            // Assert
+            _ = error.Message.Should().Contain("no terminó en 1 s").And.Contain("sin llegar a obtener canal").And.Contain("conexión").And.NotContain("canal exec se cierra");
         }
 
         [Fact]
