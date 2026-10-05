@@ -128,11 +128,13 @@ namespace NativeSsh.Test.Integracion
             _ = cronometro.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
         }
 
-        // Los archivos de /proc y /sys son regulares aunque su tamaño sea 0: se leen.
+        // Los archivos de /proc y /sys son regulares aunque su tamaño no sea el de su contenido (0 en /proc, 4096 en /sys):
+        // se leen.
         [Theory]
-        [InlineData("/proc/version")]
-        [InlineData("/proc/sys/kernel/ostype")]
-        public async Task LeerArchivo_ArchivoDeProcDeTamanoCero_SeLee(string ruta)
+        [InlineData("/proc/version", "0")]
+        [InlineData("/proc/sys/kernel/ostype", "0")]
+        [InlineData("/sys/class/net/lo/mtu", "4096")]
+        public async Task LeerArchivo_ArchivoDeProcOSys_SeLee(string ruta, string tamano)
         {
             // Arrange
             string esperado = await File.ReadAllTextAsync(ruta);
@@ -142,7 +144,7 @@ namespace NativeSsh.Test.Integracion
             string leido = await herramientas.LeerArchivoAsync(Destino, ruta);
 
             // Assert
-            _ = Bash($"stat -c %s '{ruta}'").Should().Be("0");
+            _ = Bash($"stat -c %s '{ruta}'").Should().Be(tamano);
             _ = leido.Should().Be($"[Líneas 1-1 de 1]\n{esperado}");
         }
 
