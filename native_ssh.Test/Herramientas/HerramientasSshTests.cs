@@ -171,7 +171,7 @@ namespace NativeSsh.Test.Herramientas
                     ? new("error en stat\n", 1)
                     : comando.Contains("enlace.txt")
                         ? new("enlace simbólico|12|777|2026-10-05 01:00:00|ana|devs\nENLACE:/etc/real.conf\n", 0)
-                        : new("fichero regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
+                        : new("archivo regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
 
         private static RespuestaFalsa SimularEscritura(string comando) =>
             comando.Contains("no_atomico.txt") ? new("__NS_ESCRITURA_NO_ATOMICA__\n", 0) :
@@ -1290,9 +1290,14 @@ namespace NativeSsh.Test.Herramientas
             ResultadoMetadatos resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
 
             // Assert: contrato estructurado (no un JSON serializado dentro de un string).
-            _ = resultado.Should().Be(new ResultadoMetadatos("archivo.txt", true, null, "fichero regular", 2048, "2 KiB", "644", "2026-10-05 01:00:00", "ana", "devs", null));
+            _ = resultado.Should().Be(new ResultadoMetadatos("archivo.txt", true, null, "archivo regular", 2048, "2 KiB", "644", "2026-10-05 01:00:00", "ana", "devs", null));
             string json = JsonSerializer.Serialize(resultado, ContextoJsonNativeSsh.OpcionesHerramientas);
             _ = json.Should().Contain("\"tamanoBytes\":2048").And.Contain("\"propietario\":\"ana\"").And.NotContain("destinoEnlace");
+
+            // El tipo lo calcula el script con test (valores fijos), no sale del texto de stat (%F, %HT), que depende del idioma.
+            string comando = _fabrica.Ultima!.Comandos.Single(c => c.Contains("stat -c", StringComparison.Ordinal));
+            _ = comando.Should().Contain("elif [ -f 'archivo.txt' ]; then tipo='archivo regular'").And.Contain("printf '%s|' \"$tipo\"");
+            _ = comando.Should().NotContain("%F").And.NotContain("%HT");
         }
 
         [Fact]

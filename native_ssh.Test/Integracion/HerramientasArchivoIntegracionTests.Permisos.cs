@@ -10,7 +10,7 @@ namespace NativeSsh.Test.Integracion
     public sealed partial class HerramientasArchivoIntegracionTests
     {
         // Lo que cada herramienta responde para 'archivo' (un archivo) y 'directorio' (un directorio).
-        private static async Task<Dictionary<string, string>> ErroresDeLecturaAsync(HerramientasSsh herramientas, string destino, string archivo, string directorio)
+        internal static async Task<Dictionary<string, string>> ErroresDeLecturaAsync(HerramientasSsh herramientas, string destino, string archivo, string directorio)
         {
             Dictionary<string, Func<Task<object>>> llamadas = new()
             {

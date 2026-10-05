@@ -195,7 +195,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar o si no hay permiso de lectura. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -248,6 +248,12 @@ namespace NativeSsh.Herramientas
                 fi
                 if [ -d {{rutaEscapada}} ]; then
                   printf 'Error: la ruta es un directorio: %s\n' {{rutaEscapada}} >&2
+                  exit 1
+                fi
+                # Una FIFO sin escritor bloquearía hasta el plazo y un dispositivo no es el contenido de un archivo. Los de
+                # /proc y /sys sí son archivos regulares (de tamaño 0) y se leen.
+                if [ ! -f {{rutaEscapada}} ]; then
+                  printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee.\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
                 if [ ! -r {{rutaEscapada}} ]; then
@@ -610,7 +616,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
-        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. El tipo es uno de estos valores fijos, iguales en cualquier servidor e idioma: 'archivo regular', 'directorio', 'enlace simbólico', 'fifo', 'socket', 'dispositivo de caracteres', 'dispositivo de bloques' o 'desconocido'. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<ResultadoMetadatos> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -630,7 +636,19 @@ namespace NativeSsh.Herramientas
                   echo "NO_EXISTE"
                   exit 0
                 fi
-                stat -c '%F|%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || stat -f '%HT|%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
+                # El tipo no sale de 'stat' (su texto depende del idioma del servidor y de la implementación): es uno de
+                # unos valores fijos.
+                if [ -L {{rutaEscapada}} ]; then tipo='enlace simbólico'
+                elif [ -d {{rutaEscapada}} ]; then tipo=directorio
+                elif [ -f {{rutaEscapada}} ]; then tipo='archivo regular'
+                elif [ -p {{rutaEscapada}} ]; then tipo=fifo
+                elif [ -S {{rutaEscapada}} ]; then tipo=socket
+                elif [ -c {{rutaEscapada}} ]; then tipo='dispositivo de caracteres'
+                elif [ -b {{rutaEscapada}} ]; then tipo='dispositivo de bloques'
+                else tipo=desconocido
+                fi
+                printf '%s|' "$tipo"
+                LC_ALL=C stat -c '%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || LC_ALL=C stat -f '%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
                 if [ -L {{rutaEscapada}} ]; then
                   enlace=$(readlink -- {{rutaEscapada}}; printf x)
                   printf 'ENLACE:%s' "${enlace%x}"

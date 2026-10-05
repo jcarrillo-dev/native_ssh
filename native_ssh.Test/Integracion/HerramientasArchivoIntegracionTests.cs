@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Net.Sockets;
 using FluentAssertions;
 using System.Linq;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -74,8 +75,10 @@ namespace NativeSsh.Test.Integracion
             return salida.Trim();
         }
 
+        // ssh_search sobre una FIFO sin escritor se bloquea hasta su plazo: error de tiempo agotado, el lector remoto no
+        // queda huérfano y las herramientas siguen funcionando.
         [Fact]
-        public async Task LeerArchivo_BloqueadoEnUnaFifo_LanzaTiempoAgotadoYElShellSigueUsable()
+        public async Task Buscar_BloqueadoEnUnaFifo_LanzaTiempoAgotadoYNoDejaElLectorHuerfano()
         {
             // Arrange
             string fifo = Ruta("fifo");
@@ -85,7 +88,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(1));
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(Destino, fifo))
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.BuscarAsync(Destino, "x", fifo))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             string siguiente = await herramientas.LeerArchivoAsync(Destino, normal);
 
@@ -95,6 +98,89 @@ namespace NativeSsh.Test.Integracion
 
             // Y el lector remoto no queda huérfano: sin lector, abrir la FIFO para escribir no termina (timeout = 124).
             await EsperasPrueba.EsperarHastaAsync(() => Bash($"timeout 0.5 bash -c \"echo x > '{fifo}'\"; echo $?") == "124", TimeSpan.FromSeconds(10));
+        }
+
+        // Una FIFO, un socket o un dispositivo no se leen: error al momento en lugar de esperar al plazo (una FIFO sin
+        // escritor) o de devolver un contenido que no es el de un archivo (/dev/null, /dev/zero).
+        [Theory]
+        [InlineData("fifo")]
+        [InlineData("enlace_fifo")]
+        [InlineData("socket")]
+        [InlineData("/dev/null")]
+        [InlineData("/dev/zero")]
+        public async Task LeerArchivo_DestinoQueNoEsUnArchivoRegular_FallaAlMomento(string destino)
+        {
+            // Arrange
+            _ = Bash($"mkfifo '{Ruta("fifo")}'");
+            _ = File.CreateSymbolicLink(Ruta("enlace_fifo"), "fifo");
+            using Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Bind(new UnixDomainSocketEndPoint(Ruta("socket")));
+            string ruta = destino.StartsWith('/') ? destino : Ruta(destino);
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(20));
+            Stopwatch cronometro = Stopwatch.StartNew();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.LeerArchivoAsync(Destino, ruta))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"Error: {ruta} no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee.");
+            _ = cronometro.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+        }
+
+        // Los archivos de /proc y /sys son regulares aunque su tamaño sea 0: se leen.
+        [Theory]
+        [InlineData("/proc/version")]
+        [InlineData("/proc/sys/kernel/ostype")]
+        public async Task LeerArchivo_ArchivoDeProcDeTamanoCero_SeLee(string ruta)
+        {
+            // Arrange
+            string esperado = await File.ReadAllTextAsync(ruta);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string leido = await herramientas.LeerArchivoAsync(Destino, ruta);
+
+            // Assert
+            _ = Bash($"stat -c %s '{ruta}'").Should().Be("0");
+            _ = leido.Should().Be($"[Líneas 1-1 de 1]\n{esperado}");
+        }
+
+        // El tipo de ssh_stat es uno de unos valores fijos, el mismo en cualquier servidor e idioma (no el texto traducido
+        // de 'stat').
+        [Fact]
+        public async Task ConsultarMetadatos_Tipo_EsUnValorFijoParaCadaClaseDeArchivo()
+        {
+            // Arrange
+            await File.WriteAllTextAsync(Ruta("archivo.txt"), "x");
+            await File.WriteAllTextAsync(Ruta("vacio.txt"), string.Empty);
+            _ = Directory.CreateDirectory(Ruta("directorio"));
+            _ = File.CreateSymbolicLink(Ruta("enlace"), "archivo.txt");
+            _ = Bash($"mkfifo '{Ruta("fifo")}'");
+            using Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            socket.Bind(new UnixDomainSocketEndPoint(Ruta("socket")));
+            string bloques = Bash("find /dev -maxdepth 1 -type b 2>/dev/null | head -n 1");
+            Dictionary<string, string> esperados = new()
+            {
+                [Ruta("archivo.txt")] = "archivo regular",
+                [Ruta("vacio.txt")] = "archivo regular",
+                [Ruta("directorio")] = "directorio",
+                [Ruta("enlace")] = "enlace simbólico",
+                [Ruta("fifo")] = "fifo",
+                [Ruta("socket")] = "socket",
+                ["/dev/null"] = "dispositivo de caracteres",
+            };
+            if (bloques.Length > 0)
+                esperados[bloques] = "dispositivo de bloques";
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            Dictionary<string, string?> tipos = [];
+            foreach (string ruta in esperados.Keys)
+                tipos[ruta] = (await herramientas.ConsultarMetadatosAsync(Destino, ruta)).Tipo;
+
+            // Assert
+            _ = tipos.Should().Equal(esperados.ToDictionary(par => par.Key, par => (string?)par.Value));
         }
 
         [Fact]
