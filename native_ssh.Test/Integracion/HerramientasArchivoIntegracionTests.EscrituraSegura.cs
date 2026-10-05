@@ -188,6 +188,114 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
         }
 
+        // Archivo con un enlace duro (se sobrescribe en el sitio) en su propia carpeta, con TMPDIR propio.
+        private async Task<(string Carpeta, string Archivo, string Tmpdir)> PrepararEscrituraEnElSitioAsync(HerramientasSsh herramientas)
+        {
+            string carpeta = Ruta("datos");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "f.txt");
+            await File.WriteAllTextAsync(archivo, "original completo\n");
+            _ = Bash($"ln '{archivo}' '{Path.Combine(carpeta, "f2.txt")}'");
+            return (carpeta, archivo, await FijarTmpdirAsync(herramientas));
+        }
+
+        // 'cat' falso que, al copiar el contenido nuevo (el temporal) sobre el destino, escribe solo 3 bytes y falla; con
+        // isFallaRestaurar falla igual al copiar la copia de seguridad (restauración).
+        private static string CatQueFallaAMitad(bool isFallaRestaurar, string accion = "exit 1") =>
+            $"case \"$2\" in *.tmp.*{(isFallaRestaurar ? "|*.orig.*" : string.Empty)}) head -c 3 -- \"$2\"; {accion} ;; esac\nexec /usr/bin/cat \"$@\"";
+
+        // La escritura en el sitio trunca el destino: si falla a mitad, el original se restaura desde la copia de seguridad
+        // hecha antes (mktemp 0600 en su directorio) y no queda ninguna de las dos copias.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task EscrituraEnElSitio_FallaAMitad_RestauraElOriginalYNoDejaCopias(bool isReplace)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            string stat = Stat(archivo);
+            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: false));
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => isReplace
+                    ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original", "nuevo")
+                    : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("falló la escritura en el sitio").And.Contain("se ha restaurado su contenido original");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Stat(archivo).Split(' ')[2].Should().Be(stat.Split(' ')[2]);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(2);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
+        // Si tampoco se puede restaurar, no se borra nada: el error da las rutas de la copia del original y del contenido
+        // nuevo, que siguen ahí.
+        [Fact]
+        public async Task EscrituraEnElSitio_FallanLaEscrituraYLaRestauracion_ConservaAmbasCopiasYDaSusRutas()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (string carpeta, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: true));
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            string copia = Directory.GetFiles(carpeta, ".f.txt.orig.*").Should().ContainSingle().Which;
+            string nuevo = Directory.GetFiles(carpeta, ".f.txt.tmp.*").Should().ContainSingle().Which;
+            _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
+            _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
+            _ = error.Message.Should().Contain("no se pudo restaurar").And.Contain(copia).And.Contain(nuevo);
+            _ = Bash($"stat -c %a '{copia}'").Should().Be("600");
+        }
+
+        // Interrumpida a mitad (Ctrl+C al vencer el timeout), la trampa de salida restaura el original desde la copia.
+        [Fact]
+        public async Task EscrituraEnElSitio_InterrumpidaAMitadPorElTimeout_RestauraElOriginal()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(2));
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            await SustituirComandoAsync(herramientas, "cat", CatQueFallaAMitad(isFallaRestaurar: false, "sleep 30"));
+
+            // Act
+            _ = await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>();
+
+            // Assert: el script restaura y limpia al salir, tras el Ctrl+C.
+            await EsperasPrueba.EsperarHastaAsync(() => Directory.GetFileSystemEntries(carpeta).Length == 2, TimeSpan.FromSeconds(10));
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
+        // Sin copia de seguridad no se escribe en el sitio: si no se puede crear (ni en el directorio ni en TMPDIR), error
+        // sin tocar nada.
+        [Fact]
+        public async Task EscrituraEnElSitio_SinPoderCrearLaCopiaDeSeguridad_FallaSinTocarlo()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            (string carpeta, string archivo, string tmpdir) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            string stat = Stat(archivo);
+            await SustituirComandoAsync(herramientas, "mktemp", "case \"$*\" in *.orig.*|*.ns_original.*) exit 1 ;; esac\nexec /usr/bin/mktemp \"$@\"");
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("copia de seguridad").And.Contain("No se ha modificado");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(2);
+            _ = Directory.GetFileSystemEntries(tmpdir).Should().BeEmpty();
+        }
+
         private static readonly string[] HerramientasDeConservarAtributos = ["bash", "grep", "sort", "ls", "cut"];
 
         // Lógica de conservar_atributos aislada, con un PATH mínimo: el 'cp' de cada caso (real o falso) y las herramientas
