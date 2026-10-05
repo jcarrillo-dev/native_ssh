@@ -430,6 +430,28 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task EntradaMientrasLaInterrupcionCierraElCanal_SeRechazaSinAtribuirElCierreAlServidor()
+        {
+            // Arrange: el proceso ignora Ctrl+C y la interrupción escala al cierre del canal, que se detiene recién observado.
+            using LoggerPrueba logger = new() { EventoBloqueante = 43 };
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica, logger: logger);
+            Peticion terco = Nueva("terco", timeoutSegundos: 1);
+            sesion.Encolar(terco);
+
+            // Act
+            await logger.Bloqueado.WaitAsync(Limite);
+            bool isEnviada = sesion.EnviarEntrada(terco, "hola", isEnviarEnter: true);
+            logger.Liberar();
+            await terco.Finalizacion.WaitAsync(Limite);
+
+            // Assert: como en cualquier momento de la interrupción, la entrada se rechaza sin más.
+            _ = logger.IsEsperaAgotada.Should().BeFalse();
+            _ = isEnviada.Should().BeFalse();
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+        }
+
+        [Fact]
         public async Task EntradaTardia_NoPasaAComandoPosterior()
         {
             // Arrange

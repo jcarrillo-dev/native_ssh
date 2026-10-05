@@ -76,12 +76,12 @@ namespace NativeSsh.Sesion
         private ICanalShell? _canal;
         private IConexionSsh? _conexionDelCanal;
         private BufferSalida? _salidaActual;
+        private TaskCompletionSource<int>? _esperaMarcador;
+        private bool _isInterrumpiendo;
 
         // Salida del comando que estaba en curso cuando se cerró el canal del shell: hasta que el bucle lo da por perdido,
         // su entrada se rechaza diciendo por qué.
         private BufferSalida? _salidaConCanalCerrado;
-        private TaskCompletionSource<int>? _esperaMarcador;
-        private bool _isInterrumpiendo;
 
         private volatile IConexionSsh? _conexion;
         private bool _isShellInicializadoAlgunaVez;
@@ -189,14 +189,15 @@ namespace NativeSsh.Sesion
                 bool isCanalCerrado;
                 lock (_candadoProceso)
                 {
-                    bool isEnCurso = peticion.Estado == EstadoPeticionEnum.Ejecutando;
-                    isCanalCerrado = isEnCurso && ReferenceEquals(_salidaConCanalCerrado, peticion.Salida);
-                    bool isAdmiteEntrada = isEnCurso && !_isInterrumpiendo && ReferenceEquals(_salidaActual, peticion.Salida);
+                    // Durante una interrupción (Ctrl+C o el cierre del canal que la sigue) no se admite entrada, como siempre.
+                    bool isAdmisible = peticion.Estado == EstadoPeticionEnum.Ejecutando && !_isInterrumpiendo;
+                    isCanalCerrado = isAdmisible && ReferenceEquals(_salidaConCanalCerrado, peticion.Salida);
+                    bool isAdmiteEntrada = isAdmisible && ReferenceEquals(_salidaActual, peticion.Salida);
                     canal = isAdmiteEntrada ? _canal : null;
                 }
 
                 if (isCanalCerrado)
-                    throw new NativeSshException($"El canal del shell se cerró (exit o cierre desde el servidor) mientras se ejecutaba el comando {peticion.IdTexto} en {Destino.Clave}: la entrada no se envió. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo.");
+                    throw new NativeSshException($"El canal del shell se cerró (exit, cierre desde el servidor o conexión perdida) mientras se ejecutaba el comando {peticion.IdTexto} en {Destino.Clave}: la entrada no se envió. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo.");
 
                 if (canal is null)
                     return false;
