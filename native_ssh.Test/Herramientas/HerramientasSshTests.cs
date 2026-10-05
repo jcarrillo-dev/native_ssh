@@ -876,6 +876,18 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public async Task Search_CompruebaQueLaRutaPedidaSeLeeAntesDeBuscar()
+        {
+            // Act
+            _ = await _herramientas.BuscarAsync("servidor", "patron", "src");
+
+            // Assert
+            string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("grep -rnI", StringComparison.Ordinal));
+            _ = comando.Should().Contain("if [ ! -r 'src' ] || { [ -d 'src' ] && [ ! -x 'src' ]; }; then");
+            _ = comando.IndexOf("sin permiso de lectura", StringComparison.Ordinal).Should().BeLessThan(comando.IndexOf("command -v rg", StringComparison.Ordinal));
+        }
+
+        [Fact]
         public async Task Search_EligeRgLuegoGrepPYComoUltimoRecursoGrepE()
         {
             // Act

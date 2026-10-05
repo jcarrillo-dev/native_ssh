@@ -183,6 +183,35 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
+        [Theory]
+        [InlineData("archivo", "000")]
+        [InlineData("directorio", "000")]
+        [InlineData("directorio", "600")]
+        public async Task Buscar_RutaExplicitaSinPermisoDeLectura_LanzaErrorEnLugarDeSinCoincidencias(string tipo, string modo)
+        {
+            // Arrange
+            string ruta = Ruta($"protegido_{tipo}");
+            if (tipo == "archivo")
+                await File.WriteAllTextAsync(ruta, "secreto\n");
+            else
+                await File.WriteAllTextAsync(Path.Combine(Directory.CreateDirectory(ruta).FullName, "dentro.txt"), "secreto\n");
+            _ = Bash($"chmod {modo} '{ruta}'");
+
+            try
+            {
+                // Act
+                NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync(Destino, "secreto", ruta))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert
+                _ = error.Message.Should().Contain("sin permiso de lectura").And.Contain(ruta);
+            }
+            finally
+            {
+                _ = Bash($"chmod 700 '{ruta}'");
+            }
+        }
+
         [Fact]
         public async Task Lectura_ArchivoCrlf_DevuelveSusRetornosDeCarroYTextoUtf8Fiel()
         {
