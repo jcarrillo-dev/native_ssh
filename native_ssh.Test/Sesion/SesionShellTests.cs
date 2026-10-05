@@ -798,6 +798,63 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Cancelar_ConLaEntradaPropiaColgadaEnLaEscritura_VuelveSinEnviarCtrlCYLaEntradaDiceQuePasoAlCerrar()
+        {
+            // Arrange: el comando sigue en ejecución y su propia entrada se queda dentro de la escritura (SSH.NET con el envío
+            // TCP lleno o la ventana del canal agotada), con _candadoEscritura tomado.
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            fabrica.Ultima!.ColgarEscrituras();
+            CanalFalso canal = fabrica.Ultima.CanalActual!;
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => canal.EscriturasColgadas == 1);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act: ssh_cancel.
+            Task<bool> solicitud = Task.Run(colgado.SolicitarCancelacion);
+            bool isSolicitudVuelta = await Task.WhenAny(solicitud, Task.Delay(TimeSpan.FromSeconds(1))) == solicitud;
+            bool isTerminado = await Task.WhenAny(colgado.Finalizacion, Task.Delay(Limite)) == colgado.Finalizacion;
+            TimeSpan duracion = reloj.Elapsed;
+            EstadoPeticionEnum estado = colgado.Estado;
+            string? aviso = colgado.Aviso;
+            int escriturasColgadas = canal.EscriturasColgadas;
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+            Func<Task> entradaAlCerrar = () => entrada.WaitAsync(Limite);
+
+            // Assert: quien cancela vuelve al momento; el comando termina al vencer la espera acotada al candado, sin
+            // intentar escribir Ctrl+C y diciendo que el proceso sigue; la entrada falla con su causa real al cerrar.
+            _ = isSolicitudVuelta.Should().BeTrue();
+            _ = isTerminado.Should().BeTrue();
+            _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            _ = estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = aviso.Should().Contain("no se envió Ctrl+C").And.Contain("sigue en ejecución").And.Contain("ssh_disconnect");
+            _ = escriturasColgadas.Should().Be(1);
+            _ = canal.SigintsRecibidos.Should().Be(0);
+            _ = (await entradaAlCerrar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("ssh_disconnect").And.Contain("parte de la entrada").And.NotContain("no admite");
+        }
+
+        [Fact]
+        public async Task EntradaQueFallaAlEscribir_LanzaConLaCausaRealEnLugarDeDevolverFalse()
+        {
+            // Arrange: la conexión cae sin que el canal se entere (escribir en él falla).
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("¿Nombre?"));
+            fabrica.Ultima!.CaerSinCerrarCanal();
+
+            // Act
+            Action enviar = () => sesion.EnviarEntrada(pregunta, "ana", isEnviarEnter: true);
+
+            // Assert
+            _ = enviar.Should().Throw<NativeSshException>().Which.Message.Should().Contain("perdió la conexión SSH").And.Contain("parte de la entrada");
+        }
+
+        [Fact]
         public async Task EscrituraBloqueada_ElComandoEnCursoLoAvisaHastaQueTermina()
         {
             // Arrange

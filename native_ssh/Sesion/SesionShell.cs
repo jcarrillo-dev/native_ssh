@@ -226,6 +226,7 @@ namespace NativeSsh.Sesion
             try
             {
                 ICanalShell? canal;
+                IConexionSsh? conexion;
                 bool isCanalCerrado;
                 lock (_candadoProceso)
                 {
@@ -234,6 +235,7 @@ namespace NativeSsh.Sesion
                     isCanalCerrado = isAdmisible && ReferenceEquals(_salidaConCanalCerrado, peticion.Salida);
                     bool isAdmiteEntrada = isAdmisible && ReferenceEquals(_salidaActual, peticion.Salida);
                     canal = isAdmiteEntrada ? _canal : null;
+                    conexion = _conexionDelCanal;
                 }
 
                 if (isCanalCerrado)
@@ -248,12 +250,36 @@ namespace NativeSsh.Sesion
                 if (isEnviarEnter)
                     destino[escritos++] = (byte)'\n';
                 _escritor.Advance(escritos);
-                return TryEnviarBajoCandado(canal);
+                return TryEnviarBajoCandado(canal) ? true : throw new NativeSshException(DescribirEntradaFallida(peticion, conexion));
             }
             finally
             {
                 _candadoEscritura.Exit();
             }
+        }
+
+        // La escritura de la entrada falló a mitad o al empezar: no se sabe cuánto llegó (SSH.NET no lo dice).
+        private string DescribirEntradaFallida(Peticion peticion, IConexionSsh? conexion)
+        {
+            string parcial = "puede que parte de la entrada llegara al proceso y el resto no";
+            return IsCerrando
+                ? $"La sesión con {Destino.Clave} se cerró (ssh_disconnect) mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando termina como cancelado y la siguiente operación abrirá una conexión nueva."
+                : conexion is { IsConectada: true }
+                ? $"El canal del shell de {Destino.Clave} dejó de admitir escrituras mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando terminará como shell perdido y el siguiente abrirá un shell nuevo."
+                : $"Se perdió la conexión SSH con {Destino.Clave} mientras se enviaba la entrada al comando {peticion.IdTexto}: {parcial}. El comando terminará como shell perdido y el siguiente reconectará y abrirá un shell nuevo.";
+        }
+
+        // Espera acotada a _candadoEscritura para quien no es el bucle de su escritura (la interrupción de ssh_cancel): false
+        // si vence o si la sesión se está cerrando. Como en la entrada, quien lo retiene puede estar en un envío que el
+        // servidor no acepta y que no termina hasta que lo acepte o se libere la conexión.
+        private bool TryTomarCandadoEscritura()
+        {
+            long inicio = Stopwatch.GetTimestamp();
+            while (!_candadoEscritura.TryEnter(IntervaloCandadoEntrada))
+                if (IsCerrando || Stopwatch.GetElapsedTime(inicio) >= EsperaMaxCandadoEntrada)
+                    return false;
+
+            return true;
         }
 
         private void TomarCandadoEscrituraEntrada(Peticion peticion, CancellationToken cancellationToken)
@@ -603,7 +629,18 @@ namespace NativeSsh.Sesion
             Guid idRecuperacion = Guid.NewGuid();
             IConexionSsh? conexion;
             bool isEnviado;
-            lock (_candadoEscritura)
+
+            // La escritura en curso puede ser la de una entrada atascada (ssh_input con el envío TCP lleno o la ventana del
+            // canal agotada): no se espera sin límite. Sin el candado no se escribe Ctrl+C ni se cierra el canal, porque
+            // cerrarlo con esa escritura dentro de SSH.NET podría sacar datos tras el CLOSE y OpenSSH cortaría la conexión.
+            if (!TryTomarCandadoEscritura())
+            {
+                _logger.InterrupcionSinCandadoEscritura(Destino.Clave);
+                return ($"no se envió Ctrl+C: el shell sigue enviando datos{DescribirDuracionEscritura()} que el servidor no acepta (no lee de la conexión, la red no responde o el canal tiene agotada su ventana), así que el proceso sigue en ejecución en el servidor.",
+                    "El shell no admite nada más hasta que el servidor acepte esos datos (los comandos siguientes esperan su turno y, si llega, la entrada pendiente aún puede alcanzar al proceso). Usa ssh_disconnect: cierra la conexión y lo libera (la siguiente operación abrirá una conexión y un shell nuevos, y las variables exportadas se perderán).");
+            }
+
+            try
             {
                 bool isCanalVigente;
                 lock (_candadoProceso)
@@ -624,6 +661,10 @@ namespace NativeSsh.Sesion
 
                 Componer(EscrituraEnum.Interrupcion, idRecuperacion, null);
                 isEnviado = TryEnviarBajoCandado(canal);
+            }
+            finally
+            {
+                _candadoEscritura.Exit();
             }
 
             if (isEnviado)

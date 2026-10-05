@@ -60,5 +60,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 43, Level = LogLevel.Debug, Message = "Se cierra el canal del shell de {Destino} (lo cerró el servidor, cayó la conexión o se descarta): no se escribe nada más en él.")]
         public static partial void CanalShellCerrado(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 60, Level = LogLevel.Warning, Message = "No se envió Ctrl+C al shell de {Destino}: otra escritura (una entrada) sigue dentro de un envío que el servidor no acepta. El proceso sigue en ejecución.")]
+        public static partial void InterrupcionSinCandadoEscritura(this ILogger logger, string destino);
     }
 }
