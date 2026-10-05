@@ -568,5 +568,103 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.Existe.Should().BeTrue();
             _ = metadatos.DestinoEnlace.Should().Be(destinoEnlace);
         }
+
+        private static string AclYAtributos(string ruta) =>
+            Bash($"getfacl -c -- '{ruta}' 2>&1; getfattr --absolute-names -d -m - -- '{ruta}' 2>&1 | grep -v '^# file:'");
+
+        // mv sustituiría el archivo por uno sin sus ACL ni atributos extendidos (y la máscara de la ACL heredada podría
+        // ampliar permisos de grupo): con ACL o xattr se escribe en el sitio, avisando de que no es atómica.
+        [Theory]
+        [InlineData("acl", false)]
+        [InlineData("acl", true)]
+        [InlineData("xattr", false)]
+        [InlineData("xattr", true)]
+        public async Task Sobrescribir_ArchivoConAclOAtributosExtendidos_EscribeEnElSitioYLosConserva(string tipo, bool isReplace)
+        {
+            // Arrange
+            string archivo = Ruta("con_atributos.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash(tipo == "acl"
+                ? $"chmod 640 '{archivo}' && setfacl -m u:nobody:r '{archivo}'"
+                : $"setfattr -n user.marca -v valor '{archivo}'");
+            string atributos = AclYAtributos(archivo);
+            string stat = Stat(archivo);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues")
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = atributos.Should().Contain(tipo == "acl" ? "user:nobody:r--" : "user.marca=\"valor\"");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("no atómica");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = AclYAtributos(archivo).Should().Be(atributos);
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
+        }
+
+        // El temporal hereda la ACL por defecto del directorio: renombrarlo pondría al archivo una ACL que no tenía.
+        [Fact]
+        public async Task Sobrescribir_EnDirectorioConAclPorDefecto_NoAnadeAclAlArchivo()
+        {
+            // Arrange
+            string carpeta = Ruta("con_acl_defecto");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "sin_acl.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"chmod 600 '{archivo}' && setfacl -d -m u:nobody:rw '{carpeta}'");
+            string atributos = AclYAtributos(archivo);
+            string stat = Stat(archivo);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = atributos.Should().NotContain("nobody");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = AclYAtributos(archivo).Should().Be(atributos);
+            _ = Stat(archivo).Should().Be(stat);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
+        // Las tres vías de detección de ACL/xattr, con un PATH que solo tiene las herramientas de cada vía.
+        [Theory]
+        [InlineData("getfattr", true, true)]
+        [InlineData("getfacl", true, false)]
+        [InlineData("ls", true, false)]
+        public async Task DeteccionDeAclOAtributos_SegunLasHerramientasDisponibles(string via, bool isAclDetectada, bool isXattrDetectado)
+        {
+            // Arrange
+            string bin = Ruta("bin_" + via);
+            _ = Directory.CreateDirectory(bin);
+            string[] herramientas = via switch
+            {
+                "getfattr" => ["bash", "grep", "ls", "getfattr", "getfacl"],
+                "getfacl" => ["bash", "grep", "ls", "getfacl"],
+                _ => ["bash", "grep", "ls"]
+            };
+            foreach (string herramienta in herramientas)
+                _ = File.CreateSymbolicLink(Path.Combine(bin, herramienta), Bash($"command -v {herramienta}"));
+            string script = Ruta("deteccion.sh");
+            await File.WriteAllTextAsync(script, HerramientasSsh.DefinicionTieneAclOAtributos + "\nfor f in \"$@\"; do if tiene_acl_o_atributos \"$f\"; then echo si; else echo no; fi; done\n");
+            string normal = Ruta("normal.txt");
+            string conAcl = Ruta("acl.txt");
+            string conXattr = Ruta("xattr.txt");
+            await File.WriteAllTextAsync(normal, "x");
+            await File.WriteAllTextAsync(conAcl, "x");
+            await File.WriteAllTextAsync(conXattr, "x");
+            _ = Bash($"setfacl -m u:nobody:r '{conAcl}' && setfattr -n user.marca -v 1 '{conXattr}'");
+
+            // Act
+            string[] resultado = Bash($"PATH='{bin}' '{bin}/bash' '{script}' '{normal}' '{conAcl}' '{conXattr}'").Split('\n');
+
+            // Assert
+            _ = resultado.Should().Equal("no", isAclDetectada ? "si" : "no", isXattrDetectado ? "si" : "no");
+        }
     }
 }

@@ -223,7 +223,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico; no conserva ACL ni atributos extendidos). Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico). Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, ACL o atributos extendidos (detectados con getfattr, getfacl o ls; el contexto SELinux no cuenta), lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -628,7 +628,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico); si no puede conservar propietario o modo, o hay enlaces duros, ACL o atributos extendidos, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario, enlaces duros, ACL y atributos extendidos) y lo indica en la respuesta. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -783,6 +783,9 @@ namespace NativeSsh.Herramientas
                 ? $$"""
                     if [ -e "$destino" ]; then
                       en_sitio=0
+                      {{DefinicionTieneAclOAtributos}}
+                      tiene_acl_o_atributos "$destino" && en_sitio=1
+                      tiene_acl_o_atributos "$tmp" && en_sitio=1
                       chown --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
                       chmod --reference="$destino" -- "$tmp" 2>/dev/null || en_sitio=1
                       [ "$(stat -c '%u:%g' -- "$tmp" 2>/dev/null)" = "$(stat -c '%u:%g' -- "$destino" 2>/dev/null)" ] || en_sitio=1
@@ -839,6 +842,29 @@ namespace NativeSsh.Herramientas
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
         }
 
+        // ¿Tiene ACL o atributos extendidos? mv los perdería (o, si el temporal heredó la ACL por defecto del directorio,
+        // pondría una que el original no tenía). Detección portable, de más a menos completa:
+        // 1. getfattr -m - (attr): lista todos los espacios de nombres, ACL incluidas (system.posix_acl_access);
+        // 2. getfacl -s (acl): solo ACL, la salida está vacía si el archivo solo tiene la ACL mínima;
+        // 3. ls -ld: '+' tras los permisos (ACL en GNU) o '@' (xattr en macOS).
+        // security.selinux no cuenta: lo tienen todos los archivos con SELinux y volvería no atómica cada escritura
+        // (el temporal recibe el contexto por defecto del directorio).
+        internal const string DefinicionTieneAclOAtributos = """
+            tiene_acl_o_atributos() {
+              if command -v getfattr >/dev/null 2>&1; then
+                getfattr --absolute-names -m - -- "$1" 2>/dev/null | grep -v -e '^#' -e '^$' -e '^security\.selinux$' | grep -q .
+                return
+              fi
+              if command -v getfacl >/dev/null 2>&1 && [ -n "$(getfacl -s -p -- "$1" 2>/dev/null)" ]; then
+                return 0
+              fi
+              case "$(ls -ld -- "$1" 2>/dev/null)" in
+                ??????????[+@]*) return 0 ;;
+              esac
+              return 1
+            }
+            """;
+
         // $(cmd) quita TODOS los saltos de línea finales, también los que forman parte de un nombre de archivo ("victima\n"
         // acabaría en "victima"). Se añade un centinela 'x' tras la salida y se quita después junto con el único '\n' que
         // añade el propio comando. Requiere bash ($'\n'): los scripts se ejecutan siempre con EnvolverEnBash.
@@ -868,7 +894,7 @@ namespace NativeSsh.Herramientas
 
         private static string AvisoEscrituraNoAtomica(string salida) =>
             IsEscrituraNoAtomica(salida)
-                ? " Escritura no atómica: no se podía conservar el propietario o el modo del original (o tiene enlaces duros), así que se sobrescribió en el sitio conservando inodo, modo, propietario y enlaces duros."
+                ? " Escritura no atómica: no se podía conservar el propietario o el modo del original, o tiene enlaces duros, ACL o atributos extendidos, así que se sobrescribió en el sitio conservando inodo, modo, propietario, enlaces duros, ACL y atributos extendidos."
                 : string.Empty;
 
         // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
