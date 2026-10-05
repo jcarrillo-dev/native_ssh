@@ -329,7 +329,11 @@ namespace NativeSsh.Test.Sesion.Falsos
         private volatile bool _isDispuesto;
         private int _escriturasColgadas;
         private int _escriturasTrasCerrar;
+        private int _escriturasEnCurso;
+        private int _escriturasRetenidas;
+        private int _cierresConEscrituraEnCurso;
         private ManualResetEventSlim? _liberacionEscrituras;
+        private ManualResetEventSlim? _retencionEscrituras;
         private ManualResetEventSlim? _confirmacionCierre;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
@@ -362,6 +366,13 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Intentos de escribir con el canal ya cerrado.
         public int EscriturasTrasCerrar => Volatile.Read(ref _escriturasTrasCerrar);
 
+        // Escrituras retenidas por RetenerEscrituras (cuentan aunque ya se hayan soltado).
+        public int EscriturasRetenidas => Volatile.Read(ref _escriturasRetenidas);
+
+        // Veces que se empezó a cerrar el canal con una escritura aún dentro: con SSH.NET, los datos de esa escritura
+        // podrían salir después del CLOSE y OpenSSH cortaría la conexión (EQ4).
+        public int CierresConEscrituraEnCurso => Volatile.Read(ref _cierresConEscrituraEnCurso);
+
         public int Leer(Span<byte> destino)
         {
             if (_trozoActual is null)
@@ -383,11 +394,30 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Escribir(ReadOnlySpan<byte> datos)
         {
+            _ = Interlocked.Increment(ref _escriturasEnCurso);
+            try
+            {
+                EscribirEnCurso(datos);
+            }
+            finally
+            {
+                _ = Interlocked.Decrement(ref _escriturasEnCurso);
+            }
+        }
+
+        private void EscribirEnCurso(ReadOnlySpan<byte> datos)
+        {
             if (Volatile.Read(ref _liberacionEscrituras) is { } liberacion)
             {
                 _ = Interlocked.Increment(ref _escriturasColgadas);
                 liberacion.Wait();
                 throw new InvalidOperationException("Client not connected.");
+            }
+
+            if (Volatile.Read(ref _retencionEscrituras) is { } retencion)
+            {
+                _ = Interlocked.Increment(ref _escriturasRetenidas);
+                retencion.Wait();
             }
 
             lock (_candado)
@@ -428,6 +458,11 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void ColgarEscrituras(ManualResetEventSlim liberacion) => Volatile.Write(ref _liberacionEscrituras, liberacion);
 
+        // Desde ahora escribir no vuelve hasta que se suelta la retención y entonces la escritura se completa: como SSH.NET
+        // con un servidor que deja de leer un rato (congelado y luego reanudado, o un proceso con el terminal en modo raw
+        // que tarda en leer) y después acepta los datos.
+        public void RetenerEscrituras(ManualResetEventSlim retencion) => Volatile.Write(ref _retencionEscrituras, retencion);
+
         // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
         // muere al perder el terminal.
         public void RetenerCierre(ManualResetEventSlim confirmacion) => Volatile.Write(ref _confirmacionCierre, confirmacion);
@@ -443,6 +478,8 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         public void Dispose()
         {
+            if (Volatile.Read(ref _escriturasEnCurso) > 0)
+                _ = Interlocked.Increment(ref _cierresConEscrituraEnCurso);
             _isDispuesto = true;
             if (Volatile.Read(ref _liberacionEscrituras) is { } liberacion && EscriturasColgadas > 0)
                 liberacion.Wait();

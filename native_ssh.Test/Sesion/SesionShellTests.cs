@@ -837,6 +837,118 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Cancelar_ConLaEntradaPropiaAtascada_ElSiguienteComandoAbreUnShellNuevoSinEsperarlaYElViejoSeCierraAlTerminarElla()
+        {
+            // Arrange: la entrada del comando se queda dentro de la escritura (el servidor deja de leer un rato) y después
+            // el servidor la acepta. ssh_cancel vuelve sin poder enviar Ctrl+C.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+            using ManualResetEventSlim retencion = new(false);
+            viejo.RetenerEscrituras(retencion);
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.EscriturasRetenidas == 1);
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+
+            // Act: el comando siguiente, sin ssh_disconnect y con la entrada aún atascada.
+            Peticion siguiente = Nueva("siguiente");
+            sesion.Encolar(siguiente);
+            bool isSiguienteTerminado = await Task.WhenAny(siguiente.Finalizacion, Task.Delay(Limite)) == siguiente.Finalizacion;
+            bool isViejoDispuestoConLaEntradaAtascada = viejo.IsDispuesto;
+            retencion.Set();
+            bool isEntradaEnviada = await entrada.WaitAsync(Limite);
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.IsDispuesto);
+
+            // Assert: el comando siguiente va a un shell nuevo de la misma conexión, no a la entrada del proceso cancelado;
+            // el canal viejo no se cierra con la escritura dentro (EQ4), sino cuando esta termina.
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = colgado.Aviso.Should().Contain("no se envió Ctrl+C").And.Contain("shell nuevo").And.Contain("se perderán").And.Contain("ssh_disconnect")
+                .And.NotContain("esperan su turno");
+            _ = isSiguienteTerminado.Should().BeTrue();
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:siguiente\n");
+            _ = siguiente.Aviso.Should().Contain("recreado");
+            _ = fabrica.Ultima.CanalActual.Should().NotBeSameAs(viejo);
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(2);
+            _ = fabrica.Conexiones.Should().Be(1);
+            _ = viejo.SigintsRecibidos.Should().Be(0);
+            _ = isViejoDispuestoConLaEntradaAtascada.Should().BeFalse();
+            _ = viejo.CierresConEscrituraEnCurso.Should().Be(0);
+            _ = isEntradaEnviada.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task CanalAbandonadoConLaEntradaColgadaHastaCerrarLaSesion_SeCierraAlLiberarseLaConexionYNoAntes()
+        {
+            // Arrange: la entrada no termina hasta que se libera la conexión (ssh_disconnect).
+            FabricaFalsa fabrica = new(Guion);
+            SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            fabrica.Ultima!.ColgarEscrituras();
+            CanalFalso viejo = fabrica.Ultima.CanalActual!;
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.EscriturasColgadas == 1);
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            await Task.Delay(300);
+            bool isDispuestoAntesDeCerrar = viejo.IsDispuesto;
+
+            // Act
+            await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
+            Func<Task> entradaAlCerrar = () => entrada.WaitAsync(Limite);
+            NativeSshException fallo = (await entradaAlCerrar.Should().ThrowAsync<NativeSshException>()).Which;
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.IsDispuesto);
+
+            // Assert: la entrada falla al cerrarse la conexión.
+            _ = isDispuestoAntesDeCerrar.Should().BeFalse();
+            _ = viejo.CierresConEscrituraEnCurso.Should().Be(0);
+            _ = fallo.Message.Should().Contain("parte de la entrada").And.Contain("ssh_disconnect");
+        }
+
+        [Fact]
+        public async Task CanalAbandonado_CuentaParaElCupoDeCanalesExecHastaQueSeCierra()
+        {
+            // Arrange: un shell abandonado con su entrada retenida y los canales exec que se abran, sin terminar.
+            using SemaphoreSlim bloqueo = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoExec = bloqueo };
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+            using ManualResetEventSlim retencion = new(false);
+            viejo.RetenerEscrituras(retencion);
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.EscriturasRetenidas == 1);
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Task<ResultadoCanalExec>[] lecturas = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos - 1).Select(_ => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(30), CancellationToken.None))];
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima.ExecActivos == SesionShell.MaxCanalesExecSimultaneos - 1);
+
+            // Act: una lectura más no obtiene cupo mientras el shell abandonado siga abierto; al cerrarse, sí.
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            retencion.Set();
+            _ = await entrada.WaitAsync(Limite);
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.IsDispuesto);
+            _ = bloqueo.Release(SesionShell.MaxCanalesExecSimultaneos + 1);
+            _ = await Task.WhenAll(lecturas).WaitAsync(Limite);
+            ResultadoCanalExec otra = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None).WaitAsync(Limite);
+
+            // Assert
+            _ = error.Message.Should().Contain("sin llegar a obtener canal").And.Contain("shell abandonado");
+            _ = otra.CodigoSalida.Should().Be(0);
+            _ = fabrica.Ultima.MaxExecSimultaneos.Should().Be(SesionShell.MaxCanalesExecSimultaneos - 1);
+        }
+
+        [Fact]
         public async Task EntradaQueFallaAlEscribir_LanzaConLaCausaRealEnLugarDeDevolverFalse()
         {
             // Arrange: la conexión cae sin que el canal se entere (escribir en él falla).

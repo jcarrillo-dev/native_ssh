@@ -63,5 +63,11 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 60, Level = LogLevel.Warning, Message = "No se envió Ctrl+C al shell de {Destino}: otra escritura (una entrada) sigue dentro de un envío que el servidor no acepta. El proceso sigue en ejecución.")]
         public static partial void InterrupcionSinCandadoEscritura(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 61, Level = LogLevel.Warning, Message = "Se abandona el canal del shell de {Destino} con una entrada atascada dentro: no se escribe nada más en él, el siguiente comando abre un shell nuevo y el viejo se cierra cuando termine esa escritura.")]
+        public static partial void CanalShellAbandonado(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 62, Level = LogLevel.Debug, Message = "Terminó la escritura del canal del shell abandonado de {Destino}: se cierra.")]
+        public static partial void CanalShellAbandonadoCerrado(this ILogger logger, string destino);
     }
 }
