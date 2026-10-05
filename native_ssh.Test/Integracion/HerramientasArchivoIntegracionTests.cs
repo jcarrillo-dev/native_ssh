@@ -475,5 +475,98 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(clave)).Should().Be("secreto\n");
             _ = Directory.GetFileSystemEntries(privado).Should().ContainSingle();
         }
+
+        // $(...) quita los saltos de línea finales: un enlace a "victima\n" no debe acabar escribiendo en "victima".
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_EnlaceADestinoQueTerminaEnSalto_NoTocaElArchivoSinSalto(bool isReplace)
+        {
+            // Arrange
+            string victima = Ruta("victima");
+            string conSalto = Ruta("victima\n");
+            string enlace = Ruta("enlace");
+            await File.WriteAllTextAsync(victima, "intacto\n");
+            await File.WriteAllTextAsync(conSalto, "antes\n");
+            _ = File.CreateSymbolicLink(enlace, "victima\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            _ = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, enlace, "antes", "nuevo")
+                : await herramientas.EscribirArchivoAsync(Destino, enlace, "nuevo\n", overwrite: true);
+
+            // Assert
+            _ = (await File.ReadAllTextAsync(victima)).Should().Be("intacto\n");
+            _ = (await File.ReadAllTextAsync(conSalto)).Should().Be("nuevo\n");
+            _ = new FileInfo(enlace).LinkTarget.Should().Be("victima\n");
+            _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(3);
+        }
+
+        [Fact]
+        public async Task ArchivoCuyoNombreTerminaEnSalto_SeCreaSobrescribeReemplazaYLeeSinPerderElSalto()
+        {
+            // Arrange
+            string archivo = Ruta("salto_final\n");
+            string enlace = Ruta("enlace_salto_final\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            _ = await herramientas.EscribirArchivoAsync(Destino, archivo, "uno\n");
+            _ = await herramientas.EscribirArchivoAsync(Destino, archivo, "dos\n", overwrite: true);
+            _ = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "dos", "tres");
+            string leido = await herramientas.LeerArchivoAsync(Destino, archivo, -1);
+            _ = File.CreateSymbolicLink(enlace, "salto_final\n");
+            _ = await herramientas.EscribirArchivoAsync(Destino, enlace, "cuatro\n", overwrite: true);
+            ResultadoMetadatos metadatos = await herramientas.ConsultarMetadatosAsync(Destino, enlace);
+
+            // Assert
+            _ = leido.Should().Be("[Líneas 1-1 de 1]\ntres\n");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("cuatro\n");
+            _ = new FileInfo(enlace).LinkTarget.Should().Be("salto_final\n");
+            _ = metadatos.DestinoEnlace.Should().Be("salto_final\n");
+            _ = Directory.GetFileSystemEntries(_directorio).Should().BeEquivalentTo([archivo, enlace]);
+        }
+
+        // dirname de "carpeta\n/archivo" es "carpeta\n": sin preservar el salto, el temporal se buscaría en "carpeta".
+        [Fact]
+        public async Task Sobrescribir_ArchivoEnDirectorioQueTerminaEnSalto_UsaEseDirectorio()
+        {
+            // Arrange
+            string carpeta = Ruta("carpeta\n");
+            _ = Directory.CreateDirectory(carpeta);
+            string archivo = Path.Combine(carpeta, "archivo");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
+            _ = Directory.GetFileSystemEntries(carpeta).Should().ContainSingle();
+        }
+
+        [Theory]
+        [InlineData("a\nb")]
+        [InlineData("termina_en_salto\n")]
+        [InlineData("termina_en_retorno\r")]
+        [InlineData(" espacios ")]
+        public async Task ConsultarMetadatos_DestinoDeEnlaceConSaltosOEspacios_SeDevuelveExacto(string destinoEnlace)
+        {
+            // Arrange
+            string enlace = Ruta("enlace");
+            _ = File.CreateSymbolicLink(enlace, destinoEnlace);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoMetadatos metadatos = await herramientas.ConsultarMetadatosAsync(Destino, enlace);
+
+            // Assert
+            _ = metadatos.Existe.Should().BeTrue();
+            _ = metadatos.DestinoEnlace.Should().Be(destinoEnlace);
+        }
     }
 }

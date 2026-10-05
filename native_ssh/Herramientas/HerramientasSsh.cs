@@ -516,18 +516,22 @@ namespace NativeSsh.Herramientas
                 fi
                 stat -c '%F|%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || stat -f '%HT|%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
                 if [ -L {{rutaEscapada}} ]; then
-                  printf 'ENLACE:%s\n' "$(readlink -- {{rutaEscapada}})"
+                  enlace=$(readlink -- {{rutaEscapada}}; printf x)
+                  printf 'ENLACE:%s' "${enlace%x}"
                 fi
                 )
                 """.ReplaceLineEndings("\n");
 
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutMetadatosSegundos, "Revisa la ruta.", cancellationToken).ConfigureAwait(false);
-            string salida = lectura.Salida.Trim();
-            if (salida == "NO_EXISTE")
+            // Sin Trim ni Split por líneas sobre la salida completa: el destino del enlace puede contener o terminar en
+            // saltos de línea, '\r' o espacios. Primera línea = stat; resto = "ENLACE:" + destino + el '\n' de readlink.
+            string salida = lectura.Salida;
+            if (salida.Trim() == "NO_EXISTE")
                 return new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe.");
 
-            string[] lineas = salida.Split('\n');
-            string[] partes = lineas[0].Split('|');
+            int finStat = salida.IndexOf('\n', StringComparison.Ordinal);
+            bool hasResto = finStat >= 0;
+            string[] partes = (hasResto ? salida[..finStat] : salida).Split('|');
             if (partes.Length < 4)
                 throw new NativeSshException(lectura.Error($"Error al consultar metadatos de '{ruta}'"));
 
@@ -538,10 +542,14 @@ namespace NativeSsh.Herramientas
             string ultimaModificacion = partes[3].Trim();
             string? propietario = partes.Length > 4 ? partes[4].Trim() : null;
             string? grupo = partes.Length > 5 ? partes[5].Trim() : null;
+            const string PrefijoEnlace = "ENLACE:";
+            string resto = hasResto ? salida[(finStat + 1)..] : string.Empty;
             string? destinoEnlace = null;
-            foreach (string linea in lineas.AsSpan(1))
-                if (linea.StartsWith("ENLACE:", StringComparison.Ordinal))
-                    destinoEnlace = linea["ENLACE:".Length..].TrimEnd('\r');
+            if (resto.StartsWith(PrefijoEnlace, StringComparison.Ordinal))
+            {
+                string conSalto = resto[PrefijoEnlace.Length..];
+                destinoEnlace = conSalto.EndsWith('\n') ? conSalto[..^1] : conSalto;
+            }
 
             return new ResultadoMetadatos(ruta, true, null, tipo, tamanoBytes, tamanoHumano, permisos, ultimaModificacion, propietario, grupo, destinoEnlace);
         }
@@ -810,14 +818,14 @@ namespace NativeSsh.Herramientas
                 {{comprobarNoExiste}}
                 destino=$ruta
                 if [ -L "$ruta" ]; then
-                  destino=$(readlink -f -- "$ruta")
+                  {{SustitucionLiteral("destino", "readlink -f -- \"$ruta\"")}}
                   if [ -z "$destino" ]; then
                     printf 'Error: no se pudo resolver el enlace simbólico: %s\n' "$ruta" >&2
                     exit 1
                   fi
                 fi
-                dir=$(dirname -- "$destino")
-                base=$(basename -- "$destino")
+                {{SustitucionLiteral("dir", "dirname -- \"$destino\"")}}
+                {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
                 tmp=$(mktemp -- "$dir/.$base.tmp.XXXXXX") || {
                   printf 'Error: no se pudo crear el archivo temporal en %s (¿existe el directorio y hay permiso de escritura?).\n' "$dir" >&2
                   exit 1
@@ -830,6 +838,12 @@ namespace NativeSsh.Herramientas
             const string ModoPorUmask = "\"$(printf '%o' $(( 0666 & ~0$(umask) )))\"";
             return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask}", payloadBase64);
         }
+
+        // $(cmd) quita TODOS los saltos de línea finales, también los que forman parte de un nombre de archivo ("victima\n"
+        // acabaría en "victima"). Se añade un centinela 'x' tras la salida y se quita después junto con el único '\n' que
+        // añade el propio comando. Requiere bash ($'\n'): los scripts se ejecutan siempre con EnvolverEnBash.
+        private static string SustitucionLiteral(string variable, string comando) =>
+            $"{variable}=$({comando}; printf x); {variable}=${{{variable}%x}}; {variable}=${{{variable}%$'\\n'}}";
 
         // Ejecuta 'script' con bash ("$1", "$2"... = 'argumentos', ya escapados), con 'sudo bash' si sudo=true, de modo
         // que todas sus comprobaciones (test -e/-d/-L, readlink, stat...) usan el mismo privilegio que la escritura.
