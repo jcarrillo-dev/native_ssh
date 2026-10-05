@@ -401,8 +401,9 @@ namespace NativeSsh.Test.Sesion
             Peticion salir = await EjecutarAsync(sesion, "exit");
             Peticion siguiente = await EjecutarAsync(sesion, "hola");
 
-            // Assert
+            // Assert: no se sabe si el comando llegó a ejecutarse (el canal pudo cerrarse antes), así que no lo afirma.
             _ = salir.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = salir.Aviso.Should().Contain("antes de que terminara el comando").And.NotContain("durante el comando");
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Aviso.Should().Contain("recreado");
             _ = fabrica.Conexiones.Should().Be(1);
@@ -445,10 +446,47 @@ namespace NativeSsh.Test.Sesion
 
             // Assert
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
-            _ = colgado.Aviso.Should().Contain("Se perdió la conexión SSH");
+            _ = colgado.Aviso.Should().Contain("Se perdió la conexión SSH").And.NotContain("durante el comando");
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Aviso.Should().Contain("recreado");
             _ = fabrica.Conexiones.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task ReabrirElShellSobreUnaConexionQueCae_NoDevuelveElErrorCrudoDeSshNet()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            sesion.SolicitarReset();
+            fabrica.Ultima!.CaerAlAbrirShell();
+
+            // Act
+            Peticion fallido = await EjecutarAsync(sesion, "dos");
+            Peticion siguiente = await EjecutarAsync(sesion, "tres");
+
+            // Assert
+            _ = fallido.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = fallido.Aviso.Should().Contain("Se perdió la conexión SSH").And.Contain("no llegó a enviarse").And.NotContain("waitHandle").And.NotContain("Value cannot be null");
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:tres\n");
+            _ = fabrica.Conexiones.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task InicializacionQueNoTerminaASuTiempo_LaPistaNombraLasCausasPosibles()
+        {
+            // Arrange: un login que tarda más que el plazo de inicialización y se come lo que recibe mientras tanto.
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.ComeInicializacion, retrasoLogin: TimeSpan.FromSeconds(5));
+            await using SesionShell sesion = Crear(fabrica, Opciones(timeoutInicializacionSegundos: 1));
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = peticion.Aviso.Should().Contain("no completó la inicialización en 1 s").And.Contain("login").And.Contain("no respondió");
         }
 
         [Fact]
@@ -840,6 +878,30 @@ namespace NativeSsh.Test.Sesion
             _ = activosTrasCancelar.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
             _ = maximoEnLaConexion.Should().Be(SesionShell.MaxCanalesExecSimultaneos);
             _ = siguiente.CodigoSalida.Should().Be(0);
+        }
+
+        [Fact]
+        public async Task Exec_QueVenceEsperandoLaConexion_DiceQueNoLlegoAObtenerCanal()
+        {
+            // Arrange: la conexión no termina de establecerse antes que el límite local de la lectura (1 s + 3 s).
+            using SemaphoreSlim conexion = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoConexion = conexion };
+            await using SesionShell sesion = Crear(fabrica, Opciones() with { TimeoutConexion = TimeSpan.FromSeconds(30) });
+            NativeSshException error;
+
+            try
+            {
+                // Act
+                error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+            }
+            finally
+            {
+                _ = conexion.Release();
+            }
+
+            // Assert
+            _ = error.Message.Should().Contain("no terminó en 1 s").And.Contain("sin llegar a obtener canal").And.Contain("conexión").And.NotContain("canal exec se cierra");
         }
 
         [Fact]

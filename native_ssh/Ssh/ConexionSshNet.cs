@@ -72,6 +72,13 @@ namespace NativeSsh.Ssh
             {
                 throw new NativeSshException(MensajeShellRechazado, ex);
             }
+            catch (Exception ex) when (IsCaidaDeConexion(ex))
+            {
+                // La conexión cayó mientras se abría el shell: se da por perdida antes de que SesionShell lo vea, para que
+                // lo diga así (y no con el texto de SSH.NET) y el siguiente comando reconecte.
+                MarcarPerdida();
+                throw;
+            }
 
             CanalShellSshNet canal = new(flujo, MarcarPerdida);
             // Si la conexión cayó entre la apertura y la suscripción a ErrorOccurred, nadie cerraría el canal.
@@ -88,6 +95,13 @@ namespace NativeSsh.Ssh
             _cliente.ErrorOccurred -= OnErrorConexionEvent;
             _cliente.Dispose();
         }
+
+        // Lo que lanza SSH.NET al abrir un canal cuando la conexión cae a mitad: su error de conexión ("Client not
+        // connected.", "The connection was closed by the server..."), el cliente ya liberado o, si la caída llega mientras
+        // se construye el ShellStream (Session_Disconnected lo libera y ChannelSession.Dispose anula sus esperas), el
+        // ArgumentNullException de WaitOnHandle con el handle ya nulo.
+        internal static bool IsCaidaDeConexion(Exception ex) =>
+            ex is SshConnectionException or ObjectDisposedException or ArgumentNullException { ParamName: "waitHandle" };
 
         private void MarcarPerdida() => _isPerdida = true;
 

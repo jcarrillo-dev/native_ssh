@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
@@ -121,6 +122,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _maxExecSimultaneos;
         private volatile bool _isConectada = true;
         private volatile bool _isCanalHuerfano;
+        private volatile bool _isCaidaAlAbrirShell;
         private volatile bool _isDispuesta;
         private Action? _alConsultarConexion;
 
@@ -220,11 +222,20 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
+        [SuppressMessage("Usage", "CA2208:Instantiate argument exceptions correctly", Justification = "Reproduce el ArgumentNullException de WaitOnHandle de SSH.NET.")]
         public ICanalShell AbrirShell()
         {
             _ = Interlocked.Increment(ref _aperturasShell);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
+
+            // Lo que llega de SSH.NET cuando la conexión cae a mitad de abrir el shell (Session_Disconnected libera el
+            // canal y su espera recibe un handle nulo); el adaptador da entonces la conexión por perdida.
+            if (_isCaidaAlAbrirShell)
+            {
+                _isConectada = false;
+                throw new ArgumentNullException("waitHandle");
+            }
 
             if (BloqueoAperturaShell is { } apertura)
             {
@@ -257,6 +268,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Desde ahora escribir en el canal del shell no vuelve hasta que se libera la conexión, y entonces falla: como
         // SSH.NET con la ventana del servidor agotada o una renegociación de claves sin respuesta.
         public void ColgarEscrituras() => CanalActual?.ColgarEscrituras(_liberada);
+
+        // La siguiente apertura del shell falla porque la conexión cae a mitad.
+        public void CaerAlAbrirShell() => _isCaidaAlAbrirShell = true;
 
         // Simula una caída de red: la conexión deja de estar activa y el canal se cierra.
         public void Caer()

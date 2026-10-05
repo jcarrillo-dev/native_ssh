@@ -488,10 +488,11 @@ namespace NativeSsh.Sesion
                 : peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
         }
 
-        // Con la conexión perdida (el adaptador la marca así antes de cerrar el canal) se dice explícitamente.
+        // Con la conexión perdida (el adaptador la marca así antes de cerrar el canal) se dice explícitamente. No se afirma
+        // que el comando llegara a ejecutarse: el canal pudo cerrarse antes de que el shell lo leyera.
         private string DescribirShellPerdido(IConexionSsh? conexion) => conexion is { IsConectada: true }
-            ? "El canal del shell se cerró durante el comando (exit o cierre desde el servidor). El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."
-            : $"Se perdió la conexión SSH con {Destino.Clave} durante el comando: el shell remoto se cerró y las variables exportadas se perdieron. El siguiente comando reconectará y abrirá un shell nuevo.";
+            ? "El canal del shell se cerró antes de que terminara el comando (exit o cierre desde el servidor), así que puede que no llegara a ejecutarse o que se interrumpiera a medias. El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."
+            : $"Se perdió la conexión SSH con {Destino.Clave} antes de que terminara el comando, así que puede que no llegara a ejecutarse o que se interrumpiera a medias: el shell remoto se cerró y las variables exportadas se perdieron. El siguiente comando reconectará y abrirá un shell nuevo.";
 
         // Devuelve qué se hizo con el proceso (para el estado final) y el aviso sobre el shell. Solo afirma que se envió
         // Ctrl+C, que no respondió o que la conexión sigue abierta cuando es cierto.
@@ -685,7 +686,10 @@ namespace NativeSsh.Sesion
             }
             catch (Exception ex) when (ex is not (NativeSshException or OperationCanceledException))
             {
-                throw new NativeSshException($"No se pudo abrir un shell en {Destino.Clave}: {ex.Message}", ex);
+                // Con la conexión caída, el texto de SSH.NET ("Client not connected.", un handle nulo...) no dice nada útil.
+                throw new NativeSshException(conexion.IsConectada
+                    ? $"No se pudo abrir un shell en {Destino.Clave}: {ex.Message}"
+                    : $"Se perdió la conexión SSH con {Destino.Clave} mientras se abría el shell: el comando no llegó a enviarse. El siguiente comando reconectará y abrirá un shell nuevo.", ex);
             }
 
             Guid id = Guid.NewGuid();
@@ -729,7 +733,7 @@ namespace NativeSsh.Sesion
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 CerrarCanal(canal);
-                throw new NativeSshException($"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s. El servidor necesita bash, stty y base64.");
+                throw new NativeSshException($"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s: el login tardó más que ese plazo, el servidor no respondió o al shell le falta bash, stty o base64 (los necesita el shell de ssh_exec).");
             }
             catch
             {
