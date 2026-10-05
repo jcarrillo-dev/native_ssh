@@ -23,6 +23,7 @@ namespace NativeSsh.Herramientas
         private const int TimeoutBusquedaSegundos = 90;
         private const int TimeoutMetadatosSegundos = 30;
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
+        private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
         // ssh_replace_file_content lee el archivo con 'base64', que parte en líneas de 76 caracteres + '\n':
         // cada línea de 77 bytes de salida codifica 57 bytes del archivo. Se reserva un margen para avisos (sudo, stderr).
@@ -683,8 +684,7 @@ namespace NativeSsh.Herramientas
             }
 
             string salidaBase64 = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.").Replace("\r", string.Empty, StringComparison.Ordinal).Replace("\n", string.Empty, StringComparison.Ordinal).Trim();
-            byte[] bytesArchivo = Convert.FromBase64String(salidaBase64);
-            string textoOriginal = Encoding.UTF8.GetString(bytesArchivo);
+            string textoOriginal = DecodificarArchivoUtf8(salidaBase64, ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
             string targetNormalizado = targetContent.ReplaceLineEndings(separador);
@@ -755,6 +755,28 @@ namespace NativeSsh.Herramientas
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
                 : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).";
+        }
+
+        // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
+        private static string DecodificarArchivoUtf8(string salidaBase64, string ruta)
+        {
+            string texto;
+            try
+            {
+                texto = Utf8Estricto.GetString(Convert.FromBase64String(salidaBase64));
+            }
+            catch (FormatException)
+            {
+                throw new NativeSshException($"La lectura de '{ruta}' no devolvió base64 válido (¿avisos de sudo o del shell mezclados con la salida?). No se ha escrito nada.");
+            }
+            catch (DecoderFallbackException)
+            {
+                throw new NativeSshException($"'{ruta}' no es texto UTF-8 válido (¿otra codificación, p. ej. Latin-1, o un archivo binario?): ssh_replace_file_content no lo edita para no corromperlo. No se ha escrito nada.");
+            }
+
+            return texto.Contains('\0', StringComparison.Ordinal)
+                ? throw new NativeSshException($"'{ruta}' parece un archivo binario (contiene bytes NUL): ssh_replace_file_content no lo edita. No se ha escrito nada.")
+                : texto;
         }
 
         // Nunca devuelve la cola como si fuera el contenido completo: si se descartó el principio, error.

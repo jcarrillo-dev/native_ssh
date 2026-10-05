@@ -49,6 +49,9 @@ namespace NativeSsh.Test.Herramientas
             };
 
         private static RespuestaFalsa SimularLecturaBase64(string comando) =>
+            comando.Contains("archivo_latin1.txt", StringComparison.Ordinal) ? new(Convert.ToBase64String([.. "caf"u8, 0xE9, .. "\nlinea 2\n"u8]) + "\n", 0) :
+            comando.Contains("archivo_binario.bin", StringComparison.Ordinal) ? new(Convert.ToBase64String([.. "linea 1\n"u8, 0x00, 0x01, .. "\n"u8]) + "\n", 0) :
+            comando.Contains("archivo_bom.txt", StringComparison.Ordinal) ? new(Convert.ToBase64String([0xEF, 0xBB, 0xBF, .. "linea 1\nlinea 2\n"u8]) + "\n", 0) :
             comando.Contains("archivo_inexistente.txt", StringComparison.Ordinal)
                 ? new("Error: el archivo no existe: archivo_inexistente.txt\n", 1)
                 : comando.Contains("es_directorio/", StringComparison.Ordinal)
@@ -964,6 +967,34 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_prueba.txt (1 reemplazo(s) realizado(s)).");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("base64 -d"));
+        }
+
+        [Theory]
+        [InlineData("archivo_latin1.txt", "UTF-8")]
+        [InlineData("archivo_binario.bin", "binario")]
+        public async Task ReplaceFileContent_ArchivoNoUtf8OBinario_SeRechazaSinEscribir(string ruta, string mensajeEsperado)
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", ruta, "linea", "otra", 1, 2))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain(mensajeEsperado);
+            _ = error.Message.Should().Contain("No se ha escrito nada");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ArchivoConBom_ConservaElBom()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_bom.txt", "linea 2", "linea dos", 1, 2);
+
+            // Assert
+            string escritura = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            int inicio = escritura.IndexOf("printf '%s' '", StringComparison.Ordinal) + 13;
+            string payload = escritura[inicio..escritura.IndexOf('\'', inicio)];
+            _ = Convert.FromBase64String(payload).Should().Equal([0xEF, 0xBB, 0xBF, .. "linea 1\nlinea dos\n"u8]);
         }
 
         [Fact]

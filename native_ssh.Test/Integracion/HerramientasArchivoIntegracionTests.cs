@@ -195,6 +195,24 @@ namespace NativeSsh.Test.Integracion
             _ = deEnlace.RootElement.GetProperty("propietario").GetString().Should().Be(Environment.UserName);
         }
 
+        [Fact]
+        public async Task ReemplazarContenido_ArchivoNoUtf8_SeRechazaSinTocarlo()
+        {
+            // Arrange: Latin-1 ('é' = 0xE9), inválido en UTF-8.
+            string archivo = Ruta("latin1.txt");
+            byte[] original = [.. "caf"u8, 0xE9, .. "\nsegunda\n"u8];
+            await File.WriteAllBytesAsync(archivo, original);
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "segunda", "otra", 1, 2))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("UTF-8");
+            _ = (await File.ReadAllBytesAsync(archivo)).Should().Equal(original);
+        }
+
         private Peticion UltimaPeticion(string fragmentoComando) =>
             _gestor.ListarPeticiones().First(p => p.Comando.Contains(fragmentoComando, StringComparison.Ordinal));
     }
