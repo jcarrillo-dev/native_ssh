@@ -37,6 +37,9 @@ namespace NativeSsh.Sesion
 
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
+        private const string DetalleComandoNoEnviado = "el comando no llegó a enviarse.";
+        private const string DetalleCtrlCEnviado = "se envió Ctrl+C al proceso.";
+
         private readonly IFabricaConexion _fabrica;
         private readonly LimitadorConexiones _limitador;
         private readonly OpcionesNativeSsh _opciones;
@@ -110,12 +113,14 @@ namespace NativeSsh.Sesion
             set => _directorioTrabajo = string.IsNullOrEmpty(value) ? null : value;
         }
 
+        // Un canal cuya conexión ya se perdió no cuenta como shell activo aunque aún no se haya cerrado: ssh_status nunca
+        // muestra un shell activo sin conexión (IsConectada se lee antes que este valor).
         public bool IsShellActivo
         {
             get
             {
                 lock (_candadoProceso)
-                    return _canal is not null;
+                    return _canal is not null && _conexionDelCanal is { IsConectada: true };
             }
         }
 
@@ -324,7 +329,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!_cierre.IsCancellationRequested)
             {
-                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, isComandoEnviado: false, null);
+                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, null);
                 return;
             }
             catch (NativeSshException ex)
@@ -336,18 +341,20 @@ namespace NativeSsh.Sesion
             if (token.IsCancellationRequested)
             {
                 _cierre.Token.ThrowIfCancellationRequested();
-                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, isComandoEnviado: false, avisoShell);
+                FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, avisoShell);
                 return;
             }
 
             TaskCompletionSource<int> espera = new(TaskCreationOptions.RunContinuationsAsynchronously);
             ICanalShell? canal;
+            IConexionSsh? conexionDelCanal;
             bool isEnviado = false;
             lock (_candadoEscritura)
             {
                 lock (_candadoProceso)
                 {
                     canal = _canal;
+                    conexionDelCanal = _conexionDelCanal;
                     if (canal is not null)
                     {
                         _escaner.Reiniciar(peticion.Id);
@@ -367,7 +374,10 @@ namespace NativeSsh.Sesion
             {
                 if (canal is not null)
                     CerrarCanal(canal);
-                _ = peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, "No se pudo enviar el comando: el canal del shell se cerró. El siguiente comando abrirá uno nuevo."));
+                string motivo = conexionDelCanal is { IsConectada: true }
+                    ? "No se pudo enviar el comando: el canal del shell se cerró. El siguiente comando abrirá uno nuevo."
+                    : $"No se pudo enviar el comando: se perdió la conexión SSH con {Destino.Clave}. El siguiente comando reconectará y abrirá un shell nuevo.";
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, motivo));
                 return;
             }
 
@@ -381,8 +391,8 @@ namespace NativeSsh.Sesion
             {
                 if (!espera.Task.IsCompletedSuccessfully)
                 {
-                    string? avisoInterrupcion = await InterrumpirAsync(canal, peticion).ConfigureAwait(false);
-                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, isComandoEnviado: true, Unir(avisoShell, avisoInterrupcion));
+                    (string detalle, string? avisoInterrupcion) = await InterrumpirAsync(canal, peticion).ConfigureAwait(false);
+                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(avisoShell, avisoInterrupcion));
                     return;
                 }
 
@@ -390,14 +400,22 @@ namespace NativeSsh.Sesion
             }
 
             _ = codigo == CodigoCanalCerrado
-                ? peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, "El canal del shell se cerró durante el comando (exit, caída de la conexión o cierre desde el servidor). El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."))
+                ? peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, DescribirShellPerdido(conexionDelCanal)))
                 : peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
         }
 
-        private async Task<string?> InterrumpirAsync(ICanalShell canal, Peticion peticion)
+        // Con la conexión perdida (el adaptador la marca así antes de cerrar el canal) se dice explícitamente.
+        private string DescribirShellPerdido(IConexionSsh? conexion) => conexion is { IsConectada: true }
+            ? "El canal del shell se cerró durante el comando (exit o cierre desde el servidor). El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán."
+            : $"Se perdió la conexión SSH con {Destino.Clave} durante el comando: el shell remoto se cerró y las variables exportadas se perdieron. El siguiente comando reconectará y abrirá un shell nuevo.";
+
+        // Devuelve qué se hizo con el proceso (para el estado final) y el aviso sobre el shell. Solo afirma que se envió
+        // Ctrl+C, que no respondió o que la conexión sigue abierta cuando es cierto.
+        private async Task<(string Detalle, string? Aviso)> InterrumpirAsync(ICanalShell canal, Peticion peticion)
         {
             TaskCompletionSource<int> recuperacion = new(TaskCreationOptions.RunContinuationsAsynchronously);
             Guid idRecuperacion = Guid.NewGuid();
+            IConexionSsh? conexion;
             bool isEnviado;
             lock (_candadoEscritura)
             {
@@ -405,6 +423,7 @@ namespace NativeSsh.Sesion
                 lock (_candadoProceso)
                 {
                     isCanalVigente = ReferenceEquals(_canal, canal);
+                    conexion = _conexionDelCanal;
                     if (isCanalVigente)
                     {
                         _isInterrumpiendo = true;
@@ -415,7 +434,7 @@ namespace NativeSsh.Sesion
                 }
 
                 if (!isCanalVigente)
-                    return "El canal del shell ya estaba cerrado; el siguiente comando abrirá uno nuevo.";
+                    return ("no se envió Ctrl+C porque el canal del shell ya estaba cerrado.", "El siguiente comando abrirá un shell nuevo.");
 
                 Componer(EscrituraEnum.Interrupcion, idRecuperacion, null);
                 isEnviado = TryEnviarBajoCandado(canal);
@@ -426,9 +445,12 @@ namespace NativeSsh.Sesion
                 try
                 {
                     int codigo = await recuperacion.Task.WaitAsync(_opciones.EsperaTrasCtrlC, _cierre.Token).ConfigureAwait(false);
-                    return codigo == CodigoCanalCerrado
+                    if (codigo != CodigoCanalCerrado)
+                        return (DetalleCtrlCEnviado, null);
+
+                    return (DetalleCtrlCEnviado, conexion is { IsConectada: true }
                         ? "El shell se cerró al interrumpir; el siguiente comando abrirá uno nuevo y las variables exportadas se perderán."
-                        : null;
+                        : "El shell se cerró al interrumpir porque se perdió la conexión SSH; el siguiente comando reconectará y abrirá uno nuevo, y las variables exportadas se perderán.");
                 }
                 catch (TimeoutException)
                 {
@@ -437,16 +459,25 @@ namespace NativeSsh.Sesion
             }
 
             CerrarCanal(canal);
-            return $"El proceso no respondió a Ctrl+C en {_opciones.EsperaTrasCtrlC.TotalSeconds:0.#} s: se cerró el canal del shell (la conexión TCP sigue abierta). El siguiente comando abrirá un shell nuevo y las variables exportadas se perderán.";
+            bool isConectada = conexion is { IsConectada: true };
+            string siguiente = isConectada
+                ? "El siguiente comando abrirá un shell nuevo sobre la misma conexión y las variables exportadas se perderán."
+                : "El siguiente comando reconectará y abrirá un shell nuevo, y las variables exportadas se perderán.";
+            if (!isEnviado)
+                return ("no se pudo enviar Ctrl+C al proceso.", isConectada
+                    ? $"El canal del shell ya no admitía escrituras: se cerró. {siguiente}"
+                    : $"El canal del shell ya no admitía escrituras porque se perdió la conexión SSH: se cerró. {siguiente}");
+
+            string espera = $"{_opciones.EsperaTrasCtrlC.TotalSeconds:0.#} s";
+            return (DetalleCtrlCEnviado, isConectada
+                ? $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell (la conexión TCP sigue abierta). {siguiente}"
+                : $"El proceso no respondió a Ctrl+C en {espera} y se perdió la conexión SSH: se cerró el canal del shell. {siguiente}");
         }
 
-        private static void FinalizarInterrumpida(Peticion peticion, bool isTiempoAgotado, bool isComandoEnviado, string? aviso)
-        {
-            string detalle = isComandoEnviado ? "se envió Ctrl+C al proceso." : "el comando no llegó a enviarse.";
+        private static void FinalizarInterrumpida(Peticion peticion, bool isTiempoAgotado, string detalle, string? aviso) =>
             _ = peticion.IsCancelacionSolicitada || !isTiempoAgotado
                 ? peticion.TryFinalizar(EstadoPeticionEnum.Cancelado, 130, Unir($"Cancelado: {detalle}", aviso))
                 : peticion.TryFinalizar(EstadoPeticionEnum.TiempoAgotado, 130, Unir($"Tiempo agotado ({peticion.Timeout.TotalSeconds:0.#} s): {detalle}", aviso));
-        }
 
         private async Task<string?> AsegurarShellAsync(CancellationToken token)
         {

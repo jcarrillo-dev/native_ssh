@@ -356,6 +356,84 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task CaidaDeLaConexionConComandoEnCurso_TerminaComoShellPerdidoYLoDice()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+
+            // Act: el adaptador cierra el canal en cuanto SSH.NET avisa de la caída (Leer devuelve 0).
+            fabrica.Ultima!.Caer();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = colgado.Aviso.Should().Contain("Se perdió la conexión SSH");
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.Aviso.Should().Contain("recreado");
+            _ = fabrica.Conexiones.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task CaidaQueNoCierraElCanal_NoMuestraUnShellActivoSinConexion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+
+            // Act: el canal sigue abierto un instante tras la caída (o nunca se cierra, como en SSH.NET sin adaptar).
+            fabrica.Ultima!.CaerSinCerrarCanal();
+
+            // Assert
+            _ = sesion.IsConectada.Should().BeFalse();
+            _ = sesion.IsShellActivo.Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task TiempoAgotado_ConElCanalCaidoSinAdmitirEscrituras_NoAfirmaQueSeEnvioCtrlCNiQueLaConexionSigueAbierta()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 1);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+
+            // Act
+            fabrica.Ultima!.CaerSinCerrarCanal();
+            await colgado.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = colgado.Aviso.Should().Contain("no se pudo enviar Ctrl+C").And.Contain("se perdió la conexión SSH")
+                .And.NotContain("se envió Ctrl+C").And.NotContain("no respondió a Ctrl+C").And.NotContain("sigue abierta");
+        }
+
+        [Fact]
+        public async Task TiempoAgotado_SinRespuestaACtrlCYConLaConexionCaida_NoAfirmaQueLaConexionSigueAbierta()
+        {
+            // Arrange: 'terco' ignora Ctrl+C y la conexión cae mientras se espera su respuesta.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion terco = Nueva("terco", timeoutSegundos: 0.3);
+            sesion.Encolar(terco);
+
+            // Act
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima?.SigintsRecibidos > 0);
+            fabrica.Ultima!.CaerSinCerrarCanal();
+            await terco.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = terco.Aviso.Should().Contain("no respondió a Ctrl+C").And.Contain("se perdió la conexión SSH").And.NotContain("sigue abierta");
+        }
+
+        [Fact]
         public async Task Limitador_RechazaLaReconexion()
         {
             // Arrange
