@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Linq;
 using System.Text;
@@ -609,6 +610,29 @@ namespace NativeSsh.Test.Sesion
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = encolada.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = tardia.Estado.Should().Be(EstadoPeticionEnum.Error);
+        }
+
+        [Fact]
+        public async Task Dispose_ConUnComandoEnCurso_NuncaLoTerminaComoError()
+        {
+            // Arrange: la carrera (el bucle ve la sesión cerrada antes de que se cancele su token) es muy estrecha, así
+            // que se repite muchas veces en paralelo.
+            ConcurrentQueue<string> fallos = new();
+
+            // Act
+            await Parallel.ForAsync(0, 4000, new ParallelOptions { MaxDegreeOfParallelism = 16 }, async (_, _) =>
+            {
+                SesionShell sesion = Crear(new FabricaFalsa(Guion));
+                Peticion colgado = Nueva("colgado");
+                sesion.Encolar(colgado);
+                await EsperasPrueba.EsperarHastaAsync(() => colgado.Estado == EstadoPeticionEnum.Ejecutando);
+                await sesion.DisposeAsync();
+                if (colgado.Estado != EstadoPeticionEnum.Cancelado)
+                    fallos.Enqueue($"{colgado.Estado}: {colgado.Aviso}");
+            });
+
+            // Assert
+            _ = fallos.Should().BeEmpty();
         }
 
         [Fact]

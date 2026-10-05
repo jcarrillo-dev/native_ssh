@@ -115,7 +115,8 @@ namespace NativeSsh.Sesion
 
         // Un canal cuya conexión ya se perdió no cuenta como shell activo aunque aún no se haya cerrado: ssh_status nunca
         // muestra un shell activo sin conexión (IsConectada se lee antes que este valor).
-        // Cierre en curso o terminado (DisposeAsync lo marca antes que nada).
+        // Cierre en curso o terminado. DisposeAsync lo marca antes de cancelar _cierre: es el único criterio para decidir
+        // si un fallo se debe al cierre (un comando en curso termina como Cancelado, nunca como Error).
         private bool IsCerrando => Volatile.Read(ref _isDispuesto) != 0;
 
         public bool IsShellActivo
@@ -130,7 +131,7 @@ namespace NativeSsh.Sesion
         public void Encolar(Peticion peticion)
         {
             _ = Interlocked.Increment(ref _comandosEnCola);
-            if (Volatile.Read(ref _isDispuesto) == 0 && _cola.Writer.TryWrite(peticion))
+            if (!IsCerrando && _cola.Writer.TryWrite(peticion))
                 return;
 
             _ = Interlocked.Decrement(ref _comandosEnCola);
@@ -203,7 +204,7 @@ namespace NativeSsh.Sesion
         // responde): el canal conserva su cupo hasta que se cierra de verdad, para no superar el MaxSessions del servidor.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string script, TimeSpan timeout, CancellationToken cancellationToken)
         {
-            if (Volatile.Read(ref _isDispuesto) != 0)
+            if (IsCerrando)
                 throw new NativeSshException($"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar la operación.");
 
             // El script se acota en el servidor con 'timeout'; el límite local, algo mayor, solo actúa si el servidor
@@ -289,7 +290,7 @@ namespace NativeSsh.Sesion
                     {
                         await EjecutarAsync(peticion).ConfigureAwait(false);
                     }
-                    catch (Exception ex) when (_cierre.IsCancellationRequested)
+                    catch (Exception ex) when (IsCerrando)
                     {
                         _logger.ComandoInterrumpidoPorCierre(ex, Destino.Clave);
                         _ = peticion.TryFinalizar(EstadoPeticionEnum.Cancelado, 130, "La sesión se cerró durante la ejecución.");
@@ -334,12 +335,12 @@ namespace NativeSsh.Sesion
             {
                 avisoShell = await AsegurarShellAsync(token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!_cierre.IsCancellationRequested)
+            catch (OperationCanceledException) when (!IsCerrando)
             {
                 FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, null);
                 return;
             }
-            catch (NativeSshException ex)
+            catch (NativeSshException ex) when (!IsCerrando)
             {
                 _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, ex.Message);
                 return;
@@ -347,7 +348,8 @@ namespace NativeSsh.Sesion
 
             if (token.IsCancellationRequested)
             {
-                _cierre.Token.ThrowIfCancellationRequested();
+                if (IsCerrando)
+                    throw new OperationCanceledException(token);
                 FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, avisoShell);
                 return;
             }
@@ -394,7 +396,7 @@ namespace NativeSsh.Sesion
             {
                 codigo = await espera.Task.WaitAsync(token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!_cierre.IsCancellationRequested)
+            catch (OperationCanceledException) when (!IsCerrando)
             {
                 if (!espera.Task.IsCompletedSuccessfully)
                 {
@@ -522,7 +524,7 @@ namespace NativeSsh.Sesion
             await _candadoConexion.WaitAsync(token).ConfigureAwait(false);
             try
             {
-                if (Volatile.Read(ref _isDispuesto) != 0)
+                if (IsCerrando)
                     throw new NativeSshException($"La sesión con {Destino.Clave} está cerrada; vuelve a lanzar la operación.");
 
                 actual = _conexion;
