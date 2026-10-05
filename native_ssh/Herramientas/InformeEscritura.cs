@@ -26,7 +26,8 @@ namespace NativeSsh.Herramientas
     //   creando/creado (archivo nuevo copiado sin enlace), escribiendo/escrito (escritura en el sitio), restaurando/
     //   restaurado (vuelta al original desde la copia), fallido (ni escrito ni restaurado), anexando/anexado (append).
     //   Tras escrito y restaurado, lo que el núcleo quitó al escribir y no se pudo devolver: setuid, setgid, capacidades,
-    //   o capacidades? (no se pudo comprobar), separados por comas, o '-';
+    //   o capacidades? (no se pudo comprobar si las tenía), separados por comas, o '-'. Solo si no falta nada se dice que
+    //   todo se devolvió y se comprobó;
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
@@ -101,7 +102,7 @@ namespace NativeSsh.Herramientas
         public string AvisoExito() => Fase switch
         {
             "colocado" => string.Empty,
-            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Count == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo, se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid y las capacidades (security.capability): se devolvieron y se comprobaron, salvo lo que sigue.")}{AvisoPerdidos}",
+            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Count == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo (los bits, salvo si escribe root), se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid (salvo si escribe root) y las capacidades (security.capability); lo que el archivo tenía se le devolvió y se comprobó, con estas excepciones.")}{AvisoPerdidos}",
             "creado" => " Escritura no atómica: el sistema de archivos no admite enlaces duros, así que el archivo nuevo se creó copiando el contenido.",
             _ => " No se recibió del servidor la confirmación de cómo se colocó el contenido: no se puede asegurar que la escritura fuera atómica."
         };

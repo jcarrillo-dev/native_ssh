@@ -139,10 +139,11 @@ namespace NativeSsh.Test.Herramientas
             string interrupcion = InformeEscritura.Leer(anuncios + Anuncios("fase restaurando", "fase restaurado capacidades", "limpio"), Id).MensajeInterrupcion("f", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
 
             // Assert
-            _ = exito.Should().Contain("salvo lo que sigue. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true). el núcleo quitó al escribir el bit setgid")
+            _ = exito.Should().Contain("con estas excepciones. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true). el núcleo quitó al escribir el bit setgid")
                 .And.EndWith("hace falta sudo=true y setfattr o setcap. Para devolverlas, con privilegios: «setfattr -n security.capability -v 0x0100000200 <archivo>».");
             _ = sinComprobar.Should().EndWith("ATENCIÓN: no se pudo comprobar si el archivo tenía capacidades (security.capability): en el servidor no hay getfattr ni getcap; si las tenía, el núcleo las borró al escribir.");
-            _ = todoDevuelto.Should().EndWith("El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo, se devolvieron y se comprobaron.").And.NotContain("ATENCIÓN");
+            _ = new[] { exito, sinComprobar }.Should().AllSatisfy(aviso => aviso.Should().NotContain("se devolvieron y se comprobaron"));
+            _ = todoDevuelto.Should().EndWith("El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo (los bits, salvo si escribe root), se devolvieron y se comprobaron.").And.NotContain("ATENCIÓN");
             _ = error.Should().Be("Error: falló. ATENCIÓN: el núcleo quitó al escribir el bit setuid y no se pudo devolver (chmod u+s, como propietario o con sudo=true).");
             _ = interrupcion.Should().EndWith("Se restauró el contenido original de 'f'. ATENCIÓN: el núcleo borró al escribir las capacidades del archivo (security.capability) y no se pudieron devolver: hace falta sudo=true y setfattr o setcap. Para devolverlas, con privilegios: «setfattr -n security.capability -v 0x0100000200 <archivo>».");
         }

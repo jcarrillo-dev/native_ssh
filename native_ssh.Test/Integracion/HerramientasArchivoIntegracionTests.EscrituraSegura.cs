@@ -531,28 +531,61 @@ namespace NativeSsh.Test.Integracion
                 : resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("security.capability").And.Contain("setfattr -n security.capability -v 0x01000003");
         }
 
-        // Sin getfattr ni getcap no se puede saber si un ejecutable tenía capacidades: la respuesta lo dice. Un archivo que no
-        // es ejecutable no las usa y no se avisa.
+        // Sin getfattr ni getcap no se puede saber si el archivo tenía capacidades, sea o no ejecutable (el núcleo las borra al
+        // escribir en cualquiera): la respuesta lo dice y no afirma que se devolvieron ni que se comprobaron. Con una
+        // capacidad real en un archivo no ejecutable, se pierde de verdad.
         [Theory]
-        [InlineData("755", true)]
+        [InlineData("755", false)]
         [InlineData("644", false)]
+        [InlineData("644", true)]
         [SupportedOSPlatform("linux")]
-        public async Task EscrituraEnElSitio_SinGetfattrNiGetcap_AvisaSoloSiEsEjecutable(string modo, bool isAviso)
+        public async Task EscrituraEnElSitio_SinGetfattrNiGetcap_AvisaDeQueNoSePudieronComprobarLasCapacidades(string modo, bool hasCapacidad)
         {
             // Arrange
             HerramientasSsh herramientas = Herramientas();
             (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
             _ = Bash($"chmod {modo} '{archivo}'");
+            if (hasCapacidad)
+                _ = SudoSimulado.ComoRoot("setcap cap_net_bind_service+ep \"$1\"", archivo);
+            string capacidad = Bash($"getcap '{archivo}'");
             await QuitarDelPathAsync(herramientas, "getfattr", "getcap");
 
             // Act
             ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true);
 
             // Assert
+            _ = capacidad.Should().Be(hasCapacidad ? $"{archivo} cap_net_bind_service=ep" : string.Empty);
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
-            _ = isAviso
-                ? resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("no se pudo comprobar si el archivo tenía capacidades")
-                : resultado.Mensaje.Should().NotContain("ATENCIÓN");
+            _ = Bash($"getcap '{archivo}'").Should().BeEmpty();
+            _ = Stat(archivo).Should().StartWith($"{modo} ");
+            _ = resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("no se pudo comprobar si el archivo tenía capacidades")
+                .And.NotContain("se devolvieron y se comprobaron");
+        }
+
+        // Escrito en el sitio sin sudo, un archivo setuid de otro usuario (4777) pierde el bit (el núcleo lo quita a quien no
+        // tiene CAP_FSETID) y su escritor no puede devolverlo (chmod u+s solo lo puede hacer el propietario): la respuesta
+        // lo dice. Necesita los subuid de la simulación de sudo para tener un propietario ajeno.
+        [Fact]
+        public async Task EscrituraEnElSitio_SetuidQueNoSePuedeDevolver_LoDiceLaRespuesta()
+        {
+            // Arrange: el archivo es del uid 1 de la simulación, 4777.
+            if (!SudoSimulado.HasOtrosUsuarios)
+                return;
+            HerramientasSsh herramientas = Herramientas();
+            (_, string archivo, _) = await PrepararEscrituraEnElSitioAsync(herramientas);
+            _ = SudoSimulado.ComoRoot("chown 1 -- \"$1\" && chmod 4777 -- \"$1\"", archivo);
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo completo\n", overwrite: true);
+            string modo = Stat(archivo).Split(' ')[0];
+            _ = SudoSimulado.ComoRoot("chown 0 -- \"$1\"", archivo);
+
+            // Assert
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("nuevo completo\n");
+            _ = modo.Should().Be("777");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("ATENCIÓN").And.Contain("bit setuid").And.NotContain("bit setgid")
+                .And.NotContain("se devolvieron y se comprobaron");
         }
 
         // Si el destino se convierte en un directorio entre las comprobaciones y la colocación, el temporal no puede acabar
