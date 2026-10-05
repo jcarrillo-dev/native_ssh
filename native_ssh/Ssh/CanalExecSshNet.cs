@@ -102,9 +102,11 @@ namespace NativeSsh.Ssh
                 {
                     orden.CancelAsync(forceKill: true, millisecondsTimeout: 0);
                 }
-                catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+                catch (Exception)
                 {
-                    // Ya había terminado o se estaba liberando.
+                    // Ya había terminado, se estaba liberando o la conexión cayó al enviar la señal. Se ejecuta dentro
+                    // de callbacks de CancellationToken: nada debe escapar. CancelAsync cierra los flujos igualmente
+                    // (SetAsyncComplete en su finally) y los lectores terminan.
                 }
             }
         }
