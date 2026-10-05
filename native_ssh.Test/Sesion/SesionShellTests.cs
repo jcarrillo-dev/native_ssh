@@ -813,12 +813,15 @@ namespace NativeSsh.Test.Sesion
             // Act: pasa el umbral del aviso.
             await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, Limite);
             string? avisoBloqueado = colgado.Aviso;
+            string? avisoSesion = sesion.AvisoEscrituraBloqueada;
             await sesion.DisposeAsync().AsTask().WaitAsync(Limite);
 
             // Assert: el aviso solo aparece al superar el umbral y desaparece al terminar (el estado final tiene el suyo).
             _ = avisoInicial.Should().BeNull();
             _ = avisoBloqueado.Should().Contain("ssh_disconnect").And.Contain("ssh_cancel");
+            _ = avisoSesion.Should().Contain("ssh_disconnect").And.Contain("intentando enviar datos");
             _ = sesion.SegundosEnEscritura.Should().BeNull();
+            _ = sesion.AvisoEscrituraBloqueada.Should().BeNull();
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = colgado.Aviso.Should().NotContain("ssh_disconnect");
         }

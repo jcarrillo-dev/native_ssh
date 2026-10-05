@@ -135,6 +135,7 @@ namespace NativeSsh.Sesion
         {
             Volatile.Write(ref _codigoSalida, codigo);
             Volatile.Write(ref _aviso, aviso);
+            Volatile.Write(ref _avisoEnCurso, null);
             Volatile.Write(ref _finTimestamp, _reloj.GetTimestamp());
             Volatile.Write(ref _estado, (int)estado);
         }

@@ -270,8 +270,12 @@ namespace NativeSsh.Sesion
         private string DescribirDuracionEscritura() => SegundosEnEscritura is double segundos ? $" (lleva {segundos:0} s)" : "";
 
         // Aviso del comando en curso mientras el bucle está atascado en una escritura al shell (la suya o la de su entrada).
-        private string? DescribirEscrituraBloqueada(Peticion peticion) =>
-            ReferenceEquals(_peticionActual, peticion) && SegundosEnEscritura is double segundos && segundos >= UmbralAvisoEscrituraBloqueada.TotalSeconds
+        private string? DescribirEscrituraBloqueada(Peticion peticion) => ReferenceEquals(_peticionActual, peticion) ? AvisoEscrituraBloqueada : null;
+
+        // Aviso de una escritura al shell que lleva más que UmbralAvisoEscrituraBloqueada sin que el servidor la acepte (null
+        // si no la hay). Lo muestra el comando en curso (ssh_cancel, ssh_output, ssh_input); pensado también para ssh_status.
+        public string? AvisoEscrituraBloqueada =>
+            SegundosEnEscritura is double segundos && segundos >= UmbralAvisoEscrituraBloqueada.TotalSeconds
                 ? $"El shell de {Destino.Clave} lleva {segundos:0} s intentando enviar datos que el servidor no acepta (no lee de la conexión, la red no responde o el canal tiene agotada su ventana): mientras tanto ssh_cancel no puede interrumpir el comando y ssh_input no envía nada. ssh_disconnect cierra la conexión y lo libera (el comando termina como cancelado y la siguiente operación abrirá una conexión nueva)."
                 : null;
 
