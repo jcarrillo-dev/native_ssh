@@ -134,7 +134,9 @@ namespace NativeSsh.Test.Herramientas
                 ? new("NO_EXISTE\n", 0)
                 : comando.Contains("fichero_invalido")
                     ? new("error en stat\n", 1)
-                    : new("fichero regular|2048|644|2026-10-05 01:00:00\n", 0);
+                    : comando.Contains("enlace.txt")
+                        ? new("enlace simbólico|12|777|2026-10-05 01:00:00|ana|devs\nENLACE:/etc/real.conf\n", 0)
+                        : new("fichero regular|2048|644|2026-10-05 01:00:00|ana|devs\n", 0);
 
         private static RespuestaFalsa SimularEscritura(string comando) =>
             comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
@@ -854,6 +856,23 @@ namespace NativeSsh.Test.Herramientas
             _ = doc.RootElement.GetProperty("tamanoHumano").GetString().Should().Be("2 KiB");
             _ = doc.RootElement.GetProperty("permisos").GetString().Should().Be("644");
             _ = doc.RootElement.GetProperty("ultimaModificacion").GetString().Should().Be("2026-10-05 01:00:00");
+            _ = doc.RootElement.GetProperty("propietario").GetString().Should().Be("ana");
+            _ = doc.RootElement.GetProperty("grupo").GetString().Should().Be("devs");
+            _ = doc.RootElement.TryGetProperty("destinoEnlace", out _).Should().BeFalse();
+        }
+
+        [Fact]
+        public async Task Stat_EnlaceSimbolico_DevuelveDestinoEnlace()
+        {
+            // Act
+            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "enlace.txt");
+
+            // Assert
+            using JsonDocument doc = JsonDocument.Parse(resultado);
+            _ = doc.RootElement.GetProperty("tipo").GetString().Should().Be("enlace simbólico");
+            _ = doc.RootElement.GetProperty("destinoEnlace").GetString().Should().Be("/etc/real.conf");
+            _ = doc.RootElement.GetProperty("propietario").GetString().Should().Be("ana");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("readlink --", StringComparison.Ordinal));
         }
 
         [Theory]

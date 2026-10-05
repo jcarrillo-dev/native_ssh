@@ -45,5 +45,8 @@ namespace NativeSsh.Herramientas
         long? TamanoBytes = null,
         string? TamanoHumano = null,
         string? Permisos = null,
-        string? UltimaModificacion = null);
+        string? UltimaModificacion = null,
+        string? Propietario = null,
+        string? Grupo = null,
+        string? DestinoEnlace = null);
 }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using System.Linq;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -169,6 +170,29 @@ namespace NativeSsh.Test.Integracion
             _ = deVacio.Should().Be("[Líneas 0-0 de 0]\n");
             _ = finSinSalto.Should().Be("[Líneas 2-3 de 3]\nb\nc");
             _ = completoSinSalto.Should().Be("[Líneas 1-3 de 3]\na\nb\nc");
+        }
+
+        [Fact]
+        public async Task ConsultarMetadatos_DevuelvePropietarioGrupoYDestinoDeEnlace()
+        {
+            // Arrange
+            string archivo = Ruta("real.txt");
+            await File.WriteAllTextAsync(archivo, "x");
+            string enlace = Ruta("enlace.txt");
+            _ = File.CreateSymbolicLink(enlace, archivo);
+            string grupo = Bash("id -gn");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            using JsonDocument real = JsonDocument.Parse(await herramientas.ConsultarMetadatosAsync(Destino, archivo));
+            using JsonDocument deEnlace = JsonDocument.Parse(await herramientas.ConsultarMetadatosAsync(Destino, enlace));
+
+            // Assert
+            _ = real.RootElement.GetProperty("propietario").GetString().Should().Be(Environment.UserName);
+            _ = real.RootElement.GetProperty("grupo").GetString().Should().Be(grupo);
+            _ = real.RootElement.TryGetProperty("destinoEnlace", out _).Should().BeFalse();
+            _ = deEnlace.RootElement.GetProperty("destinoEnlace").GetString().Should().Be(archivo);
+            _ = deEnlace.RootElement.GetProperty("propietario").GetString().Should().Be(Environment.UserName);
         }
 
         private Peticion UltimaPeticion(string fragmentoComando) =>

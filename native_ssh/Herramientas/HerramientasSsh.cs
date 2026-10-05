@@ -495,7 +495,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
-        [Description("Devuelve metadatos básicos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos, última modificación) de forma defensiva antes de leer archivos potencialmente masivos.")]
+        [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño.")]
         public async Task<string> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -513,7 +513,10 @@ namespace NativeSsh.Herramientas
                   echo "NO_EXISTE"
                   exit 0
                 fi
-                stat -c '%F|%s|%a|%y' -- {{rutaEscapada}} 2>/dev/null || stat -f '%HT|%z|%p|%Sm' -- {{rutaEscapada}} 2>/dev/null
+                stat -c '%F|%s|%a|%y|%U|%G' -- {{rutaEscapada}} 2>/dev/null || stat -f '%HT|%z|%Lp|%Sm|%Su|%Sg' -- {{rutaEscapada}} 2>/dev/null
+                if [ -L {{rutaEscapada}} ]; then
+                  printf 'ENLACE:%s\n' "$(readlink -- {{rutaEscapada}})"
+                fi
                 )
                 """.ReplaceLineEndings("\n");
 
@@ -525,7 +528,8 @@ namespace NativeSsh.Herramientas
             if (salida == "NO_EXISTE")
                 return JsonSerializer.Serialize(new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe."), ContextoJsonNativeSsh.Default.ResultadoMetadatos);
 
-            string[] partes = salida.Split('|');
+            string[] lineas = salida.Split('\n');
+            string[] partes = lineas[0].Split('|');
             if (partes.Length < 4)
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salida) ? $"Error al consultar metadatos de '{ruta}'." : salida);
 
@@ -534,9 +538,15 @@ namespace NativeSsh.Herramientas
             string tamanoHumano = FormatearTamano(tamanoBytes);
             string permisos = partes[2].Trim();
             string ultimaModificacion = partes[3].Trim();
+            string? propietario = partes.Length > 4 ? partes[4].Trim() : null;
+            string? grupo = partes.Length > 5 ? partes[5].Trim() : null;
+            string? destinoEnlace = null;
+            foreach (string linea in lineas.AsSpan(1))
+                if (linea.StartsWith("ENLACE:", StringComparison.Ordinal))
+                    destinoEnlace = linea["ENLACE:".Length..].TrimEnd('\r');
 
             return JsonSerializer.Serialize(
-                new ResultadoMetadatos(ruta, true, null, tipo, tamanoBytes, tamanoHumano, permisos, ultimaModificacion),
+                new ResultadoMetadatos(ruta, true, null, tipo, tamanoBytes, tamanoHumano, permisos, ultimaModificacion, propietario, grupo, destinoEnlace),
                 ContextoJsonNativeSsh.Default.ResultadoMetadatos);
         }
 
