@@ -27,17 +27,36 @@ namespace NativeSsh.Herramientas
         private static readonly TimeSpan MargenEsperaHerramienta = TimeSpan.FromSeconds(2);
         private const string MarcaEscrituraNoAtomica = "__NS_ESCRITURA_NO_ATOMICA__";
 
-        // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). El
-        // mensaje de stat en el locale C los distingue (strerror: "Permission denied" en GNU, BSD y busybox): sin_acceso
-        // informa del segundo caso y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
-        private static readonly string DefinicionSinAcceso = """
+        // 'test -e' falla igual si la ruta no existe que si un directorio de la ruta no se puede atravesar (EACCES). Para
+        // distinguirlos no se lee ningún mensaje (el de stat lleva la ruta dentro, y una ruta inexistente que contenga
+        // "Permission denied" engañaría): se sube por los directorios de la ruta hasta el primero que existe y se mira si
+        // se puede atravesar (-x, con el usuario efectivo, ACL incluidas). Un enlace que no se puede seguir se resuelve un
+        // nivel (readlink) y se sigue por su destino, hasta 40 saltos. Si un directorio lo impide, sin_acceso lo nombra
+        // ($3 es la ruta pedida) y devuelve 0; si no, no imprime nada y devuelve 1 (el script dice entonces que no existe).
+        // Las sustituciones conservan un salto de línea final del nombre (ver SustitucionLiteral).
+        internal static readonly string DefinicionSinAcceso = """
             sin_acceso() {
-              case "$(LC_ALL=C stat -- "$1" 2>&1 >/dev/null)" in
-                *'Permission denied'*)
-                  printf 'Error: sin permiso para acceder a la ruta: %s (algún directorio de la ruta no se puede atravesar).\n' "$1" >&2
-                  return 0 ;;
-              esac
-              return 1
+              local ruta=$1 saltos=${2:-0} pedida=${3:-$1} padre destino bloqueo
+              [ "$saltos" -gt 40 ] && return 1
+              [ -e "$ruta" ] && return 1
+              padre=$(dirname -- "$ruta"; printf x); padre=${padre%x}; padre=${padre%$'\n'}
+              if [ -L "$ruta" ]; then
+                destino=$(readlink -- "$ruta"; printf x); destino=${destino%x}; destino=${destino%$'\n'}
+                case $destino in
+                  /*) ;;
+                  *) destino=$padre/$destino ;;
+                esac
+                sin_acceso "$destino" $(( saltos + 1 )) "$pedida"
+                return
+              fi
+              [ "$padre" = "$ruta" ] && return 1
+              if [ -d "$padre" ]; then
+                [ -x "$padre" ] && return 1
+                bloqueo=$(readlink -f -- "$padre" 2>/dev/null; printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
+                printf 'Error: sin permiso para acceder a la ruta: %s (el directorio %s no se puede atravesar).\n' "$pedida" "${bloqueo:-$padre}" >&2
+                return 0
+              fi
+              sin_acceso "$padre" $(( saltos + 1 )) "$pedida"
             }
             """.ReplaceLineEndings("\n");
 

@@ -75,6 +75,60 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.Existe.Should().BeFalse();
         }
 
+        // El mensaje de stat lleva la ruta dentro: una ruta que no existe pero contiene el texto «Permission denied» no
+        // puede tomarse por «sin permiso».
+        [Fact]
+        public async Task HerramientasDeLectura_RutaInexistenteConElTextoPermissionDenied_DicenQueNoExiste()
+        {
+            // Arrange
+            string directorio = Ruta("Permission denied");
+            string archivo = Path.Combine(directorio, "Permission denied.txt");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            Dictionary<string, string> errores = await ErroresDeLecturaAsync(herramientas, Destino, archivo, directorio);
+            ResultadoMetadatos metadatos = await herramientas.ConsultarMetadatosAsync(Destino, archivo);
+
+            // Assert
+            _ = errores.Remove("ssh_stat");
+            _ = errores.Should().HaveCount(7).And.AllSatisfy(error => error.Value.Should().Contain("no existe", error.Key).And.NotContain("sin permiso", error.Key));
+            _ = metadatos.Existe.Should().BeFalse();
+        }
+
+        // sin_acceso decide con los permisos de los directorios de la ruta (y de los destinos de sus enlaces), sin leer un
+        // mensaje que lleve la ruta dentro. Devuelve 0 y dice qué directorio no se puede atravesar, o 1 si la ruta no existe.
+        [Theory]
+        [InlineData("no_existe/Permission denied/x", null)]
+        [InlineData("Permission denied", null)]
+        [InlineData("a/b Permission denied c", null)]
+        [InlineData("archivo.txt/x", null)]
+        [InlineData("enlace_roto/x", null)]
+        [InlineData("cerrado/sub/x", "cerrado")]
+        [InlineData("cerrado/Permission denied", "cerrado")]
+        [InlineData("enlace_a_cerrado/x", "cerrado")]
+        [InlineData("abierto/enlace_a_cerrado/x", "cerrado")]
+        public async Task SinAcceso_DecideConLosPermisosDeLosDirectoriosYNoConElTextoDeLaRuta(string relativa, string? cerrado)
+        {
+            // Arrange: 'cerrado' (0000) contiene 'sub'; los enlaces apuntan a 'cerrado/sub' (relativo) o a nada.
+            _ = Directory.CreateDirectory(Ruta("cerrado/sub"));
+            _ = Directory.CreateDirectory(Ruta("abierto"));
+            await File.WriteAllTextAsync(Ruta("archivo.txt"), "x\n");
+            _ = File.CreateSymbolicLink(Ruta("enlace_a_cerrado"), "cerrado/sub");
+            _ = File.CreateSymbolicLink(Ruta("abierto/enlace_a_cerrado"), "../cerrado/sub");
+            _ = File.CreateSymbolicLink(Ruta("enlace_roto"), "no_hay");
+            _ = Bash($"chmod 000 '{Ruta("cerrado")}'");
+            string script = Ruta("sin_acceso.sh");
+            await File.WriteAllTextAsync(script, HerramientasSsh.DefinicionSinAcceso + "\nsin_acceso \"$1\"; echo \"rc=$?\"\n");
+
+            // Act
+            string resultado = Bash($"bash '{script}' '{Ruta(relativa)}' 2>&1");
+
+            // Assert
+            _ = resultado.Should().Be(cerrado is null
+                ? "rc=1"
+                : $"Error: sin permiso para acceder a la ruta: {Ruta(relativa)} (el directorio {Ruta(cerrado)} no se puede atravesar).\nrc=0");
+        }
+
         // La ruta existe y se puede atravesar, pero ella misma no se puede leer (o recorrer, si es un directorio): error,
         // nunca contenido vacío ni «No se encontraron...».
         [Fact]
