@@ -1,5 +1,7 @@
 using FluentAssertions;
+using System.Linq;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -781,6 +783,298 @@ namespace NativeSsh.Test.Integracion
             {
                 if (Directory.Exists(dirTemporal))
                     Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task FijarDirectorio_CicloCompleto_ValidacionPersistenciaYReset()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_test_setcwd_dir_{Guid.NewGuid():N}");
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+
+                // Act 1: Fijar directorio a dirTemporal
+                string resFijar = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, dirTemporal);
+
+                // Assert 1: Confirmación y pwd contiene dirTemporal
+                _ = resFijar.Should().Contain(dirTemporal);
+                ResultadoComando pwd1 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
+                _ = pwd1.Salida.Trim().Should().Be(dirTemporal);
+
+                // Act 2: Restablecer a HOME con null
+                string resReset = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, null);
+
+                // Assert 2: Mensaje de confirmación y pwd devuelve HOME
+                _ = resReset.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
+                ResultadoComando pwd2 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
+                _ = pwd2.Salida.Trim().Should().Be(home);
+                _ = pwd2.Salida.Should().NotContain(dirTemporal);
+
+                // Act 3: Intentar fijar una ruta inexistente
+                string rutaInexistente = $"/ruta/inexistente/test_{Guid.NewGuid():N}";
+                NativeSshException error = (await FluentActions.Awaiting(() =>
+                    herramientas.FijarDirectorioAsync(sshd.Destino.Clave, rutaInexistente))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                // Assert 3: Error indica que la ruta no existe
+                _ = error.Message.Should().Contain("la ruta no existe");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task ReemplazarContenidoArchivo_CicloCompleto_ModificacionQuirurgicaYSwapAtomico()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.Combine(Path.GetTempPath(), $"ns_test_replace_{Guid.NewGuid():N}.txt");
+            try
+            {
+                // Act 1: Escribir archivo de 10 líneas
+                string contenidoInicial = string.Concat(Enumerable.Range(1, 10).Select(i => $"linea {i}\n"));
+                _ = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, contenidoInicial);
+
+                // Act 2: Reemplazo quirúrgico en líneas 4 a 6
+                string target = "linea 4\nlinea 5\nlinea 6";
+                string replacement = "linea 4 mod\nlinea 5 mod\nlinea 6 mod";
+                string resMod = await herramientas.ReemplazarContenidoArchivoAsync(
+                    sshd.Destino.Clave,
+                    archivoTemporal,
+                    target,
+                    replacement,
+                    lineaInicio: 4,
+                    lineaFin: 6);
+
+                // Assert 2: Mensaje de confirmación
+                _ = resMod.Should().Contain("Archivo modificado quirúrgicamente con éxito");
+                _ = resMod.Should().Contain("1 reemplazo(s) realizado(s)");
+
+                // Assert 3: Leer y comprobar que líneas 1-3 y 7-10 no sufrieron alteración
+                string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leido.Should().Contain("linea 1\nlinea 2\nlinea 3\n");
+                _ = leido.Should().Contain("linea 4 mod\nlinea 5 mod\nlinea 6 mod\n");
+                _ = leido.Should().Contain("linea 7\nlinea 8\nlinea 9\nlinea 10\n");
+
+                // Act 4 & Assert 4: Probar targetContent inexistente
+                NativeSshException errorNoExiste = (await FluentActions.Awaiting(() =>
+                    herramientas.ReemplazarContenidoArchivoAsync(
+                        sshd.Destino.Clave,
+                        archivoTemporal,
+                        "texto inexistente",
+                        "nuevo",
+                        lineaInicio: 1,
+                        lineaFin: 5))
+                    .Should().ThrowAsync<NativeSshException>()).Which;
+
+                _ = errorNoExiste.Message.Should().Contain("No se encontró 'targetContent'");
+
+                // Act 5 & Assert 5: Probar allowMultiple = true
+                _ = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "item_dup\nitem_dup\n", append: true);
+                string resDup = await herramientas.ReemplazarContenidoArchivoAsync(
+                    sshd.Destino.Clave,
+                    archivoTemporal,
+                    "item_dup",
+                    "item_ok",
+                    lineaInicio: 10,
+                    lineaFin: 13,
+                    allowMultiple: true);
+
+                _ = resDup.Should().Contain("2 reemplazo(s) realizado(s)");
+                string leidoDup = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = leidoDup.Should().NotContain("item_dup");
+                _ = leidoDup.Should().Contain("item_ok\nitem_ok\n");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
+            }
+        }
+
+        [Fact]
+        public async Task ListarDirectorios_ExcluyeDirectoriosRuidososYDevuelveRutasRelativas()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_tree_test_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src", "models"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "src", "views"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules", "pkg"));
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, ".git", "objects"));
+
+                // Act
+                string res = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, 3, 100);
+
+                // Assert
+                _ = res.Should().Contain("src");
+                _ = res.Should().Contain("src/models");
+                _ = res.Should().Contain("src/views");
+                _ = res.Should().NotContain("node_modules");
+                _ = res.Should().NotContain(".git");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task Buscar_ConExtension_FiltraPorExtensionCorrecta()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_ext_test_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                string f1 = Path.Combine(dirTemporal, "f1.py");
+                string f2 = Path.Combine(dirTemporal, "f2.txt");
+                await File.WriteAllTextAsync(f1, "CLAVE_MAGICA\n");
+                await File.WriteAllTextAsync(f2, "CLAVE_MAGICA\n");
+
+                // Act
+                string res = await herramientas.BuscarAsync(sshd.Destino.Clave, "CLAVE_MAGICA", dirTemporal, extension: "py");
+
+                // Assert
+                _ = res.Should().Contain("f1.py");
+                _ = res.Should().NotContain("f2.txt");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task BuscarPorNombre_EncuentraArchivosPorPatronGlob()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string dirTemporal = Path.Combine(Path.GetTempPath(), $"ns_find_test_{Guid.NewGuid():N}");
+            try
+            {
+                _ = Directory.CreateDirectory(dirTemporal);
+                _ = Directory.CreateDirectory(Path.Combine(dirTemporal, "node_modules"));
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "docker-compose.yml"), "version: '3'\n");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "app.service"), "[Unit]\n");
+                await File.WriteAllTextAsync(Path.Combine(dirTemporal, "node_modules", "bad.service"), "[Unit]\n");
+
+                // Act
+                string res = await herramientas.BuscarPorNombreAsync(sshd.Destino.Clave, "*.service", dirTemporal, tipo: "file");
+
+                // Assert
+                _ = res.Should().Contain("app.service");
+                _ = res.Should().NotContain("bad.service");
+                _ = res.Should().NotContain("docker-compose.yml");
+            }
+            finally
+            {
+                if (Directory.Exists(dirTemporal))
+                    Directory.Delete(dirTemporal, recursive: true);
+            }
+        }
+
+        [Fact]
+        public async Task ConsultarMetadatos_ArchivoExistenteEInexistente()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = sshd.Opciones();
+            FabricaConexionSsh fabrica = sshd.Fabrica(opciones);
+            await using GestorSesiones gestor = new(
+                fabrica,
+                new LimitadorConexiones(opciones, TimeProvider.System),
+                new RegistroPeticiones(opciones, TimeProvider.System),
+                opciones,
+                TimeProvider.System,
+                NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            string archivoTemporal = Path.Combine(Path.GetTempPath(), $"ns_stat_test_{Guid.NewGuid():N}.txt");
+            string rutaInexistente = Path.Combine(Path.GetTempPath(), $"ns_no_existe_{Guid.NewGuid():N}.txt");
+            try
+            {
+                await File.WriteAllTextAsync(archivoTemporal, "123456789012345"); // 15 bytes
+
+                // Act 1: Archivo existente
+                string resExistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, archivoTemporal);
+                using JsonDocument docExistente = JsonDocument.Parse(resExistente);
+                _ = docExistente.RootElement.GetProperty("existe").GetBoolean().Should().BeTrue();
+                _ = docExistente.RootElement.GetProperty("tamanoBytes").GetInt64().Should().Be(15);
+                _ = docExistente.RootElement.GetProperty("tamanoHumano").GetString().Should().Be("15 B");
+
+                // Act 2: Archivo inexistente
+                string resInexistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, rutaInexistente);
+                using JsonDocument docInexistente = JsonDocument.Parse(resInexistente);
+                _ = docInexistente.RootElement.GetProperty("existe").GetBoolean().Should().BeFalse();
+                _ = docInexistente.RootElement.GetProperty("mensaje").GetString().Should().Contain("no existe");
+            }
+            finally
+            {
+                if (File.Exists(archivoTemporal))
+                    File.Delete(archivoTemporal);
             }
         }
     }

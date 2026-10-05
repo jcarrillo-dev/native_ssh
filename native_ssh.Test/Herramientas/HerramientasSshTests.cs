@@ -1,6 +1,7 @@
 using FluentAssertions;
 using System.Globalization;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -29,6 +30,13 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
+            comando.Contains("-o -type d -print") ? SimularListDir(comando) :
+            comando.Contains("find -L . -maxdepth") ? SimularFind(comando) :
+            comando.Contains("stat -c") ? SimularStat(comando) :
+            comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
+            comando.Contains("unset __NS_CWD") ? new("/home/ana\n", 0) :
+            comando.StartsWith("export __NS_CWD=", StringComparison.Ordinal) ? new("", 0) :
+            comando.Contains("base64 <") ? SimularLecturaBase64(comando) :
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
@@ -36,6 +44,24 @@ namespace NativeSsh.Test.Herramientas
                 "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
                 _ => new($"eco:{comando}\n", 2)
             };
+
+        private static RespuestaFalsa SimularLecturaBase64(string comando) =>
+            comando.Contains("archivo_inexistente.txt", StringComparison.Ordinal)
+                ? new("Error: el archivo no existe: archivo_inexistente.txt\n", 1)
+                : comando.Contains("es_directorio/", StringComparison.Ordinal)
+                    ? new("Error: la ruta es un directorio: es_directorio/\n", 1)
+                    : comando.Contains("archivo_multiples.txt", StringComparison.Ordinal)
+                        ? new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nrepetido\nrepetido\nlinea 4\n")) + "\n", 0)
+                        : new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n")) + "\n", 0);
+
+        private static RespuestaFalsa SimularValidacionCwd(string comando) =>
+            comando.Contains("ruta_inexistente")
+                ? new("Error: la ruta no existe: ruta_inexistente\n", 1)
+                : comando.Contains("es_archivo.txt")
+                    ? new("Error: la ruta no es un directorio: es_archivo.txt\n", 1)
+                    : comando.Contains("/var/www/proyecto")
+                        ? new("/var/www/proyecto\n", 0)
+                        : new("/tmp/trabajo\n", 0);
 
         private static RespuestaFalsa SimularBusqueda(string comando)
         {
@@ -59,6 +85,29 @@ namespace NativeSsh.Test.Herramientas
 
             return new("archivo.txt:1:coincidencia encontrada\n", 0);
         }
+
+        private static RespuestaFalsa SimularListDir(string comando) =>
+            comando.Contains("ruta_inexistente")
+                ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1)
+                : comando.Contains("es_archivo.txt")
+                    ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1)
+                    : comando.Contains("vacio")
+                        ? new("", 0)
+                        : new("src\nsrc/models\nsrc/views\n", 0);
+
+        private static RespuestaFalsa SimularFind(string comando) =>
+            comando.Contains("ruta_inexistente")
+                ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1)
+                : comando.Contains("sin_coincidencias")
+                    ? new("", 0)
+                    : new("app.service\nnginx.conf\n", 0);
+
+        private static RespuestaFalsa SimularStat(string comando) =>
+            comando.Contains("no_existe.txt")
+                ? new("NO_EXISTE\n", 0)
+                : comando.Contains("fichero_invalido")
+                    ? new("error en stat\n", 1)
+                    : new("fichero regular|2048|644|2026-10-05 01:00:00\n", 0);
 
         private static RespuestaFalsa SimularEscritura(string comando) =>
             comando.Contains("ya_existe.txt") && comando.Contains("el archivo ya existe")
@@ -383,6 +432,231 @@ namespace NativeSsh.Test.Herramientas
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.BuscarAsync("servidor", "error_fatal")).Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Contain("error de sintaxis");
+        }
+
+        [Theory]
+        [InlineData("py", "--include='*.py'")]
+        [InlineData(".ts", "--include='*.ts'")]
+        [InlineData("*.json", "--include='*.json'")]
+        public async Task Search_ConExtension_IncluyeFlagInclude(string extension, string esperado)
+        {
+            // Act
+            _ = await _herramientas.BuscarAsync("servidor", "patron", extension: extension);
+
+            // Assert
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(esperado));
+        }
+
+        [Fact]
+        public async Task ListDir_RutaInexistente_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.ListarDirectoriosAsync("servidor", "ruta_inexistente")).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("la ruta de exploración no existe");
+        }
+
+        [Fact]
+        public async Task ListDir_SinSubdirectorios_DevuelveMensajeInformativo()
+        {
+            // Act
+            string resultado = await _herramientas.ListarDirectoriosAsync("servidor", "vacio");
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron subdirectorios en 'vacio'.");
+        }
+
+        [Fact]
+        public async Task ListDir_ConDirectorios_DevuelveListadoOrdenado()
+        {
+            // Act
+            string resultado = await _herramientas.ListarDirectoriosAsync("servidor", "proyecto");
+
+            // Assert
+            _ = resultado.Should().Be("src\nsrc/models\nsrc/views");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("find -L . -maxdepth 3 -mindepth 1"));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task Find_PatronVacio_LanzaExcepcion(string? patron)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.BuscarPorNombreAsync("servidor", patron!)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("El patrón de búsqueda no puede estar vacío");
+        }
+
+        [Fact]
+        public async Task Find_SinResultados_DevuelveMensajeInformativo()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarPorNombreAsync("servidor", "sin_coincidencias");
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron elementos que coincidan con 'sin_coincidencias' en '.'.");
+        }
+
+        [Fact]
+        public async Task Find_ConResultados_DevuelveRutasOrdenadas()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarPorNombreAsync("servidor", "*.service");
+
+            // Assert
+            _ = resultado.Should().Be("app.service\nnginx.conf");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-name '*.service'"));
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task Stat_RutaVacia_LanzaExcepcion(string? ruta)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.ConsultarMetadatosAsync("servidor", ruta!)).Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("La ruta no puede estar vacía");
+        }
+
+        [Fact]
+        public async Task Stat_ArchivoInexistente_DevuelveExisteFalse()
+        {
+            // Act
+            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "no_existe.txt");
+
+            // Assert
+            using JsonDocument doc = JsonDocument.Parse(resultado);
+            _ = doc.RootElement.GetProperty("existe").GetBoolean().Should().BeFalse();
+            _ = doc.RootElement.GetProperty("ruta").GetString().Should().Be("no_existe.txt");
+            _ = doc.RootElement.GetProperty("mensaje").GetString().Should().Contain("no existe");
+        }
+
+        [Fact]
+        public async Task Stat_ArchivoExistente_DevuelveMetadatosJson()
+        {
+            // Act
+            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
+
+            // Assert
+            using JsonDocument doc = JsonDocument.Parse(resultado);
+            _ = doc.RootElement.GetProperty("existe").GetBoolean().Should().BeTrue();
+            _ = doc.RootElement.GetProperty("tipo").GetString().Should().Be("fichero regular");
+            _ = doc.RootElement.GetProperty("tamanoBytes").GetInt64().Should().Be(2048);
+            _ = doc.RootElement.GetProperty("tamanoHumano").GetString().Should().Be("2 KiB");
+            _ = doc.RootElement.GetProperty("permisos").GetString().Should().Be("644");
+            _ = doc.RootElement.GetProperty("ultimaModificacion").GetString().Should().Be("2026-10-05 01:00:00");
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public async Task SetCwd_RutaVaciaONull_RestableceHome(string? ruta)
+        {
+            // Act
+            string resultado = await _herramientas.FijarDirectorioAsync("servidor", ruta);
+
+            // Assert
+            _ = resultado.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("unset __NS_CWD"));
+        }
+
+        [Fact]
+        public async Task SetCwd_RutaInexistente_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.FijarDirectorioAsync("servidor", "ruta_inexistente"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain("la ruta no existe: ruta_inexistente");
+        }
+
+        [Fact]
+        public async Task SetCwd_RutaValida_FijaVariable()
+        {
+            // Act
+            string resultado = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+
+            // Assert
+            _ = resultado.Should().Be("Directorio de trabajo persistente fijado a: /var/www/proyecto");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("export __NS_CWD='/var/www/proyecto'"));
+        }
+
+        [Theory]
+        [InlineData("", "target", 1, 5, "vacía")]
+        [InlineData("   ", "target", 1, 5, "vacía")]
+        [InlineData("archivo.txt", "", 1, 5, "targetContent")]
+        [InlineData("archivo.txt", "target", 0, 5, "mayor o igual a 1")]
+        [InlineData("archivo.txt", "target", 5, 2, "no puede ser menor")]
+        public async Task ReplaceFileContent_ParametrosInvalidos_LanzaExcepcion(string ruta, string target, int inicio, int fin, string mensajeEsperado)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.ReemplazarContenidoArchivoAsync("servidor", ruta, target, "replacement", inicio, fin))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain(mensajeEsperado);
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_TargetNoEncontradoEnRango_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "inexistente", "nuevo", 1, 3))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain("No se encontró 'targetContent' en el rango de líneas 1-3");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_MultiplesAparicionesSinAllowMultiple_LanzaExcepcion()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() =>
+                _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_multiples.txt", "repetido", "nuevo", 1, 4, allowMultiple: false))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            _ = error.Message.Should().Contain("Se encontraron 2 apariciones de 'targetContent'");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ReemplazoExitoso_DevuelveMensajeConfirmacion()
+        {
+            // Act
+            string resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
+                "servidor",
+                "archivo_prueba.txt",
+                "linea 3",
+                "linea 3 modificada",
+                lineaInicio: 2,
+                lineaFin: 4);
+
+            // Assert
+            _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_prueba.txt (1 reemplazo(s) realizado(s)).");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("base64 -d"));
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ConAllowMultiple_ReemplazaTodas()
+        {
+            // Act
+            string resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
+                "servidor",
+                "archivo_multiples.txt",
+                "repetido",
+                "cambiado",
+                lineaInicio: 1,
+                lineaFin: 4,
+                allowMultiple: true);
+
+            // Assert
+            _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_multiples.txt (2 reemplazo(s) realizado(s)).");
         }
     }
 }

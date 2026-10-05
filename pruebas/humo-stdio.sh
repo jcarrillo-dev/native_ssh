@@ -63,7 +63,7 @@ comprobar(inicio["result"]["serverInfo"]["name"] == "native_ssh", "initialize")
 enviar("notifications/initialized", notificacion=True)
 
 herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
-comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_input", "ssh_output", "ssh_read_file", "ssh_reset_shell", "ssh_search", "ssh_status", "ssh_write_file"], f"tools/list: {herramientas}")
+comprobar(herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_find", "ssh_input", "ssh_list_dir", "ssh_output", "ssh_read_file", "ssh_replace_file_content", "ssh_reset_shell", "ssh_search", "ssh_set_cwd", "ssh_stat", "ssh_status", "ssh_write_file"], f"tools/list: {herramientas}")
 
 es_error, texto = llamar("ssh_exec", {"destino": destino, "comando": "export NS_HUMO=1; echo hola"})
 datos = json.loads(texto)
@@ -81,7 +81,32 @@ comprobar(not es_error and contenido == "[Líneas 2-3 de 4]\nlinea2\nlinea3\n", 
 es_error, texto_search = llamar("ssh_search", {"destino": destino, "ruta": "/tmp", "patron": "linea3"})
 comprobar(not es_error and "/tmp/ns_humo_test.txt" in texto_search and "linea3" in texto_search, f"ssh_search: {texto_search}")
 
+es_error, texto_replace = llamar("ssh_replace_file_content", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 2, "targetContent": "linea2\n", "replacementContent": "linea2_modificada\n"})
+comprobar(not es_error and "modificado quirúrgicamente" in texto_replace, f"ssh_replace_file_content: {texto_replace}")
+
+es_error, contenido_mod = llamar("ssh_read_file", {"destino": destino, "ruta": "/tmp/ns_humo_test.txt", "lineaInicio": 2, "lineaFin": 3})
+comprobar(not es_error and contenido_mod == "[Líneas 2-3 de 4]\nlinea2_modificada\nlinea3\n", f"ssh_read_file post-replace: {contenido_mod}")
+
+es_error, texto_find = llamar("ssh_find", {"destino": destino, "ruta": "/tmp", "patron": "*.txt"})
+comprobar(not es_error and "ns_humo_test.txt" in texto_find, f"ssh_find: {texto_find}")
+
+es_error, texto_stat = llamar("ssh_stat", {"destino": destino, "ruta": "/tmp"})
+datos_stat = json.loads(texto_stat)
+comprobar(not es_error and datos_stat["existe"], f"ssh_stat: {texto_stat}")
+
 llamar("ssh_exec", {"destino": destino, "comando": "rm -f /tmp/ns_humo_test.txt"})
+
+es_error, texto_cwd = llamar("ssh_set_cwd", {"destino": destino, "ruta": "/tmp"})
+comprobar(not es_error and "/tmp" in texto_cwd, f"ssh_set_cwd fijar: {texto_cwd}")
+
+_, texto_pwd = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
+comprobar(json.loads(texto_pwd)["salida"].strip() == "/tmp", f"ssh_exec en cwd /tmp: {texto_pwd}")
+
+es_error, texto_cwd_reset = llamar("ssh_set_cwd", {"destino": destino, "ruta": None})
+comprobar(not es_error and "restablecido" in texto_cwd_reset, f"ssh_set_cwd reset: {texto_cwd_reset}")
+
+_, texto_pwd_reset = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
+comprobar(json.loads(texto_pwd_reset)["salida"].strip() != "/tmp", f"ssh_exec en cwd reset: {texto_pwd_reset}")
 
 _, texto = llamar("ssh_exec", {"destino": destino, "comando": "sleep 30", "esperarSegundos": 0})
 id_lento = json.loads(texto)["id"]
