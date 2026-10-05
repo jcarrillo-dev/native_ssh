@@ -50,16 +50,24 @@ namespace NativeSsh.Test.Herramientas
             };
 
         private static RespuestaFalsa SimularLecturaBase64(string comando) =>
-            comando.Contains("archivo_latin1.txt", StringComparison.Ordinal) ? new(Convert.ToBase64String([.. "caf"u8, 0xE9, .. "\nlinea 2\n"u8]) + "\n", 0) :
-            comando.Contains("archivo_binario.bin", StringComparison.Ordinal) ? new(Convert.ToBase64String([.. "linea 1\n"u8, 0x00, 0x01, .. "\n"u8]) + "\n", 0) :
-            comando.Contains("archivo_bom.txt", StringComparison.Ordinal) ? new(Convert.ToBase64String([0xEF, 0xBB, 0xBF, .. "linea 1\nlinea 2\n"u8]) + "\n", 0) :
+            comando.Contains("archivo_latin1.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, [.. "caf"u8, 0xE9, .. "\nlinea 2\n"u8]) :
+            comando.Contains("archivo_binario.bin", StringComparison.Ordinal) ? EnmarcarBase64(comando, [.. "linea 1\n"u8, 0x00, 0x01, .. "\n"u8]) :
+            comando.Contains("archivo_bom.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, [0xEF, 0xBB, 0xBF, .. "linea 1\nlinea 2\n"u8]) :
             comando.Contains("archivo_inexistente.txt", StringComparison.Ordinal)
                 ? new("Error: el archivo no existe: archivo_inexistente.txt\n", 1)
                 : comando.Contains("es_directorio/", StringComparison.Ordinal)
                     ? new("Error: la ruta es un directorio: es_directorio/\n", 1)
                     : comando.Contains("archivo_multiples.txt", StringComparison.Ordinal)
-                        ? new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nrepetido\nrepetido\nlinea 4\n")) + "\n", 0)
-                        : new(Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n")) + "\n", 0);
+                        ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes("linea 1\nrepetido\nrepetido\nlinea 4\n"))
+                        : EnmarcarBase64(comando, Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n"));
+
+        // Responde como el script real: el base64 entre los marcadores con el id de la petición y el tamaño del archivo.
+        private static RespuestaFalsa EnmarcarBase64(string comando, byte[] bytes)
+        {
+            int posicion = comando.IndexOf("INICIO ", StringComparison.Ordinal) + "INICIO ".Length;
+            string id = comando[posicion..(posicion + 32)];
+            return new($"__NS_B64_INICIO_{id}__\n{Convert.ToBase64String(bytes)}\n__NS_B64_FIN_{id}__ {bytes.Length}\n", 0);
+        }
 
         // Más de 16 KiB por encima de MaxBytesSalidaPorPeticion de las pruebas de descarte: el principio se pierde.
         private const int BytesSalidaEnorme = 64 * 1024;
@@ -615,6 +623,62 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = Base64ConSaltos(maximo).Should().BeLessThanOrEqualTo(disponible);
             _ = Base64ConSaltos(maximo + 1).Should().BeGreaterThan(disponible);
+        }
+
+        private const string IdMarcas = "0123456789abcdef0123456789abcdef";
+        private const string MarcaInicio = "__NS_B64_INICIO_" + IdMarcas + "__";
+        private const string MarcaFin = "__NS_B64_FIN_" + IdMarcas + "__";
+
+        [Fact]
+        public void ExtraerArchivoEntreMarcadores_ConAvisosAlrededor_DevuelveSoloElContenido()
+        {
+            // Arrange: avisos de solo letras (base64 válido) antes y después, y CRLF del terminal.
+            string salida = $"Info root\r\nsudo: aviso\n{MarcaInicio}\r\naG9sYQo=\r\n{MarcaFin} 5\r\nInfo root\n";
+
+            // Act
+            byte[] bytes = HerramientasSsh.ExtraerArchivoEntreMarcadores(salida, IdMarcas, "a.txt");
+
+            // Assert
+            _ = Encoding.UTF8.GetString(bytes).Should().Be("hola\n");
+        }
+
+        [Fact]
+        public void ExtraerArchivoEntreMarcadores_ArchivoVacio_DevuelveCeroBytes()
+        {
+            // Act
+            byte[] bytes = HerramientasSsh.ExtraerArchivoEntreMarcadores($"{MarcaInicio}\n\n{MarcaFin} 0\n", IdMarcas, "vacio.txt");
+
+            // Assert
+            _ = bytes.Should().BeEmpty();
+        }
+
+        public static TheoryData<string, string> SalidasDeLecturaInvalidas => new()
+        {
+            { "aG9sYQo=\n", "marcadores esperados (inicio: 0, fin: 0)" },
+            { $"{MarcaInicio}\naG9sYQo=\n", "marcadores esperados (inicio: 1, fin: 0)" },
+            { $"{MarcaFin} 5\n{MarcaInicio}\naG9sYQo=\n", "marcadores esperados (inicio: 1, fin: 1)" },
+            { $"{MarcaInicio}\n{MarcaInicio}\naG9sYQo=\n{MarcaFin} 5\n", "marcadores esperados (inicio: 2, fin: 1)" },
+            { $"{MarcaInicio}\naG9sYQo=\n{MarcaFin} 5\n{MarcaFin} 5\n", "marcadores esperados (inicio: 1, fin: 2)" },
+            { "__NS_B64_INICIO_ffffffffffffffffffffffffffffffff__\naG9sYQo=\n__NS_B64_FIN_ffffffffffffffffffffffffffffffff__ 5\n", "marcadores esperados (inicio: 0, fin: 0)" },
+            { $"Aviso{MarcaInicio}\naG9sYQo=\n{MarcaFin} 5\n", "marcadores esperados (inicio: 0, fin: 1)" },
+            { $"{MarcaInicio}\naG9sYQo=\n{MarcaFin} cinco\n", "no indicó el tamaño" },
+            { $"{MarcaInicio}\nsudo: aviso\naG9sYQo=\n{MarcaFin} 5\n", "texto ajeno al base64" },
+            { $"{MarcaInicio}\nInfo root\naG9sYQo=\n{MarcaFin} 5\n", "texto ajeno al base64" },
+            { $"{MarcaInicio}\nSGVs\naG9sYQo=\n{MarcaFin} 5\n", "Se leyeron 8 bytes" },
+            { $"{MarcaInicio}\naG9sYQo\n{MarcaFin} 5\n", "no devolvió base64 válido" },
+            { $"{MarcaInicio}\naG9sYQo=\n{MarcaFin} 9\n", "pero stat indicó 9" },
+        };
+
+        [Theory]
+        [MemberData(nameof(SalidasDeLecturaInvalidas))]
+        public void ExtraerArchivoEntreMarcadores_SalidaMezcladaOIncompleta_LanzaSinDevolverContenido(string salida, string mensajeEsperado)
+        {
+            // Act
+            NativeSshException error = FluentActions.Invoking(() => HerramientasSsh.ExtraerArchivoEntreMarcadores(salida, IdMarcas, "a.txt"))
+                .Should().Throw<NativeSshException>().Which;
+
+            // Assert
+            _ = error.Message.Should().Contain(mensajeEsperado).And.Contain("No se ha escrito nada en 'a.txt'.");
         }
 
         private static string DescripcionDe(string metodo) =>

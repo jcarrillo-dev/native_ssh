@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
@@ -660,8 +661,11 @@ namespace NativeSsh.Herramientas
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
+            string idMarcas = Guid.NewGuid().ToString("N");
             // Con sudo=true todas las comprobaciones van con sudo: sin él, un archivo en un directorio que el usuario no
-            // puede atravesar parece no existir.
+            // puede atravesar parece no existir. El base64 se imprime entre marcadores (ver ExtraerArchivoEntreMarcadores)
+            // y se lee entero antes del primero, así que el stderr de cat y base64 nunca cae entre ellos. Los marcadores se
+            // componen con printf para que su texto literal no aparezca en el propio script.
             string comandoLectura = EnvolverEnBash($$"""
                 ruta=$1
                 if [ ! -e "$ruta" ]; then
@@ -681,7 +685,10 @@ namespace NativeSsh.Herramientas
                   printf 'Error: el archivo %s ocupa %s bytes y supera el máximo editable con ssh_replace_file_content ({{maxBytesEditable}} bytes). No se ha modificado.\n' "$ruta" "$tam" >&2
                   exit 1
                 fi
-                cat -- "$ruta" | base64
+                b64=$(cat -- "$ruta" | base64) || exit 1
+                printf '{{PrefijoMarcaBase64}}%s_%s__\n' INICIO {{idMarcas}}
+                printf '%s\n' "$b64"
+                printf '{{PrefijoMarcaBase64}}%s_%s__ %s\n' FIN {{idMarcas}} "$tam"
                 """, sudo, rutaEscapada);
 
             Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, cancellationToken).ConfigureAwait(false);
@@ -693,8 +700,8 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al leer el archivo para reemplazo (código {peticionLectura.CodigoSalida})." : salidaError);
             }
 
-            string salidaBase64 = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.").Replace("\r", string.Empty, StringComparison.Ordinal).Replace("\n", string.Empty, StringComparison.Ordinal).Trim();
-            string textoOriginal = DecodificarArchivoUtf8(salidaBase64, ruta);
+            string salidaLectura = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.");
+            string textoOriginal = DecodificarArchivoUtf8(ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta), ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
             string targetNormalizado = targetContent.ReplaceLineEndings(separador);
@@ -902,17 +909,72 @@ namespace NativeSsh.Herramientas
                 ? " Escritura no atómica: no se podía conservar el propietario o el modo del original, o tiene enlaces duros, ACL o atributos extendidos, así que se sobrescribió en el sitio conservando inodo, modo, propietario, enlaces duros, ACL y atributos extendidos."
                 : string.Empty;
 
+        private const string PrefijoMarcaBase64 = "__NS_B64_";
+        private static readonly SearchValues<char> CaracteresBase64 = SearchValues.Create("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=");
+
+        // La lectura previa de ssh_replace_file_content va por el PTY, donde el stderr (avisos de sudo, trabajos en segundo
+        // plano...) se mezcla con stdout: un aviso de solo letras se colaría como base64 válido. El script imprime el base64
+        // entre una línea "__NS_B64_INICIO_<id>__" y otra "__NS_B64_FIN_<id>__ <tamaño según stat>", con un id aleatorio
+        // por petición que nada ajeno puede imitar (y el base64 no contiene '_'). Solo se decodifica lo que hay entre ellas:
+        // cada marcador debe aparecer exactamente una vez y en orden, entre ellos solo puede haber base64 y lo decodificado
+        // debe medir lo que dijo stat (así tampoco pasa una línea ajena de solo letras ni un archivo que cambió al leerlo).
+        // Los marcadores caben de sobra en MargenSalidaBase64.
+        internal static byte[] ExtraerArchivoEntreMarcadores(string salida, string idMarcas, string ruta)
+        {
+            string marcaInicio = $"{PrefijoMarcaBase64}INICIO_{idMarcas}__";
+            string marcaFin = $"{PrefijoMarcaBase64}FIN_{idMarcas}__ ";
+            string[] lineas = salida.Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n');
+            int idxInicio = -1;
+            int idxFin = -1;
+            int inicios = 0;
+            int fines = 0;
+            for (int i = 0; i < lineas.Length; i++)
+            {
+                if (lineas[i] == marcaInicio)
+                {
+                    inicios++;
+                    idxInicio = i;
+                }
+                else if (lineas[i].StartsWith(marcaFin, StringComparison.Ordinal))
+                {
+                    fines++;
+                    idxFin = i;
+                }
+            }
+
+            string sinEscribir = $"No se ha escrito nada en '{ruta}'.";
+            if (inicios != 1 || fines != 1 || idxFin < idxInicio)
+                throw new NativeSshException($"La lectura de '{ruta}' no devolvió su contenido entre los marcadores esperados (inicio: {inicios}, fin: {fines}); ¿se interrumpió o se mezcló otra salida del terminal? {sinEscribir}");
+
+            if (!long.TryParse(lineas[idxFin].AsSpan(marcaFin.Length), NumberStyles.None, CultureInfo.InvariantCulture, out long tamanoEsperado))
+                throw new NativeSshException($"La lectura de '{ruta}' no indicó el tamaño del archivo en su marcador final. {sinEscribir}");
+
+            string contenido = string.Concat(lineas.AsSpan(idxInicio + 1, idxFin - idxInicio - 1));
+            if (contenido.AsSpan().ContainsAnyExcept(CaracteresBase64))
+                throw new NativeSshException($"La lectura de '{ruta}' tiene texto ajeno al base64 entre sus marcadores (¿avisos de sudo o de otro proceso mezclados con la salida?). {sinEscribir}");
+
+            byte[] bytes;
+            try
+            {
+                bytes = Convert.FromBase64String(contenido);
+            }
+            catch (FormatException)
+            {
+                throw new NativeSshException($"La lectura de '{ruta}' no devolvió base64 válido entre sus marcadores (¿avisos de sudo o de otro proceso mezclados con la salida?). {sinEscribir}");
+            }
+
+            return bytes.LongLength != tamanoEsperado
+                ? throw new NativeSshException($"Se leyeron {bytes.LongLength} bytes de '{ruta}', pero stat indicó {tamanoEsperado}: el archivo cambió mientras se leía o se mezcló otra salida del terminal. {sinEscribir}")
+                : bytes;
+        }
+
         // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
-        private static string DecodificarArchivoUtf8(string salidaBase64, string ruta)
+        private static string DecodificarArchivoUtf8(byte[] bytes, string ruta)
         {
             string texto;
             try
             {
-                texto = Utf8Estricto.GetString(Convert.FromBase64String(salidaBase64));
-            }
-            catch (FormatException)
-            {
-                throw new NativeSshException($"La lectura de '{ruta}' no devolvió base64 válido (¿avisos de sudo o del shell mezclados con la salida?). No se ha escrito nada.");
+                texto = Utf8Estricto.GetString(bytes);
             }
             catch (DecoderFallbackException)
             {

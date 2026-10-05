@@ -754,5 +754,51 @@ namespace NativeSsh.Test.Integracion
             _ = Stat(archivo).Should().Be(stat);
             _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
         }
+
+        // S10: la lectura previa de ssh_replace_file_content va por el PTY, donde el stderr de sudo se mezcla con el
+        // base64. Un aviso con caracteres ajenos al base64 hacía fallar la edición; uno de solo letras (múltiplo de 4 y
+        // UTF-8 válido al decodificarlo, como "Info root") se colaba delante del contenido y se escribía en el archivo.
+        [Theory]
+        [InlineData("sudo: unable to resolve host xyz: Name or service not known")]
+        [InlineData("Info root")]
+        public async Task ReemplazarContenido_ConSudoQueAvisaPorStderr_EditaSoloElContenidoDelArchivo(string aviso)
+        {
+            // Arrange
+            string archivo = Ruta("con_aviso.txt");
+            await File.WriteAllTextAsync(archivo, "objetivo\nsegunda\n");
+            HerramientasSsh herramientas = Herramientas();
+            await SustituirComandoAsync(herramientas, "sudo", $"echo '{aviso}' >&2\nexec \"$@\"");
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "objetivo", "cambiado", sudo: true);
+
+            // Assert
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = resultado.Bytes.Should().Be(17);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("cambiado\nsegunda\n");
+            _ = Directory.GetFiles(_directorio).Should().ContainSingle();
+        }
+
+        // Los marcadores y un aviso de sudo caben en el margen reservado: el archivo del tamaño máximo documentado
+        // (773 184 bytes con el máximo por defecto) sigue siendo editable.
+        [Fact]
+        public async Task ReemplazarContenido_ArchivoDelTamanoMaximoEditableConAvisoDeSudo_SeEdita()
+        {
+            // Arrange
+            string archivo = Ruta("limite.txt");
+            string contenido = "objetivo\n" + new string('x', 773_184 - 10) + "\n";
+            await File.WriteAllTextAsync(archivo, contenido);
+            HerramientasSsh herramientas = Herramientas();
+            await SustituirComandoAsync(herramientas, "sudo", "echo 'sudo: unable to resolve host xyz: Name or service not known' >&2\nexec \"$@\"");
+
+            // Act
+            ResultadoEscritura resultado = await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "objetivo", "cambiado", sudo: true);
+
+            // Assert
+            _ = new FileInfo(archivo).Length.Should().Be(773_184);
+            _ = contenido.Length.Should().Be(773_184);
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("cambiado" + contenido["objetivo".Length..]);
+        }
     }
 }
