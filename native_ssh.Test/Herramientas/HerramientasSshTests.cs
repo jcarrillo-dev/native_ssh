@@ -1591,6 +1591,36 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima.Should().BeNull();
         }
 
+        // Un sustituto UTF-16 suelto no tiene representación en UTF-8: codificarlo lo cambiaría por U+FFFD y la ruta, el
+        // patrón o el contenido llegarían cambiados. Se rechaza antes de enviar nada.
+        [Fact]
+        public async Task Herramientas_ValorConSustitutoUtf16Suelto_LanzanSinEnviarNada()
+        {
+            // Arrange
+            const string Suelto = "a\ud800b";
+            Func<Task>[] llamadas =
+            [
+                () => _herramientas.LeerArchivoAsync("servidor", Suelto),
+                () => _herramientas.ConsultarMetadatosAsync("servidor", Suelto),
+                () => _herramientas.BuscarAsync("servidor", Suelto),
+                () => _herramientas.BuscarAsync("servidor", "patron", Suelto),
+                () => _herramientas.BuscarAsync("servidor", "patron", extension: Suelto),
+                () => _herramientas.BuscarPorNombreAsync("servidor", Suelto),
+                () => _herramientas.ListarDirectoriosAsync("servidor", Suelto),
+                () => _herramientas.EscribirArchivoAsync("servidor", Suelto, "c", overwrite: true),
+                () => _herramientas.EscribirArchivoAsync("servidor", "a.txt", Suelto, overwrite: true),
+                () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", Suelto, "linea 3", "otra"),
+                () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", Suelto, "otra"),
+                () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", Suelto),
+                () => _herramientas.FijarDirectorioAsync("servidor", Suelto),
+            ];
+
+            // Act & Assert
+            foreach (Func<Task> llamada in llamadas)
+                _ = (await FluentActions.Awaiting(llamada).Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("UTF-16");
+            _ = _fabrica.Ultima.Should().BeNull();
+        }
+
         [Theory]
         [InlineData("pm2 list | grep online")]
         [InlineData("systemctl status mi-app | grep Active")]

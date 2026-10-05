@@ -187,7 +187,7 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
-            ExigirSinNul(ruta, "La ruta");
+            ExigirValorLiteral(ruta, "La ruta");
             bool isDesdeElFinal = lineaInicio < 0;
             if (isDesdeElFinal && lineaFin is not null)
                 throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
@@ -271,7 +271,8 @@ namespace NativeSsh.Herramientas
             if (overwrite && append)
                 throw new NativeSshException("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
 
-            ExigirSinNul(ruta, "La ruta");
+            ExigirValorLiteral(ruta, "La ruta");
+            ExigirUtf16Valido(contenido ?? string.Empty, "El contenido");
             byte[] bytesUtf8 = Encoding.UTF8.GetBytes(contenido ?? string.Empty);
             string payloadBase64 = Convert.ToBase64String(bytesUtf8);
             string rutaEscapada = Escapar(ruta);
@@ -316,9 +317,9 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
-            ExigirSinNul(patron, "El patrón");
-            ExigirSinNul(ruta ?? string.Empty, "La ruta");
-            ExigirSinNul(extension ?? string.Empty, "La extensión");
+            ExigirValorLiteral(patron, "El patrón");
+            ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
+            ExigirValorLiteral(extension ?? string.Empty, "La extensión");
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
@@ -428,12 +429,29 @@ namespace NativeSsh.Herramientas
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
-        // Un NUL no puede llegar al servidor: no cabe en un argumento y bash lo descarta al decodificar el script con
-        // '$(... | base64 -d)', así que la ruta o el patrón serían otros. Se rechaza antes de enviar nada.
-        private static void ExigirSinNul(string valor, string nombre)
+        // Un valor que va dentro del script debe llegar al servidor tal cual. Un NUL no cabe en un argumento y bash lo
+        // descarta al decodificar el script con '$(... | base64 -d)': la ruta o el patrón serían otros. Se rechaza antes de
+        // enviar nada, igual que un texto que no es UTF-16 válido (ExigirUtf16Valido).
+        private static void ExigirValorLiteral(string valor, string nombre)
         {
             if (valor.Contains('\0', StringComparison.Ordinal))
                 throw new NativeSshException($"{nombre} contiene un carácter NUL (\\0), que no puede formar parte de una ruta ni de un patrón.");
+
+            ExigirUtf16Valido(valor, nombre);
+        }
+
+        // Un sustituto UTF-16 suelto no tiene representación en UTF-8: al codificarlo se cambiaría por U+FFFD y la ruta, el
+        // patrón o el contenido llegarían cambiados. Se rechaza antes de enviar nada.
+        private static void ExigirUtf16Valido(string valor, string nombre)
+        {
+            try
+            {
+                _ = Utf8Estricto.GetByteCount(valor);
+            }
+            catch (EncoderFallbackException)
+            {
+                throw new NativeSshException($"{nombre} contiene un carácter UTF-16 inválido (un sustituto suelto) que no se puede representar en UTF-8: llegaría cambiado por U+FFFD. No se ha enviado nada.");
+            }
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
@@ -446,7 +464,7 @@ namespace NativeSsh.Herramientas
             [Description("Si es true, incluye también archivos inmediatos junto a los directorios (sustituyendo completamente a 'ls' o 'tree'). Por defecto false.")] bool incluirArchivos = false,
             CancellationToken cancellationToken = default)
         {
-            ExigirSinNul(ruta ?? string.Empty, "La ruta");
+            ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 10);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
@@ -512,8 +530,8 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(patron))
                 throw new NativeSshException("El patrón de búsqueda no puede estar vacío.");
 
-            ExigirSinNul(patron, "El patrón");
-            ExigirSinNul(ruta ?? string.Empty, "La ruta");
+            ExigirValorLiteral(patron, "El patrón");
+            ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrWhiteSpace(ruta) ? "." : ruta;
@@ -575,7 +593,7 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(ruta))
                 throw new NativeSshException("La ruta no puede estar vacía.");
 
-            ExigirSinNul(ruta, "La ruta");
+            ExigirValorLiteral(ruta, "La ruta");
             string rutaEscapada = Escapar(ruta);
 
             string comando = PlantillaBash.Crear($$"""
@@ -661,7 +679,7 @@ namespace NativeSsh.Herramientas
                 return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
             }
 
-            ExigirSinNul(ruta, "La ruta");
+            ExigirValorLiteral(ruta, "La ruta");
             string idMarca = Guid.NewGuid().ToString("N");
             // El directorio resuelto vuelve por el PTY, donde LimpiarAnsi quitaría el '\r' de un CRLF (y los ESC y BEL) y Trim
             // los blancos finales (NEL, LS, PS...): viaja en base64 en una línea marcada con un id aleatorio por petición.
@@ -778,7 +796,9 @@ namespace NativeSsh.Herramientas
             if (isConRango && lineaFin < lineaInicio)
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
-            ExigirSinNul(ruta, "La ruta");
+            ExigirValorLiteral(ruta, "La ruta");
+            ExigirUtf16Valido(targetContent, "targetContent");
+            ExigirUtf16Valido(replacementContent ?? string.Empty, "replacementContent");
             string rutaEscapada = Escapar(ruta);
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
             string idMarcas = Guid.NewGuid().ToString("N");
