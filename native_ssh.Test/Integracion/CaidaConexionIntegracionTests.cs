@@ -112,7 +112,7 @@ namespace NativeSsh.Test.Integracion
                 // Assert
                 _ = propios.Should().NotBeEmpty();
                 _ = fin.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
-                _ = fin.Aviso.Should().Contain("Se perdió la conexión SSH");
+                _ = fin.Aviso.Should().Contain("Se perdió la conexión SSH").And.Contain("antes de que terminara el comando, así que puede que no llegara a ejecutarse");
                 _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
                 _ = estado.IsConectada.Should().BeFalse();
                 _ = estado.IsShellActivo.Should().BeFalse();
