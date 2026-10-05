@@ -15,6 +15,8 @@ namespace NativeSsh.Herramientas
     [JsonSerializable(typeof(ResultadoEstado))]
     [JsonSerializable(typeof(ResultadoAccion))]
     [JsonSerializable(typeof(ResultadoMetadatos))]
+    [JsonSerializable(typeof(ResultadoEscritura))]
+    [JsonSerializable(typeof(ResultadoDirectorioTrabajo))]
     public sealed partial class ContextoJsonNativeSsh : JsonSerializerContext
     {
         // Opciones del SDK de MCP (tipos del protocolo y primitivos) más los contratos propios.

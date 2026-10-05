@@ -65,12 +65,12 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             string texto = await _herramientas.LeerArchivoAsync(Destino, Ruta("a.txt"));
-            string metadatos = await _herramientas.ConsultarMetadatosAsync(Destino, Ruta("a.txt"));
+            ResultadoMetadatos metadatos = await _herramientas.ConsultarMetadatosAsync(Destino, Ruta("a.txt"));
             reloj.Stop();
 
             // Assert
             _ = texto.Should().Be("[Líneas 1-1 de 1]\nuno\n");
-            _ = metadatos.Should().Contain("\"existe\":true");
+            _ = metadatos.Existe.Should().BeTrue();
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
             _ = _gestor.BuscarPeticion(largo.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
             _ = (await _herramientas.CancelarAsync(largo.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);

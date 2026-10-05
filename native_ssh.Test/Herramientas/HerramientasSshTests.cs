@@ -329,6 +329,18 @@ namespace NativeSsh.Test.Herramientas
         }
 
         [Fact]
+        public void Json_ContratosDeEscrituraYDirectorio_CamelCaseYSinNulos()
+        {
+            // Act
+            string escritura = JsonSerializer.Serialize(new ResultadoEscritura("a.txt", 3, null, false, "m"), ContextoJsonNativeSsh.OpcionesHerramientas);
+            string directorio = JsonSerializer.Serialize(new ResultadoDirectorioTrabajo("ana@s:22", null, "m"), ContextoJsonNativeSsh.OpcionesHerramientas);
+
+            // Assert
+            _ = escritura.Should().Be("{\"ruta\":\"a.txt\",\"bytes\":3,\"isAtomica\":false,\"mensaje\":\"m\"}");
+            _ = directorio.Should().Be("{\"destino\":\"ana@s:22\",\"mensaje\":\"m\"}");
+        }
+
+        [Fact]
         public async Task ReadFile_ConMetadatos_DevuelveCabeceraConTotalLineas()
         {
             // Simula comando que devuelve cabecera y contenido
@@ -460,7 +472,7 @@ namespace NativeSsh.Test.Herramientas
             // Act
             Task<string>[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3))];
             Task<ResultadoComando> comando = _herramientas.EjecutarAsync("servidor", "hola");
-            Task<string> metadatos = _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
+            Task<ResultadoMetadatos> metadatos = _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
             _ = await Task.WhenAll(lecturas).WaitAsync(TimeSpan.FromSeconds(5));
             ResultadoComando resultado = await comando.WaitAsync(TimeSpan.FromSeconds(5));
             _ = await metadatos.WaitAsync(TimeSpan.FromSeconds(5));
@@ -740,12 +752,13 @@ namespace NativeSsh.Test.Herramientas
         public async Task WriteFile_EscrituraEnElSitio_LoIndicaEnElMensaje()
         {
             // Act
-            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "no_atomico.txt", "hola", overwrite: true);
+            ResultadoEscritura resultado = await _herramientas.EscribirArchivoAsync("servidor", "no_atomico.txt", "hola", overwrite: true);
 
             // Assert
-            _ = resultado.Should().Contain("Archivo escrito correctamente: no_atomico.txt");
-            _ = resultado.Should().Contain("no atómica");
-            _ = resultado.Should().NotContain("__NS_");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("Archivo escrito correctamente: no_atomico.txt");
+            _ = resultado.Mensaje.Should().Contain("no atómica");
+            _ = resultado.Mensaje.Should().NotContain("__NS_");
         }
 
         [Fact]
@@ -760,22 +773,20 @@ namespace NativeSsh.Test.Herramientas
         public async Task WriteFile_EscrituraExitosa_DevuelveMensajeConfirmacion()
         {
             // Act
-            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola mundo");
+            ResultadoEscritura resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola mundo");
 
             // Assert
-            _ = resultado.Should().Contain("Archivo escrito correctamente: nuevo.txt");
-            _ = resultado.Should().Contain("10 bytes");
+            _ = resultado.Should().BeEquivalentTo(new ResultadoEscritura("nuevo.txt", 10, null, true, "Archivo escrito correctamente: nuevo.txt (10 bytes)."));
         }
 
         [Fact]
         public async Task WriteFile_AnexadoExitoso_DevuelveMensajeConfirmacion()
         {
             // Act
-            string resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola", append: true);
+            ResultadoEscritura resultado = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola", append: true);
 
-            // Assert
-            _ = resultado.Should().Contain("Contenido anexado correctamente a: nuevo.txt");
-            _ = resultado.Should().Contain("4 bytes");
+            // Assert: anexar con '>>' no promete atomicidad.
+            _ = resultado.Should().BeEquivalentTo(new ResultadoEscritura("nuevo.txt", 4, null, false, "Contenido anexado correctamente a: nuevo.txt (4 bytes)."));
         }
 
         [Theory]
@@ -1031,45 +1042,36 @@ namespace NativeSsh.Test.Herramientas
         public async Task Stat_ArchivoInexistente_DevuelveExisteFalse()
         {
             // Act
-            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "no_existe.txt");
+            ResultadoMetadatos resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "no_existe.txt");
 
             // Assert
-            using JsonDocument doc = JsonDocument.Parse(resultado);
-            _ = doc.RootElement.GetProperty("existe").GetBoolean().Should().BeFalse();
-            _ = doc.RootElement.GetProperty("ruta").GetString().Should().Be("no_existe.txt");
-            _ = doc.RootElement.GetProperty("mensaje").GetString().Should().Contain("no existe");
+            _ = resultado.Existe.Should().BeFalse();
+            _ = resultado.Ruta.Should().Be("no_existe.txt");
+            _ = resultado.Mensaje.Should().Contain("no existe");
         }
 
         [Fact]
         public async Task Stat_ArchivoExistente_DevuelveMetadatosJson()
         {
             // Act
-            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
+            ResultadoMetadatos resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
 
-            // Assert
-            using JsonDocument doc = JsonDocument.Parse(resultado);
-            _ = doc.RootElement.GetProperty("existe").GetBoolean().Should().BeTrue();
-            _ = doc.RootElement.GetProperty("tipo").GetString().Should().Be("fichero regular");
-            _ = doc.RootElement.GetProperty("tamanoBytes").GetInt64().Should().Be(2048);
-            _ = doc.RootElement.GetProperty("tamanoHumano").GetString().Should().Be("2 KiB");
-            _ = doc.RootElement.GetProperty("permisos").GetString().Should().Be("644");
-            _ = doc.RootElement.GetProperty("ultimaModificacion").GetString().Should().Be("2026-10-05 01:00:00");
-            _ = doc.RootElement.GetProperty("propietario").GetString().Should().Be("ana");
-            _ = doc.RootElement.GetProperty("grupo").GetString().Should().Be("devs");
-            _ = doc.RootElement.TryGetProperty("destinoEnlace", out _).Should().BeFalse();
+            // Assert: contrato estructurado (no un JSON serializado dentro de un string).
+            _ = resultado.Should().Be(new ResultadoMetadatos("archivo.txt", true, null, "fichero regular", 2048, "2 KiB", "644", "2026-10-05 01:00:00", "ana", "devs", null));
+            string json = JsonSerializer.Serialize(resultado, ContextoJsonNativeSsh.OpcionesHerramientas);
+            _ = json.Should().Contain("\"tamanoBytes\":2048").And.Contain("\"propietario\":\"ana\"").And.NotContain("destinoEnlace");
         }
 
         [Fact]
         public async Task Stat_EnlaceSimbolico_DevuelveDestinoEnlace()
         {
             // Act
-            string resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "enlace.txt");
+            ResultadoMetadatos resultado = await _herramientas.ConsultarMetadatosAsync("servidor", "enlace.txt");
 
             // Assert
-            using JsonDocument doc = JsonDocument.Parse(resultado);
-            _ = doc.RootElement.GetProperty("tipo").GetString().Should().Be("enlace simbólico");
-            _ = doc.RootElement.GetProperty("destinoEnlace").GetString().Should().Be("/etc/real.conf");
-            _ = doc.RootElement.GetProperty("propietario").GetString().Should().Be("ana");
+            _ = resultado.Tipo.Should().Be("enlace simbólico");
+            _ = resultado.DestinoEnlace.Should().Be("/etc/real.conf");
+            _ = resultado.Propietario.Should().Be("ana");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("readlink --", StringComparison.Ordinal));
         }
 
@@ -1080,10 +1082,10 @@ namespace NativeSsh.Test.Herramientas
         public async Task SetCwd_RutaVaciaONull_RestableceHome(string? ruta)
         {
             // Act
-            string resultado = await _herramientas.FijarDirectorioAsync("servidor", ruta);
+            ResultadoDirectorioTrabajo resultado = await _herramientas.FijarDirectorioAsync("servidor", ruta);
 
             // Assert
-            _ = resultado.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
+            _ = resultado.Should().Be(new ResultadoDirectorioTrabajo("ana@servidor:22", null, "Directorio de trabajo persistente restablecido a $HOME (~)."));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("unset __NS_CWD"));
         }
 
@@ -1102,10 +1104,10 @@ namespace NativeSsh.Test.Herramientas
         public async Task SetCwd_RutaValida_FijaVariable()
         {
             // Act
-            string resultado = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+            ResultadoDirectorioTrabajo resultado = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
 
             // Assert
-            _ = resultado.Should().Be("Directorio de trabajo persistente fijado a: /var/www/proyecto");
+            _ = resultado.Should().Be(new ResultadoDirectorioTrabajo("ana@servidor:22", "/var/www/proyecto", "Directorio de trabajo persistente fijado a: /var/www/proyecto"));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("export __NS_CWD='/var/www/proyecto'"));
         }
 
@@ -1151,7 +1153,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task ReplaceFileContent_ReemplazoExitoso_DevuelveMensajeConfirmacion()
         {
             // Act
-            string resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
+            ResultadoEscritura resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
                 "servidor",
                 "archivo_prueba.txt",
                 "linea 3",
@@ -1159,8 +1161,8 @@ namespace NativeSsh.Test.Herramientas
                 lineaInicio: 2,
                 lineaFin: 4);
 
-            // Assert
-            _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_prueba.txt (1 reemplazo(s) realizado(s)).");
+            // Assert: 'bytes' es el tamaño final del archivo ("linea 1\n..linea 5\n" + " modificada").
+            _ = resultado.Should().Be(new ResultadoEscritura("archivo_prueba.txt", 51, 1, true, "Archivo modificado quirúrgicamente con éxito: archivo_prueba.txt (1 reemplazo(s) realizado(s))."));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("base64 -d"));
         }
 
@@ -1196,7 +1198,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task ReplaceFileContent_ConAllowMultiple_ReemplazaTodas()
         {
             // Act
-            string resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
+            ResultadoEscritura resultado = await _herramientas.ReemplazarContenidoArchivoAsync(
                 "servidor",
                 "archivo_multiples.txt",
                 "repetido",
@@ -1206,7 +1208,9 @@ namespace NativeSsh.Test.Herramientas
                 allowMultiple: true);
 
             // Assert
-            _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_multiples.txt (2 reemplazo(s) realizado(s)).");
+            _ = resultado.Reemplazos.Should().Be(2);
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = resultado.Mensaje.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_multiples.txt (2 reemplazo(s) realizado(s)).");
         }
 
         private string PayloadUltimaEscritura()

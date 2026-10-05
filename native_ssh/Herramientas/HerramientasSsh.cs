@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
-using System.Text.Json;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
@@ -224,8 +223,8 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico; no conserva ACL ni atributos extendidos). Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta. append=true anexa al final con '>>'.")]
-        public async Task<string> EscribirArchivoAsync(
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio que recibe modo, propietario y grupo del original y lo renombra encima (atómico; no conserva ACL ni atributos extendidos). Si no puede conservar propietario o modo (p. ej. archivo de otro usuario sin sudo) o el archivo tiene enlaces duros, lo sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Contenido textual o datos a escribir.")] string contenido,
@@ -263,11 +262,13 @@ namespace NativeSsh.Herramientas
             ExigirCompletada(peticion);
 
             string textoCompleto = ReconstruirSalida(peticion, out _);
-            return peticion.CodigoSalida != 0
-                ? throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim())
-                : append
-                    ? $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes)."
-                    : $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{AvisoEscrituraNoAtomica(textoCompleto)}";
+            if (peticion.CodigoSalida != 0)
+                throw new NativeSshException(string.IsNullOrWhiteSpace(textoCompleto) ? $"Fallo al escribir en {ruta} (código {peticion.CodigoSalida})." : textoCompleto.Trim());
+
+            bool isAtomica = !append && !IsEscrituraNoAtomica(textoCompleto);
+            return append
+                ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
+                : new ResultadoEscritura(ruta, bytesUtf8.Length, null, isAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{AvisoEscrituraNoAtomica(textoCompleto)}");
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -501,7 +502,7 @@ namespace NativeSsh.Herramientas
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
         [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
-        public async Task<string> ConsultarMetadatosAsync(
+        public async Task<ResultadoMetadatos> ConsultarMetadatosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
             CancellationToken cancellationToken = default)
@@ -527,7 +528,7 @@ namespace NativeSsh.Herramientas
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutMetadatosSegundos, "Revisa la ruta.", cancellationToken).ConfigureAwait(false);
             string salida = lectura.Salida.Trim();
             if (salida == "NO_EXISTE")
-                return JsonSerializer.Serialize(new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe."), ContextoJsonNativeSsh.Default.ResultadoMetadatos);
+                return new ResultadoMetadatos(ruta, false, "El archivo o directorio no existe.");
 
             string[] lineas = salida.Split('\n');
             string[] partes = lineas[0].Split('|');
@@ -546,9 +547,7 @@ namespace NativeSsh.Herramientas
                 if (linea.StartsWith("ENLACE:", StringComparison.Ordinal))
                     destinoEnlace = linea["ENLACE:".Length..].TrimEnd('\r');
 
-            return JsonSerializer.Serialize(
-                new ResultadoMetadatos(ruta, true, null, tipo, tamanoBytes, tamanoHumano, permisos, ultimaModificacion, propietario, grupo, destinoEnlace),
-                ContextoJsonNativeSsh.Default.ResultadoMetadatos);
+            return new ResultadoMetadatos(ruta, true, null, tipo, tamanoBytes, tamanoHumano, permisos, ultimaModificacion, propietario, grupo, destinoEnlace);
         }
 
         private static string FormatearTamano(long bytes) =>
@@ -562,7 +561,7 @@ namespace NativeSsh.Herramientas
 
         [McpServerTool(Name = "ssh_set_cwd", Destructive = true)]
         [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes (ssh_exec y las rutas relativas de las demás herramientas) sin necesidad de encadenar 'cd dir &&'. Se mantiene aunque el shell se recree (ssh_reset_shell, shell perdido) hasta ssh_disconnect. Pasa vacío/null para volver a $HOME.")]
-        public async Task<string> FijarDirectorioAsync(
+        public async Task<ResultadoDirectorioTrabajo> FijarDirectorioAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
@@ -580,7 +579,7 @@ namespace NativeSsh.Herramientas
                     throw new NativeSshException(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset);
                 }
 
-                return "Directorio de trabajo persistente restablecido a $HOME (~).";
+                return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
             }
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
@@ -621,12 +620,12 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport);
             }
 
-            return $"Directorio de trabajo persistente fijado a: {pwdReal}";
+            return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta.")]
-        public async Task<string> ReemplazarContenidoArchivoAsync(
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta. Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Texto exacto a reemplazar (incluyendo espacios e indentación).")] string targetContent,
@@ -756,7 +755,7 @@ namespace NativeSsh.Herramientas
             string salidaEscritura = ReconstruirSalida(peticionEscritura, out _).Trim();
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(string.IsNullOrWhiteSpace(salidaEscritura) ? $"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida})." : salidaEscritura)
-                : $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}";
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, !IsEscrituraNoAtomica(salidaEscritura), $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{AvisoEscrituraNoAtomica(salidaEscritura)}");
         }
 
         // Script común de ssh_write_file (sin append) y ssh_replace_file_content:
@@ -848,8 +847,10 @@ namespace NativeSsh.Herramientas
                 """.ReplaceLineEndings("\n");
         }
 
+        private static bool IsEscrituraNoAtomica(string salida) => salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal);
+
         private static string AvisoEscrituraNoAtomica(string salida) =>
-            salida.Contains(MarcaEscrituraNoAtomica, StringComparison.Ordinal)
+            IsEscrituraNoAtomica(salida)
                 ? " Escritura no atómica: no se podía conservar el propietario o el modo del original (o tiene enlaces duros), así que se sobrescribió en el sitio conservando inodo, modo, propietario y enlaces duros."
                 : string.Empty;
 

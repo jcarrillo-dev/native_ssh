@@ -1,7 +1,6 @@
 using FluentAssertions;
 using System.Linq;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -382,10 +381,10 @@ namespace NativeSsh.Test.Integracion
             try
             {
                 // Act 1: Escritura de archivo nuevo
-                string res1 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Primera línea\n");
+                ResultadoEscritura res1 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Primera línea\n");
 
                 // Assert 1: Mensaje de confirmación y contenido verificado con LeerArchivoAsync
-                _ = res1.Should().Contain("Archivo escrito correctamente");
+                _ = res1.Mensaje.Should().Contain("Archivo escrito correctamente");
                 string leido1 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
                 _ = leido1.Should().Contain("Primera línea\n");
 
@@ -399,19 +398,19 @@ namespace NativeSsh.Test.Integracion
                 _ = errorDuplicado.Message.Should().Contain("overwrite=true");
 
                 // Act 3: Sobrescritura con overwrite = true
-                string res3 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido sobrescrito\n", overwrite: true);
+                ResultadoEscritura res3 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido sobrescrito\n", overwrite: true);
 
                 // Assert 3: Archivo contiene únicamente el contenido sobrescrito
-                _ = res3.Should().Contain("Archivo escrito correctamente");
+                _ = res3.Mensaje.Should().Contain("Archivo escrito correctamente");
                 string leido3 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
                 _ = leido3.Should().Contain("Contenido sobrescrito\n");
                 _ = leido3.Should().NotContain("Primera línea");
 
                 // Act 4: Anexado con append = true
-                string res4 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Segunda línea anexada\n", append: true);
+                ResultadoEscritura res4 = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Segunda línea anexada\n", append: true);
 
                 // Assert 4: Archivo contiene el contenido concatenado
-                _ = res4.Should().Contain("Contenido anexado correctamente");
+                _ = res4.Mensaje.Should().Contain("Contenido anexado correctamente");
                 string leido4 = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
                 _ = leido4.Should().Contain("Contenido sobrescrito\nSegunda línea anexada\n");
             }
@@ -442,10 +441,10 @@ namespace NativeSsh.Test.Integracion
             try
             {
                 // Act: Escribir archivo con caracteres especiales
-                string res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, rutaCompleta, "Contenido seguro");
+                ResultadoEscritura res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, rutaCompleta, "Contenido seguro");
 
                 // Assert: Escrito correctamente y leíble sin evaluar subshells
-                _ = res.Should().Contain("Archivo escrito correctamente");
+                _ = res.Mensaje.Should().Contain("Archivo escrito correctamente");
                 string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, rutaCompleta);
                 _ = leido.Should().Contain("Contenido seguro");
             }
@@ -521,10 +520,10 @@ namespace NativeSsh.Test.Integracion
             try
             {
                 // Act: append = true sobre un archivo que no existía previamente
-                string res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido inicial append\n", append: true);
+                ResultadoEscritura res = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "Contenido inicial append\n", append: true);
 
                 // Assert: Se crea y escribe correctamente
-                _ = res.Should().Contain("Contenido anexado correctamente");
+                _ = res.Mensaje.Should().Contain("Contenido anexado correctamente");
                 string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
                 _ = leido.Should().Contain("Contenido inicial append\n");
             }
@@ -810,18 +809,19 @@ namespace NativeSsh.Test.Integracion
                 _ = Directory.CreateDirectory(dirTemporal);
 
                 // Act 1: Fijar directorio a dirTemporal
-                string resFijar = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, dirTemporal);
+                ResultadoDirectorioTrabajo resFijar = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, dirTemporal);
 
                 // Assert 1: Confirmación y pwd contiene dirTemporal
-                _ = resFijar.Should().Contain(dirTemporal);
+                _ = resFijar.Directorio.Should().Be(dirTemporal);
                 ResultadoComando pwd1 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
                 _ = pwd1.Salida.Trim().Should().Be(dirTemporal);
 
                 // Act 2: Restablecer a HOME con null
-                string resReset = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, null);
+                ResultadoDirectorioTrabajo resReset = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, null);
 
                 // Assert 2: Mensaje de confirmación y pwd devuelve HOME
-                _ = resReset.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
+                _ = resReset.Directorio.Should().BeNull();
+                _ = resReset.Mensaje.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
                 ResultadoComando pwd2 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
                 _ = pwd2.Salida.Trim().Should().Be(home);
                 _ = pwd2.Salida.Should().NotContain(dirTemporal);
@@ -867,7 +867,7 @@ namespace NativeSsh.Test.Integracion
                 // Act 2: Reemplazo quirúrgico en líneas 4 a 6
                 string target = "linea 4\nlinea 5\nlinea 6";
                 string replacement = "linea 4 mod\nlinea 5 mod\nlinea 6 mod";
-                string resMod = await herramientas.ReemplazarContenidoArchivoAsync(
+                ResultadoEscritura resMod = await herramientas.ReemplazarContenidoArchivoAsync(
                     sshd.Destino.Clave,
                     archivoTemporal,
                     target,
@@ -876,8 +876,8 @@ namespace NativeSsh.Test.Integracion
                     lineaFin: 6);
 
                 // Assert 2: Mensaje de confirmación
-                _ = resMod.Should().Contain("Archivo modificado quirúrgicamente con éxito");
-                _ = resMod.Should().Contain("1 reemplazo(s) realizado(s)");
+                _ = resMod.Mensaje.Should().Contain("Archivo modificado quirúrgicamente con éxito");
+                _ = resMod.Mensaje.Should().Contain("1 reemplazo(s) realizado(s)");
 
                 // Assert 3: Leer y comprobar que líneas 1-3 y 7-10 no sufrieron alteración
                 string leido = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
@@ -900,7 +900,7 @@ namespace NativeSsh.Test.Integracion
 
                 // Act 5 & Assert 5: Probar allowMultiple = true
                 _ = await herramientas.EscribirArchivoAsync(sshd.Destino.Clave, archivoTemporal, "item_dup\nitem_dup\n", append: true);
-                string resDup = await herramientas.ReemplazarContenidoArchivoAsync(
+                ResultadoEscritura resDup = await herramientas.ReemplazarContenidoArchivoAsync(
                     sshd.Destino.Clave,
                     archivoTemporal,
                     "item_dup",
@@ -909,7 +909,7 @@ namespace NativeSsh.Test.Integracion
                     lineaFin: 13,
                     allowMultiple: true);
 
-                _ = resDup.Should().Contain("2 reemplazo(s) realizado(s)");
+                _ = resDup.Mensaje.Should().Contain("2 reemplazo(s) realizado(s)");
                 string leidoDup = await herramientas.LeerArchivoAsync(sshd.Destino.Clave, archivoTemporal);
                 _ = leidoDup.Should().NotContain("item_dup");
                 _ = leidoDup.Should().Contain("item_ok\nitem_ok\n");
@@ -1065,17 +1065,15 @@ namespace NativeSsh.Test.Integracion
                 await File.WriteAllTextAsync(archivoTemporal, "123456789012345"); // 15 bytes
 
                 // Act 1: Archivo existente
-                string resExistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, archivoTemporal);
-                using JsonDocument docExistente = JsonDocument.Parse(resExistente);
-                _ = docExistente.RootElement.GetProperty("existe").GetBoolean().Should().BeTrue();
-                _ = docExistente.RootElement.GetProperty("tamanoBytes").GetInt64().Should().Be(15);
-                _ = docExistente.RootElement.GetProperty("tamanoHumano").GetString().Should().Be("15 B");
+                ResultadoMetadatos resExistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, archivoTemporal);
+                _ = resExistente.Existe.Should().BeTrue();
+                _ = resExistente.TamanoBytes.Should().Be(15);
+                _ = resExistente.TamanoHumano.Should().Be("15 B");
 
                 // Act 2: Archivo inexistente
-                string resInexistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, rutaInexistente);
-                using JsonDocument docInexistente = JsonDocument.Parse(resInexistente);
-                _ = docInexistente.RootElement.GetProperty("existe").GetBoolean().Should().BeFalse();
-                _ = docInexistente.RootElement.GetProperty("mensaje").GetString().Should().Contain("no existe");
+                ResultadoMetadatos resInexistente = await herramientas.ConsultarMetadatosAsync(sshd.Destino.Clave, rutaInexistente);
+                _ = resInexistente.Existe.Should().BeFalse();
+                _ = resInexistente.Mensaje.Should().Contain("no existe");
             }
             finally
             {

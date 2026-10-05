@@ -50,4 +50,11 @@ namespace NativeSsh.Herramientas
         string? Propietario = null,
         string? Grupo = null,
         string? DestinoEnlace = null);
+
+    // ssh_write_file y ssh_replace_file_content. Bytes: tamaño escrito (anexado, o archivo final en un reemplazo).
+    // Reemplazos: solo ssh_replace_file_content. IsAtomica: false si se sobrescribió en el sitio o se anexó.
+    public sealed record ResultadoEscritura(string Ruta, long Bytes, int? Reemplazos, bool IsAtomica, string Mensaje);
+
+    // ssh_set_cwd. Directorio: ruta absoluta fijada, o null si se restableció a $HOME.
+    public sealed record ResultadoDirectorioTrabajo(string Destino, string? Directorio, string Mensaje);
 }

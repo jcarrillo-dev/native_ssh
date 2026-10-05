@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using System.Linq;
-using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -210,15 +209,15 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
 
             // Act
-            using JsonDocument real = JsonDocument.Parse(await herramientas.ConsultarMetadatosAsync(Destino, archivo));
-            using JsonDocument deEnlace = JsonDocument.Parse(await herramientas.ConsultarMetadatosAsync(Destino, enlace));
+            ResultadoMetadatos real = await herramientas.ConsultarMetadatosAsync(Destino, archivo);
+            ResultadoMetadatos deEnlace = await herramientas.ConsultarMetadatosAsync(Destino, enlace);
 
             // Assert
-            _ = real.RootElement.GetProperty("propietario").GetString().Should().Be(Environment.UserName);
-            _ = real.RootElement.GetProperty("grupo").GetString().Should().Be(grupo);
-            _ = real.RootElement.TryGetProperty("destinoEnlace", out _).Should().BeFalse();
-            _ = deEnlace.RootElement.GetProperty("destinoEnlace").GetString().Should().Be(archivo);
-            _ = deEnlace.RootElement.GetProperty("propietario").GetString().Should().Be(Environment.UserName);
+            _ = real.Propietario.Should().Be(Environment.UserName);
+            _ = real.Grupo.Should().Be(grupo);
+            _ = real.DestinoEnlace.Should().BeNull();
+            _ = deEnlace.DestinoEnlace.Should().Be(archivo);
+            _ = deEnlace.Propietario.Should().Be(Environment.UserName);
         }
 
         [Fact]
@@ -291,7 +290,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
 
             // Act
-            string resultado = isReplace
+            ResultadoEscritura resultado = isReplace
                 ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues", 1, 1)
                 : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
 
@@ -299,7 +298,8 @@ namespace NativeSsh.Test.Integracion
             _ = grupo.Should().NotBeEmpty();
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
             _ = Stat(archivo).Should().StartWith($"{modo} {grupo} ");
-            _ = resultado.Should().NotContain("no atómica");
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = resultado.Mensaje.Should().NotContain("no atómica");
             _ = Directory.GetFiles(_directorio).Should().ContainSingle();
         }
 
@@ -315,10 +315,11 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
 
             // Act
-            string resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
 
             // Assert
-            _ = resultado.Should().Contain("no atómica");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("no atómica");
             _ = (await File.ReadAllTextAsync(otroNombre)).Should().Be("despues\n");
             _ = Stat(archivo).Split(' ')[2].Should().Be(inodo);
             _ = Directory.GetFiles(_directorio).Should().HaveCount(2);
@@ -340,12 +341,13 @@ namespace NativeSsh.Test.Integracion
             await SustituirComandoAsync(herramientas, "chown", "echo 'chown: operación no permitida' >&2; exit 1");
 
             // Act
-            string resultado = isReplace
+            ResultadoEscritura resultado = isReplace
                 ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues", 1, 1)
                 : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
 
             // Assert
-            _ = resultado.Should().Contain("no atómica");
+            _ = resultado.IsAtomica.Should().BeFalse();
+            _ = resultado.Mensaje.Should().Contain("no atómica");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
             string stat = Stat(archivo);
             _ = stat.Should().StartWith("640 ");
@@ -383,12 +385,13 @@ namespace NativeSsh.Test.Integracion
             string umask = Bash("umask");
 
             // Act
-            string resultado = await herramientas.EscribirArchivoAsync(Destino, nuevo, "nuevo\n");
+            ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(Destino, nuevo, "nuevo\n");
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, enlaceRoto, "x"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = resultado.Should().Contain("Archivo escrito correctamente");
+            _ = resultado.Mensaje.Should().Contain("Archivo escrito correctamente");
+            _ = resultado.Bytes.Should().Be(6);
             _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo\n");
             _ = Stat(nuevo).Split(' ')[0].Should().Be(Convert.ToString(0x1B6 & ~Convert.ToInt32(umask, 8), 8));
             _ = error.Message.Should().Contain("ya existe");
