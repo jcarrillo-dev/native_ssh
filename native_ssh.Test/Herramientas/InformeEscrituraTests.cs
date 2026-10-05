@@ -54,11 +54,13 @@ namespace NativeSsh.Test.Herramientas
             // Act
             string limpio = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo", "fase escrito", "limpio"), Id).AvisoExito();
             string conRestos = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo", "fase escrito", "restos"), Id).AvisoExito();
+            string sinLimpieza = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo", "fase escrito"), Id).AvisoExito();
             string sinConfirmar = InformeEscritura.Leer(string.Empty, Id).AvisoExito();
 
             // Assert
             _ = limpio.Should().Contain("Escritura no atómica").And.Contain("ya borrada").And.NotContain(Copia);
             _ = conRestos.Should().Contain("Escritura no atómica").And.Contain($"en '{Copia}', que no se pudo borrar");
+            _ = sinLimpieza.Should().Contain($"en '{Copia}', que puede seguir en el servidor").And.NotContain("no se pudo borrar");
             _ = sinConfirmar.Should().Contain("No se recibió del servidor la confirmación");
             _ = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado", "limpio"), Id).AvisoExito().Should().BeEmpty();
         }

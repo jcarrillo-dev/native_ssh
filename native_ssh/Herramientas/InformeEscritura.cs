@@ -174,9 +174,14 @@ namespace NativeSsh.Herramientas
             }
         }
 
-        private string CopiaDeSeguridadTrasExito => Limpieza == LimpiezaEscrituraEnum.Limpio || Copia is null
-            ? "(con una copia de seguridad previa del original, ya borrada)"
-            : $"(con una copia de seguridad previa del original en '{Copia}', que no se pudo borrar)";
+        // Solo se dice que la copia se borró si el script lo anunció.
+        private string CopiaDeSeguridadTrasExito => Limpieza switch
+        {
+            LimpiezaEscrituraEnum.Limpio => "(con una copia de seguridad previa del original, ya borrada)",
+            LimpiezaEscrituraEnum.Restos => $"(con una copia de seguridad previa del original en '{Copia}', que no se pudo borrar)",
+            LimpiezaEscrituraEnum.Desconocida or LimpiezaEscrituraEnum.Conservados => $"(con una copia de seguridad previa del original en '{Copia}', que puede seguir en el servidor)",
+            _ => $"(con una copia de seguridad previa del original en '{Copia}', que puede seguir en el servidor)"
+        };
 
         private static string? DecodificarRuta(string base64)
         {
