@@ -617,6 +617,23 @@ namespace NativeSsh.Test.Herramientas
             _ = Base64ConSaltos(maximo + 1).Should().BeGreaterThan(disponible);
         }
 
+        private static string DescripcionDe(string metodo) =>
+            typeof(HerramientasSsh).GetMethod(metodo)!.GetCustomAttributes(typeof(System.ComponentModel.DescriptionAttribute), false)
+                .Cast<System.ComponentModel.DescriptionAttribute>().Single().Description;
+
+        [Fact]
+        public void DescripcionesDeEscritura_DocumentanSoloLecturaAclYAtributosExtendidos()
+        {
+            // Act
+            string escribir = DescripcionDe(nameof(HerramientasSsh.EscribirArchivoAsync));
+            string reemplazar = DescripcionDe(nameof(HerramientasSsh.ReemplazarContenidoArchivoAsync));
+
+            // Assert
+            _ = escribir.Should().Contain("archivos de solo lectura propios").And.Contain("conservando su modo");
+            _ = escribir.Should().Contain("ACL o atributos extendidos").And.NotContain("no conserva ACL");
+            _ = reemplazar.Should().Contain("ACL o atributos extendidos").And.NotContain("no conserva ACL");
+        }
+
         [Fact]
         public void MaxBytesArchivoEditable_ValorDocumentadoConElMaximoPorDefecto()
         {

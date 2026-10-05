@@ -696,5 +696,30 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
             _ = (await busqueda).Should().Contain(":1:coincidencia");
         }
+
+        // overwrite=true sobrescribe un archivo de solo lectura propio (como 'cp' sobre él no podría): el temporal recibe
+        // su modo y se renombra encima, así que sigue siendo de solo lectura.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_ArchivoPropioDeSoloLectura_LoSobrescribeConservandoSuModo(bool isReplace)
+        {
+            // Arrange
+            string archivo = Ruta("solo_lectura.txt");
+            await File.WriteAllTextAsync(archivo, "antes\n");
+            _ = Bash($"chmod 444 '{archivo}'");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "antes", "despues")
+                : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");
+            _ = Stat(archivo).Should().StartWith("444 ");
+            _ = Directory.GetFileSystemEntries(_directorio).Should().ContainSingle();
+        }
     }
 }
