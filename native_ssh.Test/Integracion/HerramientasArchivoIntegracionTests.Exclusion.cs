@@ -318,7 +318,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // La lectura previa de ssh_replace_file_content toma el candado compartido: coexiste con otro lector compartido
-        // (aquí, un 'flock -s ... sleep' lanzado por la prueba que el 'base64' de la lectura suelta antes de codificar) y
+        // (aquí, un 'flock -s ... sleep' lanzado por la prueba que el 'base64' sin argumentos de la lectura suelta antes de
+        // codificar; el protocolo del shell también usa base64, con -d) y
         // la escritura posterior, con el exclusivo, ya lo encuentra libre. Con un candado exclusivo en la lectura, el
         // reemplazo fallaría al leer aunque nadie estuviera escribiendo.
         [Fact]
@@ -331,7 +332,7 @@ namespace NativeSsh.Test.Integracion
             using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", "38.5"]);
             await EsperasPrueba.EsperarHastaAsync(() => HayProcesos("^sleep 38[.]5$"), TimeSpan.FromSeconds(10));
             string soltado = Ruta("lector_soltado");
-            await SustituirComandoAsync(herramientas, "base64", $"if pkill -f -- '^sleep 38[.]5$'; then\n  while pgrep -f -- '^(flock -s -n|sleep 38[.]5)' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
+            await SustituirComandoAsync(herramientas, "base64", $"if [ $# = 0 ] && pkill -f -- '^sleep 38[.]5$'; then\n  while pgrep -f -- '^(flock -s -n|sleep 38[.]5)' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
 
             try
             {
