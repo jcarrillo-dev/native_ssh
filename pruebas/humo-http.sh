@@ -92,6 +92,10 @@ resultado = enviar("tools/call", {"name": "ssh_exec", "arguments": {"destino": d
 datos = json.loads(resultado["content"][0]["text"])
 comprobar(datos["estado"] == "Completado" and datos["salida"] == "hola-http\n", "ssh_exec por HTTP")
 
+resultado = enviar("tools/call", {"name": "ssh_stat", "arguments": {"destino": destino, "ruta": "/tmp"}})["result"]
+datos = json.loads(resultado["content"][0]["text"])
+comprobar(not resultado.get("isError", False) and datos["existe"] and datos["ruta"] == "/tmp", "ssh_stat por HTTP (contrato por canal exec)")
+
 try:
     peticion_evil = urllib.request.Request(url, b"{}", {"Content-Type": "application/json", "Host": "evil.example.com"}, method="POST")
     urllib.request.urlopen(peticion_evil, timeout=5)
