@@ -600,15 +600,15 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' estrictamente dentro del rango de líneas [lineaInicio, lineaFin] y lo sustituye por 'replacementContent'. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con modo, propietario y grupo del original renombrado encima (atómico; no conserva ACL ni atributos extendidos); si no puede conservar propietario o modo, o hay enlaces duros, sobrescribe en el sitio (NO atómico; conserva inodo, modo, propietario y enlaces duros) y lo indica en la respuesta.")]
         public async Task<string> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Texto exacto a reemplazar dentro del rango de líneas (incluyendo espacios e indentación).")] string targetContent,
+            [Description("Texto exacto a reemplazar (incluyendo espacios e indentación).")] string targetContent,
             [Description("Nuevo texto que reemplazará a targetContent.")] string replacementContent,
-            [Description("Línea inicial (1-indexed) del rango donde buscar targetContent.")] int lineaInicio,
-            [Description("Línea final (1-indexed, inclusive) del rango donde buscar targetContent.")] int lineaFin,
-            [Description("Si es true, permite reemplazar si targetContent aparece múltiples veces en el rango (reemplaza todas). Por defecto false (falla si hay ambigüedad).")] bool allowMultiple = false,
+            [Description("Línea inicial (1-indexed) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaFin es obligatoria.")] int? lineaInicio = null,
+            [Description("Línea final (1-indexed, inclusive) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaInicio es obligatoria.")] int? lineaFin = null,
+            [Description("Si es true, permite reemplazar si targetContent aparece múltiples veces en el archivo o el rango (reemplaza todas). Por defecto false (falla si hay ambigüedad).")] bool allowMultiple = false,
             [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
@@ -618,10 +618,16 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrEmpty(targetContent))
                 throw new NativeSshException("El texto a reemplazar (targetContent) no puede estar vacío.");
 
-            if (lineaInicio < 1)
+            bool hasInicio = lineaInicio is not null;
+            bool hasFin = lineaFin is not null;
+            if (hasInicio != hasFin)
+                throw new NativeSshException("Indica lineaInicio y lineaFin juntos (rango de líneas) u omite los dos para buscar en todo el archivo.");
+
+            bool isConRango = hasInicio;
+            if (isConRango && lineaInicio < 1)
                 throw new NativeSshException("La línea inicial debe ser mayor o igual a 1.");
 
-            if (lineaFin < lineaInicio)
+            if (isConRango && lineaFin < lineaInicio)
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
             string rutaEscapada = "'" + ruta.Replace("'", "'\\''") + "'";
@@ -672,11 +678,14 @@ namespace NativeSsh.Herramientas
             bool hasSaltoFinal = textoOriginal.EndsWith(separador, StringComparison.Ordinal);
             int totalLineas = hasSaltoFinal ? Math.Max(0, lineas.Length - 1) : lineas.Length;
 
-            if (lineaInicio > totalLineas)
-                throw new NativeSshException($"La línea inicial ({lineaInicio}) excede el total de líneas del archivo ({totalLineas}).");
+            int inicio = lineaInicio ?? 1;
+            int fin = lineaFin ?? Math.Max(1, totalLineas);
+            if (isConRango && inicio > totalLineas)
+                throw new NativeSshException($"La línea inicial ({inicio}) excede el total de líneas del archivo ({totalLineas}).");
 
-            int idxInicio = lineaInicio - 1;
-            int idxFin = Math.Min(lineaFin, totalLineas) - 1;
+            string ambito = isConRango ? $"el rango de líneas {inicio}-{fin}" : "todo el archivo";
+            int idxInicio = inicio - 1;
+            int idxFin = Math.Max(idxInicio, Math.Min(fin, totalLineas) - 1);
 
             string textoAntes = idxInicio > 0 ? string.Join(separador, lineas[..idxInicio]) + separador : string.Empty;
             string textoRango = string.Join(separador, lineas[idxInicio..(idxFin + 1)]);
@@ -699,10 +708,12 @@ namespace NativeSsh.Herramientas
             }
 
             if (ocurrencias == 0)
-                throw new NativeSshException($"No se encontró 'targetContent' en el rango de líneas {lineaInicio}-{lineaFin} de '{ruta}'. Revisa la indentación y el rango exacto.");
+                throw new NativeSshException(isConRango
+                    ? $"No se encontró 'targetContent' en {ambito} de '{ruta}'. Revisa la indentación y el rango exacto."
+                    : $"No se encontró 'targetContent' en {ambito} '{ruta}'. Revisa la indentación y los saltos de línea exactos.");
 
             if (ocurrencias > 1 && !allowMultiple)
-                throw new NativeSshException($"Se encontraron {ocurrencias} apariciones de 'targetContent' en el rango de líneas {lineaInicio}-{lineaFin}. Especifica 'allowMultiple=true' o acota el rango.");
+                throw new NativeSshException($"Se encontraron {ocurrencias} apariciones de 'targetContent' en {ambito}. Especifica 'allowMultiple=true', amplía targetContent con contexto o acota con lineaInicio/lineaFin.");
 
             string textoRangoModificado = allowMultiple
                 ? textoRango.Replace(targetNormalizado, replacementNormalizado, StringComparison.Ordinal)

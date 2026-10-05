@@ -1059,6 +1059,66 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.Should().Be("Archivo modificado quirúrgicamente con éxito: archivo_multiples.txt (2 reemplazo(s) realizado(s)).");
         }
 
+        private string PayloadUltimaEscritura()
+        {
+            string escritura = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            int inicio = escritura.IndexOf("printf '%s' '", StringComparison.Ordinal) + 13;
+            return Encoding.UTF8.GetString(Convert.FromBase64String(escritura[inicio..escritura.IndexOf('\'', inicio)]));
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_SinRango_BuscaEnTodoElArchivo()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 5", "linea cinco");
+
+            // Assert
+            _ = PayloadUltimaEscritura().Should().Be("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea cinco\n");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_SinRango_VariasAparicionesSinAllowMultiple_LanzaSinEscribir()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_multiples.txt", "repetido", "nuevo"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("Se encontraron 2 apariciones de 'targetContent' en todo el archivo");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_SinRango_ConAllowMultiple_ReemplazaTodas()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_multiples.txt", "repetido", "cambiado", allowMultiple: true);
+
+            // Assert
+            _ = PayloadUltimaEscritura().Should().Be("linea 1\ncambiado\ncambiado\nlinea 4\n");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_SinRango_TargetNoEncontrado_LanzaMencionandoTodoElArchivo()
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "inexistente", "nuevo"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("No se encontró 'targetContent' en todo el archivo");
+        }
+
+        [Theory]
+        [InlineData(2, null)]
+        [InlineData(null, 4)]
+        public async Task ReplaceFileContent_SoloUnLimiteDelRango_LanzaErrorClaro(int? inicio, int? fin)
+        {
+            // Act & Assert
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "otra", inicio, fin))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = error.Message.Should().Contain("lineaInicio y lineaFin");
+            _ = _fabrica.Ultima.Should().BeNull();
+        }
+
         [Theory]
         [InlineData("pm2 list | grep online")]
         [InlineData("systemctl status mi-app | grep Active")]
