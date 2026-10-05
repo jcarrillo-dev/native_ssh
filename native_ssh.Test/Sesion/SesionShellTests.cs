@@ -1062,6 +1062,30 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Exec_QueVenceEsperandoCupoRetenidoPorAperturasSinConfirmar_NoPrometeElPlazoRemoto()
+        {
+            // Arrange: cuatro lecturas abandonadas cuyas aperturas el servidor no confirma retienen todo el cupo.
+            using SemaphoreSlim apertura = new(0);
+            FabricaFalsa fabrica = new(Guion) { BloqueoAperturaExec = apertura };
+            await using SesionShell sesion = Crear(fabrica);
+            Task<ResultadoCanalExec>[] abandonadas = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos).Select(_ => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None))];
+            foreach (Task<ResultadoCanalExec> abandonada in abandonadas)
+                _ = await FluentActions.Awaiting(() => abandonada.WaitAsync(TimeSpan.FromSeconds(10))).Should().ThrowAsync<NativeSshException>();
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = apertura.Release(SesionShell.MaxCanalesExecSimultaneos + 1);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.CanalesExecActivos == 0);
+            ResultadoCanalExec siguiente = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None).WaitAsync(Limite);
+
+            // Assert: dice cuántas siguen sin confirmar y no promete el plazo remoto; al confirmarse, el cupo vuelve.
+            _ = error.Message.Should().Contain("sin llegar a obtener canal").And.Contain($"{SesionShell.MaxCanalesExecSimultaneos} de ellos con la apertura aún sin confirmar")
+                .And.Contain("ssh_disconnect").And.NotContain("como mucho hasta el plazo");
+            _ = siguiente.CodigoSalida.Should().Be(0);
+        }
+
+        [Fact]
         public async Task Exec_QueVenceConLaAperturaConfirmada_PrometeElPlazoRemoto()
         {
             // Arrange: el canal se abre y el comando no termina.

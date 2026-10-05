@@ -111,6 +111,9 @@ namespace NativeSsh.Sesion
         private long _comandosEjecutados;
         private int _conexionesAbiertas;
         private int _canalesExecActivos;
+
+        // Canales exec cuya apertura sigue sin confirmar por el servidor (cuentan para el cupo y no tienen plazo conocido).
+        private int _aperturasExecSinConfirmar;
         private int _isDispuesto;
         private volatile string? _directorioTrabajo;
         private volatile string? _pathLogin;
@@ -355,7 +358,7 @@ namespace NativeSsh.Sesion
             bool isCanalContado = false;
             EtapaExecEnum etapa = EtapaExecEnum.Cupo;
             Task<ResultadoCanalExec>? ejecucion = null;
-            TaskCompletionSource confirmacion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            AperturaExec? apertura = null;
             try
             {
                 await _cupoExec.WaitAsync(token).ConfigureAwait(false);
@@ -365,7 +368,8 @@ namespace NativeSsh.Sesion
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
                 etapa = EtapaExecEnum.Apertura;
-                ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, () => confirmacion.TrySetResult(), token);
+                apertura = new AperturaExec(this);
+                ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, apertura.Confirmar, token);
                 return await ejecucion.WaitAsync(token).ConfigureAwait(false);
             }
             catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
@@ -376,7 +380,7 @@ namespace NativeSsh.Sesion
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa == EtapaExecEnum.Apertura && confirmacion.Task.IsCompleted ? EtapaExecEnum.Canal : etapa, timeout));
+                throw new NativeSshException(DescribirTiempoAgotadoExec(etapa == EtapaExecEnum.Apertura && apertura is { IsConfirmada: true } ? EtapaExecEnum.Canal : etapa, timeout));
             }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
@@ -385,9 +389,14 @@ namespace NativeSsh.Sesion
             finally
             {
                 if (ejecucion is { IsCompleted: false })
-                    _ = LiberarCanalExecAlCerrarseAsync(ejecucion);
+                {
+                    _ = LiberarCanalExecAlCerrarseAsync(ejecucion, apertura);
+                }
                 else
+                {
+                    apertura?.Terminar();
                     LiberarCanalExec(isCupoTomado, isCanalContado);
+                }
             }
         }
 
@@ -396,7 +405,9 @@ namespace NativeSsh.Sesion
             string plazo = $"La operación no terminó en {timeout.TotalSeconds:0.#} s (tiempo agotado)";
             return etapa switch
             {
-                EtapaExecEnum.Cupo => $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, por lecturas en curso o por otras ya abandonadas cuyo proceso remoto aún no ha terminado (el servidor mantiene su sesión hasta entonces, como mucho hasta el plazo de cada una). Reintenta en unos segundos.",
+                EtapaExecEnum.Cupo => Volatile.Read(ref _aperturasExecSinConfirmar) is var sinConfirmar and > 0
+                    ? $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, y {sinConfirmar} de ellos con la apertura aún sin confirmar por el servidor (puede que la conexión no acepte datos): esos no se liberan hasta que el servidor responda o caiga la conexión, sin plazo conocido. Si el servidor no se recupera, ssh_disconnect cierra la conexión y los libera (la siguiente operación abrirá una conexión nueva)."
+                    : $"{plazo} sin llegar a obtener canal: los {MaxCanalesExecSimultaneos} canales exec de las lecturas en {Destino.Clave} siguen ocupados, por lecturas en curso o por otras ya abandonadas cuyo proceso remoto aún no ha terminado (el servidor mantiene su sesión hasta entonces, como mucho hasta el plazo de cada una). Reintenta en unos segundos.",
                 EtapaExecEnum.Conexion => $"{plazo} sin llegar a obtener canal: la conexión con {Destino.Clave} no se estableció a tiempo.",
                 EtapaExecEnum.Apertura => $"{plazo} sin que el servidor confirmara la apertura de su canal exec (puede que la petición ni siquiera llegara a salir, si la conexión con {Destino.Clave} no acepta datos): no se sabe si el comando llegó a arrancar. Su canal cuenta para el límite de lecturas simultáneas hasta que la apertura termine: si el servidor la confirma más tarde, el canal se cierra entonces y lo que llegara a arrancar queda acotado por su plazo remoto.",
                 EtapaExecEnum.Canal => $"{plazo}; se abandona y su canal exec se cierra (el servidor lo libera cuando termina su proceso remoto, como mucho al vencer su plazo).",
@@ -406,7 +417,7 @@ namespace NativeSsh.Sesion
 
         // La tarea de IConexionSsh.EjecutarExecAsync termina cuando el canal está cerrado (si su apertura seguía en curso,
         // cuando termina y se cierra): hasta entonces sigue contando como canal abierto en la conexión.
-        private async Task LiberarCanalExecAlCerrarseAsync(Task<ResultadoCanalExec> ejecucion)
+        private async Task LiberarCanalExecAlCerrarseAsync(Task<ResultadoCanalExec> ejecucion, AperturaExec? apertura)
         {
             try
             {
@@ -418,6 +429,7 @@ namespace NativeSsh.Sesion
             }
             finally
             {
+                apertura?.Terminar();
                 LiberarCanalExec(isCupoTomado: true, isCanalContado: true);
             }
         }
@@ -1136,5 +1148,31 @@ namespace NativeSsh.Sesion
 
         private static string? Unir(string? primero, string? segundo) =>
             primero is null ? segundo : segundo is null ? primero : $"{primero} {segundo}";
+
+        // Apertura de un canal exec: sin confirmar cuenta en _aperturasExecSinConfirmar hasta que el servidor la confirma
+        // (Confirmar, desde el adaptador) o la operación termina sin confirmación (Terminar); solo la primera cuenta.
+        private sealed class AperturaExec
+        {
+            private readonly SesionShell _sesion;
+            private int _estado;
+
+            public AperturaExec(SesionShell sesion)
+            {
+                _sesion = sesion;
+                _ = Interlocked.Increment(ref sesion._aperturasExecSinConfirmar);
+            }
+
+            public bool IsConfirmada => Volatile.Read(ref _estado) == 1;
+
+            public void Confirmar() => Finalizar(1);
+
+            public void Terminar() => Finalizar(2);
+
+            private void Finalizar(int estado)
+            {
+                if (Interlocked.CompareExchange(ref _estado, estado, 0) == 0)
+                    _ = Interlocked.Decrement(ref _sesion._aperturasExecSinConfirmar);
+            }
+        }
     }
 }
