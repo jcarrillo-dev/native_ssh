@@ -458,6 +458,63 @@ namespace NativeSsh.Herramientas
         // del primer nombre (o línea encontrada) y al final del último son datos.
         private static string QuitarSaltoFinal(string salida) => salida.EndsWith('\n') ? salida[..^1] : salida;
 
+        // Fin de los listados de ssh_find y ssh_list_dir: lee los nombres que da 'find -print0' (ya ordenados con 'sort -z'),
+        // les quita el "./" inicial y escribe como mucho 'maximo', terminados en NUL. Un nombre con '\n' sigue siendo uno
+        // solo: con 'sed | sort | head -n' se partía en dos líneas, que además se ordenaban por separado.
+        private static string LimitarNombres(int maximo) =>
+            PlantillaBash.Crear($$"""{ n=0; while [ "$n" -lt {{maximo}} ] && IFS= read -r -d '' nombre; do printf '%s\0' "${nombre#./}"; n=$((n + 1)); done; }""");
+
+        // Nombres de un listado terminados en NUL (el último NUL no deja un nombre vacío detrás).
+        private static string[] SepararNombres(string salida) =>
+            salida.Length == 0 ? [] : (salida.EndsWith('\0') ? salida[..^1] : salida).Split('\0');
+
+        // Los 'cantidad' primeros nombres, uno por línea (EscaparNombre).
+        private static string UnirNombres(string[] nombres, int cantidad)
+        {
+            StringBuilder listado = new();
+            int total = Math.Min(nombres.Length, cantidad);
+            for (int i = 0; i < total; i++)
+            {
+                if (i > 0)
+                    _ = listado.Append('\n');
+                EscaparNombre(listado, nombres[i]);
+            }
+
+            return listado.ToString();
+        }
+
+        // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
+        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL) o empieza por comillas dobles; entonces va entre
+        // comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se puede pegar tal
+        // cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad; una barra
+        // invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
+        private static void EscaparNombre(StringBuilder listado, string nombre)
+        {
+            ReadOnlySpan<char> caracteres = nombre;
+            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f');
+            if (!hasControl && !nombre.StartsWith('"'))
+            {
+                _ = listado.Append(nombre);
+                return;
+            }
+
+            _ = listado.Append('"');
+            foreach (char c in nombre)
+                _ = c switch
+                {
+                    '"' => listado.Append("\\\""),
+                    '\\' => listado.Append("\\\\"),
+                    '\n' => listado.Append("\\n"),
+                    '\r' => listado.Append("\\r"),
+                    '\t' => listado.Append("\\t"),
+                    '\f' => listado.Append("\\f"),
+                    '\b' => listado.Append("\\b"),
+                    _ when char.IsControl(c) => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
+                    _ => listado.Append(c)
+                };
+            _ = listado.Append('"');
+        }
+
         // Un valor que va dentro del script debe llegar al servidor tal cual. Un NUL no cabe en un argumento y bash lo
         // descarta al decodificar el script con '$(... | base64 -d)': la ruta o el patrón serían otros. Se rechaza antes de
         // enviar nada, igual que un texto que no es UTF-16 válido (ExigirUtf16Valido).
@@ -484,7 +541,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -519,8 +576,8 @@ namespace NativeSsh.Herramientas
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name __pycache__ -o -name .cache \) -prune \
-                  -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print -prune \
-                  -o {{filtroTipo}}-print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
+                  -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print0 -prune \
+                  -o {{filtroTipo}}-print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
                 )
                 """);
 
@@ -528,25 +585,20 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error al listar directorios"));
 
-            string salida = QuitarSaltoFinal(lectura.Salida);
-
+            string[] nombres = SepararNombres(lectura.Salida);
             string etiquetaVacio = incluirArchivos ? "elementos" : "subdirectorios";
-            if (string.IsNullOrEmpty(salida))
+            if (nombres.Length == 0)
                 return $"No se encontraron {etiquetaVacio} en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n');
-            if (lineas.Length > limite)
-            {
-                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                string etiquetaLimite = incluirArchivos ? "elementos" : "directorios";
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} {etiquetaLimite} (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]";
-            }
-
-            return salida;
+            string listado = UnirNombres(nombres, limite);
+            string etiquetaLimite = incluirArchivos ? "elementos" : "directorios";
+            return nombres.Length > limite
+                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} {etiquetaLimite} (profundidad máx: {profundidad}). Refina la ruta o profundidad para acotar.]"
+                : listado;
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -591,8 +643,8 @@ namespace NativeSsh.Herramientas
                 cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
-                  \( {{filtroTipo}}-name {{patronEscapado}} -print -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print 2>/dev/null | sed 's|^\./||' | sort | head -n {{limite + 1}}
+                  \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
+                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
                 )
                 """);
 
@@ -600,19 +652,14 @@ namespace NativeSsh.Herramientas
             if (lectura.Codigo != 0)
                 throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
 
-            string salida = QuitarSaltoFinal(lectura.Salida);
-
-            if (string.IsNullOrEmpty(salida))
+            string[] nombres = SepararNombres(lectura.Salida);
+            if (nombres.Length == 0)
                 return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
 
-            string[] lineas = salida.Split('\n');
-            if (lineas.Length > limite)
-            {
-                string salidaTruncada = string.Join('\n', lineas.AsSpan(0, limite));
-                return $"{salidaTruncada}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]";
-            }
-
-            return salida;
+            string listado = UnirNombres(nombres, limite);
+            return nombres.Length > limite
+                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]"
+                : listado;
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]

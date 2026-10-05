@@ -34,8 +34,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("sed -n") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
-            comando.Contains("-o -type d -print") || comando.Contains("-o -print 2>/dev/null") ? SimularListDir(comando) :
-            comando.Contains("-print -prune") ? SimularFind(comando) :
+            comando.Contains("-o -type d -print0") || comando.Contains("-o -print0 2>/dev/null") ? SimularListDir(comando) :
+            comando.Contains("-print0 -prune") ? SimularFind(comando) :
             comando.Contains("find -L . -maxdepth") ? SimularFind(comando) :
             comando.Contains("stat -c") ? SimularStat(comando) :
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
@@ -142,27 +142,35 @@ namespace NativeSsh.Test.Herramientas
             return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 0);
         }
 
+        // Los listados de ssh_list_dir y ssh_find llegan del servidor como nombres terminados en NUL.
+        private static RespuestaFalsa Nombres(params string[] nombres) => new(string.Concat(nombres.Select(nombre => nombre + "\0")), 0);
+
+        // Nombres con caracteres de control, con comillas dobles y con una barra invertida (como una unidad de systemd).
+        private static readonly string[] NombresConControl = ["a\nb.txt", "\"citado\".txt", "medio\"comilla.txt", "dev-disk-by\\x2duuid.swap", "tab\there", "\u0085nel\u007f", "barra\\ y\r"];
+
         private static RespuestaFalsa SimularListDir(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de exploración no existe: 'ruta_inexistente'\n", 1) :
-            comando.Contains("'extremos'") ? new(NombresConBlancos + "\n", 0) :
+            comando.Contains("'extremos'") ? Nombres(NombresConBlancos.Split('\n')) :
+            comando.Contains("'control'") ? Nombres(NombresConControl) :
             comando.Contains("es_archivo.txt") ? new("Error: la ruta no es un directorio: 'es_archivo.txt'\n", 1) :
             comando.Contains("vacio") ? new("", 0) :
-            comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print 2>/dev/null")
-                ? new(".git\nnode_modules\nProgram.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0)
-                : new(".git\nnode_modules\nsrc\nsrc/models\nsrc/views\n", 0)) :
-            comando.Contains("-o -print 2>/dev/null") ? new("Program.cs\nREADME.md\nsrc\nsrc/models\nsrc/views\n", 0) :
-            new("src\nsrc/models\nsrc/views\n", 0);
+            comando.Contains("marcadores") && comando.Contains("-name .git") ? (comando.Contains("-o -print0 2>/dev/null")
+                ? Nombres(".git", "node_modules", "Program.cs", "README.md", "src", "src/models", "src/views")
+                : Nombres(".git", "node_modules", "src", "src/models", "src/views")) :
+            comando.Contains("-o -print0 2>/dev/null") ? Nombres("Program.cs", "README.md", "src", "src/models", "src/views") :
+            Nombres("src", "src/models", "src/views");
 
         private static RespuestaFalsa SimularFind(string comando) =>
             comando.Contains("ruta_inexistente") ? new("Error: la ruta de búsqueda no existe: 'ruta_inexistente'\n", 1) :
-            comando.Contains("'extremos'") ? new(NombresConBlancos + "\n", 0) :
+            comando.Contains("'extremos'") ? Nombres(NombresConBlancos.Split('\n')) :
+            comando.Contains("'control'") ? Nombres(NombresConControl) :
             comando.Contains("sin_coincidencias") ? new("", 0) :
-            comando.Contains("-name '.git'") ? new(".git\n", 0) :
-            comando.Contains("-name 'node_modules'") ? new("node_modules\n", 0) :
-            comando.Contains("-name '__pycache__'") ? new("__pycache__\n", 0) :
-            comando.Contains("-name '.venv'") ? new(".venv\n", 0) :
-            comando.Contains("-name '*.cs'") ? new("Program.cs\nHerramientas/HerramientasSsh.cs\n", 0) :
-            new("app.service\nnginx.conf\n", 0);
+            comando.Contains("-name '.git'") ? Nombres(".git") :
+            comando.Contains("-name 'node_modules'") ? Nombres("node_modules") :
+            comando.Contains("-name '__pycache__'") ? Nombres("__pycache__") :
+            comando.Contains("-name '.venv'") ? Nombres(".venv") :
+            comando.Contains("-name '*.cs'") ? Nombres("Program.cs", "Herramientas/HerramientasSsh.cs") :
+            Nombres("app.service", "nginx.conf");
 
         private static RespuestaFalsa SimularStat(string comando) =>
             comando.Contains("no_existe.txt")
@@ -916,8 +924,9 @@ namespace NativeSsh.Test.Herramientas
             _ = lectura.Should().Contain("supera el máximo editable");
         }
 
+        // ssh_search corta con head; ssh_find y ssh_list_dir, con el bucle que lee sus nombres terminados en NUL.
         [Fact]
-        public async Task SearchFindListDir_LimitanLaSalidaEnElServidorConHead()
+        public async Task SearchFindListDir_LimitanLaSalidaEnElServidor()
         {
             // Act
             _ = await _herramientas.BuscarAsync("servidor", "patron", maxResultados: 7);
@@ -927,8 +936,8 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             string[] comandos = [.. _fabrica.Ultima!.Comandos];
             _ = comandos.Should().Contain(c => c.Contains("grep -rnI", StringComparison.Ordinal) && c.Contains("| head -n 8", StringComparison.Ordinal));
-            _ = comandos.Should().Contain(c => c.Contains("-name '*.conf'", StringComparison.Ordinal) && c.Contains("| head -n 9", StringComparison.Ordinal));
-            _ = comandos.Should().Contain(c => c.Contains("-type d -print", StringComparison.Ordinal) && c.Contains("| head -n 10", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-name '*.conf'", StringComparison.Ordinal) && c.Contains("sort -z | { n=0; while [ \"$n\" -lt 9 ]", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("-type d -print0", StringComparison.Ordinal) && c.Contains("sort -z | { n=0; while [ \"$n\" -lt 10 ]", StringComparison.Ordinal));
         }
 
         [Fact]
@@ -1263,7 +1272,7 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.Should().Contain("src");
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"\( -name __pycache__ -o -name .cache \) -prune"));
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains(@"-o \( -name .git -o -name node_modules"));
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print 2>/dev/null"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-o -print0 2>/dev/null"));
             _ = _fabrica.Ultima!.Comandos.Should().NotContain("-type d -print");
         }
 
@@ -1334,7 +1343,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Should().Be(esperado);
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print0 -prune"));
         }
 
         [Fact]
@@ -1346,7 +1355,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Should().Contain("Program.cs");
             _ = resultado.Should().NotContain("node_modules");
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print -prune"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-print0 -prune"));
         }
 
         [Theory]
@@ -1721,6 +1730,32 @@ namespace NativeSsh.Test.Herramientas
             _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
             _ = encontrados.Should().Be(NombresConBlancos);
             _ = listado.Should().Be(NombresConBlancos);
+        }
+
+        // Un nombre con caracteres de control (categoría Cc: salto de línea, retorno de carro, tabulador, NEL, DEL...) o que
+        // empieza por comillas dobles sale entre comillas dobles y escapado como una cadena JSON, en una sola línea; los
+        // demás salen tal cual (también una barra invertida o unas comillas en medio del nombre). Las descripciones lo dicen.
+        [Fact]
+        public async Task FindYListDir_NombresConCaracteresDeControl_SalenEscapadosEnUnaSolaLinea()
+        {
+            // Act
+            string encontrados = await _herramientas.BuscarPorNombreAsync("servidor", "*", "control");
+            string listado = await _herramientas.ListarDirectoriosAsync("servidor", "control", incluirArchivos: true);
+
+            // Assert
+            string esperado = """
+                "a\nb.txt"
+                "\"citado\".txt"
+                medio"comilla.txt
+                dev-disk-by\x2duuid.swap
+                "tab\there"
+                "\u0085nel\u007F"
+                "barra\\ y\r"
+                """.ReplaceLineEndings("\n");
+            _ = encontrados.Should().Be(esperado);
+            _ = listado.Should().Be(esperado);
+            _ = new[] { DescripcionDe(nameof(HerramientasSsh.BuscarPorNombreAsync)), DescripcionDe(nameof(HerramientasSsh.ListarDirectoriosAsync)) }
+                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
         }
 
         // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.

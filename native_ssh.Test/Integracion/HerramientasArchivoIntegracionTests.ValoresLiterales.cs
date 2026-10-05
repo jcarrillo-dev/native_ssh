@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Text.Json;
 using FluentAssertions;
 using NativeSsh.Herramientas;
 
@@ -57,9 +58,43 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.TamanoBytes.Should().Be(9);
             _ = buscadoEnLaRuta.Should().Contain(":1:OBJETIVO").And.NotContain("SENUELO");
             _ = buscadoPorExtension.Should().StartWith($"{Path.Combine(extension, $"f.t{separador}xt")}:1:OBJETIVO\n\n[motor: ");
-            _ = encontradoPorNombre.Should().Be($"x{separador}y");
+            // ssh_find da entre comillas y escapado como una cadena JSON un nombre con caracteres de control (LS y PS no lo son).
+            _ = encontradoPorNombre.Should().Be(separador switch
+            {
+                "\r" => "\"x\\ry\"",
+                "\r\n" => "\"x\\r\\ny\"",
+                "\f" => "\"x\\fy\"",
+                "\u0085" => "\"x\\u0085y\"",
+                _ => $"x{separador}y"
+            });
             _ = encontradoEnLaCarpeta.Should().Be("dentro.txt");
             _ = listado.Should().Be("dentro.txt");
+        }
+
+        // En ssh_find y ssh_list_dir cada nombre ocupa una sola línea: uno con caracteres de control (aquí un salto de línea,
+        // un retorno de carro y un tabulador) o que empieza por comillas dobles sale entre comillas y escapado como una cadena
+        // JSON, que decodificada da el nombre exacto; los demás, tal cual (también con una barra invertida). Antes, "a\nz.txt"
+        // salía como dos nombres, "a" y "z.txt", ordenados por separado.
+        [Fact]
+        public async Task FindYListDir_NombresConCaracteresDeControl_CadaUnoEnUnaLineaYDecodificable()
+        {
+            // Arrange
+            string carpeta = Ruta("control");
+            _ = Directory.CreateDirectory(carpeta);
+            string[] nombres = ["a\nz.txt", "b\r.txt", "c\t.txt", "\"d\".txt", "e\\f.txt", "m.txt"];
+            foreach (string nombre in nombres)
+                await File.WriteAllTextAsync(Path.Combine(carpeta, nombre), "x\n");
+            HerramientasSsh herramientas = Herramientas();
+
+            // Act
+            string[] encontrados = (await herramientas.BuscarPorNombreAsync(Destino, "*", carpeta)).Split('\n');
+            string[] listados = (await herramientas.ListarDirectoriosAsync(Destino, carpeta, incluirArchivos: true)).Split('\n');
+
+            // Assert
+            string[] esperados = ["\"a\\nz.txt\"", "\"b\\r.txt\"", "\"c\\t.txt\"", "\"\\\"d\\\".txt\"", "e\\f.txt", "m.txt"];
+            _ = encontrados.Should().BeEquivalentTo(esperados);
+            _ = listados.Should().BeEquivalentTo(esperados);
+            _ = encontrados.Select(n => n.StartsWith('"') ? JsonDocument.Parse(n).RootElement.GetString() : n).Should().BeEquivalentTo(nombres);
         }
 
         // Un patrón de ssh_search es una regex de una sola línea: el CRLF (que incluye '\n') no puede coincidir.
