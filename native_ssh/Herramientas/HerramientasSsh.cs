@@ -245,11 +245,25 @@ namespace NativeSsh.Herramientas
             Peticion peticion = gestor.BuscarPeticion(id);
             long desde = peticion.Salida.Longitud;
             if (!gestor.EnviarEntrada(peticion, texto, enter))
-                throw new NativeSshException($"El comando {peticion.IdTexto} no admite entrada: está en estado {peticion.Estado}.");
+                throw new NativeSshException(MensajeEntradaNoEnviada(peticion));
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, desde);
         }
+
+        // Por qué no se envió la entrada, con lo que la petición deja ver tras el rechazo (sin afirmar que el comando no
+        // admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la petición no
+        // está en ejecución, durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si ya no es la que ocupa
+        // el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera solo se distinguen el
+        // estado y si se pidió cancelarla: el resto se enumera.
+        internal static string MensajeEntradaNoEnviada(Peticion peticion) => peticion.Estado switch
+        {
+            EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando a que termine el anterior en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
+            EstadoPeticionEnum.Ejecutando when peticion.IsCancelacionSolicitada => $"No se envió la entrada: el comando {peticion.IdTexto} se está cancelando (Ctrl+C enviado o cierre del canal del shell en curso, por ssh_cancel o ssh_reset_shell) y mientras tanto el shell no admite entrada.",
+            EstadoPeticionEnum.Ejecutando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect, ya no es el comando que ocupa el shell o falló la escritura en el canal, y entonces pudo llegar una parte). Comprueba su estado con ssh_output o ssh_status antes de reintentar.",
+            EstadoPeticionEnum.Completado or EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado or EstadoPeticionEnum.ShellPerdido or EstadoPeticionEnum.Error => $"No se envió la entrada: el comando {peticion.IdTexto} ya terminó (estado {peticion.Estado}).",
+            _ => $"No se envió la entrada: el comando {peticion.IdTexto} está en un estado desconocido ({peticion.Estado})."
+        };
 
         [McpServerTool(Name = "ssh_cancel", Destructive = true, Idempotent = true)]
         [Description("Cancela un comando: si está encolado no llega a ejecutarse; si está en ejecución se envía Ctrl+C y, si no responde, se cierra el canal del shell (se pierden las variables exportadas).")]

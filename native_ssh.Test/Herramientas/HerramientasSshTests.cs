@@ -45,6 +45,7 @@ namespace NativeSsh.Test.Herramientas
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
+                "ignora_ctrlc" => new("empezando\n", 0, ComportamientoFalsoEnum.IgnoraCtrlC),
                 "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
                 "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
                 _ => new($"eco:{comando}\n", 2)
@@ -304,7 +305,55 @@ namespace NativeSsh.Test.Herramientas
 
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(terminado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
-            _ = error.Message.Should().Contain("Completado");
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {terminado.Id} ya terminó (estado Completado).");
+        }
+
+        // Un comando encolado tras otro todavía no admite entrada: el error lo dice así, no que el comando no la admita.
+        [Fact]
+        public async Task Input_EnComandoEncolado_DiceQueSigueEncolado()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando encolado = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(encolado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = encolado.Estado.Should().Be(EstadoPeticionEnum.Encolado);
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {encolado.Id} sigue encolado, esperando a que termine el anterior en el shell de ana@servidor:22. Envíala cuando esté en ejecución (ssh_status).");
+        }
+
+        // Durante la interrupción de un comando en ejecución (aquí, uno que ignora el Ctrl+C, así que la interrupción dura
+        // hasta EsperaTrasCtrlC y el cierre del canal) el shell rechaza la entrada: si se pidió cancelarlo, el error dice que
+        // se está cancelando; si lo interrumpe su timeout, da las causas posibles. Nunca que el comando no admite entrada.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Input_DuranteLaInterrupcion_DiceQueSeEstaInterrumpiendo(bool isCancelado)
+        {
+            // Arrange
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "ignora_ctrlc", timeoutSegundos: isCancelado ? 300 : 1, esperarSegundos: 0);
+            Peticion peticion = _gestor.BuscarPeticion(comando.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => peticion.Salida.Longitud > 0);
+            if (isCancelado)
+                _ = peticion.SolicitarCancelacion();
+
+            // Act: reintenta hasta que la interrupción empiece (antes, la entrada se acepta).
+            Exception? error = null;
+            for (int intento = 0; intento < 100 && error is null; intento++)
+            {
+                error = await Record.ExceptionAsync(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", enter: false, esperarSegundos: 0));
+                if (error is null)
+                    await Task.Delay(20);
+            }
+
+            // Assert
+            _ = error.Should().BeOfType<NativeSshException>();
+            _ = error!.Message.Should().NotContain("no admite entrada:");
+            _ = error.Message.Should().StartWith(isCancelado
+                ? $"No se envió la entrada: el comando {comando.Id} se está cancelando"
+                : $"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout");
         }
 
         [Fact]
