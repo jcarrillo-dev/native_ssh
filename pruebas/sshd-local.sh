@@ -3,6 +3,7 @@
 # Uso: pruebas/sshd-local.sh iniciar|parar
 # Deja en pruebas/.estado/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto y sshd.log.
 # NATIVE_SSH_FORCE_COMMAND cambia el shell forzado (por defecto /bin/bash -l), p. ej. para simular un login lento.
+# El ForceCommand real es un envoltorio: los canales exec ejecutan su comando con bash y el shell interactivo, el forzado.
 set -euo pipefail
 
 DIR="${NATIVE_SSH_DIR_ESTADO:-$(cd "$(dirname "$0")" && pwd)/.estado}"
@@ -27,6 +28,16 @@ iniciar() {
     echo "[127.0.0.1]:$PUERTO $(cut -d' ' -f1,2 "$DIR/host_ed25519.pub")" > "$DIR/known_hosts"
     echo "$PUERTO" > "$DIR/puerto"
 
+    # Un ForceCommand a secas sustituiría también los comandos de los canales exec por el login.
+    {
+        echo '#!/bin/bash'
+        echo 'if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then'
+        echo '    exec /bin/bash -c "$SSH_ORIGINAL_COMMAND"'
+        echo 'fi'
+        printf 'eval "exec %s"\n' "${FORCE_COMMAND//\"/\\\"}"
+    } > "$DIR/force-command.sh"
+    chmod 700 "$DIR/force-command.sh"
+
     cat > "$DIR/sshd_config" <<CFG
 Port $PUERTO
 ListenAddress 127.0.0.1
@@ -39,8 +50,9 @@ KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
 PrintMotd no
-# El shell de login del usuario puede no ser bash (p. ej. fish): se fuerza un bash de login, como en producción.
-ForceCommand $FORCE_COMMAND
+# El shell de login del usuario puede no ser bash (p. ej. fish): se fuerza un bash de login, como en producción,
+# salvo en los canales exec, cuyo comando se ejecuta con bash.
+ForceCommand $DIR/force-command.sh
 CFG
 
     "$SSHD" -f "$DIR/sshd_config" -E "$DIR/sshd.log"
