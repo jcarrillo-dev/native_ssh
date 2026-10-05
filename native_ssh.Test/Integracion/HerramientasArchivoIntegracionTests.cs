@@ -44,11 +44,19 @@ namespace NativeSsh.Test.Integracion
         public async Task DisposeAsync()
         {
             await _gestor.DisposeAsync();
-            // Las pruebas de sudo dejan directorios 0000: sin devolver los permisos no se podrían borrar.
-            if (Directory.Exists(_directorio))
+            if (!Directory.Exists(_directorio))
+                return;
+
+            // Las pruebas de sudo dejan directorios 0000 (sin devolver los permisos no se podrían borrar) y archivos de
+            // otros uid, que solo puede borrar el "root" de la simulación.
+            try
             {
-                _ = Bash($"chmod -R u+rwx '{_directorio}'");
+                _ = Bash($"chmod -R u+rwx '{_directorio}' 2>/dev/null");
                 Directory.Delete(_directorio, recursive: true);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                _ = SudoSimulado.ComoRoot("rm -rf -- \"$1\"", _directorio);
             }
         }
 
@@ -403,17 +411,12 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.GetFileSystemEntries(_directorio).Should().HaveCount(2);
         }
 
-        // sudo sin contraseña simulado con un espacio de nombres de usuario: 'unshare -r' ejecuta el comando como "root"
-        // (uid 0 mapeado al usuario de las pruebas), que tiene CAP_DAC_OVERRIDE sobre los archivos del usuario y atraviesa
-        // un directorio 0000 suyo, como root atraviesa uno ajeno con sudo real. Diferencias con sudo real: solo están
-        // mapeados el uid y el gid primario (los grupos secundarios aparecen como 65534 y 'chown' a ellos falla, así que
-        // se cae a la escritura en el sitio) y requiere espacios de nombres de usuario sin privilegios en el kernel.
-        private async Task SimularSudoAsync(HerramientasSsh herramientas)
-        {
-            _ = Bash("unshare -r true 2>/dev/null && echo disponible").Should().Be("disponible",
-                "la simulación de sudo necesita 'unshare -r' (espacios de nombres de usuario sin privilegios: kernel.unprivileged_userns_clone=1 y sin restricción de AppArmor)");
-            await SustituirComandoAsync(herramientas, "sudo", "exec unshare -r \"$@\"");
-        }
+        // sudo sin contraseña simulado con un espacio de nombres de usuario (ver SudoSimulado): el "root" del espacio tiene
+        // CAP_DAC_OVERRIDE sobre los archivos del usuario y, con sus subuid, sobre los de otros uid; atraviesa un directorio
+        // 0000 o ajeno como root con sudo real. Los grupos secundarios del usuario no están mapeados (aparecen como 65534
+        // y no se pueden asignar), así que con ellos se cae a la escritura en el sitio.
+        private async Task SimularSudoAsync(HerramientasSsh herramientas) =>
+            await SustituirComandoAsync(herramientas, "sudo", SudoSimulado.Script);
 
         private static string GrupoSecundario() => Bash("id -Gn | tr ' ' '\\n' | grep -vx \"$(id -gn)\" | head -n 1");
 
@@ -478,6 +481,47 @@ namespace NativeSsh.Test.Integracion
             _ = error.Message.Should().Contain("ya existe");
             _ = (await File.ReadAllTextAsync(clave)).Should().Be("secreto\n");
             _ = Directory.GetFileSystemEntries(privado).Should().ContainSingle();
+        }
+
+        // Rama atómica con sudo sobre un archivo de OTRO usuario (con los subuid de la simulación; sin ellos, del propio
+        // usuario): directorio ajeno 0700 que el usuario de las pruebas no puede atravesar y certificado 0640 de otro uid
+        // y de un tercer grupo, editado a través de una cadena de enlaces. Todo corre como root: la escritura es atómica
+        // y conserva propietario, grupo y modo del certificado, los enlaces y el modo del directorio.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Sobrescribir_ConSudoArchivoDeOtroUsuarioEnSuDirectorio_EsAtomicaYLoConservaTodo(bool isReplace)
+        {
+            // Arrange: dentro del espacio de nombres el usuario de las pruebas es 0; 1, 2 y 3 son uid y gid ajenos.
+            bool isAjeno = SudoSimulado.HasOtrosUsuarios;
+            string privado = Ruta("priv");
+            _ = SudoSimulado.ComoRoot($"""
+                set -e
+                mkdir -- "$1"
+                printf 'secreto\nlinea2\n' > "$1/clave.pem"
+                ln -s clave.pem "$1/actual.pem"
+                ln -s actual.pem "$1/cadena.pem"
+                chown -h {(isAjeno ? "1:2" : "0:0")} -- "$1" "$1/clave.pem" "$1/actual.pem" "$1/cadena.pem"
+                chgrp {(isAjeno ? "3" : "0")} -- "$1/clave.pem"
+                chmod 640 -- "$1/clave.pem"
+                chmod 700 -- "$1"
+                """, privado);
+            const string Inspeccion = "stat -c '%u:%g %a' -- \"$1/clave.pem\" \"$1\"; cat -- \"$1/clave.pem\"; readlink -- \"$1/actual.pem\" \"$1/cadena.pem\"; ls -A -- \"$1\"";
+            string esperadoSinContenido = $"{(isAjeno ? "1:3" : "0:0")} 640\n{(isAjeno ? "1:2" : "0:0")} 700\n";
+            HerramientasSsh herramientas = Herramientas();
+            await SimularSudoAsync(herramientas);
+
+            // Act
+            ResultadoEscritura resultado = isReplace
+                ? await herramientas.ReemplazarContenidoArchivoAsync(Destino, Path.Combine(privado, "cadena.pem"), "secreto", "nuevo", sudo: true)
+                : await herramientas.EscribirArchivoAsync(Destino, Path.Combine(privado, "cadena.pem"), "nuevo\nlinea2\n", overwrite: true, sudo: true);
+
+            // Assert
+            _ = resultado.IsAtomica.Should().BeTrue();
+            _ = resultado.Reemplazos.Should().Be(isReplace ? 1 : null);
+            _ = SudoSimulado.ComoRoot(Inspeccion, privado).Should().Be(esperadoSinContenido + "nuevo\nlinea2\nclave.pem\nactual.pem\nactual.pem\ncadena.pem\nclave.pem\n");
+            if (isAjeno)
+                _ = Bash($"ls '{privado}' >/dev/null 2>&1 && echo visible || echo invisible").Should().Be("invisible");
         }
 
         // $(...) quita los saltos de línea finales: un enlace a "victima\n" no debe acabar escribiendo en "victima".
