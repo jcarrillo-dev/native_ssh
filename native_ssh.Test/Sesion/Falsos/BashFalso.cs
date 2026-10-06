@@ -332,6 +332,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _escriturasEnCurso;
         private int _escriturasRetenidas;
         private int _cierresConEscrituraEnCurso;
+        private int _ctrlCConOtrosBytes;
+        private int _lineasATragarTrasCtrlC;
+        private int _lineasPorTragar;
+        private int _lineasRecibidas;
         private volatile bool _isEscrituraRechazada;
         private ManualResetEventSlim? _liberacionEscrituras;
         private ManualResetEventSlim? _retencionEscrituras;
@@ -366,6 +370,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         // Intentos de escribir con el canal ya cerrado.
         public int EscriturasTrasCerrar => Volatile.Read(ref _escriturasTrasCerrar);
+
+        // Líneas completas recibidas por el canal (las tragadas también cuentan).
+        public int LineasRecibidas => Volatile.Read(ref _lineasRecibidas);
+
+        // Escrituras que llevaban Ctrl+C junto a otros bytes.
+        public int CtrlCConOtrosBytes => Volatile.Read(ref _ctrlCConOtrosBytes);
 
         // Escrituras retenidas por RetenerEscrituras (cuentan aunque ya se hayan soltado).
         public int EscriturasRetenidas => Volatile.Read(ref _escriturasRetenidas);
@@ -435,6 +445,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 if (_isZombi)
                     throw new InvalidOperationException("La conexión del canal se cayó.");
 
+                if (datos.Length > 1 && datos.Contains((byte)0x03))
+                    _ = Interlocked.Increment(ref _ctrlCConOtrosBytes);
+
                 foreach (byte actual in datos)
                 {
                     if (IsCerrado)
@@ -443,7 +456,13 @@ namespace NativeSsh.Test.Sesion.Falsos
                     if (actual == 0x03)
                     {
                         _ = Interlocked.Increment(ref _sigints);
+                        bool isTraga = _enCurso is not null && Volatile.Read(ref _lineasATragarTrasCtrlC) > 0;
                         CtrlC();
+                        if (isTraga)
+                        {
+                            _lineasPorTragar = Volatile.Read(ref _lineasATragarTrasCtrlC);
+                            return;
+                        }
                     }
                     else if (actual == (byte)'\n')
                     {
@@ -470,6 +489,11 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Desde ahora escribir falla sin que la lectura se entere y con la conexión viva: el servidor cerró el canal y la
         // bomba aún no ha visto el cierre (ShellStream ya liberado al escribir, Read aún sin devolver 0).
         public void RechazarEscrituras() => _isEscrituraRechazada = true;
+
+        // Desde ahora, tras cada Ctrl+C el proceso en curso se traga las siguientes 'lineas' líneas antes de terminar, aunque
+        // lleguen en otra escritura: como 'sudo <cmd>' con use_pty, que reenvía al hijo lo que llega mientras muere (o lo toma
+        // como contraseñas si la está pidiendo). Lo que llega en la misma escritura que el Ctrl+C se pierde siempre.
+        public void TragarLineasTrasCtrlC(int lineas) => Volatile.Write(ref _lineasATragarTrasCtrlC, lineas);
 
         // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
         // muere al perder el terminal.
@@ -535,6 +559,13 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Línea recibida por el canal (lo que el TTY entrega al shell).
         private void ProcesarLinea(string linea)
         {
+            _ = Interlocked.Increment(ref _lineasRecibidas);
+            if (_lineasPorTragar > 0)
+            {
+                _lineasPorTragar--;
+                return;
+            }
+
             if (_isEnLogin)
             {
                 _bufferInterno.Enqueue(linea);

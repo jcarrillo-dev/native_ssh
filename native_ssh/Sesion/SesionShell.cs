@@ -74,6 +74,10 @@ namespace NativeSsh.Sesion
         private static readonly TimeSpan EsperaMaxCandadoEntrada = TimeSpan.FromSeconds(2);
         private static readonly TimeSpan IntervaloCandadoEntrada = TimeSpan.FromMilliseconds(50);
 
+        // Pausa entre Ctrl+C y la línea de recuperación (InterrumpirAsync): lo que tarda en terminar un 'sudo <cmd>' con
+        // use_pty, que se traga lo que llega mientras tanto. Medido a mano con ssh -tt: con 0,3 s la línea llega al shell.
+        private static readonly TimeSpan PausaTrasCtrlC = TimeSpan.FromMilliseconds(300);
+
         private const string DetalleComandoNoEnviado = "el comando no llegó a enviarse.";
         private const string AvisoAperturaShellPendiente = "El servidor aún no ha respondido a la apertura del shell: el siguiente comando esperará a esa misma apertura en lugar de abrir otro canal.";
         private const string DetalleCtrlCEnviado = "se envió Ctrl+C al proceso.";
@@ -155,7 +159,8 @@ namespace NativeSsh.Sesion
             Sincronizacion,
             CapturaPath,
             Comando,
-            Interrupcion
+            CtrlC,
+            Recuperacion
         }
 
         public DestinoSsh Destino { get; }
@@ -743,7 +748,7 @@ namespace NativeSsh.Sesion
                 if (!isCanalVigente)
                     return ("no se envió Ctrl+C porque el canal del shell ya estaba cerrado.", "El siguiente comando abrirá un shell nuevo.");
 
-                Componer(canal, EscrituraEnum.Interrupcion, idRecuperacion, null);
+                Componer(canal, EscrituraEnum.CtrlC, idRecuperacion, null);
                 isEnviado = TryEnviarBajoCandado(canal);
             }
             finally
@@ -751,22 +756,35 @@ namespace NativeSsh.Sesion
                 SoltarCandadoEscritura(canal);
             }
 
+            // La línea de recuperación va en otra escritura y tras una pausa: un 'sudo <cmd>' con use_pty se traga lo que llega
+            // mientras termina, y si estaba pidiendo la contraseña lo tomaría como contraseñas (intentos gastados; con
+            // pam_faillock, la cuenta bloqueada). Mientras tanto la entrada sigue rechazada (_isInterrumpiendo). Si el marcador
+            // no llega en la mitad de la espera, se reenvía una vez antes de escalar al cierre del canal.
+            bool isRecuperacionEnviada = false;
             if (isEnviado)
             {
-                try
-                {
-                    int codigo = await recuperacion.Task.WaitAsync(_opciones.EsperaTrasCtrlC, _cierre.Token).ConfigureAwait(false);
-                    if (codigo != CodigoCanalCerrado)
-                        return (DetalleCtrlCEnviado, null);
+                await Task.Delay(PausaTrasCtrlC, _cierre.Token).ConfigureAwait(false);
+                isRecuperacionEnviada = recuperacion.Task.IsCompleted || TryEscribirRecuperacion(canal, idRecuperacion);
+            }
 
-                    return (DetalleCtrlCEnviado, conexion is { IsConectada: true }
-                        ? "El shell se cerró al interrumpir; el siguiente comando abrirá uno nuevo y las variables exportadas se perderán."
-                        : "El shell se cerró al interrumpir porque se perdió la conexión SSH; el siguiente comando reconectará y abrirá uno nuevo, y las variables exportadas se perderán.");
-                }
-                catch (TimeoutException)
-                {
-                    // No respondió a Ctrl+C: se escala al cierre del canal.
-                }
+            if (isRecuperacionEnviada)
+            {
+                TimeSpan primeraEspera = _opciones.EsperaTrasCtrlC / 2;
+                int? codigo = await EsperarRecuperacionAsync(recuperacion, primeraEspera).ConfigureAwait(false);
+                if (codigo is null && TryEscribirRecuperacion(canal, idRecuperacion))
+                    codigo = await EsperarRecuperacionAsync(recuperacion, _opciones.EsperaTrasCtrlC - primeraEspera).ConfigureAwait(false);
+
+                if (codigo is null && recuperacion.Task.IsCompletedSuccessfully)
+                    codigo = recuperacion.Task.Result;
+
+                if (codigo is int final)
+                    return final != CodigoCanalCerrado
+                        ? (DetalleCtrlCEnviado, null)
+                        : (DetalleCtrlCEnviado, conexion is { IsConectada: true }
+                            ? "El shell se cerró al interrumpir; el siguiente comando abrirá uno nuevo y las variables exportadas se perderán."
+                            : "El shell se cerró al interrumpir porque se perdió la conexión SSH; el siguiente comando reconectará y abrirá uno nuevo, y las variables exportadas se perderán.");
+
+                // No respondió a Ctrl+C: se escala al cierre del canal.
             }
 
             bool isCierreConfirmado = TryCerrarCanal(canal);
@@ -779,6 +797,11 @@ namespace NativeSsh.Sesion
                     ? $"El canal del shell ya no admitía escrituras: se cerró. {siguiente}"
                     : $"El canal del shell ya no admitía escrituras porque se perdió la conexión SSH: se cerró. {siguiente}");
 
+            if (!isRecuperacionEnviada)
+                return (DetalleCtrlCEnviado, isConectada
+                    ? $"El canal del shell dejó de admitir escrituras antes de la línea que lo devuelve a un estado conocido: se cerró. {siguiente}"
+                    : $"Se perdió la conexión SSH antes de enviar la línea que devuelve el shell a un estado conocido: se cerró el canal del shell. {siguiente}");
+
             // Que la conexión sigue abierta solo se afirma si el servidor confirmó el cierre del canal: congelado (o con un
             // bash que no muere al perder el terminal) no lo confirma, y entonces no se sabe si responde.
             string espera = $"{_opciones.EsperaTrasCtrlC.TotalSeconds:0.#} s";
@@ -788,6 +811,41 @@ namespace NativeSsh.Sesion
             return (DetalleCtrlCEnviado, isCierreConfirmado
                 ? $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell (la conexión TCP sigue abierta). {siguiente}"
                 : $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell, pero el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s (puede que no responda, o que el proceso siga vivo sin terminal). {siguiente} Si las operaciones siguientes tampoco responden, ssh_disconnect cierra la conexión.");
+        }
+
+        // null si vence la espera; el código del marcador (o CodigoCanalCerrado) si llega.
+        private async Task<int?> EsperarRecuperacionAsync(TaskCompletionSource<int> recuperacion, TimeSpan espera)
+        {
+            try
+            {
+                return await recuperacion.Task.WaitAsync(espera, _cierre.Token).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                return null;
+            }
+        }
+
+        // La línea de recuperación tras Ctrl+C, solo si el canal sigue siendo el vigente. La espera al candado es acotada,
+        // aunque solo lo puede retener una entrada que llegó antes de la interrupción y que ya no escribe.
+        private bool TryEscribirRecuperacion(ShellAbierto canal, Guid idRecuperacion)
+        {
+            if (!TryTomarCandadoEscritura(canal))
+                return false;
+
+            try
+            {
+                lock (_candadoProceso)
+                    if (!ReferenceEquals(_canal, canal))
+                        return false;
+
+                Componer(canal, EscrituraEnum.Recuperacion, idRecuperacion, null);
+                return TryEnviarBajoCandado(canal);
+            }
+            finally
+            {
+                SoltarCandadoEscritura(canal);
+            }
         }
 
         private static void FinalizarInterrumpida(Peticion peticion, bool isTiempoAgotado, string detalle, string? aviso) =>
@@ -1350,8 +1408,11 @@ namespace NativeSsh.Sesion
                 case EscrituraEnum.Comando:
                     ConstructorComando.EscribirComando(comando, id, escritor);
                     break;
-                case EscrituraEnum.Interrupcion:
-                    ConstructorComando.EscribirInterrupcion(id, escritor);
+                case EscrituraEnum.CtrlC:
+                    ConstructorComando.EscribirCtrlC(escritor);
+                    break;
+                case EscrituraEnum.Recuperacion:
+                    ConstructorComando.EscribirRecuperacion(id, escritor);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(tipo), tipo, null);

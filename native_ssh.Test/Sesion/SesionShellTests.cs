@@ -613,7 +613,30 @@ namespace NativeSsh.Test.Sesion
         [Fact]
         public async Task TiempoAgotado_SinRespuestaACtrlCYConLaConexionCaida_NoAfirmaQueLaConexionSigueAbierta()
         {
-            // Arrange: 'terco' ignora Ctrl+C y la conexión cae mientras se espera su respuesta.
+            // Arrange: 'terco' ignora Ctrl+C y la conexión cae mientras se espera su respuesta (ya enviada la línea de
+            // recuperación, que va en otra escritura tras una pausa).
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion terco = Nueva("terco", timeoutSegundos: 0.3);
+            sesion.Encolar(terco);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima?.SigintsRecibidos > 0);
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+            int lineas = canal.LineasRecibidas;
+
+            // Act
+            await EsperasPrueba.EsperarHastaAsync(() => canal.LineasRecibidas >= lineas + 2);
+            fabrica.Ultima.CaerSinCerrarCanal();
+            await terco.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = terco.Aviso.Should().Contain("no respondió a Ctrl+C").And.Contain("se perdió la conexión SSH").And.NotContain("sigue abierta");
+        }
+
+        [Fact]
+        public async Task TiempoAgotado_ConLaConexionCaidaEntreCtrlCYLaLineaDeRecuperacion_DiceQueNoPudoEnviarLaLinea()
+        {
+            // Arrange: la conexión cae justo después de Ctrl+C, durante la pausa anterior a la línea de recuperación.
             FabricaFalsa fabrica = new(Guion);
             await using SesionShell sesion = Crear(fabrica);
             Peticion terco = Nueva("terco", timeoutSegundos: 0.3);
@@ -626,7 +649,7 @@ namespace NativeSsh.Test.Sesion
 
             // Assert
             _ = terco.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
-            _ = terco.Aviso.Should().Contain("no respondió a Ctrl+C").And.Contain("se perdió la conexión SSH").And.NotContain("sigue abierta");
+            _ = terco.Aviso.Should().Contain("se envió Ctrl+C").And.Contain("Se perdió la conexión SSH antes de enviar la línea").And.NotContain("no respondió");
         }
 
         [Fact]
@@ -998,6 +1021,61 @@ namespace NativeSsh.Test.Sesion
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
             _ = (await entradaAlCerrar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("ya había terminado como shell perdido")
                 .And.NotContain("termina como cancelado");
+        }
+
+        [Fact]
+        public async Task Cancelar_EnviaCtrlCEnSuPropiaEscrituraYDespuesLaLineaDeRecuperacion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "siguiente");
+
+            // Assert: el shell se conserva (la línea de recuperación llegó al shell, no al proceso).
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = colgado.Aviso.Should().Be("Cancelado: se envió Ctrl+C al proceso.");
+            _ = canal.SigintsRecibidos.Should().Be(1);
+            _ = canal.CtrlCConOtrosBytes.Should().Be(0);
+            _ = Texto(siguiente).Should().Be("eco:siguiente\n");
+            _ = siguiente.Aviso.Should().BeNull();
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task Cancelar_ProcesoQueSeTragaLasLineasTrasCtrlC_ComoSudo_ConservaElShell(int lineasTragadas)
+        {
+            // Arrange: como 'sudo <cmd>' con use_pty, el proceso se traga lo que llega mientras muere (con 2 líneas, también
+            // la primera línea de recuperación entera: hace falta reenviarla).
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+            canal.TragarLineasTrasCtrlC(lineasTragadas);
+
+            // Act
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "siguiente");
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = colgado.Aviso.Should().Be("Cancelado: se envió Ctrl+C al proceso.");
+            _ = Texto(siguiente).Should().Be("eco:siguiente\n");
+            _ = siguiente.Aviso.Should().BeNull();
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(1);
+            _ = canal.SigintsRecibidos.Should().Be(1);
         }
 
         [Fact]

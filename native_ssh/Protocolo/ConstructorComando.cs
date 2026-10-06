@@ -89,9 +89,15 @@ namespace NativeSsh.Protocolo
             EscribirCola(id, escritor);
         }
 
-        public static void EscribirInterrupcion(Guid id, IBufferWriter<byte> escritor)
+        // Ctrl+C va solo en su escritura y la línea de recuperación después, en otra (EscribirRecuperacion): un 'sudo <cmd>'
+        // con use_pty (o pidiendo la contraseña) se tragaría lo que llega junto al Ctrl+C, o lo tomaría como contraseñas.
+        public static void EscribirCtrlC(IBufferWriter<byte> escritor) => escritor.Write("\u0003"u8);
+
+        // Línea que devuelve el shell a un estado conocido tras Ctrl+C. El primer '\n' es una línea vacía para bash (que
+        // descartó lo que tenía a medias al recibir Ctrl+C).
+        public static void EscribirRecuperacion(Guid id, IBufferWriter<byte> escritor)
         {
-            escritor.Write("\u0003\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, escritor);
         }
 

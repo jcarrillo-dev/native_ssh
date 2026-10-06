@@ -77,13 +77,24 @@ namespace NativeSsh.Test.Protocolo
         }
 
         [Fact]
-        public void Interrupcion_EmpiezaConCtrlC()
+        public void CtrlC_VaSoloEnSuEscritura()
+        {
+            // Act
+            string texto = Componer(ConstructorComando.EscribirCtrlC);
+
+            // Assert
+            _ = texto.Should().Be("\u0003");
+        }
+
+        [Fact]
+        public void Recuperacion_NoLlevaCtrlCYEmpiezaConUnaLineaVacia()
         {
             // Arrange
-            string texto = Componer(w => ConstructorComando.EscribirInterrupcion(Id, w));
+            string texto = Componer(w => ConstructorComando.EscribirRecuperacion(Id, w));
 
             // Act & Assert
-            _ = texto.Should().StartWith("\u0003\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ");
+            _ = texto.Should().StartWith("\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ");
+            _ = texto.Should().NotContain("\u0003");
             _ = texto.Should().Contain($"'{Id:N}'");
             _ = texto.Should().EndWith("; read -r __ns_d\n");
         }
@@ -147,7 +158,7 @@ namespace NativeSsh.Test.Protocolo
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w));
             string inicializacion = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w));
-            string interrupcion = Componer(w => ConstructorComando.EscribirInterrupcion(Id, w));
+            string interrupcion = Componer(w => ConstructorComando.EscribirRecuperacion(Id, w));
 
             // Assert
             _ = comando.Should().Contain(clausulaEsperada);
