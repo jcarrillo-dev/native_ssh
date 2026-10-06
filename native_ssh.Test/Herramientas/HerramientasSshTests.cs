@@ -321,7 +321,40 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = encolado.Estado.Should().Be(EstadoPeticionEnum.Encolado);
-            _ = error.Message.Should().Be($"No se envió la entrada: el comando {encolado.Id} sigue encolado, esperando a que termine el anterior en el shell de ana@servidor:22. Envíala cuando esté en ejecución (ssh_status).");
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {encolado.Id} sigue encolado, esperando su turno en el shell de ana@servidor:22. Envíala cuando esté en ejecución (ssh_status).");
+        }
+
+        // Mientras el shell se abre (la conexión, o la apertura del canal del shell, retenidas) la petición ya está en
+        // ejecución pero el comando aún no se ha enviado y la sesión rechaza la entrada: el error dice que el shell se está
+        // abriendo y que se reintente cuando ssh_status lo muestre activo, no una lista de causas que no la incluye (auditoría
+        // del A-septies, Y01/Y02). Con el shell ya abierto, la misma entrada llega.
+        [Theory]
+        [InlineData("conexion")]
+        [InlineData("apertura_shell")]
+        public async Task Input_MientrasElShellSeAbre_DiceQueSeEstaAbriendo(string fase)
+        {
+            // Arrange
+            using SemaphoreSlim bloqueo = new(0);
+            if (fase == "conexion")
+                _fabrica.BloqueoConexion = bloqueo;
+            else
+                _fabrica.BloqueoAperturaShell = bloqueo;
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            Peticion peticion = _gestor.BuscarPeticion(comando.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => fase == "conexion" ? _fabrica.ConexionesRetenidas == 1 : _fabrica.Ultima?.AperturasShellRetenidas == 1);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoEstado estado = _herramientas.Estado("servidor");
+            _ = bloqueo.Release();
+            await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado("servidor").Sesiones[0].IsShellActivo && _fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)));
+            ResultadoComando reintento = await _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = estado.Sesiones.Should().ContainSingle().Which.IsShellActivo.Should().BeFalse();
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta cuando ssh_status muestre el shell activo (isShellActivo=true) con este comando en curso.");
+            _ = reintento.Salida.Should().Contain("recibido:x");
         }
 
         // Durante la interrupción de un comando en ejecución (aquí, uno que ignora el Ctrl+C, así que la interrupción dura

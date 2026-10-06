@@ -244,22 +244,39 @@ namespace NativeSsh.Herramientas
         {
             Peticion peticion = gestor.BuscarPeticion(id);
             long desde = peticion.Salida.Longitud;
+            // Se mira antes de enviar y otra vez tras el rechazo: si el shell se activa justo entre los dos, la entrada se
+            // rechazó igualmente porque todavía se estaba abriendo.
+            bool isShellInactivo = IsShellInactivo(peticion.Destino.Clave);
             if (!gestor.EnviarEntrada(peticion, texto, enter))
-                throw new NativeSshException(MensajeEntradaNoEnviada(peticion));
+                throw new NativeSshException(MensajeEntradaNoEnviada(peticion, isShellInactivo || IsShellInactivo(peticion.Destino.Clave)));
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, desde);
         }
 
-        // Por qué no se envió la entrada, con lo que la petición deja ver tras el rechazo (sin afirmar que el comando no
-        // admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la petición no
-        // está en ejecución, durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si ya no es la que ocupa
-        // el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera solo se distinguen el
-        // estado y si se pidió cancelarla: el resto se enumera.
-        internal static string MensajeEntradaNoEnviada(Peticion peticion) => peticion.Estado switch
+        // Sesión del destino con su shell sin abrir (ssh_status lo muestra como shellActivo=false): se está conectando,
+        // iniciando sesión o inicializando el shell (primer comando, tras ssh_reset_shell o tras perderlo), o el canal se
+        // acaba de cerrar o perder. Sin sesión, false: no hay shell que se esté abriendo.
+        private bool IsShellInactivo(string clave)
         {
-            EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando a que termine el anterior en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
+            foreach (SesionShell sesion in gestor.ListarSesiones())
+                if (sesion.Destino.Clave == clave)
+                    return !sesion.IsShellActivo;
+
+            return false;
+        }
+
+        // Por qué no se envió la entrada, con lo que la petición y su sesión dejan ver tras el rechazo (sin afirmar que el
+        // comando no admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la
+        // petición no está en ejecución, mientras su shell se abre (la petición ya está en ejecución, pero el comando aún no
+        // se ha enviado al shell), durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si ya no es la que
+        // ocupa el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera se distinguen el
+        // estado, si se pidió cancelarla y si el shell está activo: el resto se enumera.
+        internal static string MensajeEntradaNoEnviada(Peticion peticion, bool isShellInactivo) => peticion.Estado switch
+        {
+            EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando su turno en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
             EstadoPeticionEnum.Ejecutando when peticion.IsCancelacionSolicitada => $"No se envió la entrada: el comando {peticion.IdTexto} se está cancelando (Ctrl+C enviado o cierre del canal del shell en curso, por ssh_cancel o ssh_reset_shell) y mientras tanto el shell no admite entrada.",
+            EstadoPeticionEnum.Ejecutando when isShellInactivo => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta cuando ssh_status muestre el shell activo (isShellActivo=true) con este comando en curso.",
             EstadoPeticionEnum.Ejecutando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect, ya no es el comando que ocupa el shell o falló la escritura en el canal, y entonces pudo llegar una parte). Comprueba su estado con ssh_output o ssh_status antes de reintentar.",
             EstadoPeticionEnum.Completado or EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado or EstadoPeticionEnum.ShellPerdido or EstadoPeticionEnum.Error => $"No se envió la entrada: el comando {peticion.IdTexto} ya terminó (estado {peticion.Estado}).",
             _ => $"No se envió la entrada: el comando {peticion.IdTexto} está en un estado desconocido ({peticion.Estado})."
