@@ -1082,18 +1082,18 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            string anterior = DirectorioTrabajoActual(clave) ?? DirectorioHome;
-            string sigue = $"El directorio de trabajo sigue siendo {anterior}.";
+            SesionShell? sesionInicial = SesionDe(clave);
+            string? guardado = sesionInicial?.DirectorioTrabajo;
             if (string.IsNullOrEmpty(ruta))
             {
-                string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, ConsecuenciaCwdIncierta(anterior, DirectorioHome), cancellationToken).ConfigureAwait(false);
-                ExigirCompletada(peticionReset, ConsecuenciaCwd(peticionReset, anterior, DirectorioHome));
+                const string ComandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome), cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome));
 
                 if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
-                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {sigue}");
+                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
                 }
 
                 // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
@@ -1128,27 +1128,29 @@ namespace NativeSsh.Herramientas
                 """);
 
             // La validación va en un subshell: falle como falle, no cambia nada.
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, sigue, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionValidacion, sigue);
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p));
 
             if (peticionValidacion.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionValidacion, out _).Trim();
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError);
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
             }
 
             string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
             if (Encoding.UTF8.GetByteCount(pwdReal) > SesionShell.MaxBytesDirectorioTrabajo)
-                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {sigue}");
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
 
+            // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
+            SesionShell? sesionValidacion = SesionDe(clave);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, ConsecuenciaCwdIncierta(anterior, pwdReal), cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionExport, ConsecuenciaCwd(peticionExport, anterior, pwdReal));
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal));
 
             if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
-                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {sigue}");
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado)}");
             }
 
             // Fuente de verdad en C# (la reciben los canales exec y se reexporta si el shell se recrea), fijada solo cuando
@@ -1160,25 +1162,58 @@ namespace NativeSsh.Herramientas
 
         private const string DirectorioHome = "$HOME (~)";
 
-        // Directorio de trabajo que la sesión del destino guarda ahora (null = $HOME o sin sesión).
-        private string? DirectorioTrabajoActual(string clave)
+        // Sesión del destino ahora (null = no hay: nunca se abrió o ssh_disconnect la cerró).
+        private SesionShell? SesionDe(string clave)
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
                 if (sesion.Destino.Clave == clave)
-                    return sesion.DirectorioTrabajo;
+                    return sesion;
 
             return null;
         }
 
-        // Qué quedó tras un export de ssh_set_cwd que no terminó bien. C# no ha cambiado. Si el comando no llegó al shell o
-        // el shell se perdió (el nuevo se inicializa con el directorio de C#), todo sigue en el anterior; si no terminó con
-        // el shell vivo (plazo, cancelación), ese shell puede haberlo exportado ya.
-        private static string ConsecuenciaCwd(Peticion peticion, string anterior, string nuevo) =>
-            IsNoEnviadaAlShell(peticion)
-                ? $"El directorio de trabajo sigue siendo {anterior}."
-                : peticion.Estado == EstadoPeticionEnum.ShellPerdido
-                    ? $"El directorio de trabajo sigue siendo {anterior}: lo usan las herramientas de lectura y el shell nuevo se abrirá en él."
-                    : ConsecuenciaCwdIncierta(anterior, nuevo);
+        // Qué quedó del directorio de trabajo tras un fallo de ssh_set_cwd, calculado después del fallo y no antes
+        // (A-undecies, AU1): ssh_disconnect a mitad saca la sesión con su directorio y la próxima conexión empieza en $HOME,
+        // y otra llamada puede haberlo cambiado entre medias. 'guardado' es el directorio de C# al empezar (null = $HOME) y
+        // 'sesionEsperada', la sesión que había (null si aún no había ninguna). Si nada de eso pasó, C# no ha cambiado:
+        // - sin 'nuevo' (la validación, que va en un subshell, o un comando que el shell rechazó con un código distinto de
+        //   0), sin enviar al shell o cancelado en la cola: todo sigue en el anterior, con certeza;
+        // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
+        // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
+        private string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
+        {
+            SesionShell? sesion = SesionDe(clave);
+            if (sesion is null)
+                return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en {DirectorioHome}.";
+
+            string? actual = sesion.DirectorioTrabajo;
+            string actualVisible = actual ?? DirectorioHome;
+            if (sesionEsperada is not null && !ReferenceEquals(sesion, sesionEsperada))
+                return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y ya se abrió otra: el directorio de trabajo es {actualVisible}, el de esa sesión nueva.";
+
+            bool isCanceladaEnLaCola = peticion is not null && IsCanceladaEnLaCola(peticion);
+            bool isSinEfectoEnElShell = nuevo is null || peticion is null || isCanceladaEnLaCola || IsNoEnviadaAlShell(peticion);
+            bool isShellPerdido = peticion?.Estado == EstadoPeticionEnum.ShellPerdido;
+            if (actual != guardado)
+                return isSinEfectoEnElShell || isShellPerdido
+                    ? $"Mientras tanto otra llamada cambió el directorio de trabajo: ahora es {actualVisible}."
+                    : $"Mientras tanto otra llamada cambió el directorio de trabajo a {actualVisible} (lo usan las herramientas de lectura y un shell nuevo), pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd.";
+
+            string anterior = guardado ?? DirectorioHome;
+            return isCanceladaEnLaCola
+                ? $"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {anterior}."
+                : isSinEfectoEnElShell
+                    ? $"El directorio de trabajo sigue siendo {anterior}."
+                    : isShellPerdido
+                        ? $"El directorio de trabajo sigue siendo {anterior}: lo usan las herramientas de lectura y el shell nuevo se abrirá en él."
+                        : ConsecuenciaCwdIncierta(anterior, nuevo!);
+        }
+
+        // Cancelada mientras esperaba en la cola (ssh_cancel, el plazo de la herramienta o el token): no llegó a empezar, así
+        // que el shell no recibió el comando (SolicitarCancelacion la finaliza bajo el mismo candado que la marca como en
+        // ejecución). Con las señales del E-nonies, '!peticion.IsComandoEnviado' cubre este caso y el de IsNoEnviadaAlShell.
+        private static bool IsCanceladaEnLaCola(Peticion peticion) =>
+            peticion.Estado == EstadoPeticionEnum.Cancelado && peticion.TiempoEjecucion == TimeSpan.Zero;
 
         private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
             $"El directorio de trabajo sigue siendo {anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {anterior}).";
@@ -1296,8 +1331,8 @@ namespace NativeSsh.Herramientas
                 """), sudo, rutaEscapada);
 
             string sinModificar = $"No se ha modificado '{ruta}'.";
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, sinModificar, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura, sinModificar);
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura, _ => sinModificar);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -2196,7 +2231,8 @@ namespace NativeSsh.Herramientas
         }
 
         // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, string? consecuencia, CancellationToken cancellationToken)
+        // 'consecuencia' se calcula con la petición ya cancelada (si seguía en la cola, ya no se ejecutará).
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
             Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
@@ -2209,7 +2245,7 @@ namespace NativeSsh.Herramientas
                 // Sigue encolada o el shell no respondió al Ctrl+C: se cancela para no bloquear la cola.
                 EstadoPeticionEnum estado = peticion.Estado;
                 _ = peticion.SolicitarCancelacion();
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
             }
             catch (OperationCanceledException ex)
             {
@@ -2217,7 +2253,7 @@ namespace NativeSsh.Herramientas
                 if (consecuencia is null)
                     throw;
 
-                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia}", ex, cancellationToken);
+                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia(peticion)}", ex, cancellationToken);
             }
 
             return peticion;
@@ -2325,7 +2361,8 @@ namespace NativeSsh.Herramientas
         // enviarlo y no cuenta; sin ninguna salida recibida, por si acaso. Entonces no se ejecutó nada y el error no remite
         // a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco funcionan).
         // Punto de enganche con el E-nonies (A-decies, AD4): es el único sitio que decide si el comando llegó al shell
-        // (lo usan ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd). Al integrar r2-enoveno, la heurística se
+        // (lo usan ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd; para ConsecuenciaCwd, IsCanceladaEnLaCola
+        // añade el caso de la petición cancelada antes de empezar). Al integrar r2-enoveno, la heurística se
         // sustituye por su señal: 'peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado' (la sesión la
         // marca con MarcarComandoEnviado al escribir el comando entero; ya no depende del literal «Error interno:» ni de que
         // no haya salida, y PrefijoErrorInterno sobra). El aviso de un servidor sin bash (RespuestaSinBash.IsMensajeSinBash)
@@ -2344,14 +2381,15 @@ namespace NativeSsh.Herramientas
 
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
         // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
-        private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
+        // 'consecuencia' solo se calcula si la petición no se completó.
+        private static void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null)
         {
             if (IsNoEnviadaAlShell(peticion))
-                throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
 
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)
