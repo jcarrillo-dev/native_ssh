@@ -138,6 +138,42 @@ namespace NativeSsh.Test.Integracion
             _ = lineas[..^2].Should().BeEquivalentTo(esperadas);
         }
 
+        // A-decies (AD2, sonda N03): un directorio que se llama como una exclusión de archivos (deps.lock/, src.map/,
+        // m.min.js/, package-lock.json/) se recorre, y los archivos con esos nombres se siguen excluyendo, también con el
+        // filtro de extensión (las exclusiones pesan más). Con rg no se recorría; aquí, grep de GNU y busybox reales.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task Buscar_DirectorioQueSeLlamaComoUnaExclusionDeArchivos_SeRecorre(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+            _ = entorno.Servidor.ComoUsuario("""
+                cd "$1" && mkdir -p t/deps.lock t/src.map t/m.min.js t/pkg/package-lock.json
+                printf 'valor deplock\n' > t/deps.lock/a.txt
+                printf 'valor candado dentro\n' > t/deps.lock/z.lock
+                printf 'valor mapa\n' > t/src.map/b.txt
+                printf 'valor minificado\n' > t/m.min.js/c.txt
+                printf 'valor paquete\n' > t/pkg/package-lock.json/d.txt
+                printf 'valor raiz\n' > t/c.txt
+                printf 'valor candado\n' > t/x.lock
+                """, entorno.DirectorioUsuario);
+            string arbol = $"{entorno.DirectorioUsuario}/t";
+
+            // Act
+            string sinFiltro = await herramientas.BuscarAsync(entorno.Destino, "valor [a-z]+", arbol);
+            string conFiltro = await herramientas.BuscarAsync(entorno.Destino, "valor [a-z]+", arbol, "lock");
+
+            // Assert
+            string[] lineas = sinFiltro.Split('\n');
+            _ = lineas[^1].Should().Be($"[motor: {Motor(distro)}]");
+            _ = lineas[..^2].Should().BeEquivalentTo(
+                $"{arbol}/deps.lock/a.txt:1:valor deplock", $"{arbol}/src.map/b.txt:1:valor mapa", $"{arbol}/m.min.js/c.txt:1:valor minificado",
+                $"{arbol}/pkg/package-lock.json/d.txt:1:valor paquete", $"{arbol}/c.txt:1:valor raiz");
+            _ = conFiltro.Should().StartWith("No se encontraron coincidencias").And.EndWith($"[motor: {Motor(distro)}]");
+        }
+
         // El límite corta la salida (head se cierra y grep muere por SIGPIPE) sin que find lo convierta en un error.
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
