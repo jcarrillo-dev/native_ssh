@@ -340,33 +340,17 @@ namespace NativeSsh.Herramientas
             return new ResultadoAccion(clave, isHecho, isHecho ? "El próximo comando usará un shell nuevo." : "No había sesión con ese destino.");
         }
 
-        [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
-        public async Task<string> LeerArchivoAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
-            [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
-            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
-            CancellationToken cancellationToken = default)
+        // Script de ssh_read_file: cabecera '[Líneas X-Y de Total]' y el contenido tal cual. inicio < 0 = las últimas -inicio
+        // líneas (tail -n); si no, de 'inicio' a 'fin' con head y tail, que no tocan los bytes: el sed de busybox añadía un
+        // salto final que el archivo no tiene (Bloque S, P3). pipefail: un fallo de head (p. ej. de lectura) no queda tapado
+        // por el código de tail.
+        internal static string ConstruirComandoLectura(string ruta, int inicio, int fin)
         {
-            if (string.IsNullOrEmpty(ruta))
-                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
-
-            ExigirValorLiteral(ruta, "La ruta");
-            bool isDesdeElFinal = lineaInicio < 0;
-            if (isDesdeElFinal && lineaFin is not null)
-                throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
-
-            int inicio = Math.Max(1, lineaInicio);
-            int fin = lineaFin ?? (inicio + 799);
-            if (!isDesdeElFinal && fin < inicio)
-                throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
-
             string rutaEscapada = Escapar(ruta);
-            // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen sed y tail.
-            string lectura = isDesdeElFinal
+            // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen head y tail.
+            string lectura = inicio < 0
                 ? PlantillaBash.Crear($$"""
-                    ultimas={{-(long)lineaInicio}}
+                    ultimas={{-(long)inicio}}
                     inicio_efectivo=$(( total - ultimas + 1 ))
                     [ "$inicio_efectivo" -lt 1 ] && inicio_efectivo=1
                     if [ "$total" -eq 0 ]; then
@@ -374,7 +358,7 @@ namespace NativeSsh.Herramientas
                     else
                       echo "[Líneas $inicio_efectivo-$total de $total]"
                     fi
-                    tail -n {{-(long)lineaInicio}} -- {{rutaEscapada}}
+                    tail -n {{-(long)inicio}} -- {{rutaEscapada}}
                     """)
                 : PlantillaBash.Crear($$"""
                     if [ "$total" -eq 0 ]; then
@@ -383,9 +367,10 @@ namespace NativeSsh.Herramientas
                       fin_efectivo=$(( total < {{fin}} ? total : {{fin}} ))
                       echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
                     fi
-                    sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
+                    set -o pipefail
+                    head -n {{fin}} -- {{rutaEscapada}} | tail -n +{{inicio}}
                     """);
-            string comando = PlantillaBash.Crear($$"""
+            return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
@@ -413,7 +398,31 @@ namespace NativeSsh.Herramientas
                 {{lectura}}
                 )
                 """);
+        }
 
+        [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        public async Task<string> LeerArchivoAsync(
+            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
+            [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
+            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(ruta))
+                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
+
+            ExigirValorLiteral(ruta, "La ruta");
+            bool isDesdeElFinal = lineaInicio < 0;
+            if (isDesdeElFinal && lineaFin is not null)
+                throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
+
+            int inicio = Math.Max(1, lineaInicio);
+            int fin = lineaFin ?? (inicio + 799);
+            if (!isDesdeElFinal && fin < inicio)
+                throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
+
+            string comando = ConstruirComandoLectura(ruta, isDesdeElFinal ? lineaInicio : inicio, fin);
             SalidaLectura resultado = await EjecutarLecturaAsync(destino, comando, TimeoutLecturaSegundos, "Lee un rango de líneas menor (lineaInicio/lineaFin).", cancellationToken).ConfigureAwait(false);
             if (resultado.Codigo != 0)
                 throw new NativeSshException(resultado.Error("El comando de lectura falló"));

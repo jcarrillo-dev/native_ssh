@@ -31,7 +31,7 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
-            comando.Contains("sed -n") ? SimularLectura(comando) :
+            comando.Contains("| tail -n +") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
             comando.Contains("-o -type d -print0") || comando.Contains("-o -print0 2>/dev/null") ? SimularListDir(comando) :
@@ -1768,7 +1768,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             string[] comandos = [.. _fabrica.Ultima!.Comandos];
-            _ = comandos.Should().Contain(c => c.Contains("sed -n '1,3p' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("head -n 3 -- ' ' | tail -n +1", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains("stat -c", StringComparison.Ordinal) && c.Contains("[ ! -e ' ' ] && [ ! -L ' ' ]", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains("-e '  ' -- ' '", StringComparison.Ordinal));
             _ = comandos.Where(c => c.Contains("find -L . -maxdepth", StringComparison.Ordinal)).Should().HaveCount(2)
