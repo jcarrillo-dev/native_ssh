@@ -79,6 +79,34 @@ namespace NativeSsh.Test.Integracion
             return casos;
         }
 
+        // Los errores de la ruta pedida la nombran como se pidió, sin el './' que se le antepone para find.
+        [Fact]
+        public void RutaQueFindTomaPorOpcion_InexistenteOIlegible_ElErrorLaNombraComoSePidio()
+        {
+            // Arrange
+            InstalarGrepDeBusybox();
+            foreach (string programa in new[] { "dirname", "readlink" })
+                _ = File.CreateSymbolicLink(Path.Combine(_bin, programa), Ruta(programa));
+            Escribir("-cerrado/x.txt", "valor");
+            string cerrado = Path.Combine(_datos, "-cerrado");
+            File.SetUnixFileMode(cerrado, UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            try
+            {
+                // Act
+                (int codigoInexistente, _, string erroresInexistente) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor", "-noexiste", null, 50));
+                (int codigoIlegible, _, string erroresIlegible) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor", "-cerrado", null, 50));
+
+                // Assert
+                _ = (codigoInexistente, erroresInexistente).Should().Be((1, "Error: la ruta de búsqueda no existe: -noexiste\n"));
+                _ = (codigoIlegible, erroresIlegible).Should().Be((1, "Error: sin permiso de lectura en la ruta de búsqueda: -cerrado\n"));
+            }
+            finally
+            {
+                File.SetUnixFileMode(cerrado, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+
         // La ruta pedida explícitamente nunca se excluye (AN2): un directorio que se llama como uno de los excluidos
         // (node_modules, build, dist, src/build, con o sin barra final), un archivo excluido por su nombre (package-lock.json,
         // *.min.js) o por su extensión de binario (*.o, que el recorrido con find omite) o un archivo cuya extensión no casa
