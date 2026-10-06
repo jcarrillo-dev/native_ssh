@@ -17,6 +17,7 @@ namespace NativeSsh.Test.Herramientas
     public sealed class HerramientasSetCwdTests : IAsyncLifetime
     {
         private const string Anterior = "/var/www/proyecto";
+        private static readonly string RutaLarga = "/srv/larga/" + new string('x', 1100);
         private readonly FabricaFalsa _fabrica;
         private readonly GestorSesiones _gestor;
         private readonly HerramientasSsh _herramientas;
@@ -37,9 +38,14 @@ namespace NativeSsh.Test.Herramientas
         {
             if (comando.Contains("pwd -P", StringComparison.Ordinal))
             {
+                if (comando.Contains("/srv/validacion_colgada", StringComparison.Ordinal))
+                    return new(string.Empty, 0, ComportamientoFalsoEnum.Colgado);
+
                 string directorio = comando.Contains("/srv/se_cae_tras_validar", StringComparison.Ordinal) ? "/srv/se_cae_tras_validar"
                     : comando.Contains("/srv/perdido", StringComparison.Ordinal) ? "/srv/perdido"
                     : comando.Contains("/srv/colgado", StringComparison.Ordinal) ? "/srv/colgado"
+                    : comando.Contains("/srv/export_falla", StringComparison.Ordinal) ? "/srv/export_falla"
+                    : comando.Contains("/srv/larga", StringComparison.Ordinal) ? RutaLarga
                     : Anterior;
                 // Tras validar, el shell sale y ni se puede volver a abrir ni a conectar: el export no llega a enviarse.
                 if (directorio == "/srv/se_cae_tras_validar")
@@ -54,6 +60,7 @@ namespace NativeSsh.Test.Herramientas
 
             return comando.StartsWith("export __NS_CWD='/srv/perdido'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Salir)
                 : comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Colgado)
+                : comando.StartsWith("export __NS_CWD='/srv/export_falla'", StringComparison.Ordinal) ? new("bash: __NS_CWD: variable de sólo lectura\n", 1)
                 : comando.Contains("unset __NS_CWD", StringComparison.Ordinal) ? new("/home/ana\n", 0, ComportamientoFalsoEnum.Salir)
                 : new(string.Empty, 0);
         }
@@ -82,7 +89,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = error.Message.Should().StartWith("La operación no se hizo: el comando no llegó a ejecutarse")
-                .And.Contain($"El directorio de trabajo sigue siendo {Anterior}.");
+                .And.Contain($"El directorio de trabajo sigue siendo {Anterior}.").And.NotContain("puede haber pasado");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
 
@@ -101,7 +108,8 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = error.Message.Should().Contain("estado: ShellPerdido").And.NotContain("no llegó a ejecutarse")
-                .And.Contain($"El directorio de trabajo sigue siendo {Anterior}");
+                .And.Contain($"El directorio de trabajo sigue siendo {Anterior}: lo usan las herramientas de lectura y el shell nuevo se abrirá en él.")
+                .And.NotContain("puede haber pasado");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Anterior));
             _ = _fabrica.Ultima!.CanalActual!.Inicializaciones.Should().ContainSingle().Which.Should().Contain(base64);
@@ -137,8 +145,58 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<OperationCanceledException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain($"El directorio de trabajo sigue siendo {Anterior}")
-                .And.Contain("/srv/colgado").And.Contain("ssh_set_cwd");
+            _ = error.Message.Should().Contain($"El directorio de trabajo sigue siendo {Anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a /srv/colgado: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {Anterior}).");
+            _ = DirectorioDeLaSesion().Should().Be(Anterior);
+        }
+
+        // La validación no termina (el token la cancela): va en un subshell, así que nada cambió, y el error lo dice.
+        [Fact]
+        public async Task ValidacionCancelada_DiceQueElDirectorioNoCambio()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(500));
+
+            // Act
+            OperationCanceledException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", "/srv/validacion_colgada", cancelacion.Token))
+                .Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().EndWith($"El directorio de trabajo sigue siendo {Anterior}.");
+            _ = DirectorioDeLaSesion().Should().Be(Anterior);
+        }
+
+        // El export termina con error (p. ej. __NS_CWD de solo lectura): el shell no cambió y C# tampoco.
+        [Fact]
+        public async Task ExportQueFalla_NoCambiaElDirectorio()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", "/srv/export_falla"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"bash: __NS_CWD: variable de sólo lectura El directorio de trabajo sigue siendo {Anterior}.");
+            _ = DirectorioDeLaSesion().Should().Be(Anterior);
+        }
+
+        // Un directorio resuelto que supera el máximo que la sesión puede reexportar se rechaza antes del export: ni el
+        // shell ni C# cambian.
+        [Fact]
+        public async Task DirectorioDemasiadoLargo_SeRechazaSinExportarlo()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", "/srv/larga"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"La ruta del directorio de trabajo supera 1024 bytes. El directorio de trabajo sigue siendo {Anterior}.");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("export __NS_CWD='/srv/larga", StringComparison.Ordinal));
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
     }

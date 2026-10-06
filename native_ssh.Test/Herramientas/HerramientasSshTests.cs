@@ -136,6 +136,9 @@ namespace NativeSsh.Test.Herramientas
             if (comando.Contains("sin_coincidencias"))
                 return new(Motor, 1);
 
+            if (comando.Contains("parcial_sin_error"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 2);
+
             if (comando.Contains("parcial_con_error"))
                 return new(Motor + "archivo.txt:1:coincidencia encontrada\ngrep: sub/x.txt: Input/output error\n", 2);
 
@@ -1378,6 +1381,16 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("pueden faltar coincidencias")
                 .And.Contain("grep: sub/x.txt: Input/output error")
                 .And.EndWith("[motor: grep -P]");
+        }
+
+        [Fact]
+        public async Task Search_CodigoDosSinErroresConResultados_NoAvisa()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_sin_error");
+
+            // Assert
+            _ = salida.Should().Be("archivo.txt:1:coincidencia encontrada\n\n[motor: grep -P]");
         }
 
         [Theory]
