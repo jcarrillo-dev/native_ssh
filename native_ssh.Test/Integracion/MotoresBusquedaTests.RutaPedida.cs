@@ -352,9 +352,10 @@ namespace NativeSsh.Test.Integracion
                 (int codigoCorte, string salidaCorte, string erroresCorte) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor", "r", null, 2), lcAll, isSigpipePorDefecto);
 
                 // Assert
-                _ = (codigoTodo, erroresTodo).Should().Be((0, string.Empty));
+                // Sin mensajes, y con el 2 de un subdirectorio ilegible callado, como grep -rs y rg (A-undecies, AU3).
+                _ = (codigoTodo, erroresTodo).Should().Be((2, string.Empty));
                 _ = salidaTodo.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(11, "el motor y las 10 coincidencias de muchos/");
-                _ = (codigoCorte, erroresCorte).Should().Be((0, string.Empty));
+                _ = (codigoCorte, erroresCorte).Should().Be((2, string.Empty));
                 _ = salidaCorte.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(4, "el motor y el límite + 1 líneas");
             }
             finally

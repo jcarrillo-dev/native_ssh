@@ -571,7 +571,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten y la respuesta avisa de que pueden faltar coincidencias. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; lo ilegible dentro del árbol se omite y la respuesta avisa de que pueden faltar coincidencias (en el recorrido con find, solo de los directorios ilegibles, no de los archivos). Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
@@ -631,7 +631,9 @@ namespace NativeSsh.Herramientas
         //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
         //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
         //   error sale por stderr con el código 2. El código de find no sirve (es distinto de 0 si cualquier lote de grep
-        //   no encontró nada): sin ese error sale con 0 y una salida vacía es «sin coincidencias».
+        //   no encontró nada): sin ese error sale con 0 y una salida vacía es «sin coincidencias». Si calló un
+        //   subdirectorio sin permiso, sale con 2 sin stderr, como grep -rs y rg (la respuesta avisa de que pueden faltar
+        //   coincidencias; A-undecies, AU3); un archivo ilegible lo calla el grep -s de cada lote y no se puede distinguir.
         internal static string ConstruirComandoBusqueda(string patron, string rutaEfectiva, string? extension, int limite)
         {
             string rutaMotor = rutaEfectiva[0] is '-' or '(' or ')' or '!' or ',' ? "./" + rutaEfectiva : rutaEfectiva;
@@ -706,12 +708,25 @@ namespace NativeSsh.Herramientas
                       export LANG=$LC_ALL
                       unset LC_ALL LC_CTYPE LC_COLLATE
                     fi
+                    # El filtro sale con 2 si dejó pasar algún error de find, con 3 si solo calló un «Permission denied» y
+                    # con 0 si no hubo nada (o solo lo que nunca es error: desaparecido a mitad o SIGPIPE).
                     { LC_MESSAGES=C find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
-                        -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- |
-                        grep -v -e ': Permission denied$' -e ': No such file or directory$' -e ' terminated by signal 13$' -e ': Broken pipe$' >&2
+                        -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- | {
+                        ilegible=0 otro=0
+                        while IFS= read -r linea || [ -n "$linea" ]; do
+                          case $linea in
+                            *': Permission denied') ilegible=1 ;;
+                            *': No such file or directory'|*' terminated by signal 13'|*': Broken pipe') ;;
+                            *) printf '%s\n' "$linea" >&2; otro=1 ;;
+                          esac
+                        done
+                        [ "$otro" = 1 ] && exit 2
+                        [ "$ilegible" = 1 ] && exit 3
+                        exit 0
+                      }
                     } 3>&1 | head -n {{limite + 1}}
-                    # El filtro sale con 0 si dejó pasar algún error de find.
-                    [ "${PIPESTATUS[0]}" = 0 ] && rc=2 || rc=0
+                    # 2 sin stderr = algo ilegible callado, como grep -rs y rg.
+                    [ "${PIPESTATUS[0]}" = 0 ] && rc=0 || rc=2
                   else
                     grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                     rc=0

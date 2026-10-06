@@ -9,7 +9,8 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Test.Integracion
 {
     // ssh_search por el sshd local con el rg de la máquina (sonda N03 de la auditoría del A-nonies; A-decies, AD2): un
-    // directorio que se llama como una exclusión de archivos se recorre. Sin rg en la máquina, no prueba nada.
+    // directorio que se llama como una exclusión de archivos se recorre. Sin rg en la máquina, no prueba nada. También el
+    // aviso de un subdirectorio ilegible con el motor que haya (A-undecies, AU3).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
@@ -56,6 +57,37 @@ namespace NativeSsh.Test.Integracion
                 .And.Contain("src.map/b.txt:1:valor_n03")
                 .And.Contain("arbol/c.txt:1:valor_n03")
                 .And.NotContain("x.lock");
+        }
+
+        // Un subdirectorio ilegible dentro del árbol: el motor de la máquina (rg o grep de GNU) lo calla y sale con 2; la
+        // respuesta da lo que encontró y avisa de que pueden faltar coincidencias (A-undecies, AU3).
+        [Fact]
+        public async Task SubdirectorioIlegible_DaLosResultadosYAvisaDeQuePuedenFaltar()
+        {
+            // Arrange
+            _sshd = new SshdPropio(string.Empty);
+            OpcionesNativeSsh opciones = _sshd.Sshd.Opciones();
+            _gestor = new GestorSesiones(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(_gestor, opciones);
+            string raiz = Directory.CreateDirectory(Path.Combine(_directorio, "ilegible")).FullName;
+            string cerrado = Directory.CreateDirectory(Path.Combine(raiz, "cerrado")).FullName;
+            await File.WriteAllTextAsync(Path.Combine(raiz, "a.txt"), "valor_au3\n");
+            await File.WriteAllTextAsync(Path.Combine(cerrado, "b.txt"), "valor_au3\n");
+            File.SetUnixFileMode(cerrado, UnixFileMode.None);
+
+            try
+            {
+                // Act
+                string salida = await herramientas.BuscarAsync(_sshd.Sshd.Destino.Clave, "valor_au3", raiz);
+
+                // Assert
+                _ = salida.Should().StartWith($"{raiz}/a.txt:1:valor_au3\n\n[Aviso: el motor terminó con código 2 sin mostrar el error")
+                    .And.Contain("pueden faltar coincidencias.]\n[motor: ").And.NotContain("b.txt");
+            }
+            finally
+            {
+                File.SetUnixFileMode(cerrado, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
         }
     }
 }
