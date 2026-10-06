@@ -160,7 +160,8 @@ namespace NativeSsh.Test.Integracion
         // ej. un flock sin -E 75, cuyo «ocupado» sería el 1 de «no funciona»). Un flock sin -E como el de busybox (sale con
         // 1 y sin escribir nada si está ocupado; rechaza -E con su ayuda), sin python3 ni perl, también basta (Bloque S,
         // L1); uno que no supera la comprobación sobre el temporal (siempre 1, o siempre 0: no detecta el candado de otro)
-        // no se usa y se escribe sin exclusión, con el aviso; y si la supera pero sobre el archivo falla con un mensaje (como
+        // no se usa y se escribe sin exclusión, con el aviso, igual que uno que avisa con un mensaje de que el candado está
+        // ocupado (su 1 no se distingue del de «no funciona»); y si la supera pero sobre el archivo falla con un mensaje (como
         // en un sistema de archivos que no admite flock), su 1 no es «ocupado»: también se escribe sin exclusión, con el aviso.
         [Theory]
         [InlineData("flock", false)]
@@ -175,6 +176,7 @@ namespace NativeSsh.Test.Integracion
         [InlineData("sin_e_siempre_1", false)]
         [InlineData("sin_e_siempre_0", false)]
         [InlineData("sin_e_no_admitido", false)]
+        [InlineData("sin_e_ocupado_con_mensaje", false)]
         [InlineData("ninguna", false)]
         public async Task CandadoEnManosDeOtroProceso_LasOperacionesFallanSinTocarYAlSoltarloFuncionan(string herramienta, bool isSudo)
         {
@@ -188,7 +190,7 @@ namespace NativeSsh.Test.Integracion
                 "python3" => ["flock"],
                 "solo_python3" => ["flock", "perl"],
                 "perl" => ["flock", "python3"],
-                "busybox" or "sin_e_siempre_1" or "sin_e_siempre_0" or "sin_e_no_admitido" => ["python3", "perl"],
+                "busybox" or "sin_e_siempre_1" or "sin_e_siempre_0" or "sin_e_no_admitido" or "sin_e_ocupado_con_mensaje" => ["python3", "perl"],
                 _ => ["flock", "python3", "perl"]
             };
             foreach (string nombre in inservibles)
@@ -198,12 +200,13 @@ namespace NativeSsh.Test.Integracion
                 "busybox" => "exec /usr/bin/flock \"$@\" 2>/dev/null",
                 "sin_e_siempre_1" => "exit 1",
                 "sin_e_siempre_0" => "exit 0",
+                "sin_e_ocupado_con_mensaje" => "/usr/bin/flock \"$@\" 2>/dev/null || { echo 'flock: no se pudo tomar el candado' >&2; exit 1; }",
                 "sin_e_no_admitido" => $"for a; do ultimo=$a; done\ncase $(readlink /proc/$$/fd/$ultimo) in '{carpeta}'/*) echo 'flock: Operation not supported' >&2; exit 1 ;; esac\nexec /usr/bin/flock \"$@\" 2>/dev/null",
                 _ => null
             };
             if (flockSinE is not null)
                 await SustituirComandoAsync(herramientas, "flock", $"for a; do [ \"$a\" = -E ] && {{ printf 'flock: unrecognized option: E\\nBusyBox v1.37.0 multi-call binary.\\n\\nUsage: flock [-sxun] FD | {{ FILE [-c] PROG ARGS }}\\n' >&2; exit 1; }}; done\n{flockSinE}");
-            bool isSinExclusion = herramienta is "ninguna" or "sin_e_siempre_1" or "sin_e_siempre_0" or "sin_e_no_admitido";
+            bool isSinExclusion = herramienta is "ninguna" or "sin_e_siempre_1" or "sin_e_siempre_0" or "sin_e_no_admitido" or "sin_e_ocupado_con_mensaje";
             if (isSudo)
                 await SimularSudoAsync(herramientas);
             // La comprobación del flock sin -E crea su temporal con mktemp en TMPDIR: aquí, uno propio que debe quedar vacío.
