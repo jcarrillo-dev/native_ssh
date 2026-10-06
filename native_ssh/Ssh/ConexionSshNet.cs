@@ -26,16 +26,21 @@ namespace NativeSsh.Ssh
         // cerrado vea también la conexión perdida, sin depender de que SSH.NET haya cerrado ya el socket.
         //
         // Con la conexión ya establecida, SSH.NET no abandona ninguna espera mientras la conexión viva: ConnectionInfo.Timeout
-        // (TimeoutConexion, que sigue acotando el handshake) pasa a infinito. Session.WaitOnHandle lo lee en cada espera,
-        // y con un plazo una apertura de canal sin respuesta del servidor se daba por fallida e ignoraba la confirmación
-        // tardía: el canal quedaba abierto en el servidor, ocupando una plaza de su MaxSessions, sin que nadie lo cerrara.
-        // Ahora la apertura termina con la confirmación, el rechazo o la caída de la conexión, y el límite para quien
-        // espera es local (el plazo de cada lectura y el timeout de cada comando, que no esperan a SSH.NET). Esperas
+        // (TimeoutConexion, que sigue acotando el handshake) pasa a infinito, y el límite para quien espera es local (el
+        // plazo de cada lectura y el timeout de cada comando, que no esperan a SSH.NET). Session.WaitOnHandle lo lee en
+        // cada espera. Una apertura de canal cuya confirmación llega después del plazo ya no deja el canal abierto en el
+        // servidor (externo/SSH.NET, "Close a session channel whose open is confirmed after Open stopped waiting"), pero el
+        // plazo sigue siendo infinito: con uno finito (medido con el de TimeoutConexion), un servidor congelado durante una
+        // renegociación más que ese plazo hace fallar los envíos que esperan a que termine, la conexión se pierde y con ella
+        // el shell y sus variables (sonda R08 de la auditoría del E-quater), y una apertura que vence libera su plaza del
+        // cupo mientras el servidor aún puede abrir el canal (ServidorCongeladoTests, cupo coherente de EQ1). Esperas
         // afectadas tras conectar:
         // - apertura de canal y peticiones pty-req, shell y exec (ChannelSession): SesionShell las hace fuera del bucle de
         //   comandos y sin candados, y un canal cuya apertura termina tarde se cierra o se reutiliza;
         // - escribir en el canal del shell con la ventana del servidor agotada (Channel.SendData) y cualquier envío durante
-        //   una renegociación de claves (Session.SendMessage): esperan a que el servidor responda o a que caiga la conexión.
+        //   una renegociación de claves (Session.SendMessage): esperan a que el servidor responda, a que cierre el canal
+        //   (externo/SSH.NET, "Stop waiting for the remote window when the channel is closed": la escritura falla al
+        //   momento) o a que caiga la conexión.
         //   No es la única escritura que puede no volver: si el servidor deja de leer, el envío TCP se llena y Socket.Send
         //   se bloquea sin plazo (eso no depende de Timeout). Liberar la conexión (ssh_disconnect) las desbloquea todas
         //   gracias al parche de externo/SSH.NET (rama native-ssh, "Do not block Session.Dispose on a send that the server
@@ -57,8 +62,13 @@ namespace NativeSsh.Ssh
         // nuestro CLOSE y espera el del servidor, que OpenSSH no manda hasta que termina el proceso de la sesión (un proceso
         // que no escribe vive hasta su plazo remoto). Así, cerrar un canal exec abortado termina cuando el servidor libera
         // de verdad su sesión (o cae la conexión), y su cupo se libera entonces: con 1 s se daba por cerrado mientras el
-        // servidor seguía contándolo en su MaxSessions. Quien cierra el canal del shell no lo espera más de un segundo
-        // (SesionShell.CerrarCanal): un bash remoto que no muere al perder el terminal no puede bloquear la cola.
+        // servidor seguía contándolo en su MaxSessions. externo/SSH.NET ("Keep the session semaphore until the server
+        // closes the channel") ya retiene su propio semáforo de MaxSessions hasta ese CLOSE cuando la espera vence, pero no
+        // lo expone por canal (SshCommand no dice cuándo cierra el servidor), y el cupo de SesionShell lo necesita para no
+        // provocar rechazos del MaxSessions real del servidor: con el plazo de 1 s, fallan la sonda R10 de la auditoría del
+        // E-quater y CupoCanalesExecTests (el cupo se liberaba antes que la sesión del servidor). Por eso sigue infinito.
+        // Quien cierra el canal del shell no lo espera más de un segundo (SesionShell.CerrarCanal): un bash remoto que no
+        // muere al perder el terminal no puede bloquear la cola.
         public ConexionSshNet(SshClient cliente)
         {
             _cliente = cliente;

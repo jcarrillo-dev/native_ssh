@@ -243,12 +243,12 @@ namespace NativeSsh.Sesion
         }
 
         // Una vez observado el cierre del canal del shell (CerrarCanal) no se escribe nada más en él: el comando que estaba
-        // en curso rechaza su entrada con un mensaje propio hasta que el bucle lo da por perdido. La carrera de fondo es de
-        // SSH.NET y no se puede cerrar desde aquí: cuando el servidor cierra el canal (exit), su hilo de mensajes contesta
-        // con nuestro CLOSE y Channel.SendData comprueba IsOpen fuera de _messagingLock, así que una escritura que ya había
-        // pasado esa comprobación puede salir después del CLOSE y OpenSSH corta la conexión ("data packet referred to
-        // nonexistent channel"). ShellStream no avisa del EOF del servidor y su evento Closed llega cuando nuestro CLOSE ya
-        // salió: lo primero que se puede observar es el propio cierre.
+        // en curso rechaza su entrada con un mensaje propio hasta que el bucle lo da por perdido. Cuando el servidor cierra
+        // el canal (exit), el hilo de mensajes de SSH.NET contesta con nuestro CLOSE antes de que aquí se observe nada
+        // (ShellStream no avisa del EOF del servidor y su evento Closed llega cuando nuestro CLOSE ya salió): una escritura
+        // que coincide con ese cierre la para SSH.NET, que no envía datos después del CLOSE y la hace fallar (externo/SSH.NET,
+        // "Do not send channel data after SSH_MSG_CHANNEL_CLOSE"; en 2026.0.0 podía salir y OpenSSH cortaba la conexión con
+        // "data packet referred to nonexistent channel"). El rechazo de aquí da un mensaje claro en lugar de ese fallo.
         //
         // La espera al candado de escritura del canal está acotada y atiende el token y el cierre de la sesión: el bucle lo
         // retiene mientras escribe el comando, y esa escritura no termina mientras el servidor no acepte los datos. El canal
@@ -1464,8 +1464,11 @@ namespace NativeSsh.Sesion
         }
 
         // Deja de usar el canal del shell sin cerrarlo, porque una escritura (la entrada de ssh_input) sigue dentro de un envío
-        // que el servidor no acepta: cerrarlo con ella dentro podría sacar sus datos después del CLOSE y OpenSSH cortaría la
-        // conexión (EQ4). Desde aquí ya no es el vigente, así que nadie escribe más en él (toda escritura lo comprueba con
+        // que el servidor no acepta. Cerrarlo con ella dentro ya no corta la conexión (EQ4): desde F2, SSH.NET no envía datos
+        // después del CLOSE, y una escritura que espera ventana falla en cuanto se cierra el canal (F7); una bloqueada en el
+        // envío TCP solo haría esperar a quien cierra. Esperar a la escritura no es necesario y es candidato a quitarse
+        // (Bloque C/E siguiente: cambia cuándo se libera el MaxSessions y los mensajes de los shells abandonados, EO1, EN3).
+        // Desde aquí ya no es el vigente, así que nadie escribe más en él (toda escritura lo comprueba con
         // el candado del canal tomado) y el siguiente comando abre un shell nuevo sin esperar a esa entrada. Se cierra en
         // cuanto la escritura termina (CerrarSiAbandonado) y, como sigue ocupando una sesión del MaxSessions del servidor,
         // retiene hasta entonces una plaza del cupo de canales exec. false si ya no era el vigente (lo cerró otro).

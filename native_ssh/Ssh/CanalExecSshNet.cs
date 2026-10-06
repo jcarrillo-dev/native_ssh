@@ -29,11 +29,11 @@ namespace NativeSsh.Ssh
     //   cupo lo limita a 3 × MaxCanalesExecSimultaneos (12) y son hilos bloqueados, sin trabajo. Liberar antes los
     //   lectores exigiría cerrar los flujos antes que el canal, y el hilo de mensajes de SSH.NET escribiría en un
     //   PipeStream ya liberado (ObjectDisposedException por cada paquete de datos que llegara hasta el CLOSE).
-    //   SshCommand.CancelAsync enviaba antes una petición 'signal', y SSH.NET puede sacarla después del CLOSE:
-    //   Channel.Close envía CHANNEL_CLOSE antes de marcar IsOpen=false y SendMessage comprueba IsOpen sin candado. Si el
-    //   servidor ya había cerrado su lado, OpenSSH libera el canal al recibir el CLOSE y corta la conexión entera al
-    //   llegar la señal ("server_input_channel_req: unknown channel N"): se pierden el shell PTY (y sus 'export') y las
-    //   lecturas en vuelo, y se gasta una conexión del cupo de 'ufw limit'.
+    //   SshCommand.CancelAsync enviaba antes una petición 'signal', y SSH.NET 2026.0.0 podía sacarla después del CLOSE
+    //   (Channel.Close envía CHANNEL_CLOSE antes de marcar IsOpen=false y SendMessage comprobaba IsOpen sin candado): si
+    //   el servidor ya había cerrado su lado, OpenSSH corta la conexión entera al llegar la señal ("server_input_channel_req:
+    //   unknown channel N"). Corregido en externo/SSH.NET ("Do not send channel messages after SSH_MSG_CHANNEL_CLOSE"),
+    //   pero la señal sigue sin enviarse porque no sirve de barrera (ver más abajo).
     //   El Dispose nunca va en el callback del token: Close espera el CLOSE del servidor (hasta el plazo remoto) y el
     //   callback corre en el hilo de quien cancela, que quedaría bloqueado todo ese tiempo.
     // - Tras nuestro CLOSE, SSH.NET solo puede enviar por este canal un WINDOW_ADJUST (al recibir datos; con la ventana
