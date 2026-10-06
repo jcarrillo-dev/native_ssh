@@ -15,8 +15,9 @@
 #
 # Distros: debian, alpine (pruebas/contenedor/Containerfile.<distro>).
 # Deja en pruebas/.estado-contenedor-<distro>/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto,
-# contenedor, usuario y contrasena. Puertos: NATIVE_SSH_PUERTO_CONTENEDOR (por defecto 25522 para debian y 25622 para
-# alpine; el 25022 es el del sshd de login lento).
+# contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 25000 y 25999; por defecto 25352 para
+# debian y 25362 para alpine: fuera del rango X400-X999 de los sshd manuales de las pruebas y distinto del 25022 del sshd
+# de login lento por defecto).
 # Usuario de prueba: 'prueba', contraseña 'contrasena-de-prueba' (solo existe dentro del contenedor), sudo con contraseña.
 set -euo pipefail
 
@@ -37,8 +38,8 @@ directorio_estado() { echo "${NATIVE_SSH_DIR_ESTADO:-$RAIZ/.estado-contenedor-$1
 
 puerto_por_defecto() {
     case "$1" in
-        debian) echo 25522 ;;
-        alpine) echo 25622 ;;
+        debian) echo 25352 ;;
+        alpine) echo 25362 ;;
     esac
 }
 
