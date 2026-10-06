@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Buffers;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 using NativeSsh.Test.Sesion.Falsos;
 using NativeSsh.Test.Utilidades;
@@ -352,6 +353,7 @@ namespace NativeSsh.Test.Sesion
 
             // Act
             Peticion ajeno = await EjecutarAsync(sesion, "termina-anidado");
+            _ = ajeno.IsComandoEnviado.Should().BeTrue();
             Peticion siguiente = await EjecutarAsync(sesion, "hola");
 
             // Assert
@@ -399,6 +401,30 @@ namespace NativeSsh.Test.Sesion
         }
 
         // Cada canal guarda su propio testigo: el de un shell recreado (ssh_reset_shell) no es el del anterior.
+        [Fact]
+        public async Task ComandoQueLlegaAlShell_QuedaMarcadoComoEnviado_YUnoCanceladoEnLaColaNo()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado");
+            Peticion encolada = Nueva("hola");
+            sesion.Encolar(colgado);
+            sesion.Encolar(encolada);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+
+            // Act
+            _ = encolada.SolicitarCancelacion();
+            _ = colgado.SolicitarCancelacion();
+            await Task.WhenAll(colgado.Finalizacion, encolada.Finalizacion).WaitAsync(Limite);
+            Peticion hola = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = colgado.IsComandoEnviado.Should().BeTrue();
+            _ = encolada.IsComandoEnviado.Should().BeFalse();
+            _ = hola.IsComandoEnviado.Should().BeTrue();
+        }
+
         [Fact]
         public async Task CadaShellNuevo_GuardaUnTestigoDistinto()
         {
@@ -468,6 +494,8 @@ namespace NativeSsh.Test.Sesion
             _ = primero.Aviso.Should().Contain("no tiene bash").And.Contain("«-ash: exec: line 1: bash: not found»").And.Contain("native_ssh lo necesita")
                 .And.NotContain("exec bash --noediting");
             _ = segundo.Aviso.Should().Be(primero.Aviso);
+            _ = RespuestaSinBash.IsMensajeSinBash(primero.Aviso).Should().BeTrue();
+            _ = primero.IsComandoEnviado.Should().BeFalse("el comando no llegó al shell");
             _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(2);
         }
 
@@ -485,6 +513,8 @@ namespace NativeSsh.Test.Sesion
             _ = primero.Estado.Should().Be(EstadoPeticionEnum.Error);
             _ = primero.Aviso.Should().Contain("se cerró durante la inicialización").And.Contain("Cuenta caducada: contacta con el administrador»")
                 .And.NotContain("exec bash").And.NotContain("no tiene bash");
+            _ = RespuestaSinBash.IsMensajeSinBash(primero.Aviso).Should().BeFalse();
+            _ = primero.IsComandoEnviado.Should().BeFalse();
         }
 
         // EN4 por la vía exec: el 'bash -c' del comando no existe; 127, nada en stdout y el error del shell de login en stderr.
@@ -505,6 +535,7 @@ namespace NativeSsh.Test.Sesion
 
             // Assert
             _ = error.Message.Should().Contain("no tiene bash").And.Contain("«ash: bash: not found»").And.Contain("native_ssh lo necesita");
+            _ = RespuestaSinBash.IsMensajeSinBash(error.Message).Should().BeTrue();
             _ = otro.CodigoSalida.Should().Be(127, "otro programa que falta no es falta de bash");
         }
 

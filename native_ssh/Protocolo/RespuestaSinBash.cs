@@ -40,7 +40,13 @@ namespace NativeSsh.Protocolo
             return limpio.ToString().Trim();
         }
 
+        // Texto fijo del mensaje (Describir) para reconocerlo donde solo llega el texto: el aviso de una petición en Error o
+        // el de la NativeSshException de una lectura.
+        public const string MarcaMensaje = "no tiene bash (el shell de login respondió: «";
+
+        public static bool IsMensajeSinBash(string? mensaje) => mensaje?.Contains(MarcaMensaje, StringComparison.Ordinal) == true;
+
         public static string Describir(string destino, string linea) =>
-            $"El servidor {destino} no tiene bash (el shell de login respondió: «{linea}»); native_ssh lo necesita para el shell persistente de ssh_exec y para los scripts de todas sus herramientas, también las de lectura, así que ninguna funcionará en este servidor hasta que se instale bash. No se ejecutó nada.";
+            $"El servidor {destino} {MarcaMensaje}{linea}»); native_ssh lo necesita para el shell persistente de ssh_exec y para los scripts de todas sus herramientas, también las de lectura, así que ninguna funcionará en este servidor hasta que se instale bash. No se ejecutó nada.";
     }
 }

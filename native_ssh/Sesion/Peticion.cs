@@ -16,6 +16,7 @@ namespace NativeSsh.Sesion
         private long _inicioTimestamp;
         private long _finTimestamp;
         private volatile bool _isCancelacionSolicitada;
+        private volatile bool _isComandoEnviado;
         private int _codigoSalida = -1;
         private string? _aviso;
         private Func<string?>? _avisoEnCurso;
@@ -48,6 +49,12 @@ namespace NativeSsh.Sesion
         public EstadoPeticionEnum Estado => (EstadoPeticionEnum)Volatile.Read(ref _estado);
         public bool IsFinalizada => Estado.IsFinal();
         public bool IsCancelacionSolicitada => _isCancelacionSolicitada;
+
+        // true en cuanto el comando entero se escribió en el canal del shell (SesionShell.EjecutarAsync). Si la petición
+        // termina sin él, el comando no llegó al shell: no se ejecutó nada (falló la conexión, la apertura o la
+        // inicialización del shell, p. ej. un servidor sin bash, o se canceló antes); si la escritura falló a medias, el
+        // estado es ShellPerdido.
+        public bool IsComandoEnviado => _isComandoEnviado;
         public Task Finalizacion => _finalizacion.Task;
         public CancellationToken TokenInterrupcion => _interrupcion.Token;
         public long FinTimestamp => Volatile.Read(ref _finTimestamp);
@@ -91,6 +98,8 @@ namespace NativeSsh.Sesion
         }
 
         public void FijarAvisoEnCurso(Func<string?> fuente) => Volatile.Write(ref _avisoEnCurso, fuente);
+
+        public void MarcarComandoEnviado() => _isComandoEnviado = true;
 
         public bool TryFinalizar(EstadoPeticionEnum estado, int codigo, string? aviso)
         {

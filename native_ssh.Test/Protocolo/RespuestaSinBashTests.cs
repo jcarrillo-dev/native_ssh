@@ -58,6 +58,9 @@ namespace NativeSsh.Test.Protocolo
             // Assert
             _ = mensaje.Should().Contain("no tiene bash").And.Contain("«ash: bash: not found»").And.Contain("native_ssh lo necesita").And.Contain("No se ejecutó nada")
                 .And.NotContain("ssh_stat").And.NotContain("ssh_read_file");
+            _ = RespuestaSinBash.IsMensajeSinBash(mensaje).Should().BeTrue();
+            _ = RespuestaSinBash.IsMensajeSinBash("ash: bash: not found").Should().BeFalse();
+            _ = RespuestaSinBash.IsMensajeSinBash(null).Should().BeFalse();
         }
     }
 }

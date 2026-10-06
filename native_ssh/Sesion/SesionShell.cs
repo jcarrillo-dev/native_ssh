@@ -733,6 +733,7 @@ namespace NativeSsh.Sesion
                 return;
             }
 
+            peticion.MarcarComandoEnviado();
             _ = Interlocked.Increment(ref _comandosEjecutados);
             int codigo;
             try
