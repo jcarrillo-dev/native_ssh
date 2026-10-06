@@ -111,6 +111,8 @@ namespace NativeSsh.Test.Integracion
         // Dentro del árbol, las mismas exclusiones en las dos distros: directorios podados a cualquier profundidad, un
         // archivo que se llama como uno de ellos sí se busca, un enlace a un directorio no se sigue y el subdirectorio sin
         // permiso se omite sin error (find lo avisa por stderr; ahora se filtra, y el resto de sus errores no se calla).
+        // Las dos avisan igual de que pueden faltar coincidencias: grep de GNU sale con 2 sin mensaje y el recorrido con
+        // find, al callar el «Permission denied», también (A-undecies, AU3).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
@@ -135,8 +137,12 @@ namespace NativeSsh.Test.Integracion
                 $"{arbol}/src/a.py:1:valor py", $"{arbol}/real/r.txt:1:valor real", $"{arbol}/herramientas/bin:1:valor script bin",
                 .. distro == ContenedorSudo.Debian ? [$"{arbol}/g.o:1:valor objeto"] : Array.Empty<string>(),
             ];
-            _ = lineas[..^2].Should().BeEquivalentTo(esperadas);
+            _ = lineas[^2].Should().Be(AvisoCodigoDosSinDetalle);
+            _ = lineas[^3].Should().BeEmpty();
+            _ = lineas[..^3].Should().BeEquivalentTo(esperadas);
         }
+
+        private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
 
         // A-decies (AD2, sonda N03): un directorio que se llama como una exclusión de archivos (deps.lock/, src.map/,
         // m.min.js/, package-lock.json/) se recorre, y los archivos con esos nombres se siguen excluyendo, también con el
