@@ -51,14 +51,20 @@ namespace NativeSsh.Test.Integracion
 
         private static int ProcesosAnidados() => int.Parse(BashLocal.Ejecutar($"pgrep -fc '^{NombreAnidado}' || true").Trim(), System.Globalization.CultureInfo.InvariantCulture);
 
+        // isRcEnganoso: el rc del shell anidado redefine '[' y 'test' como funciones que siempre dan verdadero (la comprobación
+        // no puede depender de ellos).
         [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public async Task CtrlCAUnShellInteractivoAnidado_CierraElCanalYElSiguienteVaAUnShellNuevoDeLaSesion(bool isPlazo)
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task CtrlCAUnShellInteractivoAnidado_CierraElCanalYElSiguienteVaAUnShellNuevoDeLaSesion(bool isPlazo, bool isRcEnganoso)
         {
             // Arrange
+            string rc = Path.Combine(_sshd.DirectorioEstado, $"rc_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(rc, "[ () { return 0; }\ntest () { return 0; }\n");
+            string opciones = isRcEnganoso ? $"--noprofile --rcfile {rc}" : "--norc --noprofile";
             ResultadoComando enLaSesion = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo PADRE=$(ps -o comm= -p $PPID)", esperarSegundos: 20);
-            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash --norc --noprofile -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0);
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash {opciones} -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0);
             await EsperasPrueba.EsperarHastaAsync(() => ProcesosAnidados() == 1, TimeSpan.FromSeconds(10));
             await Task.Delay(500);
 
@@ -68,6 +74,7 @@ namespace NativeSsh.Test.Integracion
                 : await _herramientas.CancelarAsync(comando.Id);
             ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo PADRE=$(ps -o comm= -p $PPID) Q=$NS_EO2", esperarSegundos: 20);
             await EsperasPrueba.EsperarHastaAsync(() => ProcesosAnidados() == 0, TimeSpan.FromSeconds(10));
+            File.Delete(rc);
 
             // Assert: el siguiente se ejecuta en un shell nuevo de la sesión (su padre es el sshd, no el bash anidado), y el
             // anidado recibió SIGHUP al cerrarse el canal.
@@ -87,6 +94,8 @@ namespace NativeSsh.Test.Integracion
             string pid = inicio.Salida.Trim();
             (string Comando, string Salida)[] completos =
             [
+                // '[' y 'test' redefinidos en el shell de la sesión: la comprobación no los usa.
+                ("[ () { return 1; }; test () { return 1; }; echo redefinidos", "redefinidos\n"),
                 ("( echo sub; exit 3 ); echo rc=$?", "sub\nrc=3\n"),
                 ("bash -c 'echo hijo=$NS_FP; exit 4'; echo rc=$?", "hijo=si\nrc=4\n"),
                 ("sh -c 'echo sh'", "sh\n"),
