@@ -295,6 +295,38 @@ namespace NativeSsh.Test.Integracion
             _ = errores.Should().Contain("find: unrecognized: -mindepth");
         }
 
+        // Un subdirectorio que desaparece a mitad del recorrido: find avisa de que ya no existe (simulado con un find que
+        // recibe además una ruta inexistente: el mismo mensaje y el mismo código 1). Como grep -rs y rg, no es un error:
+        // se busca en todo lo demás, sin stderr y con 0 (mutación M18 de la auditoría del A-nonies; A-decies, AD3).
+        // Cualquier otro error de find (aquí, de E/S) sale por stderr con 2 junto a los resultados del resto.
+        [Theory]
+        [InlineData("No such file or directory", 0)]
+        [InlineData("Input/output error", 2)]
+        public void SinGrepDeGnu_ErrorDeFindAMitadDelRecorrido_NoPierdeElResto(string error, int codigoEsperado)
+        {
+            // Arrange
+            InstalarGrepDeBusybox();
+            Escribir("v/a.txt", "valor uno");
+            Escribir("v/sub/b.txt", "valor dos");
+            File.Delete(Path.Combine(_bin, "find"));
+            string find = Path.Combine(_bin, "find");
+            string simulacion = error.StartsWith("No such", StringComparison.Ordinal)
+                ? $"exec {Ruta("find")} \"$1\" \"$2\" \"$2/desaparecido\" \"${{@:3}}\""
+                : $"{Ruta("find")} \"$@\"; printf \"find: '%s/roto': {error}\\n\" \"$2\" >&2; exit 1";
+            File.WriteAllText(find, $"#!{Ruta("bash")}\n{simulacion}\n");
+            File.SetUnixFileMode(find, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor [a-z]+", "v", null, 50));
+
+            // Assert
+            _ = codigo.Should().Be(codigoEsperado);
+            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _ = lineas[0].Should().Be("__NS_MOTOR:grep -E");
+            _ = lineas[1..].Should().BeEquivalentTo("v/a.txt:1:valor uno", "v/sub/b.txt:1:valor dos");
+            _ = codigoEsperado == 0 ? errores.Should().BeEmpty() : errores.Should().Be($"find: 'v/roto': {error}\n");
+        }
+
         // Con el idioma de la máquina (LANG), con LC_ALL fijado (los mensajes de find dejarían de estar en inglés si solo
         // se fijara LC_MESSAGES) y con SIGPIPE por defecto, como en una sesión SSH (find de GNU avisa de que grep murió
         // por la señal 13; con SIGPIPE ignorado, grep avisa de EPIPE).

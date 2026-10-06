@@ -571,7 +571,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones y el filtro se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
@@ -755,14 +755,25 @@ namespace NativeSsh.Herramientas
             if (codigo is not (0 or 2))
                 throw new NativeSshException(lectura.Error("Error en búsqueda"));
 
+            // Un 2 con resultados y con stderr: el motor falló en parte del árbol (p. ej. un error de E/S de find en el
+            // recorrido sin grep de GNU). Los resultados valen, pero pueden faltar coincidencias: se dice, con el error.
+            string avisoErrores = codigo == 2 && hasErrores
+                ? $"[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {AcotarErrores(errores)}]\n"
+                : string.Empty;
             string[] lineas = resultados.Split('\n');
             string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
             return lineas.Length > limite
-                ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{pie}"
+                ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{avisoErrores}{pie}"
                 : lineas.Length == limite
-                    ? $"{resultados}\n\n{avisoLimite}\n{pie}"
-                    : $"{resultados}\n\n{pie}";
+                    ? $"{resultados}\n\n{avisoLimite}\n{avisoErrores}{pie}"
+                    : $"{resultados}\n\n{avisoErrores}{pie}";
         }
+
+        private const int MaxCaracteresErroresBusqueda = 1000;
+
+        // El stderr de la búsqueda en un aviso, acotado a su principio.
+        private static string AcotarErrores(string errores) =>
+            errores.Length <= MaxCaracteresErroresBusqueda ? errores : string.Concat(errores.AsSpan(0, MaxCaracteresErroresBusqueda), "…");
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 

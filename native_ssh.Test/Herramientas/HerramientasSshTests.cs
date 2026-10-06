@@ -26,6 +26,7 @@ namespace NativeSsh.Test.Herramientas
         }
 
         private static RespuestaFalsa Guion(string comando) =>
+            comando.Contains("perdido_mudo") ? new(string.Empty, 0, ComportamientoFalsoEnum.Salir) :
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
             comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
             comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
@@ -134,6 +135,9 @@ namespace NativeSsh.Test.Herramientas
 
             if (comando.Contains("sin_coincidencias"))
                 return new(Motor, 1);
+
+            if (comando.Contains("parcial_con_error"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\ngrep: sub/x.txt: Input/output error\n", 2);
 
             if (comando.Contains("'extremos'"))
                 return new(Motor + LineasConBlancos + "\n", 0);
@@ -580,6 +584,23 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
+        // El shell se pierde con el comando de la escritura ya enviado y sin ninguna salida: no es un comando que no llegó
+        // al shell (pudo ejecutarse), así que el error no dice que no se ejecutó ni que el archivo no se modificó, sino que
+        // no consta y cómo comprobarlo (mutación M22 de la auditoría del A-nonies; A-decies, AD3).
+        [Fact]
+        public async Task WriteFile_ShellPerdidoConElComandoEnviadoYSinSalida_NoDiceQueNoSeEjecuto()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "perdido_mudo.txt", "hola"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            Peticion peticion = _gestor.ListarPeticiones()[0];
+            _ = (peticion.Estado, peticion.Salida.Longitud).Should().Be((EstadoPeticionEnum.ShellPerdido, 0));
+            _ = error.Message.Should().Contain("estado: ShellPerdido").And.Contain("No consta ninguna modificación de 'perdido_mudo.txt'")
+                .And.NotContain("no llegó a ejecutarse").And.NotContain("no se ha modificado");
+        }
+
         // OperationCanceledException dice que el archivo no se modificó y da el id de la petición.
         [Fact]
         public async Task WriteFile_EncoladaYCanceladaPorElToken_DiceQueNoSeModifico()
@@ -1341,6 +1362,22 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("error de sintaxis");
             _ = error.Message.Should().Contain("[motor: grep -P]");
             _ = error.Message.Should().NotContain("__NS_");
+        }
+
+        // Código 2 con resultados y con stderr: el motor falló en parte del árbol. Se dan los resultados con un aviso de que
+        // pueden faltar coincidencias y el error, en vez de descartarlo (A-decies, AD3). Un 2 sin stderr (archivos
+        // ilegibles callados por -s/--no-messages) no avisa.
+        [Fact]
+        public async Task Search_ErrorConResultados_AvisaDeQueElResultadoPuedeSerParcial()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_con_error");
+
+            // Assert
+            _ = salida.Should().StartWith("archivo.txt:1:coincidencia encontrada\n")
+                .And.Contain("pueden faltar coincidencias")
+                .And.Contain("grep: sub/x.txt: Input/output error")
+                .And.EndWith("[motor: grep -P]");
         }
 
         [Theory]
