@@ -1251,7 +1251,7 @@ namespace NativeSsh.Test.Sesion
             _ = conLectura.Aviso.Should().Contain("1 canal(es) de las herramientas de lectura").And.Contain("cuando terminen las lecturas en curso").And.NotContain("abandonado");
             _ = lecturaConLectura.Message.Should().Contain("1 canal(es) de las herramientas de lectura").And.Contain("reintenta en unos segundos").And.NotContain("abandonado");
             _ = sinNada.Estado.Should().Be(EstadoPeticionEnum.Error);
-            _ = sinNada.Aviso.Should().Contain("no hay en esta conexión lecturas en curso").And.Contain("ssh_disconnect").And.NotContain("cuando terminen");
+            _ = sinNada.Aviso.Should().Contain("no hay en esta conexión ningún shell ni lecturas en curso").And.Contain("ssh_disconnect").And.NotContain("cuando terminen");
             _ = conCierrePendiente.Estado.Should().Be(EstadoPeticionEnum.Error);
             _ = conCierrePendiente.Aviso.Should().Contain("1 shell(s) anterior(es) cuyo cierre el servidor aún no ha confirmado").And.NotContain("cuando terminen");
         }

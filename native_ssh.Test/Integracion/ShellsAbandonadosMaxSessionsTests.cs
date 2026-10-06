@@ -101,5 +101,32 @@ namespace NativeSsh.Test.Integracion
             _ = tras.Salida.Should().Be("tras\n");
             _ = lecturaTras.Should().Be("sin error");
         }
+
+        // O3 de la auditoría del E-octies (EN3): con MaxSessions 1 el shell ocupa la única sesión y las lecturas se rechazan;
+        // el mensaje nombra al shell como ocupante y no manda reintentar (no sirve mientras siga abierto). Tras
+        // ssh_disconnect, la lectura sí se abre.
+        [Fact]
+        public async Task MaxSessions1_ElRechazoDeUnaLecturaNombraAlShellYNoMandaReintentar()
+        {
+            // Arrange
+            using SshdPropio sshd = new("MaxSessions 1");
+            OpcionesNativeSsh opciones = sshd.Sshd.Opciones();
+            await using GestorSesiones gestor = new(sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            string destino = sshd.Sshd.Destino.Clave;
+            ResultadoComando shell = await herramientas.EjecutarAsync(destino, "echo shell", esperarSegundos: 20);
+
+            // Act
+            string rechazo = await MensajeDeFalloAsync(herramientas.LeerArchivoAsync(destino, "/etc/hostname"));
+            ResultadoAccion desconexion = await herramientas.DesconectarAsync(destino);
+            string tras = await MensajeDeFalloAsync(herramientas.LeerArchivoAsync(destino, "/etc/hostname"));
+
+            // Assert
+            _ = shell.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = rechazo.Should().Contain("rechazó").And.Contain("el shell de ssh_exec (1 sesión").And.Contain("MaxSessions 1").And.Contain("reintentar no sirve")
+                .And.NotContain("reintenta en unos segundos").And.NotContain("ningún shell");
+            _ = desconexion.IsHecho.Should().BeTrue();
+            _ = tras.Should().Be("sin error");
+        }
     }
 }

@@ -539,13 +539,19 @@ namespace NativeSsh.Sesion
         // El servidor rechazó el canal (casi siempre su MaxSessions). Solo se nombra como causa lo que de verdad ocupa sesiones
         // en esta conexión ahora mismo: un mensaje que pide esperar a unas lecturas que no existen deja al usuario reintentando
         // algo que no se arregla solo (los shells abandonados no tienen plazo).
+        // Si lo único que ocupa sesiones es el shell de ssh_exec, el servidor admite una sola sesión por conexión (MaxSessions 1)
+        // y reintentar no sirve mientras el shell siga abierto.
         private string DescribirCanalExecRechazado(int lecturasPropias)
         {
-            string conexion = IsShellActivo ? "La conexión sigue abierta y el shell de ssh_exec sigue disponible" : "La conexión sigue abierta";
+            bool isShellActivo = IsShellActivo;
+            string conexion = isShellActivo ? "La conexión sigue abierta y el shell de ssh_exec sigue disponible" : "La conexión sigue abierta";
+            bool isSoloElShell = isShellActivo && CanalesExecActivos - lecturasPropias <= 0 && Volatile.Read(ref _shellsCerrandose) == 0;
             string siguiente = ShellsAbandonados > 0
                 ? $"{conexion}, pero reintentar no sirve mientras sigan abiertos esos shells: ssh_disconnect cierra la conexión y los libera (la siguiente operación abrirá una conexión nueva)."
+                : isSoloElShell
+                ? $"{conexion}, pero, si el shell es lo único que ocupa sesiones, el servidor solo admite una por conexión (MaxSessions 1) y reintentar no sirve mientras el shell siga abierto: haz la operación con ssh_exec en el shell, o cierra la conexión con ssh_disconnect y lanza las lecturas antes de volver a usar ssh_exec (la siguiente operación abrirá una conexión nueva)."
                 : $"{conexion}: reintenta en unos segundos o lanza menos operaciones a la vez.";
-            return $"El servidor rechazó abrir otro canal en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y {MaxCanalesExecSimultaneos} canales para las herramientas de lectura).{DescribirSesionesOcupadas(lecturasPropias)} {siguiente}";
+            return $"El servidor rechazó abrir otro canal en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y {MaxCanalesExecSimultaneos} canales para las herramientas de lectura).{DescribirSesionesOcupadas(lecturasPropias, isShellActivo)} {siguiente}";
         }
 
         private string DescribirShellRechazado()
@@ -555,17 +561,19 @@ namespace NativeSsh.Sesion
                 : CanalesExecActivos > 0
                 ? "La conexión sigue abierta: reintenta ssh_exec en unos segundos, cuando terminen las lecturas en curso."
                 : "La conexión sigue abierta: reintenta en unos segundos; si sigue fallando, ssh_disconnect cierra la conexión y lo libera todo (la siguiente operación abrirá una conexión nueva).";
-            return $"El servidor rechazó abrir el canal del shell de ssh_exec en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; native_ssh usa como mucho {MaxCanalesExecSimultaneos} canales para las herramientas de lectura además del shell).{DescribirSesionesOcupadas(lecturasPropias: 0)} {siguiente}";
+            return $"El servidor rechazó abrir el canal del shell de ssh_exec en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; native_ssh usa como mucho {MaxCanalesExecSimultaneos} canales para las herramientas de lectura además del shell).{DescribirSesionesOcupadas(lecturasPropias: 0, isConShell: false)} {siguiente}";
         }
 
-        // Lo que native_ssh sabe que ocupa sesiones del servidor en esta conexión, sin contar el shell vigente ni la operación
-        // que pregunta (lecturasPropias).
-        private string DescribirSesionesOcupadas(int lecturasPropias)
+        // Lo que native_ssh sabe que ocupa sesiones del servidor en esta conexión, sin contar la operación que pregunta
+        // (lecturasPropias); el shell vigente, solo con isConShell (al abrir el shell no hay ninguno vigente).
+        private string DescribirSesionesOcupadas(int lecturasPropias, bool isConShell)
         {
             int lecturas = CanalesExecActivos - lecturasPropias;
             int abandonados = ShellsAbandonados;
             int cerrandose = Volatile.Read(ref _shellsCerrandose);
             List<string> causas = [];
+            if (isConShell)
+                causas.Add("el shell de ssh_exec (1 sesión, mientras siga abierto)");
             if (lecturas > 0)
                 causas.Add($"{lecturas} canal(es) de las herramientas de lectura (en curso, o ya vencidas cuyo proceso remoto aún no ha terminado)");
             if (abandonados > 0)
@@ -574,7 +582,7 @@ namespace NativeSsh.Sesion
                 causas.Add($"{cerrandose} shell(s) anterior(es) cuyo cierre el servidor aún no ha confirmado (su proceso puede seguir vivo sin terminal)");
 
             return causas.Count == 0
-                ? " Ahora no hay en esta conexión lecturas en curso ni shells abandonados o pendientes de cierre que ocupen sesiones: puede que el servidor tenga un límite muy bajo o rechace el canal por otro motivo."
+                ? " Ahora no hay en esta conexión ningún shell ni lecturas en curso que ocupen sesiones: puede que el servidor tenga un límite muy bajo o rechace el canal por otro motivo."
                 : $" Ocupan sesiones en esta conexión: {string.Join("; ", causas)}.";
         }
 
