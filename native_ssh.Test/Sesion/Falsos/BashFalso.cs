@@ -90,6 +90,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // La línea de captura no imprime la identidad del bash ($$ y $PPID).
         public bool IsSinIdentidad { get; set; }
 
+        // Servidor sin bash: el shell de login responde al 'exec bash' de la inicialización con este texto y sale.
+        public string? RespuestaSinBash { get; set; }
+
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
@@ -121,7 +124,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 BytesPathLogin = BytesPathLogin,
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
                 RuidoTrasCapturaPath = RuidoTrasCapturaPath,
-                IsSinIdentidad = IsSinIdentidad
+                IsSinIdentidad = IsSinIdentidad,
+                RespuestaSinBash = RespuestaSinBash
             };
             Ultima = conexion;
             return conexion;
@@ -182,6 +186,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string RuidoAntesCapturaPath { get; init; } = "";
         public string RuidoTrasCapturaPath { get; init; } = "";
         public bool IsSinIdentidad { get; init; }
+        public string? RespuestaSinBash { get; init; }
         public CanalFalso? CanalActual { get; private set; }
 
         // Desde ahora el servidor rechaza abrir canales (el del shell y los exec) con la conexión intacta: como OpenSSH al
@@ -232,7 +237,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 StringBuilder errores = new();
                 foreach (string linea in respuesta.Salida.Split('\n'))
                 {
-                    bool isError = linea.StartsWith("Error:", StringComparison.Ordinal) || linea.StartsWith("grep:", StringComparison.Ordinal) || linea.StartsWith("rg:", StringComparison.Ordinal);
+                    bool isError = linea.StartsWith("Error:", StringComparison.Ordinal) || linea.StartsWith("grep:", StringComparison.Ordinal) || linea.StartsWith("rg:", StringComparison.Ordinal)
+                        || linea.StartsWith("ash:", StringComparison.Ordinal);
                     _ = (isError ? errores : salida).Append(linea).Append('\n');
                 }
 
@@ -292,7 +298,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
                 RuidoTrasCapturaPath = RuidoTrasCapturaPath,
                 Pid = 4232 + (abiertos * 10),
-                IsSinIdentidad = IsSinIdentidad
+                IsSinIdentidad = IsSinIdentidad,
+                RespuestaSinBash = RespuestaSinBash
             };
             return CanalActual;
         }
@@ -398,6 +405,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int Pid { get; init; } = 4242;
         public int PidPadre { get; init; } = 4200;
         public bool IsSinIdentidad { get; init; }
+        public string? RespuestaSinBash { get; init; }
 
         // Lo que imprimiría "$$ $PPID ${__NS_TESTIGO-}" en el shell que ejecuta ahora las líneas: el del canal (con el
         // testigo que guardó la captura) o otro.
@@ -652,7 +660,13 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         private void EjecutarLinea(string linea)
         {
-            if (linea.StartsWith("PS1=", StringComparison.Ordinal))
+            if (RespuestaSinBash is { } respuesta && linea.StartsWith("exec bash", StringComparison.Ordinal))
+            {
+                // El eco del terminal (aún sin 'stty -echo') y la respuesta del shell de login, que sale.
+                Emitir($"{linea}\r\n{respuesta}\r\n");
+                Cerrar();
+            }
+            else if (linea.StartsWith("PS1=", StringComparison.Ordinal))
             {
                 Inicializaciones.Enqueue(linea);
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);

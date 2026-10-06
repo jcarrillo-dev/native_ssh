@@ -56,6 +56,9 @@ namespace NativeSsh.Sesion
         // __NS_CWD viaja en base64 en la línea de inicialización del TTY (máximo 4095 bytes por línea).
         public const int MaxBytesDirectorioTrabajo = 1024;
 
+        // Cola de la salida del shell durante la inicialización (ShellAbierto.AnotarInicializacion).
+        private const int MaxBytesColaInicializacion = 4096;
+
         // Una escritura al shell que dura más que esto es una que el servidor no acepta (no lee de la conexión o tiene la
         // ventana del canal agotada): el comando en curso lo avisa (ssh_cancel, ssh_output, ssh_input).
         public static readonly TimeSpan UmbralAvisoEscrituraBloqueada = TimeSpan.FromSeconds(2);
@@ -488,7 +491,12 @@ namespace NativeSsh.Sesion
                 etapa = EtapaExecEnum.Apertura;
                 apertura = new AperturaExec(this);
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, apertura.Confirmar, token);
-                return await ejecucion.WaitAsync(token).ConfigureAwait(false);
+                ResultadoCanalExec resultado = await ejecucion.WaitAsync(token).ConfigureAwait(false);
+                // Sin bash en el servidor, el shell de login no encuentra el 'bash' del comando: 127, nada en stdout y su
+                // error en stderr. Se dice la causa en lugar de devolver ese stderr crudo.
+                return resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash
+                    ? throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash))
+                    : resultado;
             }
             catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
             {
@@ -1168,11 +1176,42 @@ namespace NativeSsh.Sesion
             }
 
             if (codigo == CodigoCanalCerrado)
-                throw new NativeSshException($"El shell de {Destino.Clave} se cerró durante la inicialización.");
+                throw new NativeSshException(DescribirCierreEnLaInicializacion(TerminarInicializacion(canal)));
+
+            _ = TerminarInicializacion(canal);
 
             bool isRecreado = _isShellInicializadoAlgunaVez;
             _isShellInicializadoAlgunaVez = true;
             return isRecreado ? "Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido." : null;
+        }
+
+        // Con el candado de la bomba, que es quien anota.
+        private string TerminarInicializacion(ShellAbierto canal)
+        {
+            lock (_candadoProceso)
+                return canal.TerminarInicializacion();
+        }
+
+        // Lo que escribió el shell al cerrarse durante la inicialización dice por qué: sin bash, la respuesta del shell de
+        // login al 'exec bash' (RespuestaSinBash); si no, sus últimas líneas, sin las del propio protocolo (el eco del
+        // terminal de lo que se le envió).
+        private string DescribirCierreEnLaInicializacion(string salida)
+        {
+            if (RespuestaSinBash.BuscarLinea(salida) is { } faltaBash)
+                return RespuestaSinBash.Describir(Destino.Clave, faltaBash);
+
+            List<string> lineas = [];
+            foreach (string linea in salida.Split('\n'))
+            {
+                string limpia = RespuestaSinBash.Limpiar(linea);
+                bool isDelProtocolo = limpia.Contains("__ns_", StringComparison.Ordinal) || limpia.Contains("exec bash --noediting", StringComparison.Ordinal) || limpia.StartsWith("PS1=", StringComparison.Ordinal);
+                if (limpia.Length > 0 && !isDelProtocolo)
+                    lineas.Add(limpia);
+            }
+
+            return lineas.Count == 0
+                ? $"El shell de {Destino.Clave} se cerró durante la inicialización sin escribir nada."
+                : $"El shell de {Destino.Clave} se cerró durante la inicialización; lo último que escribió: «{string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..])}».";
         }
 
         // La apertura de SSH.NET es síncrona, no atiende ningún token y, sin ConnectionInfo.Timeout, espera a que el servidor
@@ -1372,6 +1411,7 @@ namespace NativeSsh.Sesion
             int codigo;
             lock (_candadoProceso)
             {
+                canal.AnotarInicializacion(datos);
                 if (!ReferenceEquals(_canal, canal) || !_escaner.Procesar(datos, _salidaActual, out codigo))
                     return;
 
@@ -1628,6 +1668,44 @@ namespace NativeSsh.Sesion
 
             public Lock CandadoEscritura { get; } = new();
             public ArrayBufferWriter<byte> Escritor { get; } = new(4096);
+
+            // Mientras se inicializa: lo último que escribió el shell (MaxBytesColaInicializacion), para decir por qué se
+            // cerró si se cierra entonces (DescribirCierreEnLaInicializacion). Solo escribe en ella la bomba, con
+            // _candadoProceso tomado.
+            private byte[]? _colaInicializacion = new byte[MaxBytesColaInicializacion];
+            private int _longitudCola;
+
+            public void AnotarInicializacion(ReadOnlySpan<byte> datos)
+            {
+                byte[]? cola = _colaInicializacion;
+                if (cola is null)
+                    return;
+
+                if (datos.Length >= cola.Length)
+                {
+                    datos[^cola.Length..].CopyTo(cola);
+                    _longitudCola = cola.Length;
+                    return;
+                }
+
+                int sobran = Math.Max(0, _longitudCola + datos.Length - cola.Length);
+                if (sobran > 0)
+                {
+                    cola.AsSpan(sobran, _longitudCola - sobran).CopyTo(cola);
+                    _longitudCola -= sobran;
+                }
+
+                datos.CopyTo(cola.AsSpan(_longitudCola));
+                _longitudCola += datos.Length;
+            }
+
+            // Devuelve la cola como texto y deja de anotar. Con _candadoProceso tomado.
+            public string TerminarInicializacion()
+            {
+                byte[]? cola = _colaInicializacion;
+                _colaInicializacion = null;
+                return cola is null ? "" : Encoding.UTF8.GetString(cola, 0, _longitudCola);
+            }
 
             // Se completa cuando un canal abandonado termina de cerrarse.
             public Task Cerrado => _cerrado.Task;

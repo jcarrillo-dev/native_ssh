@@ -450,6 +450,64 @@ namespace NativeSsh.Test.Sesion
                 .And.NotContain("normalmente termina");
         }
 
+        // EN4 (del S4): sin bash, el shell de login responde al 'exec bash' de la inicialización y sale; el error lo dice en
+        // lugar de «se cerró durante la inicialización», y no se guarda: el comando siguiente vuelve a intentarlo.
+        [Fact]
+        public async Task ServidorSinBash_ElShellSeCierraEnLaInicializacion_ElErrorDiceQueFaltaBashSinCache()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { RespuestaSinBash = "-ash: exec: line 1: bash: not found" };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion primero = await EjecutarAsync(sesion, "hola");
+            Peticion segundo = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = primero.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = primero.Aviso.Should().Contain("no tiene bash").And.Contain("«-ash: exec: line 1: bash: not found»").And.Contain("native_ssh lo necesita")
+                .And.NotContain("exec bash --noediting");
+            _ = segundo.Aviso.Should().Be(primero.Aviso);
+            _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task ShellQueSeCierraEnLaInicializacionPorOtraCausa_ElErrorIncluyeLoQueEscribioSinElProtocolo()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { RespuestaSinBash = "Cuenta caducada: contacta con el administrador" };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion primero = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = primero.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = primero.Aviso.Should().Contain("se cerró durante la inicialización").And.Contain("Cuenta caducada: contacta con el administrador»")
+                .And.NotContain("exec bash").And.NotContain("no tiene bash");
+        }
+
+        // EN4 por la vía exec: el 'bash -c' del comando no existe; 127, nada en stdout y el error del shell de login en stderr.
+        [Fact]
+        public async Task ServidorSinBash_CanalExec_ElErrorDiceQueFaltaBash()
+        {
+            // Arrange
+            // El guion recibe el script con el 'cd' del principio.
+            FabricaFalsa fabrica = new(c => c.EndsWith("\nsin-bash", StringComparison.Ordinal) ? new("ash: bash: not found", 127)
+                : c.EndsWith("\notro-127", StringComparison.Ordinal) ? new("ash: rg: not found", 127)
+                : Guion(c));
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("sin-bash", TimeSpan.FromSeconds(10), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoCanalExec otro = await sesion.EjecutarExecAsync("otro-127", TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            // Assert
+            _ = error.Message.Should().Contain("no tiene bash").And.Contain("«ash: bash: not found»").And.Contain("native_ssh lo necesita");
+            _ = otro.CodigoSalida.Should().Be(127, "otro programa que falta no es falta de bash");
+        }
+
         [Fact]
         public async Task InicializacionSinIdentidadDelShell_FallaConMensajePropioYCierraElCanal()
         {
