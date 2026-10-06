@@ -120,6 +120,10 @@ namespace NativeSsh.Sesion
 
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
         private int _shellsAbandonados;
+
+        // Canales con una escritura en curso, el vigente o uno anterior (cerrado o abandonado), para AvisoEscrituraBloqueada.
+        // Bajo _candadoProceso.
+        private readonly List<ShellAbierto> _canalesEscribiendo = [];
         private int _isDispuesto;
         private volatile string? _directorioTrabajo;
         private volatile string? _pathLogin;
@@ -339,11 +343,32 @@ namespace NativeSsh.Sesion
         private static string DescribirDuracionEscritura(ShellAbierto canal) => canal.SegundosEnEscritura is double segundos ? $" (lleva {segundos:0} s)" : "";
 
         // Aviso del comando en curso mientras el bucle está atascado en una escritura al shell (la suya o la de su entrada).
-        private string? DescribirEscrituraBloqueada(Peticion peticion) => ReferenceEquals(_peticionActual, peticion) ? AvisoEscrituraBloqueada : null;
+        // Una escritura atascada en un shell anterior no retiene al comando en curso: no se le atribuye.
+        private string? DescribirEscrituraBloqueada(Peticion peticion) => ReferenceEquals(_peticionActual, peticion) ? AvisoEscrituraBloqueadaShellVigente : null;
 
         // Aviso de una escritura al shell que lleva más que UmbralAvisoEscrituraBloqueada sin que el servidor la acepte (null
-        // si no la hay). Lo muestra el comando en curso (ssh_cancel, ssh_output, ssh_input); pensado también para ssh_status.
-        public string? AvisoEscrituraBloqueada =>
+        // si no la hay): la del shell vigente o, si no, la de una entrada que sigue dentro de un shell anterior (cerrado o
+        // abandonado). Pensado para ssh_status.
+        public string? AvisoEscrituraBloqueada => AvisoEscrituraBloqueadaShellVigente ?? AvisoEscrituraBloqueadaShellAnterior;
+
+        private string? AvisoEscrituraBloqueadaShellAnterior
+        {
+            get
+            {
+                double maximo = 0;
+                lock (_candadoProceso)
+                    foreach (ShellAbierto canal in _canalesEscribiendo)
+                        if (!ReferenceEquals(canal, _canal) && canal.SegundosEnEscritura is double segundos && segundos > maximo)
+                            maximo = segundos;
+
+                return maximo >= UmbralAvisoEscrituraBloqueada.TotalSeconds
+                    ? $"Una entrada de ssh_input enviada a un shell anterior de {Destino.Clave} (cerrado o abandonado) lleva {maximo:0} s sin que el servidor la acepte: esa llamada a ssh_input no vuelve hasta entonces y, si el shell está abandonado, sigue ocupando una sesión del servidor. Los comandos nuevos usan otro shell (si el servidor no lee de la conexión, también esperarán). ssh_disconnect cierra la conexión y la libera (la siguiente operación abrirá una conexión nueva)."
+                    : null;
+            }
+        }
+
+        // Aviso de una escritura atascada en el shell vigente: lo muestra el comando en curso (ssh_cancel, ssh_output, ssh_input).
+        private string? AvisoEscrituraBloqueadaShellVigente =>
             SegundosEnEscritura is double segundos && segundos >= UmbralAvisoEscrituraBloqueada.TotalSeconds
                 ? $"El shell de {Destino.Clave} lleva {segundos:0} s intentando enviar datos que el servidor no acepta (no lee de la conexión, la red no responde o el canal tiene agotada su ventana): mientras tanto ssh_cancel no puede interrumpir el comando (si lo atascado es una entrada de ssh_input, lo da por cancelado sin interrumpir el proceso y abandona ese shell) y ssh_input no envía nada. ssh_disconnect cierra la conexión y lo libera (el comando termina como cancelado y la siguiente operación abrirá una conexión nueva)."
                 : null;
@@ -1337,6 +1362,8 @@ namespace NativeSsh.Sesion
         private bool TryEnviarBajoCandado(ShellAbierto canal)
         {
             canal.MarcarInicioEscritura();
+            lock (_candadoProceso)
+                _canalesEscribiendo.Add(canal);
             try
             {
                 canal.Canal.Escribir(canal.Escritor.WrittenSpan);
@@ -1349,6 +1376,8 @@ namespace NativeSsh.Sesion
             }
             finally
             {
+                lock (_candadoProceso)
+                    _ = _canalesEscribiendo.Remove(canal);
                 canal.MarcarFinEscritura();
             }
         }

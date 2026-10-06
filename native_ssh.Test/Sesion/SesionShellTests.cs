@@ -935,15 +935,21 @@ namespace NativeSsh.Test.Sesion
             // Act: una lectura más no obtiene cupo mientras el shell abandonado siga abierto; al cerrarse, sí.
             NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(1), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)))
                 .Should().ThrowAsync<NativeSshException>()).Which;
+            string? avisoSesionConElAbandonado = sesion.AvisoEscrituraBloqueada;
+            int abandonados = sesion.ShellsAbandonados;
             retencion.Set();
             _ = await entrada.WaitAsync(Limite);
             await EsperasPrueba.EsperarHastaAsync(() => viejo.IsDispuesto);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.ShellsAbandonados == 0);
             _ = bloqueo.Release(SesionShell.MaxCanalesExecSimultaneos + 1);
             _ = await Task.WhenAll(lecturas).WaitAsync(Limite);
             ResultadoCanalExec otra = await sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None).WaitAsync(Limite);
 
             // Assert
             _ = error.Message.Should().Contain("sin llegar a obtener canal").And.Contain("shell abandonado");
+            _ = abandonados.Should().Be(1);
+            _ = avisoSesionConElAbandonado.Should().Contain("shell anterior").And.Contain("ssh_disconnect");
+            _ = sesion.AvisoEscrituraBloqueada.Should().BeNull();
             _ = otra.CodigoSalida.Should().Be(0);
             _ = fabrica.Ultima.MaxExecSimultaneos.Should().Be(SesionShell.MaxCanalesExecSimultaneos - 1);
         }
