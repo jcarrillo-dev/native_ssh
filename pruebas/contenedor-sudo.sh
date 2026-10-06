@@ -15,11 +15,12 @@
 #   limpiar             elimina todos los contenedores e imágenes construidas por este script (también restos de una
 #                       ejecución interrumpida). Conserva las imágenes base descargadas (debian:13-slim, alpine:3.24).
 #
-# Distros: debian, alpine (pruebas/contenedor/Containerfile.<distro>).
+# Distros: debian, alpine y sinbash (pruebas/contenedor/Containerfile.<distro>). sinbash es Alpine sin bash instalado,
+# con el ash de busybox como shell de login (S4: qué hace native_ssh en un servidor sin bash).
 # Deja en pruebas/.estado-contenedor-<distro>/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto,
 # contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 25000 y 25999; por defecto 25352 para
-# debian y 25362 para alpine: fuera del rango X400-X999 de los sshd manuales de las pruebas y distinto del 25022 del sshd
-# de login lento por defecto).
+# debian, 25362 para alpine y 25372 para sinbash: fuera del rango X400-X999 de los sshd manuales de las pruebas y
+# distintos del 25022 del sshd de login lento por defecto).
 # Usuario de prueba: 'prueba', contraseña 'contrasena-de-prueba' (solo existe dentro del contenedor), sudo con contraseña.
 set -euo pipefail
 
@@ -31,8 +32,8 @@ CONTRASENA="contrasena-de-prueba"
 
 distro_valida() {
     case "${1:-}" in
-        debian|alpine) ;;
-        *) echo "Distro desconocida: '${1:-}' (debian o alpine)" >&2; exit 2 ;;
+        debian|alpine|sinbash) ;;
+        *) echo "Distro desconocida: '${1:-}' (debian, alpine o sinbash)" >&2; exit 2 ;;
     esac
 }
 
@@ -42,6 +43,7 @@ puerto_por_defecto() {
     case "$1" in
         debian) echo 25352 ;;
         alpine) echo 25362 ;;
+        sinbash) echo 25372 ;;
     esac
 }
 
@@ -182,6 +184,7 @@ sondear() {
         prueba "timeout -k" "timeout -k 1 1 true"
         prueba "sed conserva sin salto" "[ \"\$(printf a | sed -n 1p | wc -c)\" = 1 ]"
         rm -f ns_sondeo ns_sondeo2 ns_sondeo3
+        printf "%-10s %s\n" "login" "$(getent passwd prueba | cut -d: -f7)"
         sudo -V | head -n 1
         grep -hv "^#" /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -i "defaults" || true
         sudo -V 2>/dev/null | grep -v "^Configure" | grep -iE "pseudo-terminal|lecture user|timestamp type|Authentication timestamp timeout" || true
