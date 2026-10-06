@@ -183,6 +183,50 @@ namespace NativeSsh.Test.Integracion
             _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
         }
 
+        // O1 de la auditoría del E-sexies (sonda W04 modo 1): con la ventana del canal agotada, SSH.NET esperaba a que el
+        // servidor la ampliara y nadie despertaba esa espera al cerrarse el canal; sin ConnectionInfo.Timeout (ConexionSshNet),
+        // ssh_input no volvía hasta ssh_disconnect. Corregido en externo/SSH.NET ("Stop waiting for the remote window when the
+        // channel is closed"): la escritura falla en cuanto el servidor cierra el canal.
+        [Fact]
+        public async Task EntradaPropiaAtascada_ElServidorCierraElCanal_LaEntradaFallaAlMomentoConSuCausa()
+        {
+            // Arrange: terminal en modo raw y un proceso que no lee: la entrada agota la ventana del canal.
+            const string ProcesoQueNoLee = "sleep 119.27";
+            OpcionesNativeSsh opciones = _sshd.Sshd.Opciones();
+            await using GestorSesiones gestor = new(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            string destino = _sshd.Sshd.Destino.Clave;
+            _ = await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 20);
+            SesionShell sesion = gestor.ListarSesiones().Single();
+            int aceptadas = _sshd.Sshd.ConexionesAceptadas();
+            ResultadoComando comando = await herramientas.EjecutarAsync(destino, $"stty raw -echo; {ProcesoQueNoLee}", timeoutSegundos: 200, esperarSegundos: 0);
+            await Task.Delay(1500);
+            Task<string> entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, new string('b', 6 * 1024 * 1024), esperarSegundos: 0)));
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
+
+            // Act: mueren el proceso y el shell de la sesión, y el servidor cierra el canal.
+            try
+            {
+                _ = BashLocal.Ejecutar($"for p in $(pgrep -f '^{ProcesoQueNoLee}$'); do kill -9 $(ps -o ppid= -p $p) $p; done");
+                Stopwatch reloj = Stopwatch.StartNew();
+                Task terminada = await Task.WhenAny(entrada, Task.Delay(EsperaMaxima));
+                TimeSpan duracion = reloj.Elapsed;
+                ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20);
+
+                // Assert
+                _ = terminada.Should().BeSameAs(entrada, "ssh_input no debe esperar a ssh_disconnect");
+                _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(10));
+                _ = (await entrada).Should().Contain("dejó de admitir escrituras").And.Contain("parte de la entrada");
+                _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+                _ = siguiente.Salida.Should().Be("siguiente\n");
+                _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"pkill -f '^{ProcesoQueNoLee}$' || true");
+            }
+        }
+
         [Fact]
         public async Task EntradaPropiaAtascada_TrasCancelSinCtrlC_ElSiguienteComandoNoSeEjecutaEnUnShellAnidado()
         {
