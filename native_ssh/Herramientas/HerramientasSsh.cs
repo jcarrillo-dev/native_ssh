@@ -620,10 +620,13 @@ namespace NativeSsh.Herramientas
         //   (compara el nombre, y lo que sigue a cada '/', con el patrón): un directorio pedido va con la barra final, con
         //   la que ningún patrón casa (sale igual, 'dir/archivo'), y un archivo pedido va sin esas opciones ni -r y con -H
         //   (con -r y un solo archivo, grep no da su nombre); si es un binario que casa (-I lo calla), lo dice como rg.
-        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido; en rg las exclusiones de directorios
-        //   llevan la barra final de los globs de gitignore, para que, como en grep y find, no excluyan un archivo que se
-        //   llama igual (un script 'build' o 'bin'); y el filtro de extensión va antes que las exclusiones, porque en rg
-        //   manda el último glob que casa: detrás, '*' o '*.json' volvían a incluir .git o package-lock.json.
+        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido. En rg manda el último glob que casa y
+        //   un glob sin barra final casa con archivos y con directorios: van en este orden el filtro de extensión (o '*'),
+        //   las exclusiones de archivos, esas mismas con la barra final como positivas (un directorio 'deps.lock' o
+        //   'src.map' se recorre, como en grep de GNU, cuyo --exclude no se aplica a directorios, y en find, que solo
+        //   excluye '-type f') y al final las de directorios, con la barra final de los globs de gitignore para que no
+        //   excluyan un archivo que se llama igual (un script 'build' o 'bin'). Con el filtro detrás, '*' o '*.json'
+        //   volvían a incluir .git o package-lock.json: las exclusiones pesan más que el filtro en los tres motores.
         // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
         //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
         //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
@@ -636,7 +639,9 @@ namespace NativeSsh.Herramientas
             string rutaPedidaEscapada = Escapar(rutaEfectiva);
             string directorioGrepEscapado = Escapar(rutaMotor.EndsWith('/') ? rutaMotor : rutaMotor + "/");
             string patronEscapado = Escapar(patron);
-            string filtroRg = string.Empty;
+            // Sin filtro, rg recibe '*': con algún glob positivo (el que vuelve a admitir los directorios, abajo), rg omite
+            // todo archivo que no case con ninguno.
+            string filtroRg = "-g '*' ";
             string filtroGrep = string.Empty;
             string filtroFind = string.Empty;
             if (!string.IsNullOrEmpty(extension))
@@ -652,7 +657,8 @@ namespace NativeSsh.Herramientas
                 filtroFind = $"-name {filtroEscapado} ";
             }
 
-            string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}/' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
+            string archivosRg = ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal);
+            string exclusionesRg = $"-g '!{{{archivosRg}}}' -g '{{{archivosRg}}}/' -g '!{{{ExclusionDirectorios}}}/'";
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
             return PlantillaBash.Crear($$"""
                 (
