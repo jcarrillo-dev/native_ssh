@@ -109,8 +109,13 @@ namespace NativeSsh.Herramientas
         //   y solo se usa si antes, una vez por script, sobre un temporal propio, ha tomado un candado libre (0) y, con ese
         //   candado tomado por otra apertura, ha salido con 1 sin escribir nada. Si el sistema de archivos del destino no
         //   admite flock, ese flock escribe su error y cuenta como «no funciona».
-        // - Limitaciones: en NFS, flock se emula con candados fcntl por proceso; otro programa que tome un flock sobre el
-        //   archivo también impide escribirlo (el error lo dice).
+        // - Limitaciones: otro programa que tome un flock sobre el archivo también impide escribirlo (el error lo dice). En
+        //   NFS, flock se emula con candados fcntl (POSIX, por proceso): el exclusivo exige un descriptor abierto para
+        //   escribir, así que con el de solo lectura falla como «no funciona» y se sigue sin exclusión ('ninguno', con el
+        //   aviso), y el candado no se hereda igual entre procesos. Abrir el archivo para tomar el candado se ve en inotify
+        //   aunque no se escriba nada: OPEN y CLOSE_NOWRITE con el descriptor de lectura, y OPEN y CLOSE_WRITE si se abrió
+        //   para anexar (archivo con escritura pero sin lectura, p. ej. 0200, o el anexado), lo que puede despertar a un
+        //   programa que vigile el archivo esperando escrituras.
         internal static readonly string DefinicionCandado = """
             bloquear() {
               local codigo
@@ -1623,6 +1628,11 @@ namespace NativeSsh.Herramientas
                 return 1
               }
               anunciar_ruta copia "$copia"
+              # Sin permiso de lectura (p. ej. 0200 sin sudo) el mensaje propio lo explica, sin la línea cruda de cat.
+              if [ ! -r "$destino" ]; then
+                printf 'Error: no se pudo hacer la copia de seguridad de %s: no tiene permiso de lectura (solo de escritura) y no se sobrescribe en el sitio sin ella. No se ha modificado: dale permiso de lectura o usa sudo=true.\n' "$ruta" >&2
+                return 1
+              fi
               if ! cat -- "$destino" > "$copia"; then
                 printf 'Error: no se pudo hacer la copia de seguridad de %s: no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" >&2
                 return 1
