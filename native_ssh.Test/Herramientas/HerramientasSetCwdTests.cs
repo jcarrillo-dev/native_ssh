@@ -275,6 +275,25 @@ namespace NativeSsh.Test.Herramientas
             _ = DirectorioDeLaSesion().Should().BeNull();
         }
 
+        // Volver a $HOME falla en el shell (p. ej. __NS_CWD de solo lectura: unset falla): C# no olvida el directorio y el
+        // error dice cuál sigue siendo (A-undecies, AU2; mutación T02).
+        [Fact]
+        public async Task VolverAHomeQueFalla_NoOlvidaElDirectorio()
+        {
+            // Arrange
+            _respuestaVolverAHome = new("bash: unset: __NS_CWD: cannot unset: readonly variable\n", 1);
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", null))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be($"bash: unset: __NS_CWD: cannot unset: readonly variable El directorio de trabajo sigue siendo {Anterior}.");
+            _ = DirectorioDeLaSesion().Should().Be(Anterior);
+            _ = _fabrica.Ultima!.Comandos.Should().Contain("unset __NS_CWD && export __NS_CWD=\"\" && pwd");
+        }
+
         // La validación falla (la ruta no existe): el error dice también qué directorio sigue (A-undecies, AU3).
         [Fact]
         public async Task ValidacionQueFalla_DiceQueElDirectorioSigueSiendoElAnterior()

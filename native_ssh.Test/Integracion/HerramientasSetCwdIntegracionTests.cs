@@ -11,7 +11,7 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Test.Integracion
 {
     // ssh_set_cwd contra un sshd real: lo que dice el error sobre el directorio de trabajo es lo que queda de verdad en el
-    // shell, en las herramientas de lectura y en C# (sonda Q01 de la auditoría del A-decies; A-undecies, AU1).
+    // shell, en las herramientas de lectura y en C# (sondas Q01 y Q12 de la auditoría del A-decies; A-undecies, AU1 y AU2).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
@@ -82,6 +82,29 @@ namespace NativeSsh.Test.Integracion
                 .And.NotContain("sigue siendo").And.NotContain("ssh_reset_shell");
             _ = pwd.Should().Be(Environment.GetEnvironmentVariable("HOME"));
             _ = DirectorioDeLaSesion(destino).Should().BeNull();
+        }
+
+        // Volver a $HOME con __NS_CWD de solo lectura: 'unset' falla, así que el shell sigue en X. ssh_set_cwd no responde
+        // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (sonda Q12).
+        [Fact]
+        public async Task VolverAHomeConLaVariableDeSoloLectura_DiceQueSigueEnElAnteriorYCsYShellCoinciden()
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string x = Directory.CreateDirectory(Path.Combine(_directorio, "x12")).FullName;
+            _ = await herramientas.FijarDirectorioAsync(destino, x);
+            ResultadoComando soloLectura = await herramientas.EjecutarAsync(destino, "readonly __NS_CWD", 30, 30);
+            _ = soloLectura.Estado.Should().Be(EstadoPeticionEnum.Completado, soloLectura.Aviso);
+
+            // Act
+            Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, null));
+            string pwd = await PwdDelShellAsync(herramientas, destino);
+
+            // Assert
+            _ = error.Should().BeOfType<NativeSshException>().Which.Message.Should()
+                .EndWith($"El directorio de trabajo sigue siendo {x}.").And.NotContain("restablecido");
+            _ = pwd.Should().Be(x);
+            _ = DirectorioDeLaSesion(destino).Should().Be(x);
         }
     }
 }

@@ -1086,7 +1086,9 @@ namespace NativeSsh.Herramientas
             string? guardado = sesionInicial?.DirectorioTrabajo;
             if (string.IsNullOrEmpty(ruta))
             {
-                const string ComandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
+                // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
+                // no es el de 'pwd' (A-undecies, AU2).
+                const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
                 Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome), cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome));
 
