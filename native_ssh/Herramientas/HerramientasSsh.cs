@@ -622,7 +622,8 @@ namespace NativeSsh.Herramientas
         //   (con -r y un solo archivo, grep no da su nombre).
         // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido; en rg las exclusiones de directorios
         //   llevan la barra final de los globs de gitignore, para que, como en grep y find, no excluyan un archivo que se
-        //   llama igual (un script 'build' o 'bin').
+        //   llama igual (un script 'build' o 'bin'); y el filtro de extensión va antes que las exclusiones, porque en rg
+        //   manda el último glob que casa: detrás, '*' o '*.json' volvían a incluir .git o package-lock.json.
         // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
         //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
         //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
@@ -670,7 +671,7 @@ namespace NativeSsh.Herramientas
                 if command -v rg >/dev/null 2>&1; then
                   printf '{{PrefijoMotor}}rg\n'
                   rg --no-config --line-number --no-heading --with-filename --color never --no-messages --no-ignore --hidden \
-                    {{exclusionesRg}} {{filtroRg}}-m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    {{filtroRg}}{{exclusionesRg}} -m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                   rc=${PIPESTATUS[0]}
                 elif printf 'x\n' | grep -q --exclude-dir=x --exclude=x --include=x -E x 2>/dev/null; then
                   sintaxis=E

@@ -161,6 +161,45 @@ namespace NativeSsh.Test.Integracion
             _ = lineas[1..].Should().BeEquivalentTo("q/real/r.txt:1:valor real", "q/herramientas/bin:1:valor script bin", "q/build:1:valor script build");
         }
 
+        // El filtro de extensión no anula las exclusiones en ningún motor: en rg manda el último glob que casa y, con el
+        // filtro detrás de las exclusiones, '*' volvía a incluir .git y .cache, y '*.json', package-lock.json.
+        [Theory]
+        [MemberData(nameof(CasosFiltroYExclusiones))]
+        public void FiltroDeExtension_NoAnulaLasExclusionesEnLosCuatroMotores(string motor, string extension, string[] esperadas)
+        {
+            // Arrange
+            string? anunciado = InstalarMotor(motor);
+            if (anunciado is null)
+                return;
+            Escribir("s/.git/g.json", "valor git");
+            Escribir("s/.cache/c.txt", "valor cache");
+            Escribir("s/package-lock.json", "valor lock");
+            Escribir("s/conf.json", "valor conf");
+            Escribir("s/x.lock", "valor candado");
+            Escribir("s/a.txt", "valor texto");
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor [a-z]+", "s", extension, 50));
+
+            // Assert
+            _ = (codigo, errores).Should().Be((0, string.Empty));
+            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _ = lineas[0].Should().Be($"__NS_MOTOR:{anunciado}");
+            _ = lineas[1..].Should().BeEquivalentTo(esperadas);
+        }
+
+        public static TheoryData<string, string, string[]> CasosFiltroYExclusiones()
+        {
+            TheoryData<string, string, string[]> casos = [];
+            foreach (string motor in new[] { "rg", "grep -P", "grep -E", "find" })
+            {
+                casos.Add(motor, "*", ["s/conf.json:1:valor conf", "s/a.txt:1:valor texto"]);
+                casos.Add(motor, "json", ["s/conf.json:1:valor conf"]);
+            }
+
+            return casos;
+        }
+
         // Sin grep de GNU, un error de find nunca es «sin coincidencias» (AN1): si find falla (aquí, uno que no admite la
         // expresión), el script sale con 2 y su error va a stderr. Lo que grep -rs y rg callan también se calla aquí: un
         // subdirectorio sin permiso dentro del árbol y el grep que muere por SIGPIPE cuando head ya tiene bastantes líneas.
