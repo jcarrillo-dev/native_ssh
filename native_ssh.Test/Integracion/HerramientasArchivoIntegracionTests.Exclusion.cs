@@ -206,6 +206,10 @@ namespace NativeSsh.Test.Integracion
             bool isSinExclusion = herramienta is "ninguna" or "sin_e_siempre_1" or "sin_e_siempre_0" or "sin_e_no_admitido";
             if (isSudo)
                 await SimularSudoAsync(herramientas);
+            // La comprobación del flock sin -E crea su temporal con mktemp en TMPDIR: aquí, uno propio que debe quedar vacío.
+            string temporales = Directory.CreateDirectory(Ruta("temporales")).FullName;
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{temporales}'", esperarSegundos: 10);
+            _ = export.CodigoSalida.Should().Be(0);
             string[] entradas = Directory.GetFileSystemEntries(carpeta);
             using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", "37.5"]);
             await EsperasPrueba.EsperarHastaAsync(() => !IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
@@ -245,6 +249,7 @@ namespace NativeSsh.Test.Integracion
                 }
 
                 _ = (await File.ReadAllTextAsync(archivo)).Should().Be("LIBRE\nMAS\n");
+                _ = Directory.GetFileSystemEntries(temporales).Should().BeEmpty("ninguna operación deja temporales en TMPDIR");
             }
             finally
             {
