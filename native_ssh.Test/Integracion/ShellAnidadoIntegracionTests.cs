@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
 using FluentAssertions;
@@ -49,6 +50,18 @@ namespace NativeSsh.Test.Integracion
             _ = BashLocal.Ejecutar($"pkill -f '^({NombreAnidado}|{Proceso})' || true");
         }
 
+        private async Task EsperarSalidaAsync(string id, string texto)
+        {
+            Stopwatch reloj = Stopwatch.StartNew();
+            ResultadoComando actual;
+            while (!(actual = await _herramientas.LeerSalidaAsync(id)).Salida.Contains(texto, StringComparison.Ordinal))
+            {
+                if (reloj.Elapsed > TimeSpan.FromSeconds(15))
+                    throw new TimeoutException($"La salida del comando {id} no llegó a contener '{texto}': {actual.Estado} '{actual.Salida}' {actual.Aviso}");
+                await Task.Delay(100);
+            }
+        }
+
         private static int ProcesosAnidados() => int.Parse(BashLocal.Ejecutar($"pgrep -fc '^{NombreAnidado}' || true").Trim(), System.Globalization.CultureInfo.InvariantCulture);
 
         // isRcEnganoso: el rc del shell anidado redefine '[' y 'test' como funciones que siempre dan verdadero (la comprobación
@@ -83,6 +96,32 @@ namespace NativeSsh.Test.Integracion
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Salida.Should().Be($"{enLaSesion.Salida.TrimEnd('\n')} Q=\n");
             _ = siguiente.Aviso.Should().Contain("recreado");
+        }
+
+        // El uso normal de un shell anidado (abrirlo, usarlo con ssh_input y salir con exit) no se toma por uno que quedó
+        // vivo: la cola del comando la ejecuta el shell de la sesión cuando el anidado termina.
+        [Fact]
+        public async Task ShellAnidadoUsadoConSshInputYCerradoConExit_TerminaCompletadoSinAvisoYConservaElShell()
+        {
+            // Arrange
+            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo $$", esperarSegundos: 20);
+            string pid = inicio.Salida.Trim();
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash --norc --noprofile -i'; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 0);
+            await EsperarSalidaAsync(comando.Id, "$ ");
+
+            // Act
+            ResultadoComando dentro = await _herramientas.EnviarEntradaAsync(comando.Id, "echo dentro=$$", esperarSegundos: 2);
+            ResultadoComando fuera = await _herramientas.EnviarEntradaAsync(comando.Id, "exit 3", esperarSegundos: 20);
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EO2", esperarSegundos: 20);
+
+            // Assert
+            _ = dentro.Salida.Should().Contain("dentro=").And.NotContain($"dentro={pid}");
+            _ = fuera.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = fuera.CodigoSalida.Should().Be(0);
+            _ = fuera.Aviso.Should().BeNull();
+            _ = fuera.Salida.Should().EndWith("salio=3\n");
+            _ = siguiente.Salida.Should().Be($"pid={pid} v=si\n");
+            _ = siguiente.Aviso.Should().BeNull();
         }
 
         [Fact]
