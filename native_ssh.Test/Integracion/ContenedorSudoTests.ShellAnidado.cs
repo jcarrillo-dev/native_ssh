@@ -67,6 +67,36 @@ namespace NativeSsh.Test.Integracion
             await EsperarEnContenedorAsync(entorno, "! pgrep -f '^[-]' >/dev/null", 10);
         }
 
+        // El uso normal de un shell de root (sudo -i, ssh_input con órdenes y exit) no se toma por un shell anidado que quedó
+        // vivo: la cola del comando la ejecuta el shell de la sesión cuando el de root termina.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task SudoIUsadoConSshInputYCerradoConExit_TerminaCompletadoSinAvisoYConservaElShell(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+            await entorno.AutenticarSudoAsync(herramientas);
+            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo uid=$(id -u)", esperarSegundos: 10);
+            ResultadoComando anidado = await herramientas.EjecutarAsync(entorno.Destino, "sudo -i; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 2);
+            await EsperarSalidaAsync(herramientas, anidado.Id, "# ");
+
+            // Act
+            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(anidado.Id, "echo raiz=$(id -u)", esperarSegundos: 2);
+            ResultadoComando fuera = await herramientas.EnviarEntradaAsync(anidado.Id, "exit 4", esperarSegundos: 20);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo uid=$(id -u) vivo=$NS_VIVO", esperarSegundos: 15);
+            salida.WriteLine($"{fuera.Estado}: '{fuera.Salida}' {fuera.Aviso}");
+
+            // Assert
+            _ = dentro.Salida.Should().Contain("raiz=0");
+            _ = fuera.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = fuera.Aviso.Should().BeNull();
+            _ = fuera.Salida.Should().EndWith("salio=4\n");
+            _ = siguiente.Salida.Should().Be($"{enLaSesion.Salida.TrimEnd('\n')} vivo=si\n");
+            _ = siguiente.Aviso.Should().BeNull();
+        }
+
         // Sin shell anidado no hay falso positivo: sudo con la contraseña en caché, 'sudo -v' respondido con ssh_input y un
         // comando con sudo cancelado conservan el shell de la sesión.
         [TheoryContenedor]
