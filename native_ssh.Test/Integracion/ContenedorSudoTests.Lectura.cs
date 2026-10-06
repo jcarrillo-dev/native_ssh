@@ -154,7 +154,8 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = digitos.Should().Contain($"{proyecto}/a.txt:2:dos 123").And.Contain($"{proyecto}/sub/b.py:2:    return 42")
                 .And.NotContain("/.git/").And.NotContain("node_modules").And.EndWith("[motor: grep -P]");
-            _ = python.Should().Be($"{proyecto}/sub/b.py:2:    return 42\n\n[motor: grep -P]");
+            // privado.txt y cerrado/ no se pueden leer: el motor los calla y sale con 2, y la respuesta avisa (A-undecies, AU3).
+            _ = python.Should().Be($"{proyecto}/sub/b.py:2:    return 42\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
         }
 
         // FALLO CONOCIDO (producto, Bloque S): sin rg ni grep -P, ssh_search usa 'grep -E' con opciones de GNU grep
@@ -177,7 +178,8 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = digitos.Should().Contain($"{proyecto}/a.txt:2:dos 123").And.Contain($"{proyecto}/sub/b.py:2:    return 42")
                 .And.NotContain("/.git/").And.NotContain("node_modules").And.EndWith("[motor: grep -E]");
-            _ = python.Should().Be($"{proyecto}/sub/b.py:2:    return 42\n\n[motor: grep -E]");
+            // privado.txt y cerrado/ no se pueden leer: el motor los calla y sale con 2, y la respuesta avisa (A-undecies, AU3).
+            _ = python.Should().Be($"{proyecto}/sub/b.py:2:    return 42\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -E]");
         }
 
         [TheoryContenedor]
