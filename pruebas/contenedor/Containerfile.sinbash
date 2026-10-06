@@ -1,0 +1,21 @@
+# Servidor de pruebas de native_ssh SIN bash (Bloque S, S4): Alpine con solo el ash de busybox como shell de login del
+# usuario de prueba; bash no está instalado (la construcción falla si 'command -v bash' lo encuentra). Mismo sshd, mismo
+# usuario y sudo que Containerfile.alpine, para que la única diferencia sea la falta de bash. Lo construye y arranca
+# pruebas/contenedor-sudo.sh (podman rootless); las claves se montan en /etc/ns.
+FROM docker.io/library/alpine:3.24
+
+RUN apk add --no-cache openssh-server sudo \
+    && printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/wheel \
+    && chmod 0440 /etc/sudoers.d/wheel \
+    && if command -v bash; then echo 'bash no debe estar instalado' >&2; exit 1; fi
+
+ARG CONTRASENA=contrasena-de-prueba
+RUN adduser -D -s /bin/ash prueba \
+    && addgroup prueba wheel \
+    && printf 'prueba:%s\n' "$CONTRASENA" | chpasswd \
+    && [ "$(getent passwd prueba | cut -d: -f7)" = /bin/ash ]
+
+COPY sshd_config /etc/ns-sshd_config
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ns-sshd_config"]
