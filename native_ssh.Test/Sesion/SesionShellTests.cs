@@ -978,6 +978,90 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task RechazoDelServidorConUnShellAbandonado_ElShellYLasLecturasLoNombranYNoMandanEsperarALecturasQueNoHay()
+        {
+            // Arrange: Z01 de la auditoría del E-septies. Un shell abandonado (entrada retenida) ocupa una sesión y el
+            // servidor rechaza los canales nuevos (MaxSessions), sin ninguna lectura en curso.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+            using ManualResetEventSlim retencion = new(false);
+            viejo.RetenerEscrituras(retencion);
+            Task<bool> entrada = Task.Run(() => sesion.EnviarEntrada(colgado, "datos", isEnviarEnter: true));
+            await EsperasPrueba.EsperarHastaAsync(() => viejo.EscriturasRetenidas == 1);
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            fabrica.Ultima.IsRechazandoAperturas = true;
+
+            // Act
+            Peticion siguiente = await EjecutarAsync(sesion, "siguiente");
+            NativeSshException lectura = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            int lecturasActivas = sesion.CanalesExecActivos;
+            retencion.Set();
+            _ = await entrada.WaitAsync(Limite);
+            await EsperasPrueba.EsperarHastaAsync(() => sesion.ShellsAbandonados == 0);
+
+            // Assert: nombran el shell abandonado, dicen que reintentar no sirve y que ssh_disconnect lo libera; no piden
+            // esperar a lecturas que no existen ni cuentan como lectura la propia operación rechazada.
+            _ = lecturasActivas.Should().Be(0);
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = siguiente.Aviso.Should().Contain("MaxSessions").And.Contain("1 shell(s) abandonado(s)").And.Contain("reintentar no sirve").And.Contain("ssh_disconnect")
+                .And.NotContain("lecturas en curso").And.NotContain("herramientas de lectura (en curso");
+            _ = lectura.Message.Should().Contain("MaxSessions").And.Contain("1 shell(s) abandonado(s)").And.Contain("reintentar no sirve").And.Contain("ssh_disconnect")
+                .And.NotContain("herramientas de lectura (en curso").And.NotContain("sigue disponible");
+        }
+
+        [Fact]
+        public async Task RechazoDelServidorSinShellsAbandonados_SoloNombraComoCausaLasLecturasYLosCierresQueHay()
+        {
+            // Arrange: una lectura en curso retenida y el servidor rechazando canales nuevos.
+            using SemaphoreSlim bloqueo = new(0);
+            using ManualResetEventSlim confirmacion = new(false);
+            FabricaFalsa fabrica = new(Guion) { BloqueoExec = bloqueo };
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            Task<ResultadoCanalExec> enCurso = sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(30), CancellationToken.None);
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.ExecActivos == 1);
+            fabrica.Ultima!.IsRechazandoAperturas = true;
+            sesion.SolicitarReset();
+
+            // Act: con la lectura en curso; sin nada; y con un shell anterior cuyo cierre el servidor no confirma.
+            Peticion conLectura = await EjecutarAsync(sesion, "uno");
+            NativeSshException lecturaConLectura = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("true", TimeSpan.FromSeconds(5), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            _ = bloqueo.Release();
+            _ = await enCurso.WaitAsync(Limite);
+            Peticion sinNada = await EjecutarAsync(sesion, "dos");
+            fabrica.Ultima.IsRechazandoAperturas = false;
+            _ = await EjecutarAsync(sesion, "tres");
+            fabrica.Ultima.CanalActual!.RetenerCierre(confirmacion);
+            fabrica.Ultima.IsRechazandoAperturas = true;
+            Peticion conCierrePendiente;
+            try
+            {
+                sesion.SolicitarReset();
+                conCierrePendiente = await EjecutarAsync(sesion, "cuatro");
+            }
+            finally
+            {
+                confirmacion.Set();
+            }
+
+            // Assert
+            _ = conLectura.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = conLectura.Aviso.Should().Contain("1 canal(es) de las herramientas de lectura").And.Contain("cuando terminen las lecturas en curso").And.NotContain("abandonado");
+            _ = lecturaConLectura.Message.Should().Contain("1 canal(es) de las herramientas de lectura").And.Contain("reintenta en unos segundos").And.NotContain("abandonado");
+            _ = sinNada.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = sinNada.Aviso.Should().Contain("no hay en esta conexión lecturas en curso").And.Contain("ssh_disconnect").And.NotContain("cuando terminen");
+            _ = conCierrePendiente.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = conCierrePendiente.Aviso.Should().Contain("1 shell(s) anterior(es) cuyo cierre el servidor aún no ha confirmado").And.NotContain("cuando terminen");
+        }
+
+        [Fact]
         public async Task EntradaConElCanalCerradoPorElServidorSinQueLaLecturaLoVea_DiceQueElCanalDejoDeAdmitirEscrituras()
         {
             // Arrange: el servidor cerró el canal y la conexión sigue viva, pero la lectura aún no ha visto el cierre.

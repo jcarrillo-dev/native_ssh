@@ -129,6 +129,10 @@ namespace NativeSsh.Sesion
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
         private int _shellsAbandonados;
 
+        // Canales del shell ya descartados (cerrados o de una apertura abandonada) cuyo cierre sigue esperando la confirmación
+        // del servidor: hasta entonces su sesión sigue ocupando una plaza del MaxSessions del servidor.
+        private int _shellsCerrandose;
+
         // Canales con una escritura en curso, el vigente o uno anterior (cerrado o abandonado), para AvisoEscrituraBloqueada.
         // Bajo _candadoProceso.
         private readonly List<ShellAbierto> _canalesEscribiendo = [];
@@ -482,6 +486,11 @@ namespace NativeSsh.Sesion
             {
                 throw new NativeSshException(DescribirTiempoAgotadoExec(etapa == EtapaExecEnum.Apertura && apertura is { IsConfirmada: true } ? EtapaExecEnum.Canal : etapa, timeout));
             }
+            catch (CanalRechazadoException ex)
+            {
+                // Esta lectura ya cuenta en _canalesExecActivos: no es una de las que ocupan sesiones.
+                throw new NativeSshException(DescribirCanalExecRechazado(lecturasPropias: isCanalContado ? 1 : 0), ex);
+            }
             catch (Exception ex) when (ex is not (OperationCanceledException or NativeSshException))
             {
                 throw new NativeSshException($"Falló el canal exec en {Destino.Clave}: {ex.Message}", ex);
@@ -511,6 +520,48 @@ namespace NativeSsh.Sesion
                 EtapaExecEnum.Canal => $"{plazo}; se abandona y su canal exec se cierra (el servidor lo libera cuando termina su proceso remoto, como mucho al vencer su plazo).",
                 _ => throw new ArgumentOutOfRangeException(nameof(etapa), etapa, null)
             };
+        }
+
+        // El servidor rechazó el canal (casi siempre su MaxSessions). Solo se nombra como causa lo que de verdad ocupa sesiones
+        // en esta conexión ahora mismo: un mensaje que pide esperar a unas lecturas que no existen deja al usuario reintentando
+        // algo que no se arregla solo (los shells abandonados no tienen plazo).
+        private string DescribirCanalExecRechazado(int lecturasPropias)
+        {
+            string conexion = IsShellActivo ? "La conexión sigue abierta y el shell de ssh_exec sigue disponible" : "La conexión sigue abierta";
+            string siguiente = ShellsAbandonados > 0
+                ? $"{conexion}, pero reintentar no sirve mientras sigan abiertos esos shells: ssh_disconnect cierra la conexión y los libera (la siguiente operación abrirá una conexión nueva)."
+                : $"{conexion}: reintenta en unos segundos o lanza menos operaciones a la vez.";
+            return $"El servidor rechazó abrir otro canal en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y {MaxCanalesExecSimultaneos} canales para las herramientas de lectura).{DescribirSesionesOcupadas(lecturasPropias)} {siguiente}";
+        }
+
+        private string DescribirShellRechazado()
+        {
+            string siguiente = ShellsAbandonados > 0
+                ? "La conexión sigue abierta, pero reintentar no sirve mientras sigan abiertos esos shells: ssh_disconnect cierra la conexión y los libera (la siguiente operación abrirá una conexión nueva)."
+                : CanalesExecActivos > 0
+                ? "La conexión sigue abierta: reintenta ssh_exec en unos segundos, cuando terminen las lecturas en curso."
+                : "La conexión sigue abierta: reintenta en unos segundos; si sigue fallando, ssh_disconnect cierra la conexión y lo libera todo (la siguiente operación abrirá una conexión nueva).";
+            return $"El servidor rechazó abrir el canal del shell de ssh_exec en la conexión SSH con {Destino.Clave}: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; native_ssh usa como mucho {MaxCanalesExecSimultaneos} canales para las herramientas de lectura además del shell).{DescribirSesionesOcupadas(lecturasPropias: 0)} {siguiente}";
+        }
+
+        // Lo que native_ssh sabe que ocupa sesiones del servidor en esta conexión, sin contar el shell vigente ni la operación
+        // que pregunta (lecturasPropias).
+        private string DescribirSesionesOcupadas(int lecturasPropias)
+        {
+            int lecturas = CanalesExecActivos - lecturasPropias;
+            int abandonados = ShellsAbandonados;
+            int cerrandose = Volatile.Read(ref _shellsCerrandose);
+            List<string> causas = [];
+            if (lecturas > 0)
+                causas.Add($"{lecturas} canal(es) de las herramientas de lectura (en curso, o ya vencidas cuyo proceso remoto aún no ha terminado)");
+            if (abandonados > 0)
+                causas.Add($"{abandonados} shell(s) abandonado(s) tras una cancelación sin Ctrl+C, que siguen abiertos hasta que el servidor acepte la entrada que tenían pendiente, sin plazo conocido");
+            if (cerrandose > 0)
+                causas.Add($"{cerrandose} shell(s) anterior(es) cuyo cierre el servidor aún no ha confirmado (su proceso puede seguir vivo sin terminal)");
+
+            return causas.Count == 0
+                ? " Ahora no hay en esta conexión lecturas en curso ni shells abandonados o pendientes de cierre que ocupen sesiones: puede que el servidor tenga un límite muy bajo o rechace el canal por otro motivo."
+                : $" Ocupan sesiones en esta conexión: {string.Join("; ", causas)}.";
         }
 
         // Un shell abandonado (AbandonarCanal) retiene una plaza del cupo hasta cerrarse, sin plazo conocido.
@@ -984,6 +1035,10 @@ namespace NativeSsh.Sesion
             {
                 canal = new ShellAbierto(await ObtenerCanalShellAsync(conexion, token).ConfigureAwait(false));
             }
+            catch (CanalRechazadoException ex)
+            {
+                throw new NativeSshException(DescribirShellRechazado(), ex);
+            }
             catch (Exception ex) when (ex is not (NativeSshException or OperationCanceledException))
             {
                 // Con la conexión caída, el texto de SSH.NET ("Client not connected.", un handle nulo...) no dice nada útil.
@@ -1104,7 +1159,7 @@ namespace NativeSsh.Sesion
             }
 
             _logger.AperturaShellAbandonada(null, Destino.Clave);
-            _ = Task.Factory.StartNew(LiberarCanal, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            _ = Task.Factory.StartNew(LiberarCanalDescartado, canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
         // Un login lento con readline (bash -l) lee la línea del exec en modo crudo; al volver a modo canónico el
@@ -1285,7 +1340,7 @@ namespace NativeSsh.Sesion
             _ = (espera?.TrySetResult(CodigoCanalCerrado));
             // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
             // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.
-            Task cierre = Task.Factory.StartNew(LiberarCanal, canal.Canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            Task cierre = Task.Factory.StartNew(LiberarCanalDescartado, canal.Canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             return cierre.Wait(EsperaCierreCanalShell);
         }
 
@@ -1368,6 +1423,20 @@ namespace NativeSsh.Sesion
             finally
             {
                 _ = _cupoExec.Release();
+            }
+        }
+
+        // Cuenta en _shellsCerrandose mientras SSH.NET espera el CLOSE del servidor.
+        private void LiberarCanalDescartado(object? estado)
+        {
+            _ = Interlocked.Increment(ref _shellsCerrandose);
+            try
+            {
+                LiberarCanal(estado);
+            }
+            finally
+            {
+                _ = Interlocked.Decrement(ref _shellsCerrandose);
             }
         }
 

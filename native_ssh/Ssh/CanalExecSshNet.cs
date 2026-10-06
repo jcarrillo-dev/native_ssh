@@ -1,7 +1,6 @@
 using System.Buffers;
 using Renci.SshNet;
 using Renci.SshNet.Common;
-using NativeSsh.Comun;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Ssh
@@ -51,12 +50,11 @@ namespace NativeSsh.Ssh
     //   -k' o el watchdog, ConstructorComandoExec): tras abortar, el proceso remoto vive hasta ese plazo.
     // - Con el token de ExecuteAsync SSH.NET llamaría a CancelAsync (señal y espera síncrona de 500 ms): no se usa.
     // - Si el servidor rechaza abrir el canal (MaxSessions de sshd), Open lanza un SshException genérico ("Failed to
-    //   open a channel after N attempts.") con la conexión intacta: se traduce a un mensaje que lo explica.
+    //   open a channel after N attempts.") con la conexión intacta: se lanza CanalRechazadoException y SesionShell lo
+    //   explica con lo que sabe de las sesiones ocupadas.
     internal static class CanalExecSshNet
     {
         private const int TamanoBloque = 16 * 1024;
-
-        internal const string MensajeCanalRechazado = "El servidor rechazó abrir otro canal en la conexión SSH: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd; por defecto 10, y native_ssh usa como mucho el shell y 4 canales para las herramientas de lectura). La conexión sigue abierta y el shell de ssh_exec sigue disponible: reintenta en unos segundos o lanza menos operaciones a la vez.";
 
         public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
@@ -70,7 +68,7 @@ namespace NativeSsh.Ssh
                 }
                 catch (SshException ex) when (ex.GetType() == typeof(SshException) && IsConectado(cliente))
                 {
-                    throw new NativeSshException(MensajeCanalRechazado, ex);
+                    throw new CanalRechazadoException("El servidor rechazó abrir el canal exec.", ex);
                 }
 
                 // ExecuteAsync vuelve cuando el servidor ha confirmado la apertura del canal y respondido a la petición exec.

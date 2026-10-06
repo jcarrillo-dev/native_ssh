@@ -19,6 +19,7 @@ namespace NativeSsh.Sesion
     {
         bool IsConectada { get; }
 
+        // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta.
         ICanalShell AbrirShell();
 
         // Ejecuta 'comando' tal cual en un canal exec nuevo sobre la misma conexión TCP (lo interpreta el shell de login).
@@ -26,7 +27,22 @@ namespace NativeSsh.Sesion
         // está cerrado: si la apertura no atiende el token (la de SSH.NET es síncrona), cuando termine y se cierre.
         // 'alConfirmarseApertura' se invoca cuando el servidor ha confirmado la apertura del canal y aceptado el comando
         // (desde entonces el comando corre en el servidor y lo acota su plazo remoto); no se invoca si no llega a pasar.
+        // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta.
         Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken);
+    }
+
+    // El servidor rechazó abrir un canal de sesión (el del shell o uno exec) con la conexión intacta: casi siempre porque
+    // se alcanzó su MaxSessions. El adaptador no sabe qué ocupa esas sesiones; SesionShell la traduce a NativeSshException
+    // diciendo lo que sí sabe (lecturas en curso, shells abandonados, shells cuyo cierre sigue pendiente).
+    public sealed class CanalRechazadoException : Exception
+    {
+        public CanalRechazadoException(string mensaje) : base(mensaje)
+        {
+        }
+
+        public CanalRechazadoException(string mensaje, Exception interna) : base(mensaje, interna)
+        {
+        }
     }
 
     public interface IFabricaConexion

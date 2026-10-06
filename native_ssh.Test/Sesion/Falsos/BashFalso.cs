@@ -167,6 +167,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string RuidoTrasCapturaPath { get; init; } = "";
         public CanalFalso? CanalActual { get; private set; }
 
+        // Desde ahora el servidor rechaza abrir canales (el del shell y los exec) con la conexión intacta: como OpenSSH al
+        // alcanzar su MaxSessions.
+        public bool IsRechazandoAperturas { get; set; }
+
         // Canal exec: el guion recibe el script decodificado. Las líneas de error ("Error:", "grep:", "rg:") van a stderr.
         public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
@@ -174,6 +178,9 @@ namespace NativeSsh.Test.Sesion.Falsos
             ObjectDisposedException.ThrowIf(_isDispuesta, this);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
+
+            if (IsRechazandoAperturas)
+                throw new CanalRechazadoException("Rechazado (MaxSessions).");
 
             string script = ScriptExec.Decodificar(comando);
             ComandosExec.Enqueue(comando);
@@ -238,6 +245,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _isConectada = false;
                 throw new ArgumentNullException("waitHandle");
             }
+
+            if (IsRechazandoAperturas)
+                throw new CanalRechazadoException("Rechazado (MaxSessions).");
 
             if (BloqueoAperturaShell is { } apertura)
             {

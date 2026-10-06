@@ -1,14 +1,11 @@
 using Renci.SshNet;
 using Renci.SshNet.Common;
-using NativeSsh.Comun;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Ssh
 {
     public sealed class ConexionSshNet : IConexionSsh
     {
-        internal const string MensajeShellRechazado = "El servidor rechazó abrir el canal del shell de ssh_exec en la conexión SSH: probablemente se alcanzó su límite de sesiones por conexión (MaxSessions de sshd), ocupadas ahora por canales de las herramientas de lectura (native_ssh usa como mucho 4 a la vez además del shell). La conexión sigue abierta: reintenta ssh_exec en unos segundos, cuando terminen las lecturas en curso.";
-
         // Mensaje de SSH.NET 2026.0.0 cuando el servidor responde a CHANNEL_OPEN con un rechazo (Open lanza un
         // SshException genérico, el mismo tipo que para un pty-req o shell rechazados).
         private const string PrefijoCanalRechazado = "Failed to open a channel";
@@ -84,7 +81,8 @@ namespace NativeSsh.Ssh
             }
             catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoCanalRechazado, StringComparison.Ordinal) && IsConectada)
             {
-                throw new NativeSshException(MensajeShellRechazado, ex);
+                // SesionShell dice qué ocupa las sesiones del servidor (lecturas, shells abandonados...): aquí no se sabe.
+                throw new CanalRechazadoException("El servidor rechazó abrir el canal del shell.", ex);
             }
             catch (Exception ex) when (IsCaidaDeConexion(ex))
             {
