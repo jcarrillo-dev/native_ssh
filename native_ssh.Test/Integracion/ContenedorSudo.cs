@@ -18,6 +18,7 @@ namespace NativeSsh.Test.Integracion
     {
         public const string Debian = "debian";
         public const string Alpine = "alpine";
+        public const string SinBash = "sinbash";
 
         private readonly Dictionary<string, ServidorContenedor> _servidores = [];
         private readonly Lock _candado = new();
