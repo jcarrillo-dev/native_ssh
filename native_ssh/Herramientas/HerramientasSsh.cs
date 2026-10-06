@@ -59,6 +59,122 @@ namespace NativeSsh.Herramientas
             }
             """.ReplaceLineEndings("\n");
 
+        // Exclusión por archivo entre los scripts que lo escriben (ssh_write_file, también con append, y
+        // ssh_replace_file_content, en su lectura previa y en su escritura): una restauración en curso tras una interrupción
+        // (que sigue sola, ignorando HUP, INT y TERM) no puede pisar ni mezclarse con una escritura posterior.
+        // tomar_candado MODO (-x exclusivo, -s compartido): abre "$destino" (ya resuelto) en un descriptor ('candado') que
+        // el script mantiene abierto hasta salir, después de su trampa de salida, y toma sobre él un flock sin esperar. Lo
+        // abre para leer o, si no puede, para anexar sin truncarlo (flock no depende del modo de apertura): un archivo con
+        // permiso de escritura pero no de lectura también se escribe en el sitio (anexado sin sudo mientras una escritura
+        // con sudo lo escribe o lo restaura) y necesita el candado. La guarda [ -e ] evita que '>>' cree un archivo que no
+        // existe; si desaparece justo entre las dos, '>>' lo crea vacío, que es lo que la escritura haría igualmente. Deja
+        // en 'estado_candado' (lo anuncia la escritura; ver InformeEscritura): 'tomado'; 'sin_comprobar' (tomado, pero no
+        // se pudo comprobar que esté sobre el archivo que sigue en la ruta, ver abajo); 'ninguno' (ninguna herramienta pudo
+        // tomarlo: no hay flock, python3 ni perl que funcionen, o el sistema de archivos no admite flock) o 'sin_abrir' (no
+        // se pudo abrir ni para leer ni para anexar: sin permiso, o el archivo desapareció entretanto). Con 'ninguno' y
+        // 'sin_abrir' se sigue sin exclusión; con ellos y con 'sin_comprobar', la respuesta lo avisa. Si otro proceso lo
+        // tiene, da el error y devuelve 1 sin haber tocado nada.
+        // - No puede quedar huérfano: un flock pertenece a la descripción de archivo abierta y el núcleo lo suelta al
+        //   cerrarse su último descriptor, es decir, al terminar el script y los hijos que lo heredan (también por SIGKILL o
+        //   tras caer la conexión, cuando el script acaba su restauración). No se crea ningún archivo de candado (no hace
+        //   falta permiso de escritura en el directorio ni hay nada que borrar). Los hijos heredan el descriptor a propósito:
+        //   un 'cat' que restaura sigue excluyendo aunque maten al bash del script, hasta que termina él.
+        // - Ligado al archivo actual: tras tomarlo, mismo_inodo comprueba que el descriptor y "$destino" son el mismo
+        //   archivo (dispositivo e inodo); si entretanto se sustituyó (un renombrado encima), se reintenta, porque el
+        //   candado de un inodo que ya no está en la ruta no excluye a nadie. Solo se afirma que se sustituyó si la
+        //   comparación se hizo y dio distinto. Si no se puede hacer, se conserva el candado ('sin_comprobar') en vez de
+        //   soltarlo: excluye igual a la restauración y a las escrituras en el sitio, que no cambian de inodo (el caso para
+        //   el que existe), y lo único que queda sin cubrir es un renombrado encima justo entre abrir y bloquear, la misma
+        //   ventana que sin comprobar nada; la respuesta lo dice.
+        // - mismo_inodo FD: 0 mismo archivo, 1 distinto, 2 no se puede saber. Con /proc, el '-ef' de bash sobre /dev/fd/FD
+        //   (bash lo resuelve en /proc/self/fd/FD). Sin /proc (chroot tipo jailkit, contenedores mínimos), '-ef' sería
+        //   siempre falso: se compara dispositivo e inodo de los dos con stat de GNU coreutils ('-' es su entrada estándar,
+        //   con fstat; otro stat podría tomar '-' por un nombre de archivo), python3 (os.fstat) o perl (stat del
+        //   descriptor). Cada herramienta compara por su cuenta y sale con 0 (mismo) o 3 (distinto): cualquier otro código
+        //   es que no funcionó, nunca «distinto».
+        // - bloquear FD MODO: flock(1) de util-linux con -E 75 para distinguir «ocupado» (75) de «no funciona» (otro
+        //   código); si no, python3 o perl, que toman el flock sobre el descriptor heredado (el candado queda en la
+        //   descripción compartida con el bash del script al salir ellos). Una herramienta que no funciona nunca cuenta como
+        //   ocupado: se prueba la siguiente. El flock de busybox no tiene -E y no se usa.
+        // - Limitaciones: en NFS, flock se emula con candados fcntl por proceso; otro programa que tome un flock sobre el
+        //   archivo también impide escribirlo (el error lo dice).
+        internal static readonly string DefinicionCandado = """
+            bloquear() {
+              local codigo
+              flock -n "$2" -E 75 "$1" 2>/dev/null
+              codigo=$?
+              { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
+              python3 -c 'if 1:
+                import fcntl, sys
+                modo = fcntl.LOCK_SH if sys.argv[2] == "-s" else fcntl.LOCK_EX
+                try:
+                    fcntl.flock(int(sys.argv[1]), modo | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    sys.exit(75)' "$1" "$2" 2>/dev/null
+              codigo=$?
+              { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
+              perl -MFcntl=:flock -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; flock($f, ($ARGV[1] eq "-s" ? LOCK_SH : LOCK_EX) | LOCK_NB) and exit 0; exit($!{EWOULDBLOCK} ? 75 : 2)' "$1" "$2" 2>/dev/null
+            }
+            mismo_inodo() {
+              local del_fd de_ruta
+              if [ -e "/dev/fd/$1" ]; then
+                [ "/dev/fd/$1" -ef "$destino" ]
+                return
+              fi
+              case $(stat --version 2>/dev/null) in
+                *'GNU coreutils'*)
+                  if del_fd=$(stat -L -c '%d:%i' - <&"$1" 2>/dev/null) && [ -n "$del_fd" ]; then
+                    de_ruta=$(stat -L -c '%d:%i' -- "$destino" 2>/dev/null)
+                    [ "$del_fd" = "$de_ruta" ]
+                    return
+                  fi ;;
+              esac
+              python3 -c 'if 1:
+                import os, sys
+                fd = os.fstat(int(sys.argv[1]))
+                try:
+                    ruta = os.stat(sys.argv[2])
+                except FileNotFoundError:
+                    sys.exit(3)
+                sys.exit(0 if (fd.st_dev, fd.st_ino) == (ruta.st_dev, ruta.st_ino) else 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              perl -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; my @fd = stat($f) or exit 2; my @ruta = stat($ARGV[1]) or exit($!{ENOENT} ? 3 : 2); exit($fd[0] == $ruta[0] && $fd[1] == $ruta[1] ? 0 : 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              return 2
+            }
+            tomar_candado() {
+              local intento
+              estado_candado=
+              for intento in 1 2 3; do
+                if ! { exec {candado}<"$destino"; } 2>/dev/null; then
+                  [ -e "$destino" ] && { exec {candado}>>"$destino"; } 2>/dev/null || { estado_candado=sin_abrir; return 0; }
+                fi
+                bloquear "$candado" "$1"
+                case $? in
+                  0)
+                    mismo_inodo "$candado"
+                    case $? in
+                      0) estado_candado=tomado; return 0 ;;
+                      2) estado_candado=sin_comprobar; return 0 ;;
+                    esac ;;
+                  75)
+                    printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
+                    return 1 ;;
+                  *) estado_candado=ninguno; return 0 ;;
+                esac
+                exec {candado}<&-
+              done
+              printf 'Error: %s se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.\n' "$ruta" >&2
+              return 1
+            }
+            """.ReplaceLineEndings("\n");
+
         // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
         // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
         private const string ErrorNoRegular = """printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
@@ -129,11 +245,25 @@ namespace NativeSsh.Herramientas
             Peticion peticion = gestor.BuscarPeticion(id);
             long desde = peticion.Salida.Longitud;
             if (!gestor.EnviarEntrada(peticion, texto, enter))
-                throw new NativeSshException($"El comando {peticion.IdTexto} no admite entrada: está en estado {peticion.Estado}.");
+                throw new NativeSshException(MensajeEntradaNoEnviada(peticion));
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, desde);
         }
+
+        // Por qué no se envió la entrada, con lo que la petición deja ver tras el rechazo (sin afirmar que el comando no
+        // admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la petición no
+        // está en ejecución, durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si ya no es la que ocupa
+        // el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera solo se distinguen el
+        // estado y si se pidió cancelarla: el resto se enumera.
+        internal static string MensajeEntradaNoEnviada(Peticion peticion) => peticion.Estado switch
+        {
+            EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando a que termine el anterior en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
+            EstadoPeticionEnum.Ejecutando when peticion.IsCancelacionSolicitada => $"No se envió la entrada: el comando {peticion.IdTexto} se está cancelando (Ctrl+C enviado o cierre del canal del shell en curso, por ssh_cancel o ssh_reset_shell) y mientras tanto el shell no admite entrada.",
+            EstadoPeticionEnum.Ejecutando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect, ya no es el comando que ocupa el shell o falló la escritura en el canal, y entonces pudo llegar una parte). Comprueba su estado con ssh_output o ssh_status antes de reintentar.",
+            EstadoPeticionEnum.Completado or EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado or EstadoPeticionEnum.ShellPerdido or EstadoPeticionEnum.Error => $"No se envió la entrada: el comando {peticion.IdTexto} ya terminó (estado {peticion.Estado}).",
+            _ => $"No se envió la entrada: el comando {peticion.IdTexto} está en un estado desconocido ({peticion.Estado})."
+        };
 
         [McpServerTool(Name = "ssh_cancel", Destructive = true, Idempotent = true)]
         [Description("Cancela un comando: si está encolado no llega a ejecutarse; si está en ejecución se envía Ctrl+C y, si no responde, se cierra el canal del shell (se pierden las variables exportadas).")]
@@ -279,7 +409,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl), también. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -302,6 +432,8 @@ namespace NativeSsh.Herramientas
             string rutaEscapada = Escapar(ruta);
             string idMarcas = Guid.NewGuid().ToString("N");
 
+            // Anexar: el archivo se abre (y se crea si no existía) antes de anunciar que se anexa, para que un fallo normal al
+            // abrirlo (permiso denegado) no se describa como una muerte a mitad del anexado.
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
@@ -314,8 +446,13 @@ namespace NativeSsh.Herramientas
                     if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
                       {{ErrorNoRegular}}
                     fi
+                    {{DefinicionCandado}}
+                    { exec {anexo}>>"$ruta"; } || exit 1
+                    destino=$ruta
+                    tomar_candado -x || exit 1
+                    anunciar candado "$estado_candado"
                     anunciar fase anexando
-                    base64 -d >> "$ruta" || exit 1
+                    base64 -d >&"$anexo" || exit 1
                     anunciar fase anexado
                     """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
@@ -324,7 +461,7 @@ namespace NativeSsh.Herramientas
             return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
-                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}")
                     : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
         }
 
@@ -484,14 +621,15 @@ namespace NativeSsh.Herramientas
         }
 
         // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
-        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL) o empieza por comillas dobles; entonces va entre
-        // comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se puede pegar tal
-        // cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad; una barra
-        // invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
+        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL), los separadores de línea y de párrafo de Unicode
+        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles;
+        // entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se
+        // puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
+        // una barra invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
         private static void EscaparNombre(StringBuilder listado, string nombre)
         {
             ReadOnlySpan<char> caracteres = nombre;
-            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f');
+            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f') || caracteres.ContainsAnyInRange('\u2028', '\u2029');
             if (!hasControl && !nombre.StartsWith('"'))
             {
                 _ = listado.Append(nombre);
@@ -509,7 +647,7 @@ namespace NativeSsh.Herramientas
                     '\t' => listado.Append("\\t"),
                     '\f' => listado.Append("\\f"),
                     '\b' => listado.Append("\\b"),
-                    _ when char.IsControl(c) => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
+                    _ when char.IsControl(c) || c is '\u2028' or '\u2029' => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
                     _ => listado.Append(c)
                 };
             _ = listado.Append('"');
@@ -541,7 +679,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -598,7 +736,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -625,7 +763,7 @@ namespace NativeSsh.Herramientas
                 "file" => "-type f ",
                 "dir" or "directory" => "-type d ",
                 "all" => string.Empty,
-                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' o 'all'.")
+                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
             string comando = PlantillaBash.Crear($$"""
@@ -857,7 +995,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -915,6 +1053,9 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso de lectura: %s (prueba con sudo=true).\n' "$ruta" >&2
                   exit 1
                 fi
+                {{DefinicionCandado}}
+                destino=$ruta
+                tomar_candado -s || exit 1
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 if [ -z "$tam" ]; then
                   printf 'Error: no se pudo obtener el tamaño de: %s\n' "$ruta" >&2
@@ -1125,6 +1266,11 @@ namespace NativeSsh.Herramientas
                 {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
                 {{DefinicionAcortarNombre}}
                 acortar_nombre
+                {{DefinicionCandado}}
+                if [ -e "$destino" ]; then
+                  tomar_candado -x || exit 1
+                  anunciar candado "$estado_candado"
+                fi
                 tmp=
                 copia=
                 fuera=0

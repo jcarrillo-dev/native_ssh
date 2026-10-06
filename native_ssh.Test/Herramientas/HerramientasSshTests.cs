@@ -45,6 +45,7 @@ namespace NativeSsh.Test.Herramientas
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
+                "ignora_ctrlc" => new("empezando\n", 0, ComportamientoFalsoEnum.IgnoraCtrlC),
                 "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
                 "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
                 _ => new($"eco:{comando}\n", 2)
@@ -304,7 +305,55 @@ namespace NativeSsh.Test.Herramientas
 
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(terminado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
-            _ = error.Message.Should().Contain("Completado");
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {terminado.Id} ya terminó (estado Completado).");
+        }
+
+        // Un comando encolado tras otro todavía no admite entrada: el error lo dice así, no que el comando no la admita.
+        [Fact]
+        public async Task Input_EnComandoEncolado_DiceQueSigueEncolado()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando encolado = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(encolado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = encolado.Estado.Should().Be(EstadoPeticionEnum.Encolado);
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {encolado.Id} sigue encolado, esperando a que termine el anterior en el shell de ana@servidor:22. Envíala cuando esté en ejecución (ssh_status).");
+        }
+
+        // Durante la interrupción de un comando en ejecución (aquí, uno que ignora el Ctrl+C, así que la interrupción dura
+        // hasta EsperaTrasCtrlC y el cierre del canal) el shell rechaza la entrada: si se pidió cancelarlo, el error dice que
+        // se está cancelando; si lo interrumpe su timeout, da las causas posibles. Nunca que el comando no admite entrada.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Input_DuranteLaInterrupcion_DiceQueSeEstaInterrumpiendo(bool isCancelado)
+        {
+            // Arrange
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "ignora_ctrlc", timeoutSegundos: isCancelado ? 300 : 1, esperarSegundos: 0);
+            Peticion peticion = _gestor.BuscarPeticion(comando.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => peticion.Salida.Longitud > 0);
+            if (isCancelado)
+                _ = peticion.SolicitarCancelacion();
+
+            // Act: reintenta hasta que la interrupción empiece (antes, la entrada se acepta).
+            Exception? error = null;
+            for (int intento = 0; intento < 100 && error is null; intento++)
+            {
+                error = await Record.ExceptionAsync(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", enter: false, esperarSegundos: 0));
+                if (error is null)
+                    await Task.Delay(20);
+            }
+
+            // Assert
+            _ = error.Should().BeOfType<NativeSshException>();
+            _ = error!.Message.Should().NotContain("no admite entrada:");
+            _ = error.Message.Should().StartWith(isCancelado
+                ? $"No se envió la entrada: el comando {comando.Id} se está cancelando"
+                : $"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout");
         }
 
         [Fact]
@@ -723,8 +772,8 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Una escritura cuya salida supera el máximo por petición pierde su principio, y con él anuncios (aquí, que empezó a
-        // escribir en el sitio): el error no puede apoyarse en lo que queda (el anuncio final) para decir qué pasó con el
-        // archivo, lo dice, y no vuelca la salida entera.
+        // escribir en el sitio): el error no puede apoyarse en lo que queda para decir qué pasó con el archivo, lo dice, y no
+        // vuelca la salida entera. El anuncio final sí llegó (es lo último): dice que el script anunció que terminó.
         [Fact]
         public async Task WriteFile_SalidaConDatosDescartados_ElErrorNoSeApoyaEnLosAnunciosQueQuedan()
         {
@@ -737,7 +786,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición ")
+            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición ")
                 .And.Contain("No consta ninguna modificación de 'salida_desbordada.txt'.")
                 .And.Contain("superó el máximo de bytes por petición y se descartó su principio")
                 .And.EndWith("Error: algo falló");
@@ -1722,7 +1771,8 @@ namespace NativeSsh.Test.Herramientas
         private const string LineasConBlancos = " /a.txt:1:  sangría\nb.txt:2:fin \u2029 \r";
 
         // Los listados solo pierden el salto de línea final: los blancos y separadores al principio del primer nombre (o
-        // de la primera línea encontrada) y al final del último son datos.
+        // de la primera línea encontrada) y al final del último son datos. En ssh_find y ssh_list_dir, un nombre con un
+        // separador de línea o de párrafo de Unicode (U+2028, U+2029) sale escapado como una cadena JSON, entero.
         [Fact]
         public async Task SearchFindListDir_BlancosEnLosExtremosDelListado_SeConservan()
         {
@@ -1733,8 +1783,9 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
-            _ = encontrados.Should().Be(NombresConBlancos);
-            _ = listado.Should().Be(NombresConBlancos);
+            const string NombresEscapados = " uno\n\"\\u2028dos\"\n\"tres \\u2029\"";
+            _ = encontrados.Should().Be(NombresEscapados);
+            _ = listado.Should().Be(NombresEscapados);
         }
 
         // Un nombre con caracteres de control (categoría Cc: salto de línea, retorno de carro, tabulador, NEL, DEL...) o que
@@ -1760,7 +1811,7 @@ namespace NativeSsh.Test.Herramientas
             _ = encontrados.Should().Be(esperado);
             _ = listado.Should().Be(esperado);
             _ = new[] { DescripcionDe(nameof(HerramientasSsh.BuscarPorNombreAsync)), DescripcionDe(nameof(HerramientasSsh.ListarDirectoriosAsync)) }
-                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
+                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("U+2028, U+2029").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
         }
 
         // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.
@@ -1775,7 +1826,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain($"'{tipo}'").And.Contain("'file', 'dir' o 'all'");
+            _ = error.Message.Should().Be($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.");
             _ = _fabrica.Ultima.Should().BeNull();
         }
 

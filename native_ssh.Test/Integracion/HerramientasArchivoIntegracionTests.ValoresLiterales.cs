@@ -58,13 +58,16 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.TamanoBytes.Should().Be(9);
             _ = buscadoEnLaRuta.Should().Contain(":1:OBJETIVO").And.NotContain("SENUELO");
             _ = buscadoPorExtension.Should().StartWith($"{Path.Combine(extension, $"f.t{separador}xt")}:1:OBJETIVO\n\n[motor: ");
-            // ssh_find da entre comillas y escapado como una cadena JSON un nombre con caracteres de control (LS y PS no lo son).
+            // ssh_find da entre comillas y escapado como una cadena JSON un nombre con caracteres de control o con los
+            // separadores de línea y de párrafo de Unicode (LS y PS), que muchos lectores toman como un salto de línea.
             _ = encontradoPorNombre.Should().Be(separador switch
             {
                 "\r" => "\"x\\ry\"",
                 "\r\n" => "\"x\\r\\ny\"",
                 "\f" => "\"x\\fy\"",
                 "\u0085" => "\"x\\u0085y\"",
+                "\u2028" => "\"x\\u2028y\"",
+                "\u2029" => "\"x\\u2029y\"",
                 _ => $"x{separador}y"
             });
             _ = encontradoEnLaCarpeta.Should().Be("dentro.txt");
@@ -72,16 +75,17 @@ namespace NativeSsh.Test.Integracion
         }
 
         // En ssh_find y ssh_list_dir cada nombre ocupa una sola línea: uno con caracteres de control (aquí un salto de línea,
-        // un retorno de carro y un tabulador) o que empieza por comillas dobles sale entre comillas y escapado como una cadena
-        // JSON, que decodificada da el nombre exacto; los demás, tal cual (también con una barra invertida). Antes, "a\nz.txt"
-        // salía como dos nombres, "a" y "z.txt", ordenados por separado.
+        // un retorno de carro y un tabulador), con un separador de línea o de párrafo de Unicode (U+2028, U+2029) o que
+        // empieza por comillas dobles sale entre comillas y escapado como una cadena JSON, que decodificada da el nombre
+        // exacto; los demás, tal cual (también con una barra invertida). Antes, "a\nz.txt" salía como dos nombres, "a" y
+        // "z.txt", ordenados por separado.
         [Fact]
         public async Task FindYListDir_NombresConCaracteresDeControl_CadaUnoEnUnaLineaYDecodificable()
         {
             // Arrange
             string carpeta = Ruta("control");
             _ = Directory.CreateDirectory(carpeta);
-            string[] nombres = ["a\nz.txt", "b\r.txt", "c\t.txt", "\"d\".txt", "e\\f.txt", "m.txt"];
+            string[] nombres = ["a\nz.txt", "b\r.txt", "c\t.txt", "\"d\".txt", "e\\f.txt", "g\u2028.txt", "h\u2029.txt", "m.txt"];
             foreach (string nombre in nombres)
                 await File.WriteAllTextAsync(Path.Combine(carpeta, nombre), "x\n");
             HerramientasSsh herramientas = Herramientas();
@@ -91,7 +95,7 @@ namespace NativeSsh.Test.Integracion
             string[] listados = (await herramientas.ListarDirectoriosAsync(Destino, carpeta, incluirArchivos: true)).Split('\n');
 
             // Assert
-            string[] esperados = ["\"a\\nz.txt\"", "\"b\\r.txt\"", "\"c\\t.txt\"", "\"\\\"d\\\".txt\"", "e\\f.txt", "m.txt"];
+            string[] esperados = ["\"a\\nz.txt\"", "\"b\\r.txt\"", "\"c\\t.txt\"", "\"\\\"d\\\".txt\"", "e\\f.txt", "\"g\\u2028.txt\"", "\"h\\u2029.txt\"", "m.txt"];
             _ = encontrados.Should().BeEquivalentTo(esperados);
             _ = listados.Should().BeEquivalentTo(esperados);
             _ = encontrados.Select(n => n.StartsWith('"') ? JsonDocument.Parse(n).RootElement.GetString() : n).Should().BeEquivalentTo(nombres);
@@ -199,7 +203,8 @@ namespace NativeSsh.Test.Integracion
             string leido = await herramientas.LeerArchivoAsync(Destino, "\u2029d.txt ");
 
             // Assert
-            string ordenados = string.Join('\n', nombres.Order(StringComparer.Ordinal));
+            // LS y PS salen escapados como una cadena JSON (FindYListDir_NombresConCaracteresDeControl...).
+            string ordenados = string.Join('\n', nombres.Order(StringComparer.Ordinal).Select(n => n.Contains('\u2028', StringComparison.Ordinal) || n.Contains('\u2029', StringComparison.Ordinal) ? $"\"{n.Replace("\u2028", "\\u2028", StringComparison.Ordinal).Replace("\u2029", "\\u2029", StringComparison.Ordinal)}\"" : n));
             _ = listado.Should().Be(ordenados);
             _ = encontrados.Should().Be(ordenados);
             string[] lineas = busqueda[..busqueda.IndexOf("\n\n[motor: ", StringComparison.Ordinal)].Split('\n');
