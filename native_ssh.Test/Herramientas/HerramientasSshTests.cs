@@ -26,12 +26,13 @@ namespace NativeSsh.Test.Herramientas
         }
 
         private static RespuestaFalsa Guion(string comando) =>
+            comando.Contains("perdido_mudo") ? new(string.Empty, 0, ComportamientoFalsoEnum.Salir) :
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
             comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
             comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
             comando.Contains("error.txt") ? new("Error: el archivo no existe: error.txt\n", 1) :
-            comando.Contains("sed -n") ? SimularLectura(comando) :
+            comando.Contains("| tail -n +") ? SimularLectura(comando) :
             comando.Contains("base64 -d") ? SimularEscritura(comando) :
             comando.Contains("grep -rnI") ? SimularBusqueda(comando) :
             comando.Contains("-o -type d -print0") || comando.Contains("-o -print0 2>/dev/null") ? SimularListDir(comando) :
@@ -45,6 +46,7 @@ namespace NativeSsh.Test.Herramientas
             comando switch
             {
                 "colgado" => new("empezando\n", 0, ComportamientoFalsoEnum.Colgado),
+                "ignora_ctrlc" => new("empezando\n", 0, ComportamientoFalsoEnum.IgnoraCtrlC),
                 "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
                 "largo" => new(string.Concat(Enumerable.Range(0, 10).Select(i => $"linea {i}\n"))),
                 _ => new($"eco:{comando}\n", 2)
@@ -114,10 +116,19 @@ namespace NativeSsh.Test.Herramientas
             return new($"__NS_CWD_{id}__ {Convert.ToBase64String(Encoding.UTF8.GetBytes(directorio))}\n", 0);
         }
 
+        // Un stderr de 1500 caracteres (el aviso lo acota a 1000) y otro cuyo carácter 1000 es la primera mitad de un emoji
+        // (un par sustituto): el corte no debe partirlo.
+        private static readonly string ErrorLargo = "grep: " + string.Concat(Enumerable.Range(0, 1494).Select(i => (char)('a' + (i % 26))));
+        private static readonly string ErrorConEmojiEnElCorte = "grep: " + new string('e', 993) + "\U0001F600" + "cola";
+
         // El script elige el motor en el servidor y lo anuncia en la primera línea; el falso simula 'grep -P'.
         private static RespuestaFalsa SimularBusqueda(string comando)
         {
-            if (!comando.Contains("-P -e"))
+            // Recorrido con find sin grep de GNU: sale con 0 aunque no haya coincidencias.
+            if (comando.Contains("'vacio_con_find'"))
+                return new("__NS_MOTOR:grep -E\n", 0);
+
+            if (!comando.Contains("-\"$sintaxis\" -e"))
                 return new("grep: error falta flag -e\n", 2);
 
             if (comando.Contains("ruta_inexistente"))
@@ -129,6 +140,24 @@ namespace NativeSsh.Test.Herramientas
 
             if (comando.Contains("sin_coincidencias"))
                 return new(Motor, 1);
+
+            if (comando.Contains("parcial_sin_error"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 2);
+
+            if (comando.Contains("vacio_codigo_dos"))
+                return new(Motor, 2);
+
+            if (comando.Contains("parcial_con_error"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\ngrep: sub/x.txt: Input/output error\n", 2);
+
+            if (comando.Contains("parcial_error_largo"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n" + ErrorLargo + "\n", 2);
+
+            if (comando.Contains("parcial_error_emoji"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n" + ErrorConEmojiEnElCorte + "\n", 2);
+
+            if (comando.Contains("parcial_limite"))
+                return new(Motor + "a.txt:1:uno\nb.txt:2:dos\nc.txt:3:tres\ngrep: sub/x.txt: Input/output error\n", 2);
 
             if (comando.Contains("'extremos'"))
                 return new(Motor + LineasConBlancos + "\n", 0);
@@ -296,6 +325,18 @@ namespace NativeSsh.Test.Herramientas
             _ = respuesta.Salida.Should().Be("recibido:ana\n");
         }
 
+        // Sin grep de GNU el recorrido con find sale con 0 aunque no encuentre nada: una salida vacía es «sin coincidencias»
+        // (nunca un resultado en blanco ni un error).
+        [Fact]
+        public async Task Buscar_SalidaVaciaConCodigoCero_SinCoincidencias()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "vacio_con_find");
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron coincidencias para el patrón: 'vacio_con_find' en '.'.\n\n[motor: grep -E]");
+        }
+
         [Fact]
         public async Task Input_EnComandoTerminado_Lanza()
         {
@@ -304,7 +345,113 @@ namespace NativeSsh.Test.Herramientas
 
             // Act & Assert
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(terminado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
-            _ = error.Message.Should().Contain("Completado");
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {terminado.Id} ya terminó (estado Completado).");
+        }
+
+        // Un comando encolado tras otro todavía no admite entrada: el error lo dice así, no que el comando no la admita.
+        [Fact]
+        public async Task Input_EnComandoEncolado_DiceQueSigueEncolado()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando encolado = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(encolado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = encolado.Estado.Should().Be(EstadoPeticionEnum.Encolado);
+            _ = error.Message.Should().Be($"No se envió la entrada: el comando {encolado.Id} sigue encolado, esperando su turno en el shell de ana@servidor:22. Envíala cuando esté en ejecución (ssh_status).");
+        }
+
+        // Mientras el shell se abre (la conexión, o la apertura del canal del shell, retenidas) la petición ya está en
+        // ejecución pero el comando aún no se ha enviado y la sesión rechaza la entrada: el error dice que el shell se está
+        // abriendo y que se reintente cuando ssh_status lo muestre activo, no una lista de causas que no la incluye (auditoría
+        // del A-septies, Y01/Y02). Con el shell ya abierto, la misma entrada llega.
+        [Theory]
+        [InlineData("conexion")]
+        [InlineData("apertura_shell")]
+        public async Task Input_MientrasElShellSeAbre_DiceQueSeEstaAbriendo(string fase)
+        {
+            // Arrange
+            using SemaphoreSlim bloqueo = new(0);
+            if (fase == "conexion")
+                _fabrica.BloqueoConexion = bloqueo;
+            else
+                _fabrica.BloqueoAperturaShell = bloqueo;
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            Peticion peticion = _gestor.BuscarPeticion(comando.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => fase == "conexion" ? _fabrica.ConexionesRetenidas == 1 : _fabrica.Ultima?.AperturasShellRetenidas == 1);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoEstado estado = _herramientas.Estado("servidor");
+            _ = bloqueo.Release();
+            await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado("servidor").Sesiones[0].IsShellActivo && _fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)));
+            ResultadoComando reintento = await _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = estado.Sesiones.Should().ContainSingle().Which.IsShellActivo.Should().BeFalse();
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
+            _ = reintento.Salida.Should().Contain("recibido:x");
+        }
+
+        // Con el canal del shell ya abierto pero el inicio de sesión todavía en curso (aquí tarda 1,5 s), la sesión sigue
+        // rechazando la entrada: ssh_status muestra el shell activo, así que el error no dice que no lo esté, sino las dos
+        // causas posibles con el canal abierto y el comando dentro de su plazo (inicialización pendiente o fallo de la
+        // escritura) (auditoría del A-septies, sonda Y02).
+        [Fact]
+        public async Task Input_ConElCanalAbiertoYLaInicializacionEnCurso_DiceQueAunSePuedeEstarInicializando()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.LentoConReadline, retrasoLogin: TimeSpan.FromSeconds(1.5));
+            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana" };
+            await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            ResultadoComando comando = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => herramientas.Estado("servidor").Sesiones is [{ IsShellActivo: true }]);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)), TimeSpan.FromSeconds(10));
+            ResultadoComando reintento = await herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+
+            // Assert
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
+            _ = reintento.Salida.Should().Contain("recibido:x");
+        }
+
+        // Durante la interrupción de un comando en ejecución (aquí, uno que ignora el Ctrl+C, así que la interrupción dura
+        // hasta EsperaTrasCtrlC y el cierre del canal) el shell rechaza la entrada: si se pidió cancelarlo, el error dice que
+        // se está cancelando; si lo interrumpe su timeout, da las causas posibles. Nunca que el comando no admite entrada.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task Input_DuranteLaInterrupcion_DiceQueSeEstaInterrumpiendo(bool isCancelado)
+        {
+            // Arrange
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "ignora_ctrlc", timeoutSegundos: isCancelado ? 300 : 1, esperarSegundos: 0);
+            Peticion peticion = _gestor.BuscarPeticion(comando.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => peticion.Salida.Longitud > 0);
+            if (isCancelado)
+                _ = peticion.SolicitarCancelacion();
+
+            // Act: reintenta hasta que la interrupción empiece (antes, la entrada se acepta).
+            Exception? error = null;
+            for (int intento = 0; intento < 100 && error is null; intento++)
+            {
+                error = await Record.ExceptionAsync(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", enter: false, esperarSegundos: 0));
+                if (error is null)
+                    await Task.Delay(20);
+            }
+
+            // Assert
+            _ = error.Should().BeOfType<NativeSshException>();
+            _ = error!.Message.Should().NotContain("no admite entrada:");
+            _ = error.Message.Should().StartWith(isCancelado
+                ? $"No se envió la entrada: el comando {comando.Id} se está cancelando"
+                : $"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout");
         }
 
         [Fact]
@@ -457,6 +604,23 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
+        // El shell se pierde con el comando de la escritura ya enviado y sin ninguna salida: no es un comando que no llegó
+        // al shell (pudo ejecutarse), así que el error no dice que no se ejecutó ni que el archivo no se modificó, sino que
+        // no consta y cómo comprobarlo (mutación M22 de la auditoría del A-nonies; A-decies, AD3).
+        [Fact]
+        public async Task WriteFile_ShellPerdidoConElComandoEnviadoYSinSalida_NoDiceQueNoSeEjecuto()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EscribirArchivoAsync("servidor", "perdido_mudo.txt", "hola"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            Peticion peticion = _gestor.ListarPeticiones()[0];
+            _ = (peticion.Estado, peticion.Salida.Longitud).Should().Be((EstadoPeticionEnum.ShellPerdido, 0));
+            _ = error.Message.Should().Contain("estado: ShellPerdido").And.Contain("No consta ninguna modificación de 'perdido_mudo.txt'")
+                .And.NotContain("no llegó a ejecutarse").And.NotContain("no se ha modificado");
+        }
+
         // OperationCanceledException dice que el archivo no se modificó y da el id de la petición.
         [Fact]
         public async Task WriteFile_EncoladaYCanceladaPorElToken_DiceQueNoSeModifico()
@@ -723,8 +887,8 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Una escritura cuya salida supera el máximo por petición pierde su principio, y con él anuncios (aquí, que empezó a
-        // escribir en el sitio): el error no puede apoyarse en lo que queda (el anuncio final) para decir qué pasó con el
-        // archivo, lo dice, y no vuelca la salida entera.
+        // escribir en el sitio): el error no puede apoyarse en lo que queda para decir qué pasó con el archivo, lo dice, y no
+        // vuelca la salida entera. El anuncio final sí llegó (es lo último): dice que el script anunció que terminó.
         [Fact]
         public async Task WriteFile_SalidaConDatosDescartados_ElErrorNoSeApoyaEnLosAnunciosQueQuedan()
         {
@@ -737,7 +901,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición ")
+            _ = error.Message.Should().StartWith("La escritura en 'salida_desbordada.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición ")
                 .And.Contain("No consta ninguna modificación de 'salida_desbordada.txt'.")
                 .And.Contain("superó el máximo de bytes por petición y se descartó su principio")
                 .And.EndWith("Error: algo falló");
@@ -1187,7 +1351,7 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("rg --no-config");
             _ = comando.Should().Contain("-g '*.py'");
             _ = comando.Should().Contain("-g '!{.git,node_modules,");
-            _ = comando.Should().Contain("-P -e 'patron'");
+            _ = comando.Should().Contain("sintaxis=P").And.Contain("-\"$sintaxis\" -e 'patron'");
             _ = comando.Should().Contain("__NS_MOTOR:rg");
         }
 
@@ -1199,7 +1363,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Should().StartWith("archivo.txt:1:coincidencia encontrada");
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-P -e '--version'") && c.Contains("-E -e '--version'") && c.Contains("rg --no-config") && c.Contains("-e '--version'"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-\"$sintaxis\" -e '--version'") && c.Contains("-E -e '--version'") && c.Contains("rg --no-config") && c.Contains("-e '--version'"));
         }
 
         [Fact]
@@ -1218,6 +1382,79 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("error de sintaxis");
             _ = error.Message.Should().Contain("[motor: grep -P]");
             _ = error.Message.Should().NotContain("__NS_");
+        }
+
+        // Código 2 con resultados y con stderr: el motor falló en parte del árbol. Se dan los resultados con un aviso de que
+        // pueden faltar coincidencias y el error, en vez de descartarlo (A-decies, AD3).
+        [Fact]
+        public async Task Search_ErrorConResultados_AvisaDeQueElResultadoPuedeSerParcial()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_con_error");
+
+            // Assert
+            _ = salida.Should().StartWith("archivo.txt:1:coincidencia encontrada\n")
+                .And.Contain("pueden faltar coincidencias")
+                .And.Contain("grep: sub/x.txt: Input/output error")
+                .And.EndWith("[motor: grep -P]");
+        }
+
+        // Un 2 sin stderr (los errores que -s/--no-messages callan, como archivos ilegibles) también avisa, sin detalle: algo
+        // no se pudo leer y pueden faltar coincidencias (A-undecies, AU3).
+        [Fact]
+        public async Task Search_CodigoDosSinErroresConResultados_AvisaSinDetalle()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_sin_error");
+
+            // Assert
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
+        }
+
+        [Fact]
+        public async Task Search_CodigoDosSinErroresNiResultados_DiceQueNoHayCoincidenciasYAvisaSinDetalle()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "vacio_codigo_dos");
+
+            // Assert
+            _ = salida.Should().Be($"No se encontraron coincidencias para el patrón: 'algo' en 'vacio_codigo_dos'.\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
+        }
+
+        private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
+
+        // El stderr del aviso se acota a sus primeros 1000 caracteres, con «…» (A-undecies, AU3; mutación V01).
+        [Fact]
+        public async Task Search_ErrorLargoConResultados_AcotaElErrorA1000Caracteres()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_error_largo");
+
+            // Assert
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {ErrorLargo[..1000]}…]\n[motor: grep -P]");
+        }
+
+        // Si el carácter 1000 es la primera mitad de un par sustituto, el corte se queda en 999 (no deja medio emoji).
+        [Fact]
+        public async Task Search_ErrorConUnEmojiEnElCorte_NoParteElParSustituto()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_error_emoji");
+
+            // Assert
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {ErrorConEmojiEnElCorte[..999]}…]\n[motor: grep -P]");
+            _ = salida.EnumerateRunes().Should().NotContain(Rune.ReplacementChar);
+        }
+
+        // Con el límite alcanzado y errores, salen los dos avisos (mutación V02).
+        [Fact]
+        public async Task Search_ErrorConElLimiteAlcanzado_DaLosDosAvisos()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_limite", maxResultados: 2);
+
+            // Assert
+            _ = salida.Should().Be("a.txt:1:uno\nb.txt:2:dos\n\n[Límite alcanzado: se muestran 2 coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: grep: sub/x.txt: Input/output error]\n[motor: grep -P]");
         }
 
         [Theory]
@@ -1686,7 +1923,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             string[] comandos = [.. _fabrica.Ultima!.Comandos];
-            _ = comandos.Should().Contain(c => c.Contains("sed -n '1,3p' -- ' '", StringComparison.Ordinal));
+            _ = comandos.Should().Contain(c => c.Contains("head -n 3 -- ' ' | tail -n +1", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains("stat -c", StringComparison.Ordinal) && c.Contains("[ ! -e ' ' ] && [ ! -L ' ' ]", StringComparison.Ordinal));
             _ = comandos.Should().Contain(c => c.Contains("-e '  ' -- ' '", StringComparison.Ordinal));
             _ = comandos.Where(c => c.Contains("find -L . -maxdepth", StringComparison.Ordinal)).Should().HaveCount(2)
@@ -1722,7 +1959,8 @@ namespace NativeSsh.Test.Herramientas
         private const string LineasConBlancos = " /a.txt:1:  sangría\nb.txt:2:fin \u2029 \r";
 
         // Los listados solo pierden el salto de línea final: los blancos y separadores al principio del primer nombre (o
-        // de la primera línea encontrada) y al final del último son datos.
+        // de la primera línea encontrada) y al final del último son datos. En ssh_find y ssh_list_dir, un nombre con un
+        // separador de línea o de párrafo de Unicode (U+2028, U+2029) sale escapado como una cadena JSON, entero.
         [Fact]
         public async Task SearchFindListDir_BlancosEnLosExtremosDelListado_SeConservan()
         {
@@ -1733,8 +1971,9 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = busqueda.Should().Be($"{LineasConBlancos}\n\n[motor: grep -P]");
-            _ = encontrados.Should().Be(NombresConBlancos);
-            _ = listado.Should().Be(NombresConBlancos);
+            const string NombresEscapados = " uno\n\"\\u2028dos\"\n\"tres \\u2029\"";
+            _ = encontrados.Should().Be(NombresEscapados);
+            _ = listado.Should().Be(NombresEscapados);
         }
 
         // Un nombre con caracteres de control (categoría Cc: salto de línea, retorno de carro, tabulador, NEL, DEL...) o que
@@ -1760,7 +1999,7 @@ namespace NativeSsh.Test.Herramientas
             _ = encontrados.Should().Be(esperado);
             _ = listado.Should().Be(esperado);
             _ = new[] { DescripcionDe(nameof(HerramientasSsh.BuscarPorNombreAsync)), DescripcionDe(nameof(HerramientasSsh.ListarDirectoriosAsync)) }
-                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
+                .Should().AllSatisfy(descripcion => descripcion.Should().Contain("caracteres de control").And.Contain("U+2028, U+2029").And.Contain("entre comillas dobles y escapado como una cadena JSON"));
         }
 
         // Un tipo que no es 'file', 'dir' (o 'directory') ni 'all' es un error, no una búsqueda de archivos.
@@ -1775,7 +2014,7 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain($"'{tipo}'").And.Contain("'file', 'dir' o 'all'");
+            _ = error.Message.Should().Be($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.");
             _ = _fabrica.Ultima.Should().BeNull();
         }
 

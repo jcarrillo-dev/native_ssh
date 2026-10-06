@@ -11,6 +11,20 @@ using NativeSsh.Sesion;
 
 namespace NativeSsh.Herramientas
 {
+    // Lo que se ve del shell de una petición en ejecución cuya entrada se rechazó (HerramientasSsh.EnviarEntradaAsync).
+    internal enum ShellEntradaEnum
+    {
+        // Sin sesión del destino, el comando ya no es el que ocupa el shell o su timeout ya venció: causas generales.
+        Indeterminado,
+
+        // La sesión no tiene el shell activo: se está abriendo (conexión, canal) o su canal se acaba de cerrar.
+        Inactivo,
+
+        // Canal abierto, el comando es el que ocupa el shell y su timeout no ha vencido: o el shell aún se inicializa
+        // (el comando no se le ha enviado) o falló la escritura.
+        ActivoConElComando
+    }
+
     [McpServerToolType]
     public sealed partial class HerramientasSsh(GestorSesiones gestor, OpcionesNativeSsh opciones)
     {
@@ -56,6 +70,172 @@ namespace NativeSsh.Herramientas
                 return 0
               fi
               sin_acceso "$padre" $(( saltos + 1 )) "$pedida"
+            }
+            """.ReplaceLineEndings("\n");
+
+        // Exclusión por archivo entre los scripts que lo escriben (ssh_write_file, también con append, y
+        // ssh_replace_file_content, en su lectura previa y en su escritura): una restauración en curso tras una interrupción
+        // (que sigue sola, ignorando HUP, INT y TERM) no puede pisar ni mezclarse con una escritura posterior.
+        // tomar_candado MODO (-x exclusivo, -s compartido): abre "$destino" (ya resuelto) en un descriptor ('candado') que
+        // el script mantiene abierto hasta salir, después de su trampa de salida, y toma sobre él un flock sin esperar. Lo
+        // abre para leer o, si no puede, para anexar sin truncarlo (flock no depende del modo de apertura): un archivo con
+        // permiso de escritura pero no de lectura también se escribe en el sitio (anexado sin sudo mientras una escritura
+        // con sudo lo escribe o lo restaura) y necesita el candado. La guarda [ -e ] evita que '>>' cree un archivo que no
+        // existe; si desaparece justo entre las dos, '>>' lo crea vacío, que es lo que la escritura haría igualmente. Con
+        // 'anexar' no vacío (ssh_write_file con append) lo abre siempre para anexar, creándolo si no existe, y el anexado
+        // escribe por ese mismo descriptor: así la comprobación del inodo es la del descriptor por el que se escribe (con
+        // un descriptor aparte para anexar, un renombrado encima entre abrir uno y otro dejaba el candado y la comprobación
+        // en el archivo nuevo y el anexado en el viejo, ya fuera de la ruta); si no se puede abrir, el error de bash y 1. Deja
+        // en 'estado_candado' (lo anuncia la escritura; ver InformeEscritura): 'tomado'; 'sin_comprobar' (tomado, pero no
+        // se pudo comprobar que esté sobre el archivo que sigue en la ruta, ver abajo); 'ninguno' (ninguna herramienta pudo
+        // tomarlo: no hay flock, python3 ni perl que funcionen, o el sistema de archivos no admite flock) o 'sin_abrir' (no
+        // se pudo abrir ni para leer ni para anexar: sin permiso, o el archivo desapareció entretanto). Con 'ninguno' y
+        // 'sin_abrir' se sigue sin exclusión; con ellos y con 'sin_comprobar', la respuesta lo avisa. Si otro proceso lo
+        // tiene, da el error y devuelve 1 sin haber tocado nada.
+        // - No puede quedar huérfano: un flock pertenece a la descripción de archivo abierta y el núcleo lo suelta al
+        //   cerrarse su último descriptor, es decir, al terminar el script y los hijos que lo heredan (también por SIGKILL o
+        //   tras caer la conexión, cuando el script acaba su restauración). No se crea ningún archivo de candado (no hace
+        //   falta permiso de escritura en el directorio ni hay nada que borrar). Los hijos heredan el descriptor a propósito:
+        //   un 'cat' que restaura sigue excluyendo aunque maten al bash del script, hasta que termina él.
+        // - Ligado al archivo actual: tras tomarlo, mismo_inodo comprueba que el descriptor y "$destino" son el mismo
+        //   archivo (dispositivo e inodo); si entretanto se sustituyó (un renombrado encima), se reintenta, porque el
+        //   candado de un inodo que ya no está en la ruta no excluye a nadie. Solo se afirma que se sustituyó si la
+        //   comparación se hizo y dio distinto. Si no se puede hacer, se conserva el candado ('sin_comprobar') en vez de
+        //   soltarlo: excluye igual a la restauración y a las escrituras en el sitio, que no cambian de inodo (el caso para
+        //   el que existe), y lo único que queda sin cubrir es un renombrado encima justo entre abrir y bloquear, la misma
+        //   ventana que sin comprobar nada; la respuesta lo dice.
+        // - mismo_inodo FD: 0 mismo archivo, 1 distinto, 2 no se puede saber. Con /proc, el '-ef' de bash sobre /dev/fd/FD
+        //   (bash lo resuelve en /proc/self/fd/FD). Sin /proc (chroot tipo jailkit, contenedores mínimos), '-ef' sería
+        //   siempre falso: se compara dispositivo e inodo de los dos con stat de GNU coreutils ('-' es su entrada estándar,
+        //   con fstat; otro stat podría tomar '-' por un nombre de archivo), python3 (os.fstat) o perl (stat del
+        //   descriptor). Cada herramienta compara por su cuenta y sale con 0 (mismo) o 3 (distinto): cualquier otro código
+        //   es que no funcionó, nunca «distinto». Que la ruta no exista (ENOENT) es «distinto»; cualquier otro fallo al
+        //   consultarla (p. ej. sin permiso para atravesar un directorio) es «no se sabe». Por eso un '-ef' falso solo es
+        //   «distinto» si la ruta existe; si no, decide la siguiente vía (el '-e' de bash no distingue ENOENT de EACCES), y
+        //   sin ninguna, 2: una ruta borrada justo al tomar el candado, en un servidor con /proc pero sin stat de GNU,
+        //   python3 ni perl, queda como 'sin_comprobar' en vez de reintentarse. stat de GNU se ejecuta con LC_ALL=C para
+        //   reconocer ENOENT por su mensaje.
+        // - bloquear FD MODO: flock(1) de util-linux con -E 75 para distinguir «ocupado» (75) de «no funciona» (otro
+        //   código); si no, python3 o perl, que toman el flock sobre el descriptor heredado (el candado queda en la
+        //   descripción compartida con el bash del script al salir ellos). Una herramienta que no funciona nunca cuenta como
+        //   ocupado: se prueba la siguiente. Como último recurso, un flock sin -E (el de busybox, en Alpine sin python3 ni
+        //   perl), que sale con 1 tanto si está ocupado como si no funciona: se distinguen porque ocupado no escribe nada,
+        //   y solo se usa si antes, una vez por script, sobre un temporal propio, ha tomado un candado libre (0) y, con ese
+        //   candado tomado por otra apertura, ha salido con 1 sin escribir nada. Si el sistema de archivos del destino no
+        //   admite flock, ese flock escribe su error y cuenta como «no funciona».
+        // - Limitaciones: otro programa que tome un flock sobre el archivo también impide escribirlo (el error lo dice). En
+        //   NFS, flock se emula con candados fcntl (POSIX, por proceso): el exclusivo exige un descriptor abierto para
+        //   escribir, así que con el de solo lectura falla como «no funciona» y se sigue sin exclusión ('ninguno', con el
+        //   aviso), y el candado no se hereda igual entre procesos. Abrir el archivo para tomar el candado se ve en inotify
+        //   aunque no se escriba nada: OPEN y CLOSE_NOWRITE con el descriptor de lectura, y OPEN y CLOSE_WRITE si se abrió
+        //   para anexar (archivo con escritura pero sin lectura, p. ej. 0200, o el anexado), lo que puede despertar a un
+        //   programa que vigile el archivo esperando escrituras.
+        internal static readonly string DefinicionCandado = """
+            bloquear() {
+              local codigo
+              flock -n "$2" -E 75 "$1" 2>/dev/null
+              codigo=$?
+              { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
+              python3 -c 'if 1:
+                import fcntl, sys
+                modo = fcntl.LOCK_SH if sys.argv[2] == "-s" else fcntl.LOCK_EX
+                try:
+                    fcntl.flock(int(sys.argv[1]), modo | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    sys.exit(75)' "$1" "$2" 2>/dev/null
+              codigo=$?
+              { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
+              perl -MFcntl=:flock -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; flock($f, ($ARGV[1] eq "-s" ? LOCK_SH : LOCK_EX) | LOCK_NB) and exit 0; exit($!{EWOULDBLOCK} ? 75 : 2)' "$1" "$2" 2>/dev/null
+              codigo=$?
+              { [ "$codigo" = 0 ] || [ "$codigo" = 75 ]; } && return "$codigo"
+              bloquear_sin_e "$1" "$2"
+            }
+            bloquear_sin_e() {
+              local prueba uno dos error codigo
+              if [ -z "${flock_sin_e:-}" ]; then
+                flock_sin_e=no
+                if prueba=$(mktemp 2>/dev/null); then
+                  if { exec {uno}<"$prueba" {dos}<"$prueba"; } 2>/dev/null; then
+                    if flock -n -x "$uno" 2>/dev/null; then
+                      error=$(flock -n -x "$dos" 2>&1)
+                      codigo=$?
+                      [ "$codigo" = 1 ] && [ -z "$error" ] && flock_sin_e=si
+                    fi
+                    exec {uno}<&- {dos}<&-
+                  fi
+                  rm -f -- "$prueba"
+                fi
+              fi
+              [ "$flock_sin_e" = si ] || return 2
+              error=$(flock -n "$2" "$1" 2>&1)
+              codigo=$?
+              [ "$codigo" = 0 ] && return 0
+              [ "$codigo" = 1 ] && [ -z "$error" ] && return 75
+              return 2
+            }
+            mismo_inodo() {
+              local del_fd de_ruta
+              if [ -e "/dev/fd/$1" ]; then
+                [ "/dev/fd/$1" -ef "$destino" ] && return 0
+                [ -e "$destino" ] && return 1
+              fi
+              case $(stat --version 2>/dev/null) in
+                *'GNU coreutils'*)
+                  if del_fd=$(stat -L -c '%d:%i' - <&"$1" 2>/dev/null) && [ -n "$del_fd" ]; then
+                    if de_ruta=$(LC_ALL=C stat -L -c '%d:%i' -- "$destino" 2>&1); then
+                      [ "$del_fd" = "$de_ruta" ]
+                      return
+                    fi
+                    case $de_ruta in
+                      *': No such file or directory') return 1 ;;
+                    esac
+                  fi ;;
+              esac
+              python3 -c 'if 1:
+                import os, sys
+                fd = os.fstat(int(sys.argv[1]))
+                try:
+                    ruta = os.stat(sys.argv[2])
+                except FileNotFoundError:
+                    sys.exit(3)
+                sys.exit(0 if (fd.st_dev, fd.st_ino) == (ruta.st_dev, ruta.st_ino) else 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              perl -e 'open(my $f, "<&=", $ARGV[0]) or exit 2; my @fd = stat($f) or exit 2; my @ruta = stat($ARGV[1]) or exit($!{ENOENT} ? 3 : 2); exit($fd[0] == $ruta[0] && $fd[1] == $ruta[1] ? 0 : 3)' "$1" "$destino" 2>/dev/null
+              case $? in
+                0) return 0 ;;
+                3) return 1 ;;
+              esac
+              return 2
+            }
+            tomar_candado() {
+              local intento
+              estado_candado=
+              for intento in 1 2 3; do
+                if [ -n "${anexar:-}" ]; then
+                  { exec {candado}>>"$destino"; } || return 1
+                elif ! { exec {candado}<"$destino"; } 2>/dev/null; then
+                  [ -e "$destino" ] && { exec {candado}>>"$destino"; } 2>/dev/null || { estado_candado=sin_abrir; return 0; }
+                fi
+                bloquear "$candado" "$1"
+                case $? in
+                  0)
+                    mismo_inodo "$candado"
+                    case $? in
+                      0) estado_candado=tomado; return 0 ;;
+                      2) estado_candado=sin_comprobar; return 0 ;;
+                    esac ;;
+                  75)
+                    printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
+                    return 1 ;;
+                  *) estado_candado=ninguno; return 0 ;;
+                esac
+                exec {candado}<&-
+              done
+              printf 'Error: %s se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.\n' "$ruta" >&2
+              return 1
             }
             """.ReplaceLineEndings("\n");
 
@@ -128,12 +308,58 @@ namespace NativeSsh.Herramientas
         {
             Peticion peticion = gestor.BuscarPeticion(id);
             long desde = peticion.Salida.Longitud;
+            // Se mira antes de enviar y otra vez tras el rechazo: si el shell se activa justo entre los dos, la entrada se
+            // rechazó igualmente porque todavía se estaba abriendo.
+            ShellEntradaEnum antes = ObservarShell(peticion);
             if (!gestor.EnviarEntrada(peticion, texto, enter))
-                throw new NativeSshException($"El comando {peticion.IdTexto} no admite entrada: está en estado {peticion.Estado}.");
+            {
+                ShellEntradaEnum despues = ObservarShell(peticion);
+                throw new NativeSshException(MensajeEntradaNoEnviada(peticion, antes == ShellEntradaEnum.Inactivo ? antes : despues));
+            }
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, desde);
         }
+
+        // Lo que la sesión del destino deja ver de su shell respecto a una petición en ejecución (ver ShellEntradaEnum). La
+        // sesión no expone si la inicialización del shell terminó ni si el comando ya se le envió: con el canal abierto,
+        // el comando como el que ocupa el shell y su timeout sin vencer, eso y un fallo de la escritura son las únicas causas
+        // que quedan para un rechazo.
+        private ShellEntradaEnum ObservarShell(Peticion peticion)
+        {
+            foreach (SesionShell sesion in gestor.ListarSesiones())
+            {
+                if (sesion.Destino.Clave != peticion.Destino.Clave)
+                    continue;
+
+                return !sesion.IsShellActivo
+                    ? ShellEntradaEnum.Inactivo
+                    : ReferenceEquals(sesion.PeticionActual, peticion) && peticion.TiempoEjecucion < peticion.Timeout
+                        ? ShellEntradaEnum.ActivoConElComando
+                        : ShellEntradaEnum.Indeterminado;
+            }
+
+            return ShellEntradaEnum.Indeterminado;
+        }
+
+        // Por qué no se envió la entrada, con lo que la petición y su sesión dejan ver tras el rechazo (sin afirmar que el
+        // comando no admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la
+        // petición no está en ejecución, mientras su shell se abre o se inicializa (la petición ya está en ejecución, pero
+        // el comando aún no se ha enviado al shell), durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si
+        // ya no es la que ocupa el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera
+        // se distinguen el estado, si se pidió cancelarla y lo que se ve del shell (ShellEntradaEnum): el resto se enumera.
+        internal static string MensajeEntradaNoEnviada(Peticion peticion, ShellEntradaEnum shell) => peticion.Estado switch
+        {
+            EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando su turno en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
+            EstadoPeticionEnum.Ejecutando when peticion.IsCancelacionSolicitada => $"No se envió la entrada: el comando {peticion.IdTexto} se está cancelando (Ctrl+C enviado o cierre del canal del shell en curso, por ssh_cancel o ssh_reset_shell) y mientras tanto el shell no admite entrada.",
+            EstadoPeticionEnum.Ejecutando when shell == ShellEntradaEnum.Inactivo => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). {ReintentoTrasApertura}",
+            EstadoPeticionEnum.Ejecutando when shell == ShellEntradaEnum.ActivoConElComando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). {ReintentoTrasApertura}",
+            EstadoPeticionEnum.Ejecutando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect, ya no es el comando que ocupa el shell o falló la escritura en el canal, y entonces pudo llegar una parte). Comprueba su estado con ssh_output o ssh_status antes de reintentar.",
+            EstadoPeticionEnum.Completado or EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado or EstadoPeticionEnum.ShellPerdido or EstadoPeticionEnum.Error => $"No se envió la entrada: el comando {peticion.IdTexto} ya terminó (estado {peticion.Estado}).",
+            _ => $"No se envió la entrada: el comando {peticion.IdTexto} está en un estado desconocido ({peticion.Estado})."
+        };
+
+        private const string ReintentoTrasApertura = "Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.";
 
         [McpServerTool(Name = "ssh_cancel", Destructive = true, Idempotent = true)]
         [Description("Cancela un comando: si está encolado no llega a ejecutarse; si está en ejecución se envía Ctrl+C y, si no responde, se cierra el canal del shell (se pierden las variables exportadas).")]
@@ -193,33 +419,17 @@ namespace NativeSsh.Herramientas
             return new ResultadoAccion(clave, isHecho, isHecho ? "El próximo comando usará un shell nuevo." : "No había sesión con ese destino.");
         }
 
-        [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
-        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
-        public async Task<string> LeerArchivoAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
-            [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
-            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
-            CancellationToken cancellationToken = default)
+        // Script de ssh_read_file: cabecera '[Líneas X-Y de Total]' y el contenido tal cual. inicio < 0 = las últimas -inicio
+        // líneas (tail -n); si no, de 'inicio' a 'fin' con head y tail, que no tocan los bytes: el sed de busybox añadía un
+        // salto final que el archivo no tiene (Bloque S, P3). pipefail: un fallo de head (p. ej. de lectura) no queda tapado
+        // por el código de tail.
+        internal static string ConstruirComandoLectura(string ruta, int inicio, int fin)
         {
-            if (string.IsNullOrEmpty(ruta))
-                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
-
-            ExigirValorLiteral(ruta, "La ruta");
-            bool isDesdeElFinal = lineaInicio < 0;
-            if (isDesdeElFinal && lineaFin is not null)
-                throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
-
-            int inicio = Math.Max(1, lineaInicio);
-            int fin = lineaFin ?? (inicio + 799);
-            if (!isDesdeElFinal && fin < inicio)
-                throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
-
             string rutaEscapada = Escapar(ruta);
-            // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen sed y tail.
-            string lectura = isDesdeElFinal
+            // wc -l no cuenta una última línea sin '\n': se suma para que la cabecera cuadre con lo que imprimen head y tail.
+            string lectura = inicio < 0
                 ? PlantillaBash.Crear($$"""
-                    ultimas={{-(long)lineaInicio}}
+                    ultimas={{-(long)inicio}}
                     inicio_efectivo=$(( total - ultimas + 1 ))
                     [ "$inicio_efectivo" -lt 1 ] && inicio_efectivo=1
                     if [ "$total" -eq 0 ]; then
@@ -227,7 +437,7 @@ namespace NativeSsh.Herramientas
                     else
                       echo "[Líneas $inicio_efectivo-$total de $total]"
                     fi
-                    tail -n {{-(long)lineaInicio}} -- {{rutaEscapada}}
+                    tail -n {{-(long)inicio}} -- {{rutaEscapada}}
                     """)
                 : PlantillaBash.Crear($$"""
                     if [ "$total" -eq 0 ]; then
@@ -236,9 +446,10 @@ namespace NativeSsh.Herramientas
                       fin_efectivo=$(( total < {{fin}} ? total : {{fin}} ))
                       echo "[Líneas {{inicio}}-$fin_efectivo de $total]"
                     fi
-                    sed -n '{{inicio}},{{fin}}p' -- {{rutaEscapada}}
+                    set -o pipefail
+                    head -n {{fin}} -- {{rutaEscapada}} | tail -n +{{inicio}}
                     """);
-            string comando = PlantillaBash.Crear($$"""
+            return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
@@ -266,7 +477,31 @@ namespace NativeSsh.Herramientas
                 {{lectura}}
                 )
                 """);
+        }
 
+        [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
+        [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        public async Task<string> LeerArchivoAsync(
+            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
+            [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
+            [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrEmpty(ruta))
+                throw new NativeSshException("La ruta del archivo no puede estar vacía.");
+
+            ExigirValorLiteral(ruta, "La ruta");
+            bool isDesdeElFinal = lineaInicio < 0;
+            if (isDesdeElFinal && lineaFin is not null)
+                throw new NativeSshException($"lineaFin no se puede combinar con un lineaInicio negativo ({lineaInicio} = últimas {-(long)lineaInicio} líneas). Omite lineaFin o usa un rango positivo.");
+
+            int inicio = Math.Max(1, lineaInicio);
+            int fin = lineaFin ?? (inicio + 799);
+            if (!isDesdeElFinal && fin < inicio)
+                throw new NativeSshException($"La línea final ({fin}) no puede ser menor que la línea inicial ({inicio}).");
+
+            string comando = ConstruirComandoLectura(ruta, isDesdeElFinal ? lineaInicio : inicio, fin);
             SalidaLectura resultado = await EjecutarLecturaAsync(destino, comando, TimeoutLecturaSegundos, "Lee un rango de líneas menor (lineaInicio/lineaFin).", cancellationToken).ConfigureAwait(false);
             if (resultado.Codigo != 0)
                 throw new NativeSshException(resultado.Error("El comando de lectura falló"));
@@ -279,7 +514,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -302,6 +537,8 @@ namespace NativeSsh.Herramientas
             string rutaEscapada = Escapar(ruta);
             string idMarcas = Guid.NewGuid().ToString("N");
 
+            // Anexar: el archivo se abre (y se crea si no existía) antes de anunciar que se anexa, para que un fallo normal al
+            // abrirlo (permiso denegado) no se describa como una muerte a mitad del anexado.
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
@@ -314,8 +551,13 @@ namespace NativeSsh.Herramientas
                     if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
                       {{ErrorNoRegular}}
                     fi
+                    {{DefinicionCandado}}
+                    destino=$ruta
+                    anexar=si
+                    tomar_candado -x || exit 1
+                    anunciar candado "$estado_candado"
                     anunciar fase anexando
-                    base64 -d >> "$ruta" || exit 1
+                    base64 -d >&"$candado" || exit 1
                     anunciar fase anexado
                     """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
@@ -324,17 +566,17 @@ namespace NativeSsh.Herramientas
             return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
-                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).")
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}")
                     : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; lo ilegible dentro del árbol se omite y la respuesta avisa de que pueden faltar coincidencias (en el recorrido con find, solo de los directorios ilegibles, no de los archivos). Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
             [Description("Directorio o ruta donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
-            [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json').")] string? extension = null,
+            [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json'); no se aplica si la ruta es un archivo.")] string? extension = null,
             [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
             CancellationToken cancellationToken = default)
         {
@@ -355,15 +597,55 @@ namespace NativeSsh.Herramientas
         private const string ExclusionDirectorios = ".git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj";
         private const string ExclusionArchivos = "'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'";
 
+        // Sin grep de GNU no hay -I (omitir binarios por su contenido): en el recorrido con find se omiten por extensión.
+        private const string ExclusionBinarios = "'*.pyc','*.pyo','*.o','*.so','*.a','*.class','*.jar','*.exe','*.dll','*.png','*.jpg','*.jpeg','*.gif','*.ico','*.pdf','*.zip','*.gz','*.tgz','*.xz','*.bz2','*.woff','*.woff2'";
+
+        // Las mismas exclusiones para find: poda de los directorios y '! -name' de los archivos.
+        private static readonly string PodaFind = "-type d \\( -name '" + ExclusionDirectorios.Replace(",", "' -o -name '", StringComparison.Ordinal) + "' \\) -prune";
+        private static readonly string ExclusionArchivosFind = "! -name " + $"{ExclusionArchivos},{ExclusionBinarios}".Replace(",", " ! -name ", StringComparison.Ordinal);
+
         // Motor de búsqueda elegido en el servidor: rg si está instalado (regex de Rust), si no grep -P (PCRE) si el grep
         // lo admite, y como último recurso grep -E (ERE). Los tres con las mismas exclusiones, filtro de extensión y límite.
-        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó.
+        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó. Las exclusiones y -I de
+        // grep son de GNU (se comprueba que las admite, no la versión): con otro grep (p. ej. busybox, que las rechaza con
+        // su ayuda; Bloque S, P2) el árbol se recorre con find (poda de los mismos directorios, mismas exclusiones de
+        // archivos y los binarios por extensión) y cada archivo se busca con grep -E; una regex inválida se detecta antes
+        // con una línea de prueba (busybox no la compila sin datos que leer).
+        // La ruta pedida nunca se excluye, en ninguno de los tres: las exclusiones y el filtro de extensión son para lo que
+        // hay dentro de un directorio; un archivo pedido se busca siempre y sale como 'ruta:línea:texto'.
+        // - Una ruta relativa que empieza por '-', '(', ')', '!' o ',' lleva './' delante en los tres motores (misma salida
+        //   en todos): find la tomaría por una opción ('-d' es '-depth' en GNU) o un operador y, con su error callado,
+        //   daba «sin coincidencias» o buscaba en todo el directorio actual.
+        // - El grep de GNU aplica --exclude-dir, --exclude e --include también a las rutas de la línea de órdenes
+        //   (compara el nombre, y lo que sigue a cada '/', con el patrón): un directorio pedido va con la barra final, con
+        //   la que ningún patrón casa (sale igual, 'dir/archivo'), y un archivo pedido va sin esas opciones ni -r y con -H
+        //   (con -r y un solo archivo, grep no da su nombre); si es un binario que casa (-I lo calla), lo dice como rg.
+        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido. En rg manda el último glob que casa y
+        //   un glob sin barra final casa con archivos y con directorios: van en este orden el filtro de extensión (o '*'),
+        //   las exclusiones de archivos, esas mismas con la barra final como positivas (un directorio 'deps.lock' o
+        //   'src.map' se recorre, como en grep de GNU, cuyo --exclude no se aplica a directorios, y en find, que solo
+        //   excluye '-type f') y al final las de directorios, con la barra final de los globs de gitignore para que no
+        //   excluyan un archivo que se llama igual (un script 'build' o 'bin'). Con el filtro detrás, '*' o '*.json'
+        //   volvían a incluir .git o package-lock.json: las exclusiones pesan más que el filtro en los tres motores.
+        // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
+        //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
+        //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
+        //   error sale por stderr con el código 2. El código de find no sirve (es distinto de 0 si cualquier lote de grep
+        //   no encontró nada): sin ese error sale con 0 y una salida vacía es «sin coincidencias». Si calló un
+        //   subdirectorio sin permiso, sale con 2 sin stderr, como grep -rs y rg (la respuesta avisa de que pueden faltar
+        //   coincidencias; A-undecies, AU3); un archivo ilegible lo calla el grep -s de cada lote y no se puede distinguir.
         internal static string ConstruirComandoBusqueda(string patron, string rutaEfectiva, string? extension, int limite)
         {
-            string rutaEscapada = Escapar(rutaEfectiva);
+            string rutaMotor = rutaEfectiva[0] is '-' or '(' or ')' or '!' or ',' ? "./" + rutaEfectiva : rutaEfectiva;
+            string rutaEscapada = Escapar(rutaMotor);
+            string rutaPedidaEscapada = Escapar(rutaEfectiva);
+            string directorioGrepEscapado = Escapar(rutaMotor.EndsWith('/') ? rutaMotor : rutaMotor + "/");
             string patronEscapado = Escapar(patron);
-            string filtroRg = string.Empty;
+            // Sin filtro, rg recibe '*': con algún glob positivo (el que vuelve a admitir los directorios, abajo), rg omite
+            // todo archivo que no case con ninguno.
+            string filtroRg = "-g '*' ";
             string filtroGrep = string.Empty;
+            string filtroFind = string.Empty;
             if (!string.IsNullOrEmpty(extension))
             {
                 string filtro = extension.StartsWith("*.", StringComparison.Ordinal)
@@ -374,37 +656,81 @@ namespace NativeSsh.Herramientas
                 string filtroEscapado = Escapar(filtro);
                 filtroRg = $"-g {filtroEscapado} ";
                 filtroGrep = $"--include={filtroEscapado} ";
+                filtroFind = $"-name {filtroEscapado} ";
             }
 
-            string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
+            string archivosRg = ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal);
+            string exclusionesRg = $"-g '!{{{archivosRg}}}' -g '{{{archivosRg}}}/' -g '!{{{ExclusionDirectorios}}}/'";
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
             return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} 0 {{rutaPedidaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaPedidaEscapada}} >&2
                   exit 1
                 fi
                 # La ruta pedida debe poder leerse (y recorrerse si es un directorio): los motores silencian los errores
                 # de permisos y un "sin coincidencias" engañaría. Los archivos ilegibles dentro del árbol sí se omiten.
                 if [ ! -r {{rutaEscapada}} ] || { [ -d {{rutaEscapada}} ] && [ ! -x {{rutaEscapada}} ]; }; then
-                  printf 'Error: sin permiso de lectura en la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
+                  printf 'Error: sin permiso de lectura en la ruta de búsqueda: %s\n' {{rutaPedidaEscapada}} >&2
                   exit 1
                 fi
                 # Código del motor, no de head; 141 (SIGPIPE) = head ya tenía suficientes líneas.
                 if command -v rg >/dev/null 2>&1; then
                   printf '{{PrefijoMotor}}rg\n'
                   rg --no-config --line-number --no-heading --with-filename --color never --no-messages --no-ignore --hidden \
-                    {{exclusionesRg}} {{filtroRg}}-m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    {{filtroRg}}{{exclusionesRg}} -m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                   rc=${PIPESTATUS[0]}
-                elif printf '1\n' | grep -qP '\d' 2>/dev/null; then
-                  printf '{{PrefijoMotor}}grep -P\n'
-                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -P -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                  rc=${PIPESTATUS[0]}
+                elif printf 'x\n' | grep -q --exclude-dir=x --exclude=x --include=x -E x 2>/dev/null; then
+                  sintaxis=E
+                  printf '1\n' | grep -qP '\d' 2>/dev/null && sintaxis=P
+                  printf '{{PrefijoMotor}}grep -%s\n' "$sintaxis"
+                  if [ -d {{rutaEscapada}} ]; then
+                    grep -rnIHs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{directorioGrepEscapado}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
+                  else
+                    grep -nIHs -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
+                    # -I calla un binario: pedido como ruta, se dice que casa (como rg) en vez de «sin coincidencias».
+                    if [ "$rc" = 1 ] && grep -qs -"$sintaxis" -e {{patronEscapado}} -- {{rutaEscapada}}; then
+                      printf '%s: binary file matches\n' {{rutaEscapada}}
+                      rc=0
+                    fi
+                  fi
                 else
                   printf '{{PrefijoMotor}}grep -E\n'
-                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                  rc=${PIPESTATUS[0]}
+                  printf 'x\n' | grep -E -e {{patronEscapado}} >/dev/null
+                  [ "$?" = 2 ] && exit 2
+                  if [ -d {{rutaEscapada}} ]; then
+                    # Mensajes de find en inglés para reconocerlos (LC_MESSAGES=C). Si el idioma lo fija LC_ALL, pasa a
+                    # LANG: grep conserva así la codificación y el orden (LC_CTYPE, LC_COLLATE), que cambian lo que casa.
+                    if [ -n "${LC_ALL-}" ]; then
+                      export LANG=$LC_ALL
+                      unset LC_ALL LC_CTYPE LC_COLLATE
+                    fi
+                    # El filtro sale con 2 si dejó pasar algún error de find, con 3 si solo calló un «Permission denied» y
+                    # con 0 si no hubo nada (o solo lo que nunca es error: desaparecido a mitad o SIGPIPE).
+                    { LC_MESSAGES=C find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
+                        -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- | {
+                        ilegible=0 otro=0
+                        while IFS= read -r linea || [ -n "$linea" ]; do
+                          case $linea in
+                            *': Permission denied') ilegible=1 ;;
+                            *': No such file or directory'|*' terminated by signal 13'|*': Broken pipe') ;;
+                            *) printf '%s\n' "$linea" >&2; otro=1 ;;
+                          esac
+                        done
+                        [ "$otro" = 1 ] && exit 2
+                        [ "$ilegible" = 1 ] && exit 3
+                        exit 0
+                      }
+                    } 3>&1 | head -n {{limite + 1}}
+                    # 2 sin stderr = algo ilegible callado, como grep -rs y rg.
+                    [ "${PIPESTATUS[0]}" = 0 ] && rc=0 || rc=2
+                  else
+                    grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=0
+                  fi
                 fi
                 [ "$rc" -eq 141 ] && rc=0
                 exit "$rc"
@@ -432,25 +758,40 @@ namespace NativeSsh.Herramientas
             string errores = lectura.Errores.Trim();
             bool isVacio = string.IsNullOrEmpty(resultados);
             bool hasErrores = !string.IsNullOrEmpty(errores);
-            // Sin resultados y con stderr es un error (ruta inexistente, regex inválida...). Un 2 sin stderr solo indica
-            // archivos ilegibles (silenciados con -s/--no-messages): no hubo coincidencias.
+            // Sin resultados y con stderr es un error (ruta inexistente, regex inválida...).
             if (codigo != 0 && isVacio && hasErrores)
                 throw new NativeSshException(motor == "desconocido" ? errores : $"{errores}\n{pie}");
 
-            if (codigo is 1 or 2 && isVacio)
-                return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.\n\n{pie}";
+            // Un 2 con stderr y resultados: el motor falló en parte del árbol (p. ej. un error de E/S de find en el recorrido
+            // sin grep de GNU). Los resultados valen, pero pueden faltar coincidencias: se dice, con el error. Un 2 sin
+            // stderr (con o sin resultados) es un error que -s/--no-messages calla, como un archivo o directorio ilegible:
+            // también pueden faltar, y se dice sin detalle (A-undecies, AU3).
+            string avisoErrores = codigo != 2 ? string.Empty
+                : hasErrores ? $"[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {AcotarErrores(errores)}]\n"
+                : AvisoCodigoDosSinDetalle + "\n";
+
+            // 0 sin resultados: el recorrido con find sin grep de GNU, que no da un código de «sin coincidencias».
+            if (codigo is 0 or 1 or 2 && isVacio)
+                return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.\n\n{avisoErrores}{pie}";
 
             if (codigo is not (0 or 2))
                 throw new NativeSshException(lectura.Error("Error en búsqueda"));
-
             string[] lineas = resultados.Split('\n');
             string avisoLimite = $"[Límite alcanzado: se muestran {limite} coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]";
             return lineas.Length > limite
-                ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{pie}"
+                ? $"{string.Join('\n', lineas.AsSpan(0, limite))}\n\n{avisoLimite}\n{avisoErrores}{pie}"
                 : lineas.Length == limite
-                    ? $"{resultados}\n\n{avisoLimite}\n{pie}"
-                    : $"{resultados}\n\n{pie}";
+                    ? $"{resultados}\n\n{avisoLimite}\n{avisoErrores}{pie}"
+                    : $"{resultados}\n\n{avisoErrores}{pie}";
         }
+
+        private const int MaxCaracteresErroresBusqueda = 1000;
+
+        private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
+
+        // El stderr de la búsqueda en un aviso, acotado a su principio sin partir un par sustituto (un emoji, p. ej.).
+        private static string AcotarErrores(string errores) =>
+            errores.Length <= MaxCaracteresErroresBusqueda ? errores : string.Concat(errores.AsSpan(0, char.IsHighSurrogate(errores[MaxCaracteresErroresBusqueda - 1]) ? MaxCaracteresErroresBusqueda - 1 : MaxCaracteresErroresBusqueda), "…");
 
         private static string Escapar(string valor) => "'" + valor.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
@@ -484,14 +825,15 @@ namespace NativeSsh.Herramientas
         }
 
         // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
-        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL) o empieza por comillas dobles; entonces va entre
-        // comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se puede pegar tal
-        // cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad; una barra
-        // invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
+        // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL), los separadores de línea y de párrafo de Unicode
+        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles;
+        // entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se
+        // puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
+        // una barra invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
         private static void EscaparNombre(StringBuilder listado, string nombre)
         {
             ReadOnlySpan<char> caracteres = nombre;
-            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f');
+            bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f') || caracteres.ContainsAnyInRange('\u2028', '\u2029');
             if (!hasControl && !nombre.StartsWith('"'))
             {
                 _ = listado.Append(nombre);
@@ -509,7 +851,7 @@ namespace NativeSsh.Herramientas
                     '\t' => listado.Append("\\t"),
                     '\f' => listado.Append("\\f"),
                     '\b' => listado.Append("\\b"),
-                    _ when char.IsControl(c) => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
+                    _ when char.IsControl(c) || c is '\u2028' or '\u2029' => listado.Append("\\u").Append(((int)c).ToString("X4", CultureInfo.InvariantCulture)),
                     _ => listado.Append(c)
                 };
             _ = listado.Append('"');
@@ -541,7 +883,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -598,7 +940,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -625,7 +967,7 @@ namespace NativeSsh.Herramientas
                 "file" => "-type f ",
                 "dir" or "directory" => "-type d ",
                 "all" => string.Empty,
-                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' o 'all'.")
+                _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
             string comando = PlantillaBash.Crear($$"""
@@ -754,20 +1096,26 @@ namespace NativeSsh.Herramientas
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
+            string clave = gestor.ParsearDestino(destino).Clave;
+            SesionShell? sesionInicial = SesionDe(clave);
+            string? guardado = sesionInicial?.DirectorioTrabajo;
             if (string.IsNullOrEmpty(ruta))
             {
-                gestor.FijarDirectorioTrabajo(destino, null);
-                string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-                ExigirCompletada(peticionReset);
+                // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
+                // no es el de 'pwd' (A-undecies, AU2).
+                const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome), cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome));
 
                 if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
-                    throw new NativeSshException(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset);
+                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
                 }
 
-                return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
+                // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
+                gestor.FijarDirectorioTrabajo(destino, null);
+                return new ResultadoDirectorioTrabajo(clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
             }
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -796,30 +1144,96 @@ namespace NativeSsh.Herramientas
                 )
                 """);
 
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionValidacion);
+            // La validación va en un subshell: falle como falle, no cambia nada.
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p));
 
             if (peticionValidacion.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionValidacion, out _).Trim();
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError);
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
             }
 
             string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
-            // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
-            gestor.FijarDirectorioTrabajo(destino, pwdReal);
+            if (Encoding.UTF8.GetByteCount(pwdReal) > SesionShell.MaxBytesDirectorioTrabajo)
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+
+            // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
+            SesionShell? sesionValidacion = SesionDe(clave);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionExport);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal));
 
             if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
-                throw new NativeSshException(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport);
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado)}");
             }
 
-            return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
+            // Fuente de verdad en C# (la reciben los canales exec y se reexporta si el shell se recrea), fijada solo cuando
+            // el shell ya lo ha exportado: si el comando no llegó o no terminó, las herramientas de lectura y un shell
+            // nuevo siguen en el anterior y el error lo dice (A-decies, AD1).
+            gestor.FijarDirectorioTrabajo(destino, pwdReal);
+            return new ResultadoDirectorioTrabajo(clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
         }
+
+        private const string DirectorioHome = "$HOME (~)";
+
+        // Sesión del destino ahora (null = no hay: nunca se abrió o ssh_disconnect la cerró).
+        private SesionShell? SesionDe(string clave)
+        {
+            foreach (SesionShell sesion in gestor.ListarSesiones())
+                if (sesion.Destino.Clave == clave)
+                    return sesion;
+
+            return null;
+        }
+
+        // Qué quedó del directorio de trabajo tras un fallo de ssh_set_cwd, calculado después del fallo y no antes
+        // (A-undecies, AU1): ssh_disconnect a mitad saca la sesión con su directorio y la próxima conexión empieza en $HOME,
+        // y otra llamada puede haberlo cambiado entre medias. 'guardado' es el directorio de C# al empezar (null = $HOME) y
+        // 'sesionEsperada', la sesión que había (null si aún no había ninguna). Si nada de eso pasó, C# no ha cambiado:
+        // - sin 'nuevo' (la validación, que va en un subshell, o un comando que el shell rechazó con un código distinto de
+        //   0), sin enviar al shell o cancelado en la cola: todo sigue en el anterior, con certeza;
+        // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
+        // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
+        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
+        {
+            SesionShell? sesion = SesionDe(clave);
+            if (sesion is null)
+                return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en {DirectorioHome}.";
+
+            string? actual = sesion.DirectorioTrabajo;
+            string actualVisible = actual ?? DirectorioHome;
+            if (sesionEsperada is not null && !ReferenceEquals(sesion, sesionEsperada))
+                return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y ya se abrió otra: el directorio de trabajo es {actualVisible}, el de esa sesión nueva.";
+
+            bool isCanceladaEnLaCola = peticion is not null && IsCanceladaEnLaCola(peticion);
+            bool isSinEfectoEnElShell = nuevo is null || peticion is null || isCanceladaEnLaCola || IsNoEnviadaAlShell(peticion);
+            bool isShellPerdido = peticion?.Estado == EstadoPeticionEnum.ShellPerdido;
+            if (actual != guardado)
+                return isSinEfectoEnElShell || isShellPerdido
+                    ? $"Mientras tanto otra llamada cambió el directorio de trabajo: ahora es {actualVisible}."
+                    : $"Mientras tanto otra llamada cambió el directorio de trabajo a {actualVisible} (lo usan las herramientas de lectura y un shell nuevo), pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd.";
+
+            string anterior = guardado ?? DirectorioHome;
+            return isCanceladaEnLaCola
+                ? $"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {anterior}."
+                : isSinEfectoEnElShell
+                    ? $"El directorio de trabajo sigue siendo {anterior}."
+                    : isShellPerdido
+                        ? $"El directorio de trabajo sigue siendo {anterior}: lo usan las herramientas de lectura y el shell nuevo se abrirá en él."
+                        : ConsecuenciaCwdIncierta(anterior, nuevo!);
+        }
+
+        // Cancelada mientras esperaba en la cola (ssh_cancel, el plazo de la herramienta o el token): no llegó a empezar, así
+        // que el shell no recibió el comando (SolicitarCancelacion la finaliza bajo el mismo candado que la marca como en
+        // ejecución). Con las señales del E-nonies, '!peticion.IsComandoEnviado' cubre este caso y el de IsNoEnviadaAlShell.
+        private static bool IsCanceladaEnLaCola(Peticion peticion) =>
+            peticion.Estado == EstadoPeticionEnum.Cancelado && peticion.TiempoEjecucion == TimeSpan.Zero;
+
+        private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
+            $"El directorio de trabajo sigue siendo {anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {anterior}).";
 
         private const string PrefijoMarcaDirectorio = "__NS_CWD_";
 
@@ -857,7 +1271,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -915,6 +1329,9 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso de lectura: %s (prueba con sudo=true).\n' "$ruta" >&2
                   exit 1
                 fi
+                {{DefinicionCandado}}
+                destino=$ruta
+                tomar_candado -s || exit 1
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 if [ -z "$tam" ]; then
                   printf 'Error: no se pudo obtener el tamaño de: %s\n' "$ruta" >&2
@@ -931,8 +1348,8 @@ namespace NativeSsh.Herramientas
                 """), sudo, rutaEscapada);
 
             string sinModificar = $"No se ha modificado '{ruta}'.";
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, sinModificar, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura, sinModificar);
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura, _ => sinModificar);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -1125,6 +1542,11 @@ namespace NativeSsh.Herramientas
                 {{SustitucionLiteral("base", "basename -- \"$destino\"")}}
                 {{DefinicionAcortarNombre}}
                 acortar_nombre
+                {{DefinicionCandado}}
+                if [ -e "$destino" ]; then
+                  tomar_candado -x || exit 1
+                  anunciar candado "$estado_candado"
+                fi
                 tmp=
                 copia=
                 fuera=0
@@ -1378,6 +1800,11 @@ namespace NativeSsh.Herramientas
                 return 1
               }
               anunciar_ruta copia "$copia"
+              # Sin permiso de lectura (p. ej. 0200 sin sudo) el mensaje propio lo explica, sin la línea cruda de cat.
+              if [ ! -r "$destino" ]; then
+                printf 'Error: no se pudo hacer la copia de seguridad de %s: no tiene permiso de lectura (solo de escritura) y no se sobrescribe en el sitio sin ella. No se ha modificado: dale permiso de lectura o usa sudo=true.\n' "$ruta" >&2
+                return 1
+              fi
               if ! cat -- "$destino" > "$copia"; then
                 printf 'Error: no se pudo hacer la copia de seguridad de %s: no se sobrescribe en el sitio sin ella. No se ha modificado.\n' "$ruta" >&2
                 return 1
@@ -1821,7 +2248,8 @@ namespace NativeSsh.Herramientas
         }
 
         // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, string? consecuencia, CancellationToken cancellationToken)
+        // 'consecuencia' se calcula con la petición ya cancelada (si seguía en la cola, ya no se ejecutará).
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
             Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
@@ -1834,7 +2262,7 @@ namespace NativeSsh.Herramientas
                 // Sigue encolada o el shell no respondió al Ctrl+C: se cancela para no bloquear la cola.
                 EstadoPeticionEnum estado = peticion.Estado;
                 _ = peticion.SolicitarCancelacion();
-                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no terminó en {timeout.TotalSeconds:0} s (estado: {estado}); se ha cancelado la petición {peticion.IdTexto}.{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
             }
             catch (OperationCanceledException ex)
             {
@@ -1842,7 +2270,7 @@ namespace NativeSsh.Herramientas
                 if (consecuencia is null)
                     throw;
 
-                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia}", ex, cancellationToken);
+                throw new OperationCanceledException($"Se canceló la operación (petición {peticion.IdTexto}). {consecuencia(peticion)}", ex, cancellationToken);
             }
 
             return peticion;
@@ -1883,6 +2311,9 @@ namespace NativeSsh.Herramientas
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado == EstadoPeticionEnum.Completado && !isCancelada)
                 return (peticion, informe);
+
+            if (IsNoEnviadaAlShell(peticion))
+                throw new NativeSshException($"La escritura en '{ruta}' no se hizo: {NoEnviadaAlShell} '{ruta}' no se ha modificado. {peticion.Aviso}");
 
             // Una petición cancelada en la cola nunca empezó a ejecutarse (no tiene instante de inicio).
             string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: peticion.TiempoEjecucion > TimeSpan.Zero);
@@ -1940,13 +2371,42 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
+        // El comando no llegó al shell: la sesión finaliza la petición en Error, con código -1 y la causa en el aviso, cuando
+        // falla la conexión o la apertura e inicialización del shell (p. ej. en un servidor sin bash, cuyo shell de login
+        // sale al fallar 'exec bash': «El shell de … se cerró durante la inicialización.»), o cuando la sesión ya está
+        // cerrada, siempre antes de enviarlo. El otro Error de la sesión, «Error interno: …», puede llegar después de
+        // enviarlo y no cuenta; sin ninguna salida recibida, por si acaso. Entonces no se ejecutó nada y el error no remite
+        // a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco funcionan).
+        // Punto de enganche con el E-nonies (A-decies, AD4): es el único sitio que decide si el comando llegó al shell
+        // (lo usan ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd; para ConsecuenciaCwd, IsCanceladaEnLaCola
+        // añade el caso de la petición cancelada antes de empezar). Al integrar r2-enoveno, la heurística se
+        // sustituye por su señal: 'peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado' (la sesión la
+        // marca con MarcarComandoEnviado al escribir el comando entero; ya no depende del literal «Error interno:» ni de que
+        // no haya salida, y PrefijoErrorInterno sobra). El aviso de un servidor sin bash (RespuestaSinBash.IsMensajeSinBash)
+        // ya dice que no se ejecutó nada y que ninguna herramienta funcionará: va tal cual detrás de NoEnviadaAlShell.
+        private static bool IsNoEnviadaAlShell(Peticion peticion) =>
+            peticion.Estado == EstadoPeticionEnum.Error
+            && peticion.CodigoSalida == -1
+            && peticion.Salida.Longitud == 0
+            && peticion.Aviso is { Length: > 0 } aviso
+            && !aviso.StartsWith(PrefijoErrorInterno, StringComparison.Ordinal);
+
+        // Prefijo del aviso de SesionShell para una excepción inesperada al ejecutar un comando.
+        private const string PrefijoErrorInterno = "Error interno:";
+
+        private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse (no se envió al shell de ssh_exec: no se pudo abrir —conexión, inicio de sesión o inicialización— o la sesión ya estaba cerrada).";
+
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
         // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
-        private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
+        // 'consecuencia' solo se calcula si la petición no se completó.
+        private static void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null)
         {
+            if (IsNoEnviadaAlShell(peticion))
+                throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
+
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

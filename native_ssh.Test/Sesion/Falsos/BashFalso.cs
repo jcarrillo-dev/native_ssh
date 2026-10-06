@@ -26,7 +26,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Como AbreShellAnidado, pero el shell que recibe Ctrl+C y ejecuta las líneas siguientes tiene el mismo $$ y $PPID
         // que el de la sesión y no tiene su testigo: un shell en un contenedor gemelo (ssh -tt a la otra máquina) o el
         // programa que deja un 'exec bash' (mismo proceso).
-        AbreShellSinTestigo
+        AbreShellSinTestigo,
+
+        // Responde (salida y marcador, el comando termina bien) y después el shell sale y cierra el canal.
+        ResponderYSalir
     }
 
     // Cómo se comporta el shell de login antes de ejecutar el 'exec bash' de la inicialización.
@@ -743,6 +746,10 @@ namespace NativeSsh.Test.Sesion.Falsos
                     EmitirConMarcador(respuesta.Salida, id, CodigoCola(linea, respuesta.Codigo));
                     break;
                 case ComportamientoFalsoEnum.Salir:
+                    Cerrar();
+                    break;
+                case ComportamientoFalsoEnum.ResponderYSalir:
+                    EmitirConMarcador(respuesta.Salida, id, respuesta.Codigo);
                     Cerrar();
                     break;
                 case ComportamientoFalsoEnum.Colgado:

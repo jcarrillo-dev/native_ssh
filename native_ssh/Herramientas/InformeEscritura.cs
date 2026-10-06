@@ -19,6 +19,28 @@ namespace NativeSsh.Herramientas
         Conservados
     }
 
+    // Lo que el script anunció del candado del archivo ("candado <estado>", ver HerramientasSsh.DefinicionCandado).
+    internal enum CandadoEscrituraEnum
+    {
+        // Sin anuncio: el archivo no existía (escritura nueva) o el script no llegó a tomarlo.
+        SinAnuncio,
+
+        // "tomado": excluye a las demás operaciones sobre el archivo mientras el script siga en marcha.
+        Tomado,
+
+        // "sin_comprobar": tomado, pero no se pudo comprobar que esté sobre el archivo que sigue en la ruta (sin /proc ni
+        // stat de GNU coreutils, python3 o perl en el servidor, o la ruta no se pudo consultar por algo distinto de que no
+        // exista, p. ej. sin permiso para atravesar un directorio).
+        SinComprobar,
+
+        // "ninguno": ninguna herramienta pudo tomarlo (no hay flock, python3 ni perl que funcionen, o el sistema de
+        // archivos no admite flock).
+        SinHerramienta,
+
+        // "sin_abrir": el archivo no se pudo abrir ni para leer ni para anexar (sin permiso, o desapareció entretanto).
+        SinAbrir
+    }
+
     // Lo que el script de una escritura (ssh_write_file, ssh_replace_file_content) anuncia mientras trabaja, en líneas
     // "__NS_W_<id>__ <clave> [<valor>]" de su salida con el id de la petición (nada ajeno puede imitarlo):
     // - "tmp <base64>" y "copia <base64>": rutas del temporal con el contenido nuevo y de la copia de seguridad del
@@ -29,6 +51,10 @@ namespace NativeSsh.Herramientas
     //   Tras escrito y restaurado, lo que el núcleo quitó al escribir y no se pudo devolver: setuid, setgid, capacidades,
     //   o capacidades? (no se pudo comprobar si las tenía), separados por comas, o '-'. Solo si no falta nada se dice que
     //   todo se devolvió y se comprobó;
+    // - "candado <estado>": qué pasó al tomar el candado del archivo (flock, ver DefinicionCandado) antes de tocar nada:
+    //   tomado, sin_comprobar (tomado sin poder comprobar que esté sobre el archivo de la ruta), ninguno (no hubo
+    //   herramienta que lo tomara) o sin_abrir (no se pudo abrir ni para leer ni para anexar); en los dos últimos sigue
+    //   sin exclusión (CandadoEscrituraEnum). Sin anuncio, el archivo no existía;
     // - "conservados", "limpio" o "restos": qué hizo al salir con el temporal y la copia.
     // Si la escritura no termina (tiempo agotado, cancelación, conexión perdida), el error dice qué pasó con el archivo
     // según lo último que el script llegó a anunciar, y nada más. El anuncio final de la trampa de salida ("conservados",
@@ -38,7 +64,8 @@ namespace NativeSsh.Herramientas
     // termina con un código distinto de 0 sin ese anuncio (lo mató SIGKILL a mitad, o anexaba), el error dice lo mismo
     // según lo anunciado, con el código y el id. Texto: la salida sin los anuncios ni los avisos de bash sobre hijos
     // muertos por una señal. Si la salida superó el máximo por petición y se descartó su principio (IsSalidaIncompleta),
-    // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen.
+    // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen; como lo que se conserva es el final, si
+    // el anuncio final llegó dicen que el script anunció que terminó (no que no lo confirmó).
     internal sealed partial record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
@@ -46,9 +73,15 @@ namespace NativeSsh.Herramientas
         // Lo que se incluye de la salida del script en un error que ya da el id de la petición (la completa, con ssh_output).
         private const int MaxCaracteresSalidaEnError = 2000;
 
-        private const string AvisoSalidaIncompleta = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+        // Si la salida se descartó en parte, se conserva su final: el anuncio final del script, si llegó, sigue ahí.
+        private string AvisoSalidaIncompleta => IsFinalRecibido
+            ? "La salida del script superó el máximo de bytes por petición y se descartó su principio: el script anunció que terminó, pero puede faltar parte de lo que anunció antes."
+            : "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
 
         public bool IsSalidaIncompleta { get; init; }
+
+        // Ver el anuncio "candado".
+        public CandadoEscrituraEnum Candado { get; init; }
 
         public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
@@ -59,6 +92,7 @@ namespace NativeSsh.Herramientas
             string? temporal = null;
             string? copia = null;
             string? capacidad = null;
+            CandadoEscrituraEnum candado = CandadoEscrituraEnum.SinAnuncio;
             LimpiezaEscrituraEnum limpieza = LimpiezaEscrituraEnum.Desconocida;
             foreach (string linea in salida.Split('\n'))
             {
@@ -87,6 +121,9 @@ namespace NativeSsh.Herramientas
                     case "capacidad" when hasValor:
                         capacidad = DecodificarRuta(partes[1]);
                         break;
+                    case "candado" when hasValor:
+                        candado = LeerCandado(partes[1]);
+                        break;
                     case "fase" when hasValor:
                         fase = partes[1];
                         perdidos = partes.Length > 2 && partes[2] != "-" ? partes[2].Split(',') : [];
@@ -105,21 +142,36 @@ namespace NativeSsh.Herramientas
                 }
             }
 
-            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta };
+            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta, Candado = candado };
         }
 
         // Aviso que el bash del script ("ns", su $0) escribe en su stderr al recoger un hijo que murió por una señal: «ns: línea
-        // 155: 2904918 Superado el límite de tamaño de fichero (`core' generado) cat -- ...» (la palabra «línea» y la
-        // descripción van en el idioma del servidor). No es un error del script: no pasa al texto del informe. Los demás
-        // avisos de bash ("ns: línea 3: base64: orden no encontrada") no llevan un PID tras el número de línea y se quedan.
-        [GeneratedRegex(@"^ns: [^:]+ [0-9]+: [0-9]+ ", RegexOptions.CultureInvariant)]
+        // 155: 2904918 Superado el límite de tamaño de fichero (`core' generado) cat -- "$tmp" > "$destino"» (la palabra
+        // «línea» y la descripción van en el idioma del servidor). No es un error del script: no pasa al texto del informe.
+        // Forma completa (pretty_print_job de bash): tras el número de línea, el PID con «%5ld» (alineado con espacios si es
+        // corto), la descripción y la orden tal como está escrita en el script, con sus variables sin expandir. Todas las
+        // órdenes del script que pueden morir así nombran sus archivos con una variable entre comillas ("$tmp", "$destino",
+        // "$1"...), y eso es lo que distingue el aviso de un error de bash con una ruta del usuario, que va expandida: «ns:
+        // línea 12: 12 x: Permiso denegado» (ruta relativa que empieza por dígitos y un espacio) se queda en el texto, como
+        // «ns: línea 3: base64: orden no encontrada». Solo se perdería el error de una ruta que, además de empezar por dígitos
+        // y un espacio, contenga literalmente comillas, '$' y una letra.
+        [GeneratedRegex(@"^ns: [^:]+ [0-9]+: +[0-9]+ .*""\$[{A-Za-z0-9_]", RegexOptions.CultureInvariant)]
         private static partial Regex RegexAvisoDeBash();
+
+        private static CandadoEscrituraEnum LeerCandado(string estado) => estado switch
+        {
+            "tomado" => CandadoEscrituraEnum.Tomado,
+            "sin_comprobar" => CandadoEscrituraEnum.SinComprobar,
+            "ninguno" => CandadoEscrituraEnum.SinHerramienta,
+            "sin_abrir" => CandadoEscrituraEnum.SinAbrir,
+            _ => CandadoEscrituraEnum.SinAnuncio
+        };
 
         // Solo un renombrado (mv) o un enlace (ln) colocan el contenido nuevo de una vez.
         public bool IsAtomica => Fase == "colocado";
 
         // Lo que se añade al mensaje de una escritura terminada con éxito.
-        public string AvisoExito() => IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase();
+        public string AvisoExito() => (IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase()) + AvisoSinCandado();
 
         private string AvisoExitoSegunFase() => Fase switch
         {
@@ -140,7 +192,8 @@ namespace NativeSsh.Herramientas
             if (IsFinalConfirmado || (!hasAnuncios && !IsSalidaIncompleta))
                 return (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
-            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)} sin que el script confirmara cómo terminó (petición {idPeticion}, su salida completa con ssh_output). ");
+            string final = IsFinalRecibido ? "; el script anunció que terminó, pero se descartó el principio de su salida" : " sin que el script confirmara cómo terminó";
+            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)}{final} (petición {idPeticion}, su salida completa con ssh_output). ");
             _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: true)).Append(Restos);
             if (IsSalidaIncompleta)
                 _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
@@ -167,7 +220,7 @@ namespace NativeSsh.Herramientas
             else
             {
                 _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: false)).Append(Restos);
-                if (!IsFinalConfirmado)
+                if (!IsFinalRecibido)
                     _ = mensaje.Append(" El script no confirmó cómo terminó (pudo interrumpirse o perderse su salida después de lo anterior, que es lo último que anunció): compruébalo con ssh_stat o ssh_read_file.");
                 if (IsSalidaIncompleta)
                     _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
@@ -180,8 +233,11 @@ namespace NativeSsh.Herramientas
             return mensaje.ToString();
         }
 
+        // Llegó el anuncio final del script ("conservados", "limpio" o "restos"): terminó.
+        private bool IsFinalRecibido => Limpieza != LimpiezaEscrituraEnum.Desconocida;
+
         // Con la salida incompleta, que quede el anuncio final no confirma lo anterior.
-        private bool IsFinalConfirmado => !IsSalidaIncompleta && Limpieza != LimpiezaEscrituraEnum.Desconocida;
+        private bool IsFinalConfirmado => !IsSalidaIncompleta && IsFinalRecibido;
 
         // La salida del script (sin los anuncios) en un error, acotada a su final.
         private string SalidaDelScript => Texto.Length <= MaxCaracteresSalidaEnError
@@ -200,13 +256,42 @@ namespace NativeSsh.Herramientas
             // terminó sin confirmarlo, murió a mitad y la copia sigue en su sitio.
             "escribiendo" or "restaurando" => isScriptTerminado
                 ? $"'{ruta}' puede haber quedado a medio escribir y el script ya no lo restaurará: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo)."
-                : $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).",
+                : $"'{ruta}' puede haber quedado a medio escribir. Tras la interrupción, el script restaura el original desde la copia de seguridad y solo después borra la copia y el contenido nuevo; si no lo consigue, la copia del original queda en '{Copia}' y el contenido nuevo en '{Temporal}' (para recuperar el original, copia la primera sobre el archivo).{AvisoCandadoEnCurso}",
             "fallido" => $"'{ruta}' quedó a medio escribir y no se pudo restaurar: la copia de seguridad del original está en '{Copia}' y el contenido nuevo en '{Temporal}' (no se han borrado; para recuperar el original, copia la primera sobre el archivo).",
             "restaurado" => $"Se restauró el contenido original de '{ruta}'.{AvisoPerdidos}",
             "escrito" => $"'{ruta}' ya tiene el contenido nuevo completo (escrito en el sitio).{AvisoPerdidos}",
             "anexando" => $"Al final de '{ruta}' puede haberse anexado solo una parte del contenido.",
             "anexado" => $"El contenido ya se anexó completo al final de '{ruta}'.",
             _ => $"No se sabe en qué estado quedó '{ruta}' (fase anunciada: '{Fase}')."
+        };
+
+        // Interrumpido escribiendo o restaurando en el sitio, el script sigue en marcha: qué pasa mientras con una escritura
+        // nueva sobre el mismo archivo.
+        private string AvisoCandadoEnCurso => Candado switch
+        {
+            CandadoEscrituraEnum.Tomado => $" {CandadoTomadoEnCurso}",
+            CandadoEscrituraEnum.SinComprobar => $" {CandadoTomadoEnCurso} Pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, no excluye a nadie.",
+            CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} {SinCandadoEnCurso}",
+            CandadoEscrituraEnum.SinAbrir => $" {SinCandadoPorApertura} {SinCandadoEnCurso}",
+            CandadoEscrituraEnum.SinAnuncio => string.Empty,
+            _ => string.Empty
+        };
+
+        private const string CandadoTomadoEnCurso = "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.";
+        private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta)";
+        private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock (de util-linux, o uno sin -E como el de busybox que funcione), python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+        private const string SinCandadoPorApertura = "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto).";
+        private const string SinCandadoEnCurso = "Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.";
+        private const string SinProteccion = "no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
+
+        // Lo que se añade al éxito de una escritura que no tuvo un candado comprobado.
+        public string AvisoSinCandado() => Candado switch
+        {
+            CandadoEscrituraEnum.SinComprobar => $" El script tomó el candado del archivo (flock), pero {CandadoSinComprobar}: si otro proceso lo sustituyó justo mientras se tomaba, la escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinHerramienta => $" {SinCandadoPorHerramientas} La escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinAbrir => $" {SinCandadoPorApertura} La escritura {SinProteccion}",
+            CandadoEscrituraEnum.SinAnuncio or CandadoEscrituraEnum.Tomado => string.Empty,
+            _ => string.Empty
         };
 
         // Temporales que pueden seguir en el servidor, salvo los que ya se nombraron como conservados.

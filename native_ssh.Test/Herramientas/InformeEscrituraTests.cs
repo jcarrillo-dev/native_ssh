@@ -53,6 +53,27 @@ namespace NativeSsh.Test.Herramientas
             _ = informe.Texto.Should().Be("ns: línea 3: base64: orden no encontrada\nError: falló la escritura en el sitio de f.txt; se ha restaurado su contenido original.");
         }
 
+        // Un error de bash con una ruta del usuario que empieza por dígitos y un espacio («ns: línea 12: 12 x: Permiso
+        // denegado») tiene la misma cabecera que el aviso de un hijo muerto por una señal, pero no es un aviso: se queda en el
+        // texto. Solo se quitan los avisos con su forma completa: tras el PID (con «%5d», alineado con espacios si es corto),
+        // la orden del script tal como la escribió, con sus variables sin expandir («"$destino"»), que una ruta expandida no
+        // contiene.
+        [Theory]
+        [InlineData("ns: línea 12: 12 x: Permiso denegado", true)]
+        [InlineData("ns: line 7: 12 x: Permission denied", true)]
+        [InlineData("ns: línea 12: 4021 Killed: no es un aviso", true)]
+        [InlineData("ns: line 12:   402 Killed                     cat -- \"$copia\" > \"$destino\"", false)]
+        [InlineData("ns: línea 30: 3569366 Terminado (killed)         base64 -d > \"$tmp\"", false)]
+        [InlineData("ns: línea 9: 77777 Violación de segmento     (`core' generado) chmod -- u+s \"$destino\" 2> /dev/null", false)]
+        public void Leer_SoloQuitaLosAvisosDeBashConSuFormaCompleta(string linea, bool isTexto)
+        {
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(linea + "\n", Id);
+
+            // Assert
+            _ = informe.Texto.Should().Be(isTexto ? linea : string.Empty);
+        }
+
         [Theory]
         [InlineData("colocado", true)]
         [InlineData("escrito", false)]
@@ -119,24 +140,39 @@ namespace NativeSsh.Test.Herramientas
             _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}, su salida completa con ssh_output). {esperado}");
         }
 
-        // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: aunque quede el
-        // final, no se afirma que no se modificó nada ni que la limpieza confirmó cómo terminó, y se dice por qué.
-        [Fact]
-        public void SalidaIncompleta_NoSeApoyaEnLosAnunciosQueQuedan()
+        // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: no se afirma que no se
+        // modificó nada y se dice por qué. Si el anuncio final llegó (está al final, que es lo que se conserva), el mensaje
+        // dice que el script anunció que terminó, no que no lo confirmó; sin él, que no lo confirmó.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void SalidaIncompleta_NoSeApoyaEnLosAnunciosQueQuedanYDiceSiLlegoElFinal(bool isFinal)
         {
             // Arrange
-            InformeEscritura informe = InformeEscritura.Leer(Anuncios("limpio"), Id, isSalidaCompleta: false);
+            string final = isFinal ? Anuncios("limpio") : string.Empty;
+            InformeEscritura informe = InformeEscritura.Leer(Anuncios("fase restaurado") + final, Id, isSalidaCompleta: false);
 
             // Act
-            string interrupcion = informe.MensajeInterrupcion("f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
+            string interrupcion = InformeEscritura.Leer(final, Id, isSalidaCompleta: false).MensajeInterrupcion("f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
             string error = informe.MensajeError("por defecto", "f.txt", 1, Id);
-            string exito = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado", "limpio"), Id, isSalidaCompleta: false).AvisoExito();
+            string exito = InformeEscritura.Leer(Anuncios("fase colocando", "fase colocado") + final, Id, isSalidaCompleta: false).AvisoExito();
 
             // Assert
-            const string Descartada = "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
-            _ = interrupcion.Should().Contain("No consta ninguna modificación de 'f.txt'.").And.NotContain("No se llegó a modificar").And.Contain(Descartada).And.Contain(NoConfirmado.Trim());
-            _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}").And.Contain(Descartada);
-            _ = exito.Should().Be($" {Descartada}");
+            string descartada = isFinal
+                ? "La salida del script superó el máximo de bytes por petición y se descartó su principio: el script anunció que terminó, pero puede faltar parte de lo que anunció antes."
+                : "La salida del script superó el máximo de bytes por petición y se descartó su principio: puede faltar parte de lo que anunció.";
+            _ = interrupcion.Should().Contain("No consta ninguna modificación de 'f.txt'.").And.NotContain("No se llegó a modificar").And.Contain(descartada);
+            _ = exito.Should().Be($" {descartada}");
+            if (isFinal)
+            {
+                _ = interrupcion.Should().NotContain("no confirmó");
+                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición {Id}, su salida completa con ssh_output). Se restauró el contenido original de 'f.txt'. {descartada}");
+            }
+            else
+            {
+                _ = interrupcion.Should().Contain(NoConfirmado.Trim());
+                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}").And.Contain(descartada);
+            }
         }
 
         // Una petición que no llegó a ejecutarse (cancelada en la cola) no modificó nada, sin matices.
@@ -234,6 +270,53 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = mensaje.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). 'f.txt' puede haber quedado a medio escribir").And.EndWith(" Salida del script: cat: error de escritura");
+        }
+
+        // Interrumpida escribiendo o restaurando en el sitio, el script sigue en marcha: con el candado tomado, el error dice
+        // que las operaciones nuevas sobre el archivo fallan hasta que termine (y, si no se pudo comprobar que esté sobre el
+        // archivo de la ruta, en qué caso no excluye); sin candado, por qué y que no se escriba en él hasta comprobar que
+        // terminó; sin anuncio del candado (o con uno desconocido), nada.
+        [Theory]
+        [InlineData("candado tomado", nameof(CandadoEscrituraEnum.Tomado), "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.")]
+        [InlineData("candado sin_comprobar", nameof(CandadoEscrituraEnum.SinComprobar), "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine. Pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta): si otro proceso lo sustituyó justo mientras se tomaba, no excluye a nadie.")]
+        [InlineData("candado ninguno", nameof(CandadoEscrituraEnum.SinHerramienta), "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock (de util-linux, o uno sin -E como el de busybox que funcione), python3 ni perl que lo consigan, o el sistema de archivos no admite flock. Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.")]
+        [InlineData("candado sin_abrir", nameof(CandadoEscrituraEnum.SinAbrir), "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto). Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.")]
+        [InlineData("candado otro", nameof(CandadoEscrituraEnum.SinAnuncio), null)]
+        [InlineData(null, nameof(CandadoEscrituraEnum.SinAnuncio), null)]
+        public void MensajeInterrupcion_EscribiendoEnElSitio_DiceQuePasaConLasEscriturasNuevas(string? anuncio, string candado, string? esperado)
+        {
+            // Arrange
+            string anuncios = (anuncio is null ? string.Empty : Anuncios(anuncio)) + RutasCreadas + Anuncios("fase escribiendo");
+
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(anuncios, Id);
+            string mensaje = informe.MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, null, isEjecutada: true);
+            string trasSigkill = informe.MensajeError("x", "f.txt", 137, Id);
+
+            // Assert
+            _ = informe.Candado.ToString().Should().Be(candado);
+            _ = esperado is null
+                ? mensaje.Should().NotContain("candado")
+                : mensaje.Should().Contain($"(para recuperar el original, copia la primera sobre el archivo). {esperado} El script no confirmó");
+            _ = trasSigkill.Should().NotContain("candado", "con el script muerto ya no hay restauración en curso");
+        }
+
+        // Una escritura terminada sin candado (ninguna herramienta pudo tomarlo, o no se pudo abrir el archivo) o con un
+        // candado que no se pudo comprobar lo avisa, con el motivo; con el candado tomado y comprobado, nada.
+        [Theory]
+        [InlineData("candado ninguno", " El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock (de util-linux, o uno sin -E como el de busybox que funcione), python3 ni perl que lo consigan, o el sistema de archivos no admite flock. La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
+        [InlineData("candado sin_abrir", " El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto). La escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
+        [InlineData("candado sin_comprobar", " El script tomó el candado del archivo (flock), pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta): si otro proceso lo sustituyó justo mientras se tomaba, la escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.")]
+        [InlineData("candado tomado", "")]
+        [InlineData("candado otro", "")]
+        public void AvisoSinCandado_SoloSiNoSePudoTomarOComprobar(string anuncio, string esperado)
+        {
+            // Act
+            InformeEscritura informe = InformeEscritura.Leer(Anuncios(anuncio, "fase colocado", "limpio"), Id);
+
+            // Assert
+            _ = informe.AvisoExito().Should().Be(informe.AvisoSinCandado());
+            _ = informe.AvisoSinCandado().Should().Be(esperado);
         }
     }
 }

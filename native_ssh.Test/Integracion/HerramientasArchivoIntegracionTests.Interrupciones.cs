@@ -49,6 +49,10 @@ namespace NativeSsh.Test.Integracion
             NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => Directory.GetFileSystemEntries(carpeta).Length == 2, TimeSpan.FromSeconds(15));
 
+            // El script suelta el candado del archivo al salir, justo después de borrar la copia y el temporal; mientras lo
+            // tiene, .NET no puede abrir el archivo (emula FileShare con flock).
+            await EsperasPrueba.EsperarHastaAsync(() => IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
+
             // Assert: restaurado en el sitio (mismo inodo y modo) y sin restos; el error no afirma un estado que no conoce.
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original completo\n");
             _ = Stat(archivo).Should().Be(stat);
@@ -149,6 +153,7 @@ namespace NativeSsh.Test.Integracion
             _ = Bash($"kill -KILL \"$(ps -o ppid= -p {cat})\"");
             NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
             _ = Bash($"kill -INT {cat} 2>/dev/null; true");
+            await EsperasPrueba.EsperarHastaAsync(() => IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
 
             // Assert
             string copia = Directory.GetFiles(carpeta, ".f.txt.orig.*").Should().ContainSingle().Which;
