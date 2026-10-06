@@ -14,7 +14,14 @@ namespace NativeSsh.Test.Sesion.Falsos
         Colgado,
         IgnoraCtrlC,
         PideEntrada,
-        Salir
+        Salir,
+
+        // Abre un shell interactivo anidado (sudo -i, su -, ssh a otra máquina, bash -i): no termina, y Ctrl+C lo recibe el
+        // anidado, que sigue vivo; desde entonces las líneas que llegan las ejecuta él (con otro $$ y otro $PPID).
+        AbreShellAnidado,
+
+        // Imprime su salida y su marcador desde otro shell (la cola la ejecuta un shell con otro $$ y otro $PPID).
+        TerminaEnShellAnidado
     }
 
     // Cómo se comporta el shell de login antes de ejecutar el 'exec bash' de la inicialización.
@@ -75,6 +82,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string RuidoAntesCapturaPath { get; set; } = "";
         public string RuidoTrasCapturaPath { get; set; } = "";
 
+        // La línea de captura no imprime la identidad del bash ($$ y $PPID).
+        public bool IsSinIdentidad { get; set; }
+
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
@@ -105,7 +115,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 PathLogin = PathLogin,
                 BytesPathLogin = BytesPathLogin,
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
-                RuidoTrasCapturaPath = RuidoTrasCapturaPath
+                RuidoTrasCapturaPath = RuidoTrasCapturaPath,
+                IsSinIdentidad = IsSinIdentidad
             };
             Ultima = conexion;
             return conexion;
@@ -165,6 +176,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public byte[]? BytesPathLogin { get; init; }
         public string RuidoAntesCapturaPath { get; init; } = "";
         public string RuidoTrasCapturaPath { get; init; } = "";
+        public bool IsSinIdentidad { get; init; }
         public CanalFalso? CanalActual { get; private set; }
 
         // Desde ahora el servidor rechaza abrir canales (el del shell y los exec) con la conexión intacta: como OpenSSH al
@@ -266,13 +278,16 @@ namespace NativeSsh.Test.Sesion.Falsos
                     throw new InvalidOperationException("Conexión cerrada.");
             }
 
-            _ = Interlocked.Increment(ref _shellsAbiertos);
+            // Cada shell es un bash distinto: otro $$, mismo padre (el sshd de la conexión).
+            int abiertos = Interlocked.Increment(ref _shellsAbiertos);
             CanalActual = new CanalFalso(guion, tamanoTrozo, Comandos, login, retrasoLogin)
             {
                 PathLogin = PathLogin,
                 BytesPathLogin = BytesPathLogin,
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
-                RuidoTrasCapturaPath = RuidoTrasCapturaPath
+                RuidoTrasCapturaPath = RuidoTrasCapturaPath,
+                Pid = 4232 + (abiertos * 10),
+                IsSinIdentidad = IsSinIdentidad
             };
             return CanalActual;
         }
@@ -350,6 +365,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         private ManualResetEventSlim? _liberacionEscrituras;
         private ManualResetEventSlim? _retencionEscrituras;
         private ManualResetEventSlim? _confirmacionCierre;
+        private string? _identidadActual;
+        private int _lineasEnShellAjeno;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
@@ -370,6 +387,17 @@ namespace NativeSsh.Test.Sesion.Falsos
         public byte[]? BytesPathLogin { get; init; }
         public string RuidoAntesCapturaPath { get; init; } = "";
         public string RuidoTrasCapturaPath { get; init; } = "";
+
+        // $$ y $PPID del bash del canal (los que imprime la captura) y si la imprime (un shell que no la entiende).
+        public int Pid { get; init; } = 4242;
+        public int PidPadre { get; init; } = 4200;
+        public bool IsSinIdentidad { get; init; }
+
+        // Lo que imprimiría "$$ $PPID" en el shell que ejecuta ahora las líneas: el del canal o uno anidado.
+        public string IdentidadActual => Volatile.Read(ref _identidadActual) ?? $"{Pid} {PidPadre}";
+
+        // Líneas cuya comprobación de identidad no coincidió con el shell que las ejecutó.
+        public int LineasEnShellAjeno => Volatile.Read(ref _lineasEnShellAjeno);
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
@@ -565,6 +593,9 @@ namespace NativeSsh.Test.Sesion.Falsos
             if (_enCurso is null || _enCurso.Comportamiento == ComportamientoFalsoEnum.IgnoraCtrlC)
                 return;
 
+            if (_enCurso.Comportamiento == ComportamientoFalsoEnum.AbreShellAnidado)
+                Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999}");
+
             _enCurso = null;
             _idEnCurso = null;
         }
@@ -625,7 +656,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 string id = ExtraerId(linea);
                 string base64 = Convert.ToBase64String(BytesPathLogin ?? Encoding.UTF8.GetBytes(PathLogin));
                 string captura = linea.Contains("'__NSP'", StringComparison.Ordinal) ? $"__NSP_{id}_\n{base64}\n__NSQ_{id}_\n" : $"{base64}\n";
-                EmitirConMarcador(RuidoAntesCapturaPath + captura + RuidoTrasCapturaPath, id, 0);
+                string identidad = linea.Contains("'__NSI'", StringComparison.Ordinal) && !IsSinIdentidad ? $"__NSI_{id}_{Pid}_{PidPadre}__\n" : "";
+                EmitirConMarcador(RuidoAntesCapturaPath + identidad + captura + RuidoTrasCapturaPath, id, 0);
             }
             else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
             {
@@ -644,17 +676,18 @@ namespace NativeSsh.Test.Sesion.Falsos
             else if (linea.StartsWith("eval ", StringComparison.Ordinal))
             {
                 string comando = Encoding.UTF8.GetString(Convert.FromBase64String(_base64.ToString()));
-                Ejecutar(comando, ExtraerId(linea));
+                Ejecutar(comando, ExtraerId(linea), linea);
             }
             else if (linea.StartsWith("__ns_rc=130", StringComparison.Ordinal))
             {
+                int codigo = CodigoCola(linea, 130);
                 if (RetrasoMarcadorRecuperacion <= TimeSpan.Zero)
-                    EmitirConMarcador("", ExtraerId(linea), 130);
+                    EmitirConMarcador("", ExtraerId(linea), codigo);
                 else
                 {
                     // bash ya espera en su 'read'; lo que llega tarde es la salida del marcador.
                     _isReadPendiente = true;
-                    string marcador = $"__NSX_{ExtraerId(linea)}_130__\n";
+                    string marcador = $"__NSX_{ExtraerId(linea)}_{codigo}__\n";
                     _ = Task.Delay(RetrasoMarcadorRecuperacion).ContinueWith(_ =>
                     {
                         lock (_candado)
@@ -664,14 +697,18 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
-        private void Ejecutar(string comando, string id)
+        private void Ejecutar(string comando, string id, string linea)
         {
             _comandos.Enqueue(comando);
             RespuestaFalsa respuesta = _guion(comando);
             switch (respuesta.Comportamiento)
             {
                 case ComportamientoFalsoEnum.Normal:
-                    EmitirConMarcador(respuesta.Salida, id, respuesta.Codigo);
+                    EmitirConMarcador(respuesta.Salida, id, CodigoCola(linea, respuesta.Codigo));
+                    break;
+                case ComportamientoFalsoEnum.TerminaEnShellAnidado:
+                    Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999}");
+                    EmitirConMarcador(respuesta.Salida, id, CodigoCola(linea, respuesta.Codigo));
                     break;
                 case ComportamientoFalsoEnum.Salir:
                     Cerrar();
@@ -679,6 +716,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 case ComportamientoFalsoEnum.Colgado:
                 case ComportamientoFalsoEnum.IgnoraCtrlC:
                 case ComportamientoFalsoEnum.PideEntrada:
+                case ComportamientoFalsoEnum.AbreShellAnidado:
                     _enCurso = respuesta;
                     _idEnCurso = id;
                     Emitir(respuesta.Salida);
@@ -699,6 +737,24 @@ namespace NativeSsh.Test.Sesion.Falsos
             byte[] bytes = Encoding.UTF8.GetBytes(texto);
             for (int i = 0; i < bytes.Length && !IsCerrado; i += _tamanoTrozo)
                 _salida.Add(bytes[i..Math.Min(bytes.Length, i + _tamanoTrozo)]);
+        }
+
+        // Lo que hace la cola de la línea: si comprueba la identidad ([ "$$ $PPID" = '<pid> <ppid>' ] || __ns_rc=999) y no
+        // coincide con la del shell que la ejecuta, el marcador lleva 999.
+        private int CodigoCola(string linea, int codigo)
+        {
+            const string Prefijo = "[ \"$$ $PPID\" = '";
+            int inicio = linea.IndexOf(Prefijo, StringComparison.Ordinal);
+            if (inicio < 0)
+                return codigo;
+
+            inicio += Prefijo.Length;
+            string esperada = linea[inicio..linea.IndexOf('\'', inicio)];
+            if (esperada == IdentidadActual)
+                return codigo;
+
+            _ = Interlocked.Increment(ref _lineasEnShellAjeno);
+            return 999;
         }
 
         private static string ExtraerId(string linea)

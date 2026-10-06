@@ -69,5 +69,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 62, Level = LogLevel.Debug, Message = "Terminó la escritura del canal del shell abandonado de {Destino}: se cierra.")]
         public static partial void CanalShellAbandonadoCerrado(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 63, Level = LogLevel.Warning, Message = "Una línea del shell de {Destino} la ejecutó otro shell (uno interactivo anidado que dejó el comando: sudo -i, su -, ssh a otra máquina, bash -i): se cierra el canal del shell para que los comandos siguientes no se ejecuten dentro.")]
+        public static partial void ShellAnidadoDetectado(this ILogger logger, string destino);
     }
 }

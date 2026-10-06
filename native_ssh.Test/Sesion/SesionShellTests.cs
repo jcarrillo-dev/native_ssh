@@ -30,6 +30,8 @@ namespace NativeSsh.Test.Sesion
             "terco" => new("", 0, ComportamientoFalsoEnum.IgnoraCtrlC),
             "pregunta" => new("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
             "exit" => new("", 0, ComportamientoFalsoEnum.Salir),
+            "sudo -i" => new("root# ", 0, ComportamientoFalsoEnum.AbreShellAnidado),
+            "termina-anidado" => new("dentro\n", 0, ComportamientoFalsoEnum.TerminaEnShellAnidado),
             "falla" => new("error\n", 3),
             _ => new($"eco:{comando}\n")
         };
@@ -270,6 +272,111 @@ namespace NativeSsh.Test.Sesion
             _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CtrlCAUnShellAnidado_CierraElCanalLoDiceYElSiguienteNoSeEjecutaDentro(bool isPlazo)
+        {
+            // Arrange: B1 de la auditoría del E-septies (Z06). El comando deja un shell interactivo anidado (sudo -i, su -,
+            // ssh a otra máquina, bash -i) que no muere con Ctrl+C: la línea de recuperación la ejecuta él.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+            Peticion anidado = Nueva("sudo -i", timeoutSegundos: isPlazo ? 0.5 : 60);
+            sesion.Encolar(anidado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(anidado).Contains("root# "));
+
+            // Act
+            if (!isPlazo)
+                _ = anidado.SolicitarCancelacion();
+            await anidado.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "hola");
+
+            // Assert: no se da la cancelación por buena en silencio; el canal se cierra y el siguiente va a un shell nuevo.
+            _ = anidado.Estado.Should().Be(isPlazo ? EstadoPeticionEnum.TiempoAgotado : EstadoPeticionEnum.Cancelado);
+            _ = anidado.Aviso.Should().Contain("shell interactivo anidado").And.Contain("se cerró el canal del shell").And.Contain("SIGHUP")
+                .And.Contain("shell nuevo").And.Contain("se perderán").And.Contain("ssh_set_cwd");
+            _ = viejo.LineasEnShellAjeno.Should().Be(1);
+            _ = viejo.IsDispuesto.Should().BeTrue();
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:hola\n");
+            _ = siguiente.Aviso.Should().Contain("recreado");
+            _ = fabrica.Ultima.CanalActual.Should().NotBeSameAs(viejo);
+            _ = fabrica.Ultima.CanalActual!.LineasEnShellAjeno.Should().Be(0);
+            _ = fabrica.Conexiones.Should().Be(1);
+        }
+
+        [Fact]
+        public async Task CtrlCAUnProcesoNormal_ConLaComprobacionDeIdentidad_ConservaElShellSinAviso()
+        {
+            // Arrange: falso positivo que no debe darse: el Ctrl+C termina el proceso y la recuperación la ejecuta el shell
+            // de la sesión, también tras recrearlo (otro $$).
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            sesion.SolicitarReset();
+            _ = await EjecutarAsync(sesion, "hola");
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+            Peticion colgado = Nueva("colgado");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+
+            // Act
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "dos");
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = colgado.Aviso.Should().Be("Cancelado: se envió Ctrl+C al proceso.");
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.Aviso.Should().BeNull();
+            _ = fabrica.Ultima.CanalActual.Should().BeSameAs(canal);
+            _ = canal.Pid.Should().NotBe(4242, "el shell recreado es otro bash");
+            _ = canal.LineasEnShellAjeno.Should().Be(0);
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(2);
+        }
+
+        [Fact]
+        public async Task ComandoCuyaColaEjecutaOtroShell_TerminaComoShellPerdidoYCierraElCanal()
+        {
+            // Arrange: defensa en profundidad; la cola de un comando la ejecuta un shell distinto del de la sesión.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+
+            // Act
+            Peticion ajeno = await EjecutarAsync(sesion, "termina-anidado");
+            Peticion siguiente = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = ajeno.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = ajeno.CodigoSalida.Should().Be(-1);
+            _ = ajeno.Aviso.Should().Contain("no se ejecutó en el shell de ssh_exec").And.Contain("Se cerró el canal del shell").And.Contain("shell nuevo");
+            _ = viejo.IsDispuesto.Should().BeTrue();
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.Aviso.Should().Contain("recreado");
+        }
+
+        [Fact]
+        public async Task InicializacionSinIdentidadDelShell_FallaConMensajePropioYCierraElCanal()
+        {
+            // Arrange: sin $$ ni $PPID no se podría detectar un shell anidado tras Ctrl+C.
+            FabricaFalsa fabrica = new(Guion) { IsSinIdentidad = true };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion hola = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = hola.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = hola.Aviso.Should().Contain("identificador de proceso");
+            _ = fabrica.Ultima!.CanalActual!.IsDispuesto.Should().BeTrue();
+            _ = sesion.IsShellActivo.Should().BeFalse();
         }
 
         [Fact]
