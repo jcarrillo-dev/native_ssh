@@ -1182,7 +1182,7 @@ namespace NativeSsh.Herramientas
         //   0), sin enviar al shell o cancelado en la cola: todo sigue en el anterior, con certeza;
         // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
         // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
-        private string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
+        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
         {
             SesionShell? sesion = SesionDe(clave);
             if (sesion is null)

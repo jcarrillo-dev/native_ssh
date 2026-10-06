@@ -349,5 +349,62 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("export __NS_CWD='/srv/en_cola'", StringComparison.Ordinal));
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
+
+        // Otra llamada cambia el directorio de trabajo mientras el export de esta no termina (el token lo cancela): el error
+        // dice cuál es ahora y que el shell de ssh_exec puede estar en el de esta llamada, no que sigue el anterior.
+        [Fact]
+        public async Task OtraLlamadaCambiaElDirectorioMientrasElExportNoTermina_DiceCualEsAhora()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            using CancellationTokenSource cancelacion = new();
+            Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "/srv/colgado", cancelacion.Token);
+            await EsperarEjecutandoAsync("export __NS_CWD='/srv/colgado'");
+            _gestor.FijarDirectorioTrabajo("servidor", "/srv/otro");
+
+            // Act
+            await cancelacion.CancelAsync();
+            OperationCanceledException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<OperationCanceledException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().EndWith("Mientras tanto otra llamada cambió el directorio de trabajo a /srv/otro (lo usan las herramientas de lectura y un shell nuevo), pero el shell actual de ssh_exec puede haber pasado ya a /srv/colgado: repite ssh_set_cwd.")
+                .And.NotContain("sigue siendo");
+            _ = DirectorioDeLaSesion().Should().Be("/srv/otro");
+        }
+
+        // Qué dice la consecuencia según lo que pasó con la sesión y el directorio entre medias (A-undecies, AU1).
+        [Fact]
+        public async Task ConsecuenciaCwd_SesionCerradaYOtraAbierta_DiceElDirectorioDeLaNueva()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell primera = _gestor.ListarSesiones().Single();
+            _ = await _herramientas.DesconectarAsync("servidor");
+            _gestor.FijarDirectorioTrabajo("servidor", null);
+
+            // Act
+            string consecuencia = _herramientas.ConsecuenciaCwd(Destino, primera, Anterior);
+
+            // Assert
+            _ = consecuencia.Should().Be($"La sesión con {Destino} se cerró mientras tanto (ssh_disconnect) y ya se abrió otra: el directorio de trabajo es $HOME (~), el de esa sesión nueva.");
+        }
+
+        [Fact]
+        public async Task ConsecuenciaCwd_SinCambiosYSinPeticion_DiceQueSigueElAnterior()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+
+            // Act
+            string mismaSesion = _herramientas.ConsecuenciaCwd(Destino, sesion, Anterior);
+            string sinSesionAlEmpezar = _herramientas.ConsecuenciaCwd(Destino, null, Anterior);
+            string otraLlamada = _herramientas.ConsecuenciaCwd(Destino, sesion, "/srv/antes");
+
+            // Assert
+            _ = mismaSesion.Should().Be($"El directorio de trabajo sigue siendo {Anterior}.");
+            _ = sinSesionAlEmpezar.Should().Be(mismaSesion);
+            _ = otraLlamada.Should().Be($"Mientras tanto otra llamada cambió el directorio de trabajo: ahora es {Anterior}.");
+        }
     }
 }
