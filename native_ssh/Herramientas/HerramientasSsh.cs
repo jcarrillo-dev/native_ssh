@@ -1061,20 +1061,24 @@ namespace NativeSsh.Herramientas
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
+            string clave = gestor.ParsearDestino(destino).Clave;
+            string anterior = DirectorioTrabajoActual(clave) ?? DirectorioHome;
+            string sigue = $"El directorio de trabajo sigue siendo {anterior}.";
             if (string.IsNullOrEmpty(ruta))
             {
-                gestor.FijarDirectorioTrabajo(destino, null);
                 string comandoReset = "unset __NS_CWD; export __NS_CWD=\"\"; pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-                ExigirCompletada(peticionReset);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, comandoReset, TimeoutMetadatosSegundos, ConsecuenciaCwdIncierta(anterior, DirectorioHome), cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset, ConsecuenciaCwd(peticionReset, anterior, DirectorioHome));
 
                 if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
-                    throw new NativeSshException(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset);
+                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {sigue}");
                 }
 
-                return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
+                // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
+                gestor.FijarDirectorioTrabajo(destino, null);
+                return new ResultadoDirectorioTrabajo(clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
             }
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -1103,8 +1107,9 @@ namespace NativeSsh.Herramientas
                 )
                 """);
 
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionValidacion);
+            // La validación va en un subshell: falle como falle, no cambia nada.
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, sigue, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion, sigue);
 
             if (peticionValidacion.CodigoSalida != 0)
             {
@@ -1113,20 +1118,50 @@ namespace NativeSsh.Herramientas
             }
 
             string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
-            // Fuente de verdad en C#: la reciben los canales exec y se reexporta si el shell se recrea.
-            gestor.FijarDirectorioTrabajo(destino, pwdReal);
+            if (Encoding.UTF8.GetByteCount(pwdReal) > SesionShell.MaxBytesDirectorioTrabajo)
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {sigue}");
+
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, null, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionExport);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, ConsecuenciaCwdIncierta(anterior, pwdReal), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport, ConsecuenciaCwd(peticionExport, anterior, pwdReal));
 
             if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
-                throw new NativeSshException(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport);
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {sigue}");
             }
 
-            return new ResultadoDirectorioTrabajo(gestor.ParsearDestino(destino).Clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
+            // Fuente de verdad en C# (la reciben los canales exec y se reexporta si el shell se recrea), fijada solo cuando
+            // el shell ya lo ha exportado: si el comando no llegó o no terminó, las herramientas de lectura y un shell
+            // nuevo siguen en el anterior y el error lo dice (A-decies, AD1).
+            gestor.FijarDirectorioTrabajo(destino, pwdReal);
+            return new ResultadoDirectorioTrabajo(clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
         }
+
+        private const string DirectorioHome = "$HOME (~)";
+
+        // Directorio de trabajo que la sesión del destino guarda ahora (null = $HOME o sin sesión).
+        private string? DirectorioTrabajoActual(string clave)
+        {
+            foreach (SesionShell sesion in gestor.ListarSesiones())
+                if (sesion.Destino.Clave == clave)
+                    return sesion.DirectorioTrabajo;
+
+            return null;
+        }
+
+        // Qué quedó tras un export de ssh_set_cwd que no terminó bien. C# no ha cambiado. Si el comando no llegó al shell o
+        // el shell se perdió (el nuevo se inicializa con el directorio de C#), todo sigue en el anterior; si no terminó con
+        // el shell vivo (plazo, cancelación), ese shell puede haberlo exportado ya.
+        private static string ConsecuenciaCwd(Peticion peticion, string anterior, string nuevo) =>
+            IsNoEnviadaAlShell(peticion)
+                ? $"El directorio de trabajo sigue siendo {anterior}."
+                : peticion.Estado == EstadoPeticionEnum.ShellPerdido
+                    ? $"El directorio de trabajo sigue siendo {anterior}: lo usan las herramientas de lectura y el shell nuevo se abrirá en él."
+                    : ConsecuenciaCwdIncierta(anterior, nuevo);
+
+        private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
+            $"El directorio de trabajo sigue siendo {anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {anterior}).";
 
         private const string PrefijoMarcaDirectorio = "__NS_CWD_";
 

@@ -14,7 +14,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         Colgado,
         IgnoraCtrlC,
         PideEntrada,
-        Salir
+        Salir,
+
+        // Responde (salida y marcador, el comando termina bien) y después el shell sale y cierra el canal.
+        ResponderYSalir
     }
 
     // Cómo se comporta el shell de login antes de ejecutar el 'exec bash' de la inicialización.
@@ -567,6 +570,10 @@ namespace NativeSsh.Test.Sesion.Falsos
                     EmitirConMarcador(respuesta.Salida, id, respuesta.Codigo);
                     break;
                 case ComportamientoFalsoEnum.Salir:
+                    Cerrar();
+                    break;
+                case ComportamientoFalsoEnum.ResponderYSalir:
+                    EmitirConMarcador(respuesta.Salida, id, respuesta.Codigo);
                     Cerrar();
                     break;
                 case ComportamientoFalsoEnum.Colgado:
