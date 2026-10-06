@@ -21,12 +21,9 @@ namespace NativeSsh.Ssh
         private volatile bool _isPerdida;
 
         // Tras la caída del TCP, SshClient.IsConnected puede seguir siendo true un instante (hasta que SSH.NET cierra el
-        // socket): la conexión se da por perdida en cuanto llega ErrorOccurred, antes de cerrar el canal del shell, para
-        // que quien vea el canal cerrado vea también la conexión perdida. La suscripción es de la conexión, no solo del
-        // canal del shell: si el aviso llega mientras AbrirShell construye el canal (después de que el ShellStream se
-        // suscriba al error de la sesión y antes de que CanalShellSshNet se suscriba al suyo), nadie cerraría ese canal y
-        // un comando esperaría hasta su plazo; la comprobación que sigue a la suscripción lo ve porque la conexión ya se dio
-        // por perdida con el propio aviso, sin depender de que SSH.NET haya cerrado ya el socket.
+        // socket): la conexión se da por perdida en cuanto llega ErrorOccurred, antes de que SSH.NET cierre el canal del
+        // shell (el ShellStream atiende el mismo aviso después, porque se suscribe más tarde), para que quien vea el canal
+        // cerrado vea también la conexión perdida, sin depender de que SSH.NET haya cerrado ya el socket.
         //
         // Con la conexión ya establecida, SSH.NET no abandona ninguna espera mientras la conexión viva: ConnectionInfo.Timeout
         // (TimeoutConexion, que sigue acotando el handshake) pasa a infinito. Session.WaitOnHandle lo lee en cada espera,
@@ -92,11 +89,9 @@ namespace NativeSsh.Ssh
                 throw;
             }
 
-            CanalShellSshNet canal = new(flujo, MarcarPerdida);
-            // Si la conexión cayó entre la apertura y la suscripción a ErrorOccurred, nadie cerraría el canal.
-            if (!IsConectada)
-                canal.Dispose();
-            return canal;
+            // Si la conexión cae después, el propio ShellStream se libera (se suscribió al error de la sesión antes de abrir el
+            // canal); si cayó antes, la apertura habría fallado.
+            return new CanalShellSshNet(flujo);
         }
 
         public Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken) =>
