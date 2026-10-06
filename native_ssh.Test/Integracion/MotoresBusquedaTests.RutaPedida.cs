@@ -257,6 +257,25 @@ namespace NativeSsh.Test.Integracion
         // Sin grep de GNU, un error de find nunca es «sin coincidencias» (AN1): si find falla (aquí, uno que no admite la
         // expresión), el script sale con 2 y su error va a stderr. Lo que grep -rs y rg callan también se calla aquí: un
         // subdirectorio sin permiso dentro del árbol y el grep que muere por SIGPIPE cuando head ya tiene bastantes líneas.
+        // Una regex inválida es un error aunque no haya archivos en los que buscar (grep no llega a ejecutarse): la línea
+        // de prueba la detecta antes del recorrido. Con archivos, el error de cada grep también sale ahora por stderr.
+        [Theory]
+        [InlineData("vacio")]
+        [InlineData("src")]
+        public void SinGrepDeGnu_RegexInvalida_EsUnErrorConYSinArchivos(string ruta)
+        {
+            // Arrange
+            InstalarGrepDeBusybox();
+            _ = Directory.CreateDirectory(Path.Combine(_datos, "vacio"));
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor (", ruta, null, 50));
+
+            // Assert
+            _ = (codigo, salida).Should().Be((2, "__NS_MOTOR:grep -E\n"));
+            _ = errores.Should().NotBeEmpty();
+        }
+
         [Fact]
         public void SinGrepDeGnu_ErrorDeFind_NoEsSinCoincidencias()
         {
