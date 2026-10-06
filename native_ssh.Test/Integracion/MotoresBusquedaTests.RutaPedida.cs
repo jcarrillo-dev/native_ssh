@@ -248,8 +248,15 @@ namespace NativeSsh.Test.Integracion
             _ = errores.Should().Contain("find: unrecognized: -mindepth");
         }
 
-        [Fact]
-        public void SinGrepDeGnu_SubdirectorioSinPermisoYCorteDeHead_SinErrores()
+        // Con el idioma de la máquina (LANG), con LC_ALL fijado (los mensajes de find dejarían de estar en inglés si solo
+        // se fijara LC_MESSAGES) y con SIGPIPE por defecto, como en una sesión SSH (find de GNU avisa de que grep murió
+        // por la señal 13; con SIGPIPE ignorado, grep avisa de EPIPE).
+        [Theory]
+        [InlineData(null, false)]
+        [InlineData("es_ES.UTF-8", false)]
+        [InlineData(null, true)]
+        [InlineData("es_ES.UTF-8", true)]
+        public void SinGrepDeGnu_SubdirectorioSinPermisoYCorteDeHead_SinErrores(string? lcAll, bool isSigpipePorDefecto)
         {
             // Arrange
             InstalarGrepDeBusybox();
@@ -262,8 +269,8 @@ namespace NativeSsh.Test.Integracion
             try
             {
                 // Act
-                (int codigoTodo, string salidaTodo, string erroresTodo) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor 7[0-9]$", "r", null, 50));
-                (int codigoCorte, string salidaCorte, string erroresCorte) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor", "r", null, 2));
+                (int codigoTodo, string salidaTodo, string erroresTodo) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor 7[0-9]$", "r", null, 50), lcAll, isSigpipePorDefecto);
+                (int codigoCorte, string salidaCorte, string erroresCorte) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor", "r", null, 2), lcAll, isSigpipePorDefecto);
 
                 // Assert
                 _ = (codigoTodo, erroresTodo).Should().Be((0, string.Empty));
@@ -275,6 +282,25 @@ namespace NativeSsh.Test.Integracion
             {
                 File.SetUnixFileMode(cerrado, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             }
+        }
+
+        // Los mensajes de find van en inglés, pero grep conserva la codificación del idioma: con LC_ALL o LANG en UTF-8,
+        // '^.$' casa con 'ñ' (dos bytes), que en el idioma C no casaría.
+        [Theory]
+        [InlineData("es_ES.UTF-8")]
+        [InlineData(null)]
+        public void SinGrepDeGnu_GrepConservaLaCodificacionDelIdioma(string? lcAll)
+        {
+            // Arrange
+            InstalarGrepDeBusybox();
+            Escribir("u/n.txt", "ñ");
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("^.$", "u", null, 50), lcAll);
+
+            // Assert
+            _ = (codigo, errores).Should().Be((0, string.Empty));
+            _ = salida.Should().Be("__NS_MOTOR:grep -E\nu/n.txt:1:ñ\n");
         }
     }
 }

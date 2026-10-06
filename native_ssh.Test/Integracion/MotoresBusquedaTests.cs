@@ -51,10 +51,17 @@ namespace NativeSsh.Test.Integracion
             return (codigo, salida);
         }
 
-        private (int Codigo, string Salida, string Errores) EjecutarConErrores(string script)
+        // El proceso de pruebas hereda el idioma de la máquina (LANG). Con 'lcAll' se fija LC_ALL; con 'isSigpipePorDefecto'
+        // el script se lanza con SIGPIPE por defecto, como en una sesión SSH (.NET lo ignora y sus hijos lo heredan
+        // ignorado: un grep que escribe en una tubería cerrada falla con EPIPE en vez de morir).
+        private (int Codigo, string Salida, string Errores) EjecutarConErrores(string script, string? lcAll = null, bool isSigpipePorDefecto = false)
         {
-            ProcessStartInfo inicio = new("/bin/bash", ["-c", script]) { RedirectStandardOutput = true, RedirectStandardError = true };
+            ProcessStartInfo inicio = isSigpipePorDefecto
+                ? new("/usr/bin/env", ["--default-signal=PIPE", "/bin/bash", "-c", script]) { RedirectStandardOutput = true, RedirectStandardError = true }
+                : new("/bin/bash", ["-c", script]) { RedirectStandardOutput = true, RedirectStandardError = true };
             inicio.Environment["PATH"] = _bin;
+            if (lcAll is not null)
+                inicio.Environment["LC_ALL"] = lcAll;
             inicio.WorkingDirectory = _datos;
             using Process proceso = Process.Start(inicio)!;
             Task<string> errores = proceso.StandardError.ReadToEndAsync();
