@@ -154,7 +154,7 @@ namespace NativeSsh.Test.Protocolo
         {
             // Arrange
             IdentidadShell identidad = new(123456, 789);
-            string cola = $"[ \"$$ $PPID\" = '123456 789' ] || __ns_rc={MarcadorFin.CodigoShellAnidado}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
+            string cola = $"case \"$$ $PPID\" in '123456 789') ;; *) __ns_rc={MarcadorFin.CodigoShellAnidado} ;; esac; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w, identidad));

@@ -739,11 +739,11 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _salida.Add(bytes[i..Math.Min(bytes.Length, i + _tamanoTrozo)]);
         }
 
-        // Lo que hace la cola de la línea: si comprueba la identidad ([ "$$ $PPID" = '<pid> <ppid>' ] || __ns_rc=999) y no
-        // coincide con la del shell que la ejecuta, el marcador lleva 999.
+        // Lo que hace la cola de la línea: si comprueba la identidad (case "$$ $PPID" in '<pid> <ppid>') ;; *) __ns_rc=999 ;;
+        // esac) y no coincide con la del shell que la ejecuta, el marcador lleva 999.
         private int CodigoCola(string linea, int codigo)
         {
-            const string Prefijo = "[ \"$$ $PPID\" = '";
+            const string Prefijo = "case \"$$ $PPID\" in '";
             int inicio = linea.IndexOf(Prefijo, StringComparison.Ordinal);
             if (inicio < 0)
                 return codigo;

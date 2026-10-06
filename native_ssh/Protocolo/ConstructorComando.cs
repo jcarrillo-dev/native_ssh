@@ -108,15 +108,18 @@ namespace NativeSsh.Protocolo
         }
 
         // Con identidad, la línea comprueba antes del marcador que la ejecuta el shell de la sesión; si no, el marcador lleva
-        // MarcadorFin.CodigoShellAnidado. Solo [, printf y read: cualquier shell POSIX la entiende.
+        // MarcadorFin.CodigoShellAnidado. Con 'case' y no con '[': '[' (y 'test') se pueden redefinir como función (en el
+        // shell de la sesión daría falsos positivos; en el rc de un shell anidado, que no se detectara), y 'case' es una
+        // palabra reservada; un alias con su nombre solo rompe la línea, que entonces no da marcador y se trata como un
+        // proceso que no responde. Cualquier shell POSIX la entiende.
         private static void EscribirCola(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             if (identidad is { } esperada)
             {
-                escritor.Write("[ \"$$ $PPID\" = '"u8);
+                escritor.Write("case \"$$ $PPID\" in '"u8);
                 esperada.Escribir(escritor);
                 // 999 = MarcadorFin.CodigoShellAnidado.
-                escritor.Write("' ] || __ns_rc=999; "u8);
+                escritor.Write("') ;; *) __ns_rc=999 ;; esac; "u8);
             }
 
             escritor.Write("printf '%s_%s_%d__\\n' '__NSX' '"u8);
