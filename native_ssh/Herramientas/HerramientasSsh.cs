@@ -2321,6 +2321,12 @@ namespace NativeSsh.Herramientas
         // cerrada, siempre antes de enviarlo. El otro Error de la sesión, «Error interno: …», puede llegar después de
         // enviarlo y no cuenta; sin ninguna salida recibida, por si acaso. Entonces no se ejecutó nada y el error no remite
         // a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco funcionan).
+        // Punto de enganche con el E-nonies (A-decies, AD4): es el único sitio que decide si el comando llegó al shell
+        // (lo usan ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd). Al integrar r2-enoveno, la heurística se
+        // sustituye por su señal: 'peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado' (la sesión la
+        // marca con MarcarComandoEnviado al escribir el comando entero; ya no depende del literal «Error interno:» ni de que
+        // no haya salida, y PrefijoErrorInterno sobra). El aviso de un servidor sin bash (RespuestaSinBash.IsMensajeSinBash)
+        // ya dice que no se ejecutó nada y que ninguna herramienta funcionará: va tal cual detrás de NoEnviadaAlShell.
         private static bool IsNoEnviadaAlShell(Peticion peticion) =>
             peticion.Estado == EstadoPeticionEnum.Error
             && peticion.CodigoSalida == -1
