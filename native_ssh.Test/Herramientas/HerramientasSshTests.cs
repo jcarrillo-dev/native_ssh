@@ -369,7 +369,32 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = estado.Sesiones.Should().ContainSingle().Which.IsShellActivo.Should().BeFalse();
-            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta cuando ssh_status muestre el shell activo (isShellActivo=true) con este comando en curso.");
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
+            _ = reintento.Salida.Should().Contain("recibido:x");
+        }
+
+        // Con el canal del shell ya abierto pero el inicio de sesión todavía en curso (aquí tarda 1,5 s), la sesión sigue
+        // rechazando la entrada: ssh_status muestra el shell activo, así que el error no dice que no lo esté, sino las dos
+        // causas posibles con el canal abierto y el comando dentro de su plazo (inicialización pendiente o fallo de la
+        // escritura) (auditoría del A-septies, sonda Y02).
+        [Fact]
+        public async Task Input_ConElCanalAbiertoYLaInicializacionEnCurso_DiceQueAunSePuedeEstarInicializando()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion, login: LoginFalsoEnum.LentoConReadline, retrasoLogin: TimeSpan.FromSeconds(1.5));
+            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana" };
+            await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            ResultadoComando comando = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => herramientas.Estado("servidor").Sesiones is [{ IsShellActivo: true }]);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)), TimeSpan.FromSeconds(10));
+            ResultadoComando reintento = await herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+
+            // Assert
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
             _ = reintento.Salida.Should().Contain("recibido:x");
         }
 

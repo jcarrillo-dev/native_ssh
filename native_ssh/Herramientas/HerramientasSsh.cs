@@ -11,6 +11,20 @@ using NativeSsh.Sesion;
 
 namespace NativeSsh.Herramientas
 {
+    // Lo que se ve del shell de una petición en ejecución cuya entrada se rechazó (HerramientasSsh.EnviarEntradaAsync).
+    internal enum ShellEntradaEnum
+    {
+        // Sin sesión del destino, el comando ya no es el que ocupa el shell o su timeout ya venció: causas generales.
+        Indeterminado,
+
+        // La sesión no tiene el shell activo: se está abriendo (conexión, canal) o su canal se acaba de cerrar.
+        Inactivo,
+
+        // Canal abierto, el comando es el que ocupa el shell y su timeout no ha vencido: o el shell aún se inicializa
+        // (el comando no se le ha enviado) o falló la escritura.
+        ActivoConElComando
+    }
+
     [McpServerToolType]
     public sealed partial class HerramientasSsh(GestorSesiones gestor, OpcionesNativeSsh opciones)
     {
@@ -296,41 +310,56 @@ namespace NativeSsh.Herramientas
             long desde = peticion.Salida.Longitud;
             // Se mira antes de enviar y otra vez tras el rechazo: si el shell se activa justo entre los dos, la entrada se
             // rechazó igualmente porque todavía se estaba abriendo.
-            bool isShellInactivo = IsShellInactivo(peticion.Destino.Clave);
+            ShellEntradaEnum antes = ObservarShell(peticion);
             if (!gestor.EnviarEntrada(peticion, texto, enter))
-                throw new NativeSshException(MensajeEntradaNoEnviada(peticion, isShellInactivo || IsShellInactivo(peticion.Destino.Clave)));
+            {
+                ShellEntradaEnum despues = ObservarShell(peticion);
+                throw new NativeSshException(MensajeEntradaNoEnviada(peticion, antes == ShellEntradaEnum.Inactivo ? antes : despues));
+            }
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, desde);
         }
 
-        // Sesión del destino con su shell sin abrir (ssh_status lo muestra como shellActivo=false): se está conectando,
-        // iniciando sesión o inicializando el shell (primer comando, tras ssh_reset_shell o tras perderlo), o el canal se
-        // acaba de cerrar o perder. Sin sesión, false: no hay shell que se esté abriendo.
-        private bool IsShellInactivo(string clave)
+        // Lo que la sesión del destino deja ver de su shell respecto a una petición en ejecución (ver ShellEntradaEnum). La
+        // sesión no expone si la inicialización del shell terminó ni si el comando ya se le envió: con el canal abierto,
+        // el comando como el que ocupa el shell y su timeout sin vencer, eso y un fallo de la escritura son las únicas causas
+        // que quedan para un rechazo.
+        private ShellEntradaEnum ObservarShell(Peticion peticion)
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
-                if (sesion.Destino.Clave == clave)
-                    return !sesion.IsShellActivo;
+            {
+                if (sesion.Destino.Clave != peticion.Destino.Clave)
+                    continue;
 
-            return false;
+                return !sesion.IsShellActivo
+                    ? ShellEntradaEnum.Inactivo
+                    : ReferenceEquals(sesion.PeticionActual, peticion) && peticion.TiempoEjecucion < peticion.Timeout
+                        ? ShellEntradaEnum.ActivoConElComando
+                        : ShellEntradaEnum.Indeterminado;
+            }
+
+            return ShellEntradaEnum.Indeterminado;
         }
 
         // Por qué no se envió la entrada, con lo que la petición y su sesión dejan ver tras el rechazo (sin afirmar que el
         // comando no admite entrada: un comando en ejecución casi siempre la admite). La sesión rechaza la entrada si la
-        // petición no está en ejecución, mientras su shell se abre (la petición ya está en ejecución, pero el comando aún no
-        // se ha enviado al shell), durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si ya no es la que
-        // ocupa el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera se distinguen el
-        // estado, si se pidió cancelarla y si el shell está activo: el resto se enumera.
-        internal static string MensajeEntradaNoEnviada(Peticion peticion, bool isShellInactivo) => peticion.Estado switch
+        // petición no está en ejecución, mientras su shell se abre o se inicializa (la petición ya está en ejecución, pero
+        // el comando aún no se ha enviado al shell), durante una interrupción (Ctrl+C o el cierre del canal que la sigue), si
+        // ya no es la que ocupa el shell o si no hay sesión; y devuelve false si la escritura en el canal falla. Desde fuera
+        // se distinguen el estado, si se pidió cancelarla y lo que se ve del shell (ShellEntradaEnum): el resto se enumera.
+        internal static string MensajeEntradaNoEnviada(Peticion peticion, ShellEntradaEnum shell) => peticion.Estado switch
         {
             EstadoPeticionEnum.Encolado => $"No se envió la entrada: el comando {peticion.IdTexto} sigue encolado, esperando su turno en el shell de {peticion.Destino.Clave}. Envíala cuando esté en ejecución (ssh_status).",
             EstadoPeticionEnum.Ejecutando when peticion.IsCancelacionSolicitada => $"No se envió la entrada: el comando {peticion.IdTexto} se está cancelando (Ctrl+C enviado o cierre del canal del shell en curso, por ssh_cancel o ssh_reset_shell) y mientras tanto el shell no admite entrada.",
-            EstadoPeticionEnum.Ejecutando when isShellInactivo => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta cuando ssh_status muestre el shell activo (isShellActivo=true) con este comando en curso.",
+            EstadoPeticionEnum.Ejecutando when shell == ShellEntradaEnum.Inactivo => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). {ReintentoTrasApertura}",
+            EstadoPeticionEnum.Ejecutando when shell == ShellEntradaEnum.ActivoConElComando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell de {peticion.Destino.Clave} no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). {ReintentoTrasApertura}",
             EstadoPeticionEnum.Ejecutando => $"No se envió la entrada al comando {peticion.IdTexto}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect, ya no es el comando que ocupa el shell o falló la escritura en el canal, y entonces pudo llegar una parte). Comprueba su estado con ssh_output o ssh_status antes de reintentar.",
             EstadoPeticionEnum.Completado or EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado or EstadoPeticionEnum.ShellPerdido or EstadoPeticionEnum.Error => $"No se envió la entrada: el comando {peticion.IdTexto} ya terminó (estado {peticion.Estado}).",
             _ => $"No se envió la entrada: el comando {peticion.IdTexto} está en un estado desconocido ({peticion.Estado})."
         };
+
+        private const string ReintentoTrasApertura = "Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.";
 
         [McpServerTool(Name = "ssh_cancel", Destructive = true, Idempotent = true)]
         [Description("Cancela un comando: si está encolado no llega a ejecutarse; si está en ejecución se envía Ctrl+C y, si no responde, se cierra el canal del shell (se pierden las variables exportadas).")]
