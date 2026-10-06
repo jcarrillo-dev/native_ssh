@@ -132,6 +132,32 @@ namespace NativeSsh.Test.Integracion
             return casos;
         }
 
+        // Un binario pedido como ruta que casa nunca es «sin coincidencias»: el grep de GNU lo callaba con -I. Cada motor
+        // lo dice a su manera (rg y grep de GNU, «binary file matches»; busybox da la línea), pero todos con su nombre.
+        [Theory]
+        [MemberData(nameof(Motores))]
+        public void BinarioPedidoComoRuta_TodosLosMotoresDicenQueCasa(string motor)
+        {
+            // Arrange
+            string? anunciado = InstalarMotor(motor);
+            if (anunciado is null)
+                return;
+            _ = Directory.CreateDirectory(Path.Combine(_datos, "p"));
+            File.WriteAllBytes(Path.Combine(_datos, "p", "datos.bin"), [.. "valor binario\n"u8, 0, 1, .. "\n"u8]);
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor [a-z]+", "p/datos.bin", null, 50));
+            (int codigoNada, string salidaNada, _) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("no_aparece", "p/datos.bin", null, 50));
+
+            // Assert
+            _ = (codigo, errores).Should().Be((0, string.Empty));
+            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _ = lineas[0].Should().Be($"__NS_MOTOR:{anunciado}");
+            _ = lineas[1..].Should().ContainSingle().Which.Should().StartWith("p/datos.bin:");
+            _ = salidaNada.Should().Be($"__NS_MOTOR:{anunciado}\n");
+            _ = codigoNada.Should().Be(motor == "find" ? 0 : 1);
+        }
+
         // Dentro del árbol, los cuatro caminos excluyen lo mismo: los directorios de la lista se podan a cualquier
         // profundidad, pero un archivo que se llama como uno de ellos (aquí 'bin' y 'build', p. ej. un script) se busca
         // (rg los excluía también como archivos), y un enlace a un directorio no se sigue (como grep -r y rg sin -L; el

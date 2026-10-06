@@ -619,7 +619,7 @@ namespace NativeSsh.Herramientas
         // - El grep de GNU aplica --exclude-dir, --exclude e --include también a las rutas de la línea de órdenes
         //   (compara el nombre, y lo que sigue a cada '/', con el patrón): un directorio pedido va con la barra final, con
         //   la que ningún patrón casa (sale igual, 'dir/archivo'), y un archivo pedido va sin esas opciones ni -r y con -H
-        //   (con -r y un solo archivo, grep no da su nombre).
+        //   (con -r y un solo archivo, grep no da su nombre); si es un binario que casa (-I lo calla), lo dice como rg.
         // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido; en rg las exclusiones de directorios
         //   llevan la barra final de los globs de gitignore, para que, como en grep y find, no excluyan un archivo que se
         //   llama igual (un script 'build' o 'bin'); y el filtro de extensión va antes que las exclusiones, porque en rg
@@ -679,10 +679,16 @@ namespace NativeSsh.Herramientas
                   printf '{{PrefijoMotor}}grep -%s\n' "$sintaxis"
                   if [ -d {{rutaEscapada}} ]; then
                     grep -rnIHs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{directorioGrepEscapado}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
                   else
                     grep -nIHs -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
+                    # -I calla un binario: pedido como ruta, se dice que casa (como rg) en vez de «sin coincidencias».
+                    if [ "$rc" = 1 ] && grep -qs -"$sintaxis" -e {{patronEscapado}} -- {{rutaEscapada}}; then
+                      printf '%s: binary file matches\n' {{rutaEscapada}}
+                      rc=0
+                    fi
                   fi
-                  rc=${PIPESTATUS[0]}
                 else
                   printf '{{PrefijoMotor}}grep -E\n'
                   printf 'x\n' | grep -E -e {{patronEscapado}} >/dev/null
