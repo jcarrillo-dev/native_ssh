@@ -609,12 +609,21 @@ namespace NativeSsh.Herramientas
         // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó. Las exclusiones y -I de
         // grep son de GNU (se comprueba que las admite, no la versión): con otro grep (p. ej. busybox, que las rechaza con
         // su ayuda; Bloque S, P2) el árbol se recorre con find (poda de los mismos directorios, mismas exclusiones de
-        // archivos y los binarios por extensión) y cada archivo se busca con grep -E. Ahí el código de find no sirve (es
-        // distinto de 0 si cualquier lote de grep no encontró nada): sale con 0 y una salida vacía es «sin coincidencias»;
-        // una regex inválida se detecta antes con una línea de prueba (busybox no la compila sin datos que leer).
+        // archivos y los binarios por extensión) y cada archivo se busca con grep -E; una regex inválida se detecta antes
+        // con una línea de prueba (busybox no la compila sin datos que leer).
+        // - Una ruta relativa que empieza por '-', '(', ')', '!' o ',' lleva './' delante en los tres motores (misma salida
+        //   en todos): find la tomaría por una opción ('-d' es '-depth' en GNU) o un operador y, con su error callado,
+        //   daba «sin coincidencias» o buscaba en todo el directorio actual.
+        // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
+        //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
+        //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
+        //   error sale por stderr con el código 2. El código de find no sirve (es distinto de 0 si cualquier lote de grep
+        //   no encontró nada): sin ese error sale con 0 y una salida vacía es «sin coincidencias».
         internal static string ConstruirComandoBusqueda(string patron, string rutaEfectiva, string? extension, int limite)
         {
-            string rutaEscapada = Escapar(rutaEfectiva);
+            string rutaMotor = rutaEfectiva[0] is '-' or '(' or ')' or '!' or ',' ? "./" + rutaEfectiva : rutaEfectiva;
+            string rutaEscapada = Escapar(rutaMotor);
+            string rutaPedidaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
             string filtroRg = string.Empty;
             string filtroGrep = string.Empty;
@@ -638,13 +647,13 @@ namespace NativeSsh.Herramientas
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
-                  sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
+                  sin_acceso {{rutaEscapada}} 0 {{rutaPedidaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaPedidaEscapada}} >&2
                   exit 1
                 fi
                 # La ruta pedida debe poder leerse (y recorrerse si es un directorio): los motores silencian los errores
                 # de permisos y un "sin coincidencias" engañaría. Los archivos ilegibles dentro del árbol sí se omiten.
                 if [ ! -r {{rutaEscapada}} ] || { [ -d {{rutaEscapada}} ] && [ ! -x {{rutaEscapada}} ]; }; then
-                  printf 'Error: sin permiso de lectura en la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
+                  printf 'Error: sin permiso de lectura en la ruta de búsqueda: %s\n' {{rutaPedidaEscapada}} >&2
                   exit 1
                 fi
                 # Código del motor, no de head; 141 (SIGPIPE) = head ya tenía suficientes líneas.
@@ -668,12 +677,22 @@ namespace NativeSsh.Herramientas
                   printf 'x\n' | grep -E -e {{patronEscapado}} >/dev/null
                   [ "$?" = 2 ] && exit 2
                   if [ -d {{rutaEscapada}} ]; then
-                    find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
-                      -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>/dev/null | head -n {{limite + 1}}
+                    # Mensajes de find en inglés para reconocerlos (LC_MESSAGES=C). Si el idioma lo fija LC_ALL, pasa a
+                    # LANG: grep conserva así la codificación y el orden (LC_CTYPE, LC_COLLATE), que cambian lo que casa.
+                    if [ -n "${LC_ALL-}" ]; then
+                      export LANG=$LC_ALL
+                      unset LC_ALL LC_CTYPE LC_COLLATE
+                    fi
+                    { LC_MESSAGES=C find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
+                        -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- |
+                        grep -v -e ': Permission denied$' -e ': No such file or directory$' -e ' terminated by signal 13$' -e ': Broken pipe$' >&2
+                    } 3>&1 | head -n {{limite + 1}}
+                    # El filtro sale con 0 si dejó pasar algún error de find.
+                    [ "${PIPESTATUS[0]}" = 0 ] && rc=2 || rc=0
                   else
                     grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=0
                   fi
-                  rc=0
                 fi
                 [ "$rc" -eq 141 ] && rc=0
                 exit "$rc"

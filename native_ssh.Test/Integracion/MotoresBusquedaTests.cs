@@ -8,7 +8,7 @@ namespace NativeSsh.Test.Integracion
     // Ejecuta el script de ssh_search con bash local y un PATH controlado para recorrer los tres motores.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
-    public sealed class MotoresBusquedaTests : IDisposable
+    public sealed partial class MotoresBusquedaTests : IDisposable
     {
         private readonly string _raiz = Path.Combine(Path.GetTempPath(), $"ns_motores_{Guid.NewGuid():N}");
         private readonly string _datos;
@@ -47,14 +47,20 @@ namespace NativeSsh.Test.Integracion
 
         private (int Codigo, string Salida) Ejecutar(string script)
         {
+            (int codigo, string salida, _) = EjecutarConErrores(script);
+            return (codigo, salida);
+        }
+
+        private (int Codigo, string Salida, string Errores) EjecutarConErrores(string script)
+        {
             ProcessStartInfo inicio = new("/bin/bash", ["-c", script]) { RedirectStandardOutput = true, RedirectStandardError = true };
             inicio.Environment["PATH"] = _bin;
             inicio.WorkingDirectory = _datos;
             using Process proceso = Process.Start(inicio)!;
+            Task<string> errores = proceso.StandardError.ReadToEndAsync();
             string salida = proceso.StandardOutput.ReadToEnd();
-            _ = proceso.StandardError.ReadToEnd();
             proceso.WaitForExit();
-            return (proceso.ExitCode, salida);
+            return (proceso.ExitCode, salida, errores.Result);
         }
 
         private void InstalarGrep(bool isConPcre)
