@@ -2279,7 +2279,7 @@ namespace NativeSsh.Herramientas
         // Prefijo del aviso de SesionShell para una excepción inesperada al ejecutar un comando.
         private const string PrefijoErrorInterno = "Error interno:";
 
-        private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse, porque no se pudo abrir el shell de ssh_exec en el servidor (conexión, inicio de sesión o inicialización); no se ejecutó nada.";
+        private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse (no se envió al shell de ssh_exec: no se pudo abrir —conexión, inicio de sesión o inicialización— o la sesión ya estaba cerrada).";
 
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
         // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
