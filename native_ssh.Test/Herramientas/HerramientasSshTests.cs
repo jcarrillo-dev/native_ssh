@@ -116,6 +116,11 @@ namespace NativeSsh.Test.Herramientas
             return new($"__NS_CWD_{id}__ {Convert.ToBase64String(Encoding.UTF8.GetBytes(directorio))}\n", 0);
         }
 
+        // Un stderr de 1500 caracteres (el aviso lo acota a 1000) y otro cuyo carácter 1000 es la primera mitad de un emoji
+        // (un par sustituto): el corte no debe partirlo.
+        private static readonly string ErrorLargo = "grep: " + string.Concat(Enumerable.Range(0, 1494).Select(i => (char)('a' + (i % 26))));
+        private static readonly string ErrorConEmojiEnElCorte = "grep: " + new string('e', 993) + "\U0001F600" + "cola";
+
         // El script elige el motor en el servidor y lo anuncia en la primera línea; el falso simula 'grep -P'.
         private static RespuestaFalsa SimularBusqueda(string comando)
         {
@@ -139,8 +144,20 @@ namespace NativeSsh.Test.Herramientas
             if (comando.Contains("parcial_sin_error"))
                 return new(Motor + "archivo.txt:1:coincidencia encontrada\n", 2);
 
+            if (comando.Contains("vacio_codigo_dos"))
+                return new(Motor, 2);
+
             if (comando.Contains("parcial_con_error"))
                 return new(Motor + "archivo.txt:1:coincidencia encontrada\ngrep: sub/x.txt: Input/output error\n", 2);
+
+            if (comando.Contains("parcial_error_largo"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n" + ErrorLargo + "\n", 2);
+
+            if (comando.Contains("parcial_error_emoji"))
+                return new(Motor + "archivo.txt:1:coincidencia encontrada\n" + ErrorConEmojiEnElCorte + "\n", 2);
+
+            if (comando.Contains("parcial_limite"))
+                return new(Motor + "a.txt:1:uno\nb.txt:2:dos\nc.txt:3:tres\ngrep: sub/x.txt: Input/output error\n", 2);
 
             if (comando.Contains("'extremos'"))
                 return new(Motor + LineasConBlancos + "\n", 0);
@@ -1368,8 +1385,7 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Código 2 con resultados y con stderr: el motor falló en parte del árbol. Se dan los resultados con un aviso de que
-        // pueden faltar coincidencias y el error, en vez de descartarlo (A-decies, AD3). Un 2 sin stderr (archivos
-        // ilegibles callados por -s/--no-messages) no avisa.
+        // pueden faltar coincidencias y el error, en vez de descartarlo (A-decies, AD3).
         [Fact]
         public async Task Search_ErrorConResultados_AvisaDeQueElResultadoPuedeSerParcial()
         {
@@ -1383,14 +1399,62 @@ namespace NativeSsh.Test.Herramientas
                 .And.EndWith("[motor: grep -P]");
         }
 
+        // Un 2 sin stderr (los errores que -s/--no-messages callan, como archivos ilegibles) también avisa, sin detalle: algo
+        // no se pudo leer y pueden faltar coincidencias (A-undecies, AU3).
         [Fact]
-        public async Task Search_CodigoDosSinErroresConResultados_NoAvisa()
+        public async Task Search_CodigoDosSinErroresConResultados_AvisaSinDetalle()
         {
             // Act
             string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_sin_error");
 
             // Assert
-            _ = salida.Should().Be("archivo.txt:1:coincidencia encontrada\n\n[motor: grep -P]");
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
+        }
+
+        [Fact]
+        public async Task Search_CodigoDosSinErroresNiResultados_DiceQueNoHayCoincidenciasYAvisaSinDetalle()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "vacio_codigo_dos");
+
+            // Assert
+            _ = salida.Should().Be($"No se encontraron coincidencias para el patrón: 'algo' en 'vacio_codigo_dos'.\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
+        }
+
+        private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
+
+        // El stderr del aviso se acota a sus primeros 1000 caracteres, con «…» (A-undecies, AU3; mutación V01).
+        [Fact]
+        public async Task Search_ErrorLargoConResultados_AcotaElErrorA1000Caracteres()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_error_largo");
+
+            // Assert
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {ErrorLargo[..1000]}…]\n[motor: grep -P]");
+        }
+
+        // Si el carácter 1000 es la primera mitad de un par sustituto, el corte se queda en 999 (no deja medio emoji).
+        [Fact]
+        public async Task Search_ErrorConUnEmojiEnElCorte_NoParteElParSustituto()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_error_emoji");
+
+            // Assert
+            _ = salida.Should().Be($"archivo.txt:1:coincidencia encontrada\n\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {ErrorConEmojiEnElCorte[..999]}…]\n[motor: grep -P]");
+            _ = salida.EnumerateRunes().Should().NotContain(Rune.ReplacementChar);
+        }
+
+        // Con el límite alcanzado y errores, salen los dos avisos (mutación V02).
+        [Fact]
+        public async Task Search_ErrorConElLimiteAlcanzado_DaLosDosAvisos()
+        {
+            // Act
+            string salida = await _herramientas.BuscarAsync("servidor", "algo", "parcial_limite", maxResultados: 2);
+
+            // Assert
+            _ = salida.Should().Be("a.txt:1:uno\nb.txt:2:dos\n\n[Límite alcanzado: se muestran 2 coincidencias. Refina el patrón o subdirectorio para acotar la búsqueda.]\n[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: grep: sub/x.txt: Input/output error]\n[motor: grep -P]");
         }
 
         [Theory]
