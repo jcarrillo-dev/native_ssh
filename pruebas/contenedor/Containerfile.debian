@@ -1,0 +1,23 @@
+# Servidor de pruebas de native_ssh con sudo real: Debian estable con su configuración de sudo de serie (use_pty,
+# secure_path, env_reset, caché de credenciales por terminal), un usuario con contraseña que pertenece al grupo 'sudo'
+# (la regla '%sudo ALL=(ALL:ALL) ALL' de la distribución, sin NOPASSWD) y sshd con autenticación solo por clave.
+# Lo construye y arranca pruebas/contenedor-sudo.sh (podman rootless); las claves del servidor y la del cliente se montan
+# en /etc/ns desde el directorio de estado del anfitrión, así que la imagen no contiene ningún secreto.
+FROM docker.io/library/debian:13-slim
+
+# attr (getfattr/setfattr) y libcap2-bin (getcap/setcap): para preparar y comprobar atributos extendidos y capacidades.
+# procps: ps/pgrep para comprobar desde las pruebas qué procesos siguen vivos. coreutils, util-linux (flock) y perl-base
+# vienen de serie.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openssh-server sudo attr libcap2-bin procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+ARG CONTRASENA=contrasena-de-prueba
+RUN useradd --create-home --shell /bin/bash --groups sudo prueba \
+    && printf 'prueba:%s\n' "$CONTRASENA" | chpasswd
+
+COPY sshd_config /etc/ns-sshd_config
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ns-sshd_config"]

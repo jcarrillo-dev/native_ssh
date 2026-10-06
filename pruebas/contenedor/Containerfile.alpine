@@ -1,0 +1,20 @@
+# Servidor de pruebas de native_ssh con sudo real: Alpine (busybox en lugar de GNU coreutils/util-linux: sin
+# 'cp --attributes-only', 'stat -c %C' ni 'flock -E'; sin python3 ni perl) con el sudo de Alpine y su configuración de
+# serie; el usuario de prueba tiene contraseña y pertenece a 'wheel', que recibe en sudoers.d la regla que Alpine trae
+# comentada ('%wheel ALL=(ALL:ALL) ALL', sin NOPASSWD). bash es el shell de login (native_ssh ejecuta sus scripts con
+# bash). Lo construye y arranca pruebas/contenedor-sudo.sh (podman rootless); las claves se montan en /etc/ns.
+FROM docker.io/library/alpine:3.24
+
+RUN apk add --no-cache openssh-server sudo bash \
+    && printf '%%wheel ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/wheel \
+    && chmod 0440 /etc/sudoers.d/wheel
+
+ARG CONTRASENA=contrasena-de-prueba
+RUN adduser -D -s /bin/bash prueba \
+    && addgroup prueba wheel \
+    && printf 'prueba:%s\n' "$CONTRASENA" | chpasswd
+
+COPY sshd_config /etc/ns-sshd_config
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ns-sshd_config"]

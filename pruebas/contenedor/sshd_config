@@ -1,0 +1,17 @@
+# sshd de los contenedores de pruebas (Debian y Alpine). Las claves llegan montadas en /etc/ns desde el anfitrión.
+Port 22
+HostKey /etc/ns/host_ed25519
+AuthorizedKeysFile /etc/ns/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+AllowUsers prueba
+# Sin PAM en sshd: pam_loginuid falla en un contenedor sin privilegios. sudo sí usa PAM (o shadow en Alpine) para la
+# contraseña.
+UsePAM no
+# Los archivos montados vienen del anfitrión (su dueño es el uid mapeado): sin comprobar su dueño ni sus permisos.
+StrictModes no
+PrintMotd no
+PrintLastLog no
+LogLevel VERBOSE
