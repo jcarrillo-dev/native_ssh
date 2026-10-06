@@ -10,6 +10,10 @@ namespace NativeSsh.Protocolo
         public const int MaxDigitosCodigo = 3;
         public const int MaxLongitud = LongitudCabecera + LongitudId + 1 + MaxDigitosCodigo + 2;
 
+        // Código del marcador cuando la línea la ejecutó un shell distinto del de la sesión (IdentidadShell): fuera del rango
+        // de los códigos de salida (0-255), así que ningún comando puede devolverlo.
+        public const int CodigoShellAnidado = 999;
+
         public static ReadOnlySpan<byte> Cabecera => "__NSX_"u8;
 
         public static void EscribirId(Guid id, IBufferWriter<byte> escritor)

@@ -11,7 +11,8 @@ namespace NativeSsh.Protocolo
         public const int MaxBase64PorLinea = 3000;
         public const int BytesPorLinea = MaxBase64PorLinea / 4 * 3;
 
-        public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, IBufferWriter<byte> escritor)
+        // identidad: la del shell que debe ejecutar la línea (null mientras no se conoce, solo durante la inicialización).
+        public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(comando.Length));
             int longitud = Encoding.UTF8.GetBytes(comando, utf8.Span);
@@ -32,7 +33,7 @@ namespace NativeSsh.Protocolo
             }
 
             escritor.Write("'\neval \"$(printf '%s' \"$__ns_b\" | base64 -d)\"; __ns_rc=$?; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
-            EscribirCola(id, escritor);
+            EscribirCola(id, escritor, identidad);
         }
 
         public static void EscribirInicializacion(Guid id, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
@@ -75,13 +76,16 @@ namespace NativeSsh.Protocolo
             EscribirCola(id, escritor);
         }
 
-        // Tras inicializar: el PATH que dejó el shell de login (lo hereda el bash del PTY), para los canales exec (que solo
-        // reciben el PATH por defecto de sshd). Va en base64, en una sola línea, entre "__NSP_<id>_\n" y "\n__NSQ_<id>_\n"
-        // (LectorCapturaPath): otro proceso que escriba en el terminal a la vez no se confunde con él. Los marcadores se
-        // imprimen con printf '%s_%s', así que el texto de la línea no los contiene. El primer '\n' satisface el 'read'.
+        // Tras inicializar: la identidad del bash ($$ y $PPID) en "__NSI_<id>_<pid>_<ppid>__\n" (IdentidadShell) y el PATH que
+        // dejó el shell de login (lo hereda el bash del PTY), para los canales exec (que solo reciben el PATH por defecto de
+        // sshd). El PATH va en base64, en una sola línea, entre "__NSP_<id>_\n" y "\n__NSQ_<id>_\n" (LectorCapturaPath): otro
+        // proceso que escriba en el terminal a la vez no se confunde con él. Los marcadores se imprimen con printf '%s_%s',
+        // así que el texto de la línea no los contiene. El primer '\n' satisface el 'read'.
         public static void EscribirCapturaPath(Guid id, IBufferWriter<byte> escritor)
         {
-            escritor.Write("\n__ns_rc=0; printf '%s_%s_\\n' '__NSP' '"u8);
+            escritor.Write("\n__ns_rc=0; printf '%s_%s_%d_%d__\\n' '__NSI' '"u8);
+            MarcadorFin.EscribirId(id, escritor);
+            escritor.Write("' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '"u8);
             MarcadorFin.EscribirId(id, escritor);
@@ -95,14 +99,26 @@ namespace NativeSsh.Protocolo
 
         // Línea que devuelve el shell a un estado conocido tras Ctrl+C. El primer '\n' es una línea vacía para bash (que
         // descartó lo que tenía a medias al recibir Ctrl+C).
-        public static void EscribirRecuperacion(Guid id, IBufferWriter<byte> escritor)
+        // Si la ejecuta un shell interactivo anidado que el Ctrl+C no terminó (sudo -i, su -, ssh a otra máquina, bash -i),
+        // su marcador lleva MarcadorFin.CodigoShellAnidado (EscribirCola).
+        public static void EscribirRecuperacion(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             escritor.Write("\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
-            EscribirCola(id, escritor);
+            EscribirCola(id, escritor, identidad);
         }
 
-        private static void EscribirCola(Guid id, IBufferWriter<byte> escritor)
+        // Con identidad, la línea comprueba antes del marcador que la ejecuta el shell de la sesión; si no, el marcador lleva
+        // MarcadorFin.CodigoShellAnidado. Solo [, printf y read: cualquier shell POSIX la entiende.
+        private static void EscribirCola(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
+            if (identidad is { } esperada)
+            {
+                escritor.Write("[ \"$$ $PPID\" = '"u8);
+                esperada.Escribir(escritor);
+                // 999 = MarcadorFin.CodigoShellAnidado.
+                escritor.Write("' ] || __ns_rc=999; "u8);
+            }
+
             escritor.Write("printf '%s_%s_%d__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("' \"$__ns_rc\"; read -r __ns_d\n"u8);

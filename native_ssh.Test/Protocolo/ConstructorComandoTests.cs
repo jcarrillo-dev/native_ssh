@@ -145,8 +145,27 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirCapturaPath(Id, w));
 
             // Assert: el primer '\n' satisface el 'read' del marcador anterior; los marcadores no aparecen en el texto.
-            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
-            _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}");
+            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s_%s_%d_%d__\\n' '__NSI' '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}").And.NotContain($"__NSI_{Id:N}");
+        }
+
+        [Fact]
+        public void ComandoYRecuperacion_ConIdentidad_ComparanPidYPadreJustoAntesDelMarcador()
+        {
+            // Arrange
+            IdentidadShell identidad = new(123456, 789);
+            string cola = $"[ \"$$ $PPID\" = '123456 789' ] || __ns_rc={MarcadorFin.CodigoShellAnidado}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
+
+            // Act
+            string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w, identidad));
+            string recuperacion = Componer(w => ConstructorComando.EscribirRecuperacion(Id, w, identidad));
+            string sinIdentidad = Componer(w => ConstructorComando.EscribirComando("ls", Id, w));
+
+            // Assert: la comprobación va después del eval (y del cd), así que la ejecuta el shell que ejecuta la cola.
+            _ = comando.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
+            _ = recuperacion.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
+            _ = sinIdentidad.Should().NotContain("$PPID");
+            _ = MarcadorFin.CodigoShellAnidado.Should().BeInRange(256, 999, "ningún código de salida (0-255) puede coincidir y cabe en los 3 dígitos del marcador");
         }
 
         [Fact]
