@@ -111,6 +111,7 @@ namespace NativeSsh.Test.Integracion
         [Theory]
         [InlineData(null)]
         [InlineData("py")]
+        [InlineData("js")]
         public void SinGrepDeGnu_RecorreConFindYGrepE_ConLasMismasExclusiones(string? extension)
         {
             // Arrange
@@ -124,9 +125,13 @@ namespace NativeSsh.Test.Integracion
             _ = codigo.Should().Be(0);
             string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
             _ = lineas[0].Should().Be("__NS_MOTOR:grep -E");
-            _ = extension is null
-                ? lineas[1..].Should().BeEquivalentTo("./src/a.py:1:valor 123", "./src/b.js:1:valor 456", "./sub dir/h.py:2:valor 5")
-                : lineas[1..].Should().BeEquivalentTo("./src/a.py:1:valor 123", "./sub dir/h.py:2:valor 5");
+            // Con "js" solo queda un archivo (f.min.js excluido, build podado): grep lo recibe solo y aun así da su nombre.
+            _ = extension switch
+            {
+                null => lineas[1..].Should().BeEquivalentTo("./src/a.py:1:valor 123", "./src/b.js:1:valor 456", "./sub dir/h.py:2:valor 5"),
+                "py" => lineas[1..].Should().BeEquivalentTo("./src/a.py:1:valor 123", "./sub dir/h.py:2:valor 5"),
+                _ => lineas[1..].Should().Equal("./src/b.js:1:valor 456")
+            };
         }
 
         // Sin coincidencias sale con 0 y solo el motor (InterpretarBusqueda lo da como «sin coincidencias»); una regex
@@ -150,6 +155,25 @@ namespace NativeSsh.Test.Integracion
             _ = (codigoArchivo, salidaArchivo).Should().Be((0, "__NS_MOTOR:grep -E\nsub dir/h.py:2:valor 5\n"));
             _ = codigoLimite.Should().Be(0);
             _ = salidaLimite.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(4, "el motor y el límite + 1 líneas");
+        }
+
+        // La poda es de lo que hay dentro de la ruta pedida: buscar dentro de un directorio excluido (aquí node_modules) o de
+        // un enlace simbólico a un directorio (como grep -r con la ruta de la línea de órdenes) encuentra lo que contiene.
+        [Theory]
+        [InlineData("node_modules", "py", "node_modules/c.py:1:valor 789")]
+        [InlineData("enlace", "js", "enlace/b.js:1:valor 456")]
+        public void SinGrepDeGnu_RutaExcluidaOEnlaceADirectorio_BuscaDentro(string ruta, string extension, string esperado)
+        {
+            // Arrange
+            InstalarGrepDeBusybox();
+            _ = Directory.CreateSymbolicLink(Path.Combine(_datos, "enlace"), Path.Combine(_datos, "src"));
+
+            // Act
+            (int codigo, string salida) = Ejecutar(HerramientasSsh.ConstruirComandoBusqueda("valor [0-9]+", ruta, extension, 50));
+
+            // Assert
+            _ = codigo.Should().Be(0);
+            _ = salida.Should().Be($"__NS_MOTOR:grep -E\n{esperado}\n");
         }
 
         [Fact]
