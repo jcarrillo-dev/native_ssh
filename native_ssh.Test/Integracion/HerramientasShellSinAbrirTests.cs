@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -14,13 +15,16 @@ namespace NativeSsh.Test.Integracion
     // servidor sin bash tampoco funcionan (A-nonies, AN4).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
-    public sealed class HerramientasShellSinAbrirTests : IAsyncDisposable
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
+    public sealed class HerramientasShellSinAbrirTests : IAsyncLifetime
     {
         private readonly SshdPropio _sshd = new(string.Empty, "/bin/sh -c 'echo ash: bash: not found >&2; exit 127'");
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_sinabrir_{Guid.NewGuid():N}")).FullName;
         private GestorSesiones? _gestor;
 
-        public async ValueTask DisposeAsync()
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public async Task DisposeAsync()
         {
             if (_gestor is not null)
                 await _gestor.DisposeAsync();
