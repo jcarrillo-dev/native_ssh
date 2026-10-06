@@ -21,7 +21,12 @@ namespace NativeSsh.Test.Sesion.Falsos
         AbreShellAnidado,
 
         // Imprime su salida y su marcador desde otro shell (la cola la ejecuta un shell con otro $$ y otro $PPID).
-        TerminaEnShellAnidado
+        TerminaEnShellAnidado,
+
+        // Como AbreShellAnidado, pero el shell que recibe Ctrl+C y ejecuta las líneas siguientes tiene el mismo $$ y $PPID
+        // que el de la sesión y no tiene su testigo: un shell en un contenedor gemelo (ssh -tt a la otra máquina) o el
+        // programa que deja un 'exec bash' (mismo proceso).
+        AbreShellSinTestigo
     }
 
     // Cómo se comporta el shell de login antes de ejecutar el 'exec bash' de la inicialización.
@@ -366,6 +371,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private ManualResetEventSlim? _retencionEscrituras;
         private ManualResetEventSlim? _confirmacionCierre;
         private string? _identidadActual;
+        private string _testigo = "";
         private int _lineasEnShellAjeno;
 
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
@@ -393,8 +399,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         public int PidPadre { get; init; } = 4200;
         public bool IsSinIdentidad { get; init; }
 
-        // Lo que imprimiría "$$ $PPID" en el shell que ejecuta ahora las líneas: el del canal o uno anidado.
-        public string IdentidadActual => Volatile.Read(ref _identidadActual) ?? $"{Pid} {PidPadre}";
+        // Lo que imprimiría "$$ $PPID ${__NS_TESTIGO-}" en el shell que ejecuta ahora las líneas: el del canal (con el
+        // testigo que guardó la captura) o otro.
+        public string IdentidadActual => Volatile.Read(ref _identidadActual) ?? $"{Pid} {PidPadre} {Volatile.Read(ref _testigo)}";
 
         // Líneas cuya comprobación de identidad no coincidió con el shell que las ejecutó.
         public int LineasEnShellAjeno => Volatile.Read(ref _lineasEnShellAjeno);
@@ -594,7 +601,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 return;
 
             if (_enCurso.Comportamiento == ComportamientoFalsoEnum.AbreShellAnidado)
-                Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999}");
+                Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999} ");
+            else if (_enCurso.Comportamiento == ComportamientoFalsoEnum.AbreShellSinTestigo)
+                Volatile.Write(ref _identidadActual, $"{Pid} {PidPadre} ");
 
             _enCurso = null;
             _idEnCurso = null;
@@ -656,7 +665,16 @@ namespace NativeSsh.Test.Sesion.Falsos
                 string id = ExtraerId(linea);
                 string base64 = Convert.ToBase64String(BytesPathLogin ?? Encoding.UTF8.GetBytes(PathLogin));
                 string captura = linea.Contains("'__NSP'", StringComparison.Ordinal) ? $"__NSP_{id}_\n{base64}\n__NSQ_{id}_\n" : $"{base64}\n";
-                string identidad = linea.Contains("'__NSI'", StringComparison.Ordinal) && !IsSinIdentidad ? $"__NSI_{id}_{Pid}_{PidPadre}__\n" : "";
+                // La captura guarda el testigo del canal y solo entonces imprime la identidad.
+                const string Asignacion = "declare -r -a __NS_TESTIGO=('";
+                int inicioTestigo = linea.IndexOf(Asignacion, StringComparison.Ordinal);
+                if (inicioTestigo >= 0)
+                {
+                    inicioTestigo += Asignacion.Length;
+                    Volatile.Write(ref _testigo, linea[inicioTestigo..linea.IndexOf('\'', inicioTestigo)]);
+                }
+
+                string identidad = linea.Contains("'__NSI'", StringComparison.Ordinal) && !IsSinIdentidad && inicioTestigo >= 0 ? $"__NSI_{id}_{Pid}_{PidPadre}__\n" : "";
                 EmitirConMarcador(RuidoAntesCapturaPath + identidad + captura + RuidoTrasCapturaPath, id, 0);
             }
             else if (linea.StartsWith("__ns_rc=0;", StringComparison.Ordinal))
@@ -707,7 +725,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                     EmitirConMarcador(respuesta.Salida, id, CodigoCola(linea, respuesta.Codigo));
                     break;
                 case ComportamientoFalsoEnum.TerminaEnShellAnidado:
-                    Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999}");
+                    Volatile.Write(ref _identidadActual, $"{Pid + 1000} {Pid + 999} ");
                     EmitirConMarcador(respuesta.Salida, id, CodigoCola(linea, respuesta.Codigo));
                     break;
                 case ComportamientoFalsoEnum.Salir:
@@ -717,6 +735,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 case ComportamientoFalsoEnum.IgnoraCtrlC:
                 case ComportamientoFalsoEnum.PideEntrada:
                 case ComportamientoFalsoEnum.AbreShellAnidado:
+                case ComportamientoFalsoEnum.AbreShellSinTestigo:
                     _enCurso = respuesta;
                     _idEnCurso = id;
                     Emitir(respuesta.Salida);
@@ -739,11 +758,11 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _salida.Add(bytes[i..Math.Min(bytes.Length, i + _tamanoTrozo)]);
         }
 
-        // Lo que hace la cola de la línea: si comprueba la identidad (case "$$ $PPID" in '<pid> <ppid>') ;; *) __ns_rc=999 ;;
-        // esac) y no coincide con la del shell que la ejecuta, el marcador lleva 999.
+        // Lo que hace la cola de la línea: si comprueba la identidad (__ns_t="$$ $PPID ${__NS_TESTIGO-}";
+        // __ns_t=${__ns_t#'<pid> <ppid> <testigo>'}; …) y no coincide con la del shell que la ejecuta, el marcador lleva 999.
         private int CodigoCola(string linea, int codigo)
         {
-            const string Prefijo = "case \"$$ $PPID\" in '";
+            const string Prefijo = "__ns_t=\"$$ $PPID ${__NS_TESTIGO-}\"; __ns_t=${__ns_t#'";
             int inicio = linea.IndexOf(Prefijo, StringComparison.Ordinal);
             if (inicio < 0)
                 return codigo;

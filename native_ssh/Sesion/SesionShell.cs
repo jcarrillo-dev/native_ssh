@@ -34,10 +34,12 @@ namespace NativeSsh.Sesion
     // (Peticion.SolicitarCancelacion). Ese canal no se vuelve a usar (AbandonarCanal): el candado de escritura, el búfer y
     // la marca de la escritura en curso son de cada canal (ShellAbierto), así que el siguiente comando abre un shell nuevo
     // sin esperar a esa entrada, y el viejo se cierra cuando ella termina.
-    // La cola de cada comando y la línea de recuperación tras Ctrl+C comprueban que las ejecuta el bash de la sesión ($$ y
-    // $PPID capturados al inicializarlo, IdentidadShell): si las ejecuta otro (un shell interactivo anidado que dejó el
-    // comando y que Ctrl+C no termina: sudo -i, su -, ssh a otra máquina, bash -i), el canal se cierra y se dice, para que
-    // los comandos siguientes no se ejecuten dentro de él como otro usuario o en otra máquina.
+    // La cola de cada comando y la línea de recuperación tras Ctrl+C comprueban que las ejecuta el bash de la sesión ($$,
+    // $PPID y el testigo aleatorio del canal, IdentidadShell): si las ejecuta otro (un shell interactivo anidado que dejó el
+    // comando y que Ctrl+C no termina: sudo -i, su -, ssh a otra máquina, bash -i; o uno que sustituyó al de la sesión con
+    // exec), el canal se cierra y se dice, para que los comandos siguientes no se ejecuten dentro de él como otro usuario
+    // o en otra máquina. Un 'exec bash' o 'exec sh' del usuario también cierra el canal (lado seguro: el testigo no pasa al
+    // programa del exec).
     // Un canal exec cuenta para el cupo (MaxCanalesExecSimultaneos) hasta que el servidor lo cierra de verdad (o cae la
     // conexión), aunque la operación ya haya fallado por su plazo local, su tope o una cancelación: cerrar un canal espera
     // el CLOSE del servidor (ConexionSshNet), y OpenSSH no lo envía, ni libera la plaza de su MaxSessions, hasta que
@@ -173,6 +175,14 @@ namespace NativeSsh.Sesion
             Comando,
             CtrlC,
             Recuperacion
+        }
+
+        // Resultado de cerrar el canal del shell (TryCerrarCanal).
+        private enum CierreCanalEnum
+        {
+            Confirmado,
+            SinConfirmar,
+            YaCerrado
         }
 
         public DestinoSsh Destino { get; }
@@ -729,11 +739,11 @@ namespace NativeSsh.Sesion
 
             if (codigo == MarcadorFin.CodigoShellAnidado)
             {
-                // Defensa en profundidad: la cola del comando solo se ejecuta fuera del shell de la sesión si había quedado
-                // otro shell en el terminal, y la interrupción ya cierra el canal cuando lo detecta.
+                // Defensa en profundidad: la cola del comando solo la ejecuta otro shell si había otro leyendo del terminal (la
+                // interrupción ya cierra el canal cuando lo detecta). No se sabe qué parte del comando ejecutó cada uno.
                 _logger.ShellAnidadoDetectado(Destino.Clave);
-                CerrarCanal(canal);
-                _ = peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, $"El comando no se ejecutó en el shell de ssh_exec sino en otro shell que había quedado en su terminal (uno interactivo anidado: sudo -i, su -, ssh a otra máquina, bash -i), quizá como otro usuario o en otra máquina: su salida y su código no son los del shell de la sesión. Se cerró el canal del shell (lo que siguiera dentro recibe SIGHUP). {DescribirShellNuevoTrasCierre(conexionDelCanal)}"));
+                string cierre = DescribirCierreTrasShellAjeno(TryCerrarCanal(canal));
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, $"La última línea del comando, la que da su código, no la ejecutó el shell de la sesión de ssh_exec sino otro shell que leía de su terminal (uno interactivo anidado: sudo -i, su -, ssh a otra máquina, bash -i; o uno que sustituyó al de la sesión con exec): puede que el comando se ejecutara, entero o en parte, en ese otro shell, quizá como otro usuario o en otra máquina, así que su salida y su código no son fiables. {Mayuscula(cierre)}. {DescribirShellNuevoTrasCierre(conexionDelCanal)}"));
                 return;
             }
 
@@ -840,9 +850,10 @@ namespace NativeSsh.Sesion
             // líneas (la primera y el reenvío) acaban también en ella (Z05 de la auditoría del E-septies): desde aquí no se puede
             // saber si el terminal está en raw (un proceso que ignora SIGINT tampoco da el marcador), así que no se distingue;
             // ese proceso no termina y el canal se cierra al vencer la espera, como siempre.
-            // Cada línea comprueba además que la ejecuta el shell de la sesión (IdentidadShell): si el comando dejó un shell
-            // interactivo anidado que sigue vivo (sudo -i, su -, ssh a otra máquina, bash -i), la ejecuta él, su marcador llega
-            // con MarcadorFin.CodigoShellAnidado y el canal se cierra en lugar de dar la cancelación por buena.
+            // Cada línea comprueba además que la ejecuta el shell de la sesión (IdentidadShell): si el comando dejó otro shell
+            // que sigue vivo (uno interactivo anidado: sudo -i, su -, ssh a otra máquina, bash -i; o uno que sustituyó al de la
+            // sesión con exec), la ejecuta él, su marcador llega con MarcadorFin.CodigoShellAnidado y el canal se cierra en
+            // lugar de dar la cancelación por buena.
             bool isRecuperacionEnviada = false;
             if (isEnviado)
             {
@@ -864,16 +875,16 @@ namespace NativeSsh.Sesion
                 if (codigo is null && recuperacion.Task.IsCompletedSuccessfully)
                     codigo = recuperacion.Task.Result;
 
-                // La recuperación la ejecutó otro shell: el comando abrió uno interactivo anidado (sudo -i, su -, ssh a otra
-                // máquina, bash -i) que no muere con Ctrl+C. Si se diera la cancelación por buena, los comandos siguientes se
-                // ejecutarían dentro de él (como root o en otra máquina): se cierra el canal, que le manda SIGHUP.
+                // La recuperación la ejecutó otro shell que no muere con Ctrl+C: uno interactivo anidado que abrió el comando
+                // (sudo -i, su -, ssh a otra máquina, bash -i) o uno que sustituyó al de la sesión con exec. Si se diera la
+                // cancelación por buena, los comandos siguientes se ejecutarían dentro de él (quizá como root o en otra
+                // máquina): se cierra el canal.
                 if (codigo == MarcadorFin.CodigoShellAnidado)
                 {
                     _logger.ShellAnidadoDetectado(Destino.Clave);
-                    bool isCerrado = TryCerrarCanal(canal);
-                    string cierre = isCerrado ? "se cerró el canal del shell de ssh_exec" : $"se cerró el canal del shell de ssh_exec, aunque el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s (puede que lo de dentro siga vivo sin terminal)";
-                    return ("se envió Ctrl+C, pero lo recibió un shell interactivo anidado que el comando había abierto (p. ej. sudo -i, su -, ssh a otra máquina o bash -i) y que sigue vivo.",
-                        $"Para que los comandos siguientes no se ejecuten dentro de ese shell (quizá como otro usuario o en otra máquina) {cierre}: lo que siguiera dentro recibe SIGHUP. {DescribirShellNuevoTrasCierre(conexion)}");
+                    string cierre = DescribirCierreTrasShellAjeno(TryCerrarCanal(canal));
+                    return ("se envió Ctrl+C, pero no lo recibió el shell de la sesión sino otro que sigue vivo en su terminal: un shell interactivo anidado que el comando había abierto (p. ej. sudo -i, su -, ssh a otra máquina o bash -i) o uno que sustituyó al de la sesión con exec (exec bash, exec sh, exec su…).",
+                        $"Para que los comandos siguientes no se ejecuten dentro de ese shell (quizá como otro usuario o en otra máquina) {cierre}. {DescribirShellNuevoTrasCierre(conexion)}");
                 }
 
                 if (codigo is int final)
@@ -886,7 +897,7 @@ namespace NativeSsh.Sesion
                 // No respondió a Ctrl+C: se escala al cierre del canal.
             }
 
-            bool isCierreConfirmado = TryCerrarCanal(canal);
+            CierreCanalEnum cierreCanal = TryCerrarCanal(canal);
             bool isConectada = conexion is { IsConectada: true };
             string siguiente = isConectada
                 ? "El siguiente comando abrirá un shell nuevo sobre la misma conexión y las variables exportadas se perderán."
@@ -907,10 +918,25 @@ namespace NativeSsh.Sesion
             if (!isConectada)
                 return (DetalleCtrlCEnviado, $"El proceso no respondió a Ctrl+C en {espera} y se perdió la conexión SSH: se cerró el canal del shell. {siguiente}");
 
-            return (DetalleCtrlCEnviado, isCierreConfirmado
-                ? $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell (la conexión TCP sigue abierta). {siguiente}"
-                : $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell, pero el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s (puede que no responda, o que el proceso siga vivo sin terminal). {siguiente} Si las operaciones siguientes tampoco responden, ssh_disconnect cierra la conexión.");
+            return (DetalleCtrlCEnviado, cierreCanal switch
+            {
+                CierreCanalEnum.Confirmado => $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell (la conexión TCP sigue abierta). {siguiente}",
+                CierreCanalEnum.YaCerrado => $"El proceso no respondió a Ctrl+C en {espera} y el canal del shell ya se había cerrado (desde el servidor o al perderse la conexión). {siguiente}",
+                CierreCanalEnum.SinConfirmar => $"El proceso no respondió a Ctrl+C en {espera}: se cerró el canal del shell, pero el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s (puede que no responda, o que el proceso siga vivo sin terminal). {siguiente} Si las operaciones siguientes tampoco responden, ssh_disconnect cierra la conexión.",
+                _ => throw new ArgumentOutOfRangeException(nameof(canal), cierreCanal, null)
+            });
         }
+
+        // Cómo quedó el canal cerrado porque otro shell ejecutó una línea del protocolo (sin mayúscula inicial ni punto).
+        private static string DescribirCierreTrasShellAjeno(CierreCanalEnum cierre) => cierre switch
+        {
+            CierreCanalEnum.Confirmado => "se cerró el canal del shell de ssh_exec: al perder su terminal, lo que siguiera dentro recibe SIGHUP y normalmente termina (no lo que ignore esa señal o se haya separado del terminal, como tmux, screen o nohup)",
+            CierreCanalEnum.SinConfirmar => $"se cerró el canal del shell de ssh_exec, aunque el servidor no confirmó el cierre en {EsperaCierreCanalShell.TotalSeconds:0.#} s: puede que lo de dentro siga vivo sin terminal",
+            CierreCanalEnum.YaCerrado => "el canal del shell de ssh_exec ya se había cerrado (desde el servidor o al perderse la conexión)",
+            _ => throw new ArgumentOutOfRangeException(nameof(cierre), cierre, null)
+        };
+
+        private static string Mayuscula(string texto) => string.Concat(char.ToUpperInvariant(texto[0]).ToString(), texto.AsSpan(1));
 
         // null si vence la espera; el código del marcador (o CodigoCanalCerrado) si llega.
         private async Task<int?> EsperarRecuperacionAsync(TaskCompletionSource<int> recuperacion, TimeSpan espera)
@@ -1235,8 +1261,8 @@ namespace NativeSsh.Sesion
 
         // Con el shell ya en un estado conocido. Si la captura no da un PATH válido (LectorCapturaPath) se descarta: los
         // canales exec vuelven al PATH por defecto de sshd y se registra el motivo. La identidad del bash (IdentidadShell), en
-        // cambio, es obligatoria: sin ella no se podría saber si un Ctrl+C deja los comandos siguientes en un shell anidado,
-        // así que si falta la inicialización falla (no pasa con bash: $$ y $PPID existen siempre).
+        // cambio, es obligatoria: sin ella no se podría saber si un Ctrl+C deja los comandos siguientes en otro shell, así que
+        // si falta (o el bash no guardó el testigo del canal) la inicialización falla (no pasa con bash).
         private async Task<int> CapturarIdentidadYPathAsync(ShellAbierto canal, CancellationToken token)
         {
             Guid id = Guid.NewGuid();
@@ -1274,8 +1300,8 @@ namespace NativeSsh.Sesion
                 LecturaSalida lectura = captura.Leer(0, bytes);
                 bool isCompleta = !lectura.HasDatosDescartados && lectura.Fin <= bytes.Length;
                 ReadOnlySpan<byte> salida = bytes.AsSpan(0, lectura.Copiados);
-                if (!isCompleta || !IdentidadShell.TryLeer(salida, id, out IdentidadShell identidad))
-                    throw new NativeSshException($"El shell de {Destino.Clave} no devolvió su identificador de proceso al inicializarse (lo necesita ssh_exec para detectar shells anidados): puede que el shell no sea bash o que otro proceso escriba en el terminal. Vuelve a intentarlo; si se repite, ssh_reset_shell abre otro.");
+                if (!isCompleta || !IdentidadShell.TryLeer(salida, id, canal.Testigo, out IdentidadShell identidad))
+                    throw new NativeSshException($"El shell de {Destino.Clave} no devolvió su identificador de proceso ni confirmó el testigo de su canal al inicializarse (los necesita ssh_exec para detectar shells anidados o sustituidos con exec): puede que el shell no sea bash o que otro proceso escriba en el terminal. Vuelve a intentarlo; si se repite, ssh_reset_shell abre otro.");
 
                 canal.Identidad = identidad;
                 if (!TryLeerPath(isCompleta, salida, id, out string? path, out string? motivo))
@@ -1361,15 +1387,15 @@ namespace NativeSsh.Sesion
 
         private void CerrarCanal(ShellAbierto canal) => _ = TryCerrarCanal(canal);
 
-        // true si el servidor confirmó el cierre en EsperaCierreCanalShell (o la conexión ya no lo exigía); false si sigue
-        // pendiente o si el canal ya no era el vigente (lo cerró otro).
-        private bool TryCerrarCanal(ShellAbierto canal)
+        // Confirmado si el servidor confirmó el cierre en EsperaCierreCanalShell (o la conexión ya no lo exigía); SinConfirmar
+        // si sigue pendiente; YaCerrado si el canal ya no era el vigente (lo cerró otro).
+        private CierreCanalEnum TryCerrarCanal(ShellAbierto canal)
         {
             TaskCompletionSource<int>? espera;
             lock (_candadoProceso)
             {
                 if (!ReferenceEquals(_canal, canal))
-                    return false;
+                    return CierreCanalEnum.YaCerrado;
 
                 _canal = null;
                 _conexionDelCanal = null;
@@ -1385,7 +1411,7 @@ namespace NativeSsh.Sesion
             // SSH.NET espera sin plazo el CLOSE del servidor, que no llega mientras el bash remoto no termine: uno que no
             // muere al perder el terminal (trap '' HUP con un trabajo en primer plano) no puede bloquear a quien cierra.
             Task cierre = Task.Factory.StartNew(LiberarCanalDescartado, canal.Canal, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            return cierre.Wait(EsperaCierreCanalShell);
+            return cierre.Wait(EsperaCierreCanalShell) ? CierreCanalEnum.Confirmado : CierreCanalEnum.SinConfirmar;
         }
 
         // Deja de usar el canal del shell sin cerrarlo, porque una escritura (la entrada de ssh_input) sigue dentro de un envío
@@ -1527,7 +1553,7 @@ namespace NativeSsh.Sesion
                     ConstructorComando.EscribirSincronizacion(id, escritor);
                     break;
                 case EscrituraEnum.CapturaPath:
-                    ConstructorComando.EscribirCapturaPath(id, escritor);
+                    ConstructorComando.EscribirCapturaPath(id, canal.Testigo, escritor);
                     break;
                 case EscrituraEnum.Comando:
                     ConstructorComando.EscribirComando(comando, id, escritor, canal.Identidad);
@@ -1584,6 +1610,9 @@ namespace NativeSsh.Sesion
             private int _isCierreIniciado;
 
             public ICanalShell Canal { get; } = canal;
+
+            // Testigo aleatorio de este canal (IdentidadShell), que la captura guarda en su bash: cada canal tiene el suyo.
+            public Guid Testigo { get; } = IdentidadShell.NuevoTestigo();
 
             // La del bash del canal, capturada al inicializarlo (CapturarIdentidadYPathAsync); null hasta entonces. Solo la
             // escribe y la lee el bucle.

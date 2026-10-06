@@ -9,6 +9,7 @@ namespace NativeSsh.Test.Protocolo
     public class ConstructorComandoTests
     {
         private static readonly Guid Id = Guid.Parse("0123456789abcdef0123456789abcdef");
+        private static readonly Guid Testigo = Guid.Parse("fedcba9876543210fedcba9876543210");
 
         private static string Componer(Action<ArrayBufferWriter<byte>> accion)
         {
@@ -139,22 +140,23 @@ namespace NativeSsh.Test.Protocolo
         }
 
         [Fact]
-        public void CapturaPath_SaltoInicialYPathEnBase64EntreMarcadoresEnUnaLineaConMarcador()
+        public void CapturaPath_SaltoInicialTestigoYPathEnBase64EntreMarcadoresEnUnaLineaConMarcador()
         {
             // Act
-            string texto = Componer(w => ConstructorComando.EscribirCapturaPath(Id, w));
+            string texto = Componer(w => ConstructorComando.EscribirCapturaPath(Id, Testigo, w));
 
-            // Assert: el primer '\n' satisface el 'read' del marcador anterior; los marcadores no aparecen en el texto.
-            _ = texto.Should().Be($"\n__ns_rc=0; printf '%s_%s_%d_%d__\\n' '__NSI' '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            // Assert: el primer '\n' satisface el 'read' del marcador anterior; los marcadores no aparecen en el texto. El
+            // testigo se guarda en un array de solo lectura y la cabecera de la identidad solo sale entera si quedó guardado.
+            _ = texto.Should().Be($"\n__ns_rc=0; declare -r -a __NS_TESTIGO=('{Testigo:N}'); __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
             _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}").And.NotContain($"__NSI_{Id:N}");
         }
 
         [Fact]
-        public void ComandoYRecuperacion_ConIdentidad_ComparanPidYPadreJustoAntesDelMarcador()
+        public void ComandoYRecuperacion_ConIdentidad_ComparanPidPadreYTestigoJustoAntesDelMarcador()
         {
             // Arrange
-            IdentidadShell identidad = new(123456, 789);
-            string cola = $"case \"$$ $PPID\" in '123456 789') ;; *) __ns_rc={MarcadorFin.CodigoShellAnidado} ;; esac; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
+            IdentidadShell identidad = new(123456, 789, Testigo);
+            string cola = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w, identidad));
@@ -164,7 +166,7 @@ namespace NativeSsh.Test.Protocolo
             // Assert: la comprobación va después del eval (y del cd), así que la ejecuta el shell que ejecuta la cola.
             _ = comando.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
             _ = recuperacion.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
-            _ = sinIdentidad.Should().NotContain("$PPID");
+            _ = sinIdentidad.Should().NotContain("$PPID").And.NotContain("__NS_TESTIGO");
             _ = MarcadorFin.CodigoShellAnidado.Should().BeInRange(256, 999, "ningún código de salida (0-255) puede coincidir y cabe en los 3 dígitos del marcador");
         }
 
