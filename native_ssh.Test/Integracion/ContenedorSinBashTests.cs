@@ -117,7 +117,8 @@ namespace NativeSsh.Test.Integracion
             }
 
             _ = escritura.Duracion.Should().BeLessThan(PlazoLlamada);
-            _ = escritura.Excepcion.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain("No consta ninguna modificación");
+            // El comando de la escritura no llegó al shell (Peticion.IsComandoEnviado): el error lo afirma, no lo deja en duda.
+            _ = escritura.Excepcion.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain("no se ha modificado").And.NotContain("No consta");
             _ = reemplazo.Duracion.Should().BeLessThan(PlazoLlamada);
             _ = reemplazo.Excepcion.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain("No se ha modificado");
             _ = cwd.Duracion.Should().BeLessThan(PlazoLlamada);
