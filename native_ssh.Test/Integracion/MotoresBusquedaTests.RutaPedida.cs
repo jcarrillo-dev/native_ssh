@@ -43,6 +43,7 @@ namespace NativeSsh.Test.Integracion
         // Ruta relativa que find tomaría por una opción ('-d' es '-depth' en GNU) o un operador ('(', ')', '!', ','): se le
         // antepone './' en los cuatro caminos, así que find la recorre como una ruta y todos dan lo mismo, solo lo de dentro
         // (Z04 de la auditoría del A-octies: con busybox, '-d' y '(' daban «sin coincidencias» y '!' buscaba en todo '.').
+        // También un archivo cuyo nombre empieza por '-'.
         [Theory]
         [MemberData(nameof(CasosRutaQueFindTomaPorOpcion))]
         public void RutaQueFindTomaPorOpcion_TodosLosMotoresBuscanSoloDentro(string motor, string ruta, string esperado)
@@ -51,7 +52,7 @@ namespace NativeSsh.Test.Integracion
             string? anunciado = InstalarMotor(motor);
             if (anunciado is null)
                 return;
-            foreach ((string archivo, string texto) in new[] { ("-d/f.txt", "valor guion"), ("(/p.txt", "valor paren"), (")/q.txt", "valor cierre"), ("!/e.txt", "valor excl"), (",/c.txt", "valor coma"), (".git/g.txt", "valor git") })
+            foreach ((string archivo, string texto) in new[] { ("-d/f.txt", "valor guion"), ("(/p.txt", "valor paren"), (")/q.txt", "valor cierre"), ("!/e.txt", "valor excl"), (",/c.txt", "valor coma"), ("-x.txt", "valor archivo"), (".git/g.txt", "valor git") })
                 Escribir(archivo, texto);
 
             // Act
@@ -72,6 +73,60 @@ namespace NativeSsh.Test.Integracion
                 casos.Add(motor, ")", "./)/q.txt:1:valor cierre");
                 casos.Add(motor, "!", "./!/e.txt:1:valor excl");
                 casos.Add(motor, ",", "./,/c.txt:1:valor coma");
+                casos.Add(motor, "-x.txt", "./-x.txt:1:valor archivo");
+            }
+
+            return casos;
+        }
+
+        // La ruta pedida explícitamente nunca se excluye (AN2): un directorio que se llama como uno de los excluidos
+        // (node_modules, build, dist, src/build, con o sin barra final), un archivo excluido por su nombre (package-lock.json,
+        // *.min.js) o por su extensión de binario (*.o, que el recorrido con find omite) o un archivo cuya extensión no casa
+        // con el filtro se buscan en los cuatro caminos. El grep de GNU aplicaba --exclude-dir, --exclude e --include también
+        // a la ruta de la línea de órdenes y daba «sin coincidencias». Lo de dentro sí se sigue excluyendo
+        // (node_modules/x/node_modules). Con la ruta como archivo, la salida es 'ruta:línea:texto' en todos (AN3: el grep de
+        // GNU con -r y un solo archivo no daba el nombre).
+        [Theory]
+        [MemberData(nameof(CasosRutaPedidaExcluida))]
+        public void RutaPedidaQueSeExcluiriaDentroDelArbol_TodosLosMotoresLaBuscan(string motor, string ruta, string? extension, string esperado)
+        {
+            // Arrange
+            string? anunciado = InstalarMotor(motor);
+            if (anunciado is null)
+                return;
+            Escribir("p/node_modules/n.txt", "valor nm");
+            Escribir("p/node_modules/x/node_modules/m.txt", "valor anidado");
+            Escribir("p/build/b.txt", "valor build");
+            Escribir("p/dist/d.txt", "valor dist");
+            Escribir("p/src/build/s.txt", "valor src build");
+            Escribir("p/src/a.py", "valor py");
+            Escribir("p/package-lock.json", "valor lock");
+            Escribir("p/f.min.js", "valor min");
+            Escribir("p/g.o", "valor objeto");
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor [a-z]+", ruta, extension, 50));
+
+            // Assert
+            _ = (codigo, errores).Should().Be((0, string.Empty));
+            _ = salida.Should().Be($"__NS_MOTOR:{anunciado}\n{esperado}\n");
+        }
+
+        public static TheoryData<string, string, string?, string> CasosRutaPedidaExcluida()
+        {
+            TheoryData<string, string, string?, string> casos = [];
+            foreach (string motor in new[] { "rg", "grep -P", "grep -E", "find" })
+            {
+                casos.Add(motor, "p/node_modules", null, "p/node_modules/n.txt:1:valor nm");
+                casos.Add(motor, "p/node_modules/", null, "p/node_modules/n.txt:1:valor nm");
+                casos.Add(motor, "p/build", null, "p/build/b.txt:1:valor build");
+                casos.Add(motor, "p/dist", "txt", "p/dist/d.txt:1:valor dist");
+                casos.Add(motor, "p/src/build", null, "p/src/build/s.txt:1:valor src build");
+                casos.Add(motor, "p/package-lock.json", null, "p/package-lock.json:1:valor lock");
+                casos.Add(motor, "p/f.min.js", null, "p/f.min.js:1:valor min");
+                casos.Add(motor, "p/g.o", null, "p/g.o:1:valor objeto");
+                casos.Add(motor, "p/src/a.py", "js", "p/src/a.py:1:valor py");
+                casos.Add(motor, "p/src/a.py", null, "p/src/a.py:1:valor py");
             }
 
             return casos;

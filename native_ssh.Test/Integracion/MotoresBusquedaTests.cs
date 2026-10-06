@@ -164,8 +164,10 @@ namespace NativeSsh.Test.Integracion
             _ = salidaLimite.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(4, "el motor y el límite + 1 líneas");
         }
 
-        // La poda es de lo que hay dentro de la ruta pedida: buscar dentro de un directorio excluido (aquí node_modules) o de
-        // un enlace simbólico a un directorio (como grep -r con la ruta de la línea de órdenes) encuentra lo que contiene.
+        // La poda es de lo que hay dentro de la ruta pedida: buscar dentro de un directorio excluido (aquí node_modules)
+        // encuentra lo que contiene, como en los otros motores (RutaPedidaQueSeExcluiriaDentroDelArbol_…; el grep de GNU
+        // lo excluía hasta el A-nonies), y un enlace simbólico a un directorio pedido se sigue, como grep -r y rg siguen
+        // los de la línea de órdenes.
         [Theory]
         [InlineData("node_modules", "py", "node_modules/c.py:1:valor 789")]
         [InlineData("enlace", "js", "enlace/b.js:1:valor 456")]

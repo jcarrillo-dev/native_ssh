@@ -571,12 +571,12 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones y el filtro se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
             [Description("Directorio o ruta donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
-            [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json').")] string? extension = null,
+            [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json'); no se aplica si la ruta es un archivo.")] string? extension = null,
             [Description("Número máximo de coincidencias a devolver (por defecto 50, máx 200).")] int maxResultados = 50,
             CancellationToken cancellationToken = default)
         {
@@ -611,9 +611,16 @@ namespace NativeSsh.Herramientas
         // su ayuda; Bloque S, P2) el árbol se recorre con find (poda de los mismos directorios, mismas exclusiones de
         // archivos y los binarios por extensión) y cada archivo se busca con grep -E; una regex inválida se detecta antes
         // con una línea de prueba (busybox no la compila sin datos que leer).
+        // La ruta pedida nunca se excluye, en ninguno de los tres: las exclusiones y el filtro de extensión son para lo que
+        // hay dentro de un directorio; un archivo pedido se busca siempre y sale como 'ruta:línea:texto'.
         // - Una ruta relativa que empieza por '-', '(', ')', '!' o ',' lleva './' delante en los tres motores (misma salida
         //   en todos): find la tomaría por una opción ('-d' es '-depth' en GNU) o un operador y, con su error callado,
         //   daba «sin coincidencias» o buscaba en todo el directorio actual.
+        // - El grep de GNU aplica --exclude-dir, --exclude e --include también a las rutas de la línea de órdenes
+        //   (compara el nombre, y lo que sigue a cada '/', con el patrón): un directorio pedido va con la barra final, con
+        //   la que ningún patrón casa (sale igual, 'dir/archivo'), y un archivo pedido va sin esas opciones ni -r y con -H
+        //   (con -r y un solo archivo, grep no da su nombre).
+        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido.
         // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
         //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
         //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
@@ -624,6 +631,7 @@ namespace NativeSsh.Herramientas
             string rutaMotor = rutaEfectiva[0] is '-' or '(' or ')' or '!' or ',' ? "./" + rutaEfectiva : rutaEfectiva;
             string rutaEscapada = Escapar(rutaMotor);
             string rutaPedidaEscapada = Escapar(rutaEfectiva);
+            string directorioGrepEscapado = Escapar(rutaMotor.EndsWith('/') ? rutaMotor : rutaMotor + "/");
             string patronEscapado = Escapar(patron);
             string filtroRg = string.Empty;
             string filtroGrep = string.Empty;
@@ -663,15 +671,15 @@ namespace NativeSsh.Herramientas
                     {{exclusionesRg}} {{filtroRg}}-m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                   rc=${PIPESTATUS[0]}
                 elif printf 'x\n' | grep -q --exclude-dir=x --exclude=x --include=x -E x 2>/dev/null; then
-                  if printf '1\n' | grep -qP '\d' 2>/dev/null; then
-                    printf '{{PrefijoMotor}}grep -P\n'
-                    grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -P -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                    rc=${PIPESTATUS[0]}
+                  sintaxis=E
+                  printf '1\n' | grep -qP '\d' 2>/dev/null && sintaxis=P
+                  printf '{{PrefijoMotor}}grep -%s\n' "$sintaxis"
+                  if [ -d {{rutaEscapada}} ]; then
+                    grep -rnIHs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{directorioGrepEscapado}} | head -n {{limite + 1}}
                   else
-                    printf '{{PrefijoMotor}}grep -E\n'
-                    grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                    rc=${PIPESTATUS[0]}
+                    grep -nIHs -m {{limite}} -"$sintaxis" -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                   fi
+                  rc=${PIPESTATUS[0]}
                 else
                   printf '{{PrefijoMotor}}grep -E\n'
                   printf 'x\n' | grep -E -e {{patronEscapado}} >/dev/null

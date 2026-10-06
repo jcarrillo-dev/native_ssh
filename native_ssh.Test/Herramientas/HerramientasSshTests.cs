@@ -122,7 +122,7 @@ namespace NativeSsh.Test.Herramientas
             if (comando.Contains("'vacio_con_find'"))
                 return new("__NS_MOTOR:grep -E\n", 0);
 
-            if (!comando.Contains("-P -e"))
+            if (!comando.Contains("-\"$sintaxis\" -e"))
                 return new("grep: error falta flag -e\n", 2);
 
             if (comando.Contains("ruta_inexistente"))
@@ -1310,7 +1310,7 @@ namespace NativeSsh.Test.Herramientas
             _ = comando.Should().Contain("rg --no-config");
             _ = comando.Should().Contain("-g '*.py'");
             _ = comando.Should().Contain("-g '!{.git,node_modules,");
-            _ = comando.Should().Contain("-P -e 'patron'");
+            _ = comando.Should().Contain("sintaxis=P").And.Contain("-\"$sintaxis\" -e 'patron'");
             _ = comando.Should().Contain("__NS_MOTOR:rg");
         }
 
@@ -1322,7 +1322,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Should().StartWith("archivo.txt:1:coincidencia encontrada");
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-P -e '--version'") && c.Contains("-E -e '--version'") && c.Contains("rg --no-config") && c.Contains("-e '--version'"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("-\"$sintaxis\" -e '--version'") && c.Contains("-E -e '--version'") && c.Contains("rg --no-config") && c.Contains("-e '--version'"));
         }
 
         [Fact]
