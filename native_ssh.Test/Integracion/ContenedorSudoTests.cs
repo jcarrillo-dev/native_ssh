@@ -202,6 +202,34 @@ namespace NativeSsh.Test.Integracion
             _ = entorno.Root("ls -A \"$1\"", entorno.DirectorioRoot).Should().Be("config\n");
         }
 
+        // FALLO CONOCIDO (producto, Bloque S; misma causa que el de ssh_cancel): al vencer el plazo de una escritura con
+        // sudo=true que espera la contraseña, la interrupción ("\x03\n__ns_rc=130; ...") llega a sudo como contraseñas
+        // (en Debian, «Sorry, try again.» y un segundo intento con la línea de recuperación), sudo no muere a tiempo y el
+        // producto cierra el canal del shell: intentos fallidos registrados y shell perdido con sus variables.
+        [TheoryContenedor(FalloConocido = "producto: el texto que sigue al Ctrl+C de la interrupción llega a sudo como contraseña; intentos fallidos y shell perdido")]
+        [Trait("Categoria", "FalloConocido")]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task FalloConocido_EscribirConSudo_PlazoVencidoPidiendoLaContrasena_NoGastaIntentosYConservaElShell(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(4));
+            string archivo = $"{entorno.DirectorioRoot}/config";
+            _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; export NS_VIVO=si", esperarSegundos: 10);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15);
+            salida.WriteLine(error.Message);
+
+            // Assert
+            _ = error.Message.Should().NotContain("Sorry, try again").And.NotContain("se cerró el canal del shell");
+            _ = siguiente.Salida.Should().Be("vivo=si\n");
+        }
+
         // La contraseña también se puede responder con ssh_input mientras la propia ssh_write_file con sudo=true espera:
         // la escritura termina bien y el prompt de sudo no estropea su informe.
         [TheoryContenedor]
