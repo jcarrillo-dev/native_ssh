@@ -91,14 +91,16 @@ namespace NativeSsh.Protocolo
         // PATH va en base64, en una sola línea, entre "__NSP_<id>_\n" y "\n__NSQ_<id>_\n" (LectorCapturaPath): otro proceso
         // que escriba en el terminal a la vez no se confunde con él. Los marcadores se imprimen con printf '%s_%s', así que el
         // texto de la línea no los contiene. Se envía una sola vez por canal (la inicialización puede llegar dos veces, y
-        // asignar de nuevo una variable de solo lectura daría error). El primer '\n' satisface el 'read'.
+        // asignar de nuevo una variable de solo lectura daría error). La asignación va dentro de un eval: si falla (ya hay
+        // una variable de solo lectura con ese nombre), bash abandona el resto de la orden, que así es solo el eval, y la
+        // línea sigue y da su marcador sin la identidad. El primer '\n' satisface el 'read'.
         public static void EscribirCapturaPath(Guid id, Guid testigo, IBufferWriter<byte> escritor)
         {
-            escritor.Write("\n__ns_rc=0; declare -r -a "u8);
+            escritor.Write("\n__ns_rc=0; eval \"declare -r -a "u8);
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("=('"u8);
             EscribirTestigo(testigo, escritor);
-            escritor.Write("'); __ns_t=${"u8);
+            escritor.Write("')\"; __ns_t=${"u8);
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("-x}; __ns_t=${__ns_t#'"u8);
             EscribirTestigo(testigo, escritor);

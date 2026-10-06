@@ -179,6 +179,23 @@ namespace NativeSsh.Test.Protocolo
             _ = Errores.Should().BeEmpty();
         }
 
+        // Fallo cerrado: si el bash no puede guardar el testigo del canal (ya hay una variable de solo lectura con ese nombre),
+        // la captura no da la identidad y la inicialización falla.
+        [Fact]
+        public async Task Captura_SinPoderGuardarElTestigo_NoDaLaIdentidad()
+        {
+            // Arrange
+            _ = await EjecutarAsync("declare -r -a __NS_TESTIGO=(otro)", null);
+            Guid id = Guid.NewGuid();
+
+            // Act
+            await EscribirAsync(w => ConstructorComando.EscribirCapturaPath(id, _testigo, w));
+            (string salida, _) = await LeerHastaMarcadorAsync(id);
+
+            // Assert
+            _ = IdentidadShell.TryLeer(Encoding.UTF8.GetBytes(salida), id, _testigo, out _).Should().BeFalse(salida);
+        }
+
         // El testigo no pasa a ningún otro proceso, ni exportándolo: un bash hijo o el programa de un exec (mismo $$ y $PPID)
         // no lo tienen. Tampoco se puede cambiar ni borrar.
         [Fact]
