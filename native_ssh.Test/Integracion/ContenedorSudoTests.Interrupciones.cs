@@ -187,10 +187,12 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Candado por archivo: otro proceso (aquí root, con flock) tiene tomado el candado del archivo; las escrituras, con
-        // y sin sudo, fallan al momento sin tocarlo (Debian: flock de util-linux y perl).
+        // y sin sudo, fallan al momento sin tocarlo (Debian: flock de util-linux y perl; Alpine: el flock de busybox, sin -E).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian, true)]
         [InlineData(ContenedorSudo.Debian, false)]
+        [InlineData(ContenedorSudo.Alpine, true)]
+        [InlineData(ContenedorSudo.Alpine, false)]
         public async Task Escritura_CandadoDelArchivoTomadoPorOtroProceso_FallaAlMomentoSinTocarlo(string distro, bool isSudo)
         {
             // Arrange
@@ -223,12 +225,13 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
-        // En Alpine no hay herramienta de candado que el producto acepte (el flock de busybox no tiene -E; sin python3 ni
-        // perl): la escritura sigue sin exclusión y la respuesta lo avisa (decisión aceptada en el A-sexies).
+        // En Alpine (sin python3 ni perl) el candado lo toma el flock de busybox, que no tiene -E pero funciona (A-octies,
+        // AO3): la escritura queda protegida y la respuesta no avisa de que no hubo exclusión. Antes del AO3 se escribía sin
+        // candado y con ese aviso (decisión del A-sexies).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Alpine, true)]
         [InlineData(ContenedorSudo.Alpine, false)]
-        public async Task Escritura_SinHerramientaDeCandadoAceptada_EscribeYAvisaDeQueNoHuboExclusion(string distro, bool isSudo)
+        public async Task Escritura_ConElFlockDeBusybox_EscribeConCandadoYSinAvisoDeFaltaDeExclusion(string distro, bool isSudo)
         {
             // Arrange
             await using Entorno entorno = Preparar(distro);
@@ -242,7 +245,7 @@ namespace NativeSsh.Test.Integracion
             ResultadoEscritura resultado = await herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: isSudo);
 
             // Assert
-            _ = resultado.Mensaje.Should().Contain("no pudo tomar el candado").And.Contain("no estuvo protegida");
+            _ = resultado.Mensaje.Should().NotContain("candado").And.NotContain("no estuvo protegida");
             _ = entorno.Root("cat \"$1\"", archivo).Should().Be("despues\n");
         }
 
