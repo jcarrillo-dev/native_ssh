@@ -118,6 +118,10 @@ namespace NativeSsh.Test.Herramientas
         // El script elige el motor en el servidor y lo anuncia en la primera línea; el falso simula 'grep -P'.
         private static RespuestaFalsa SimularBusqueda(string comando)
         {
+            // Recorrido con find sin grep de GNU: sale con 0 aunque no haya coincidencias.
+            if (comando.Contains("'vacio_con_find'"))
+                return new("__NS_MOTOR:grep -E\n", 0);
+
             if (!comando.Contains("-P -e"))
                 return new("grep: error falta flag -e\n", 2);
 
@@ -295,6 +299,18 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = respuesta.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = respuesta.Salida.Should().Be("recibido:ana\n");
+        }
+
+        // Sin grep de GNU el recorrido con find sale con 0 aunque no encuentre nada: una salida vacía es «sin coincidencias»
+        // (nunca un resultado en blanco ni un error).
+        [Fact]
+        public async Task Buscar_SalidaVaciaConCodigoCero_SinCoincidencias()
+        {
+            // Act
+            string resultado = await _herramientas.BuscarAsync("servidor", "vacio_con_find");
+
+            // Assert
+            _ = resultado.Should().Be("No se encontraron coincidencias para el patrón: 'vacio_con_find' en '.'.\n\n[motor: grep -E]");
         }
 
         [Fact]

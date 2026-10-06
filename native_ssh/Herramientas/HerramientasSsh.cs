@@ -492,7 +492,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión. Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; los archivos ilegibles dentro del árbol se omiten. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
@@ -518,15 +518,28 @@ namespace NativeSsh.Herramientas
         private const string ExclusionDirectorios = ".git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj";
         private const string ExclusionArchivos = "'*.min.js','*.min.css','*.map','*.lock','package-lock.json','pnpm-lock.yaml'";
 
+        // Sin grep de GNU no hay -I (omitir binarios por su contenido): en el recorrido con find se omiten por extensión.
+        private const string ExclusionBinarios = "'*.pyc','*.pyo','*.o','*.so','*.a','*.class','*.jar','*.exe','*.dll','*.png','*.jpg','*.jpeg','*.gif','*.ico','*.pdf','*.zip','*.gz','*.tgz','*.xz','*.bz2','*.woff','*.woff2'";
+
+        // Las mismas exclusiones para find: poda de los directorios y '! -name' de los archivos.
+        private static readonly string PodaFind = "-type d \\( -name '" + ExclusionDirectorios.Replace(",", "' -o -name '", StringComparison.Ordinal) + "' \\) -prune";
+        private static readonly string ExclusionArchivosFind = "! -name " + $"{ExclusionArchivos},{ExclusionBinarios}".Replace(",", " ! -name ", StringComparison.Ordinal);
+
         // Motor de búsqueda elegido en el servidor: rg si está instalado (regex de Rust), si no grep -P (PCRE) si el grep
         // lo admite, y como último recurso grep -E (ERE). Los tres con las mismas exclusiones, filtro de extensión y límite.
-        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó.
+        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó. Las exclusiones y -I de
+        // grep son de GNU (se comprueba que las admite, no la versión): con otro grep (p. ej. busybox, que las rechaza con
+        // su ayuda; Bloque S, P2) el árbol se recorre con find (poda de los mismos directorios, mismas exclusiones de
+        // archivos y los binarios por extensión) y cada archivo se busca con grep -E. Ahí el código de find no sirve (es
+        // distinto de 0 si cualquier lote de grep no encontró nada): sale con 0 y una salida vacía es «sin coincidencias»;
+        // una regex inválida se detecta antes con una línea de prueba (busybox no la compila sin datos que leer).
         internal static string ConstruirComandoBusqueda(string patron, string rutaEfectiva, string? extension, int limite)
         {
             string rutaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
             string filtroRg = string.Empty;
             string filtroGrep = string.Empty;
+            string filtroFind = string.Empty;
             if (!string.IsNullOrEmpty(extension))
             {
                 string filtro = extension.StartsWith("*.", StringComparison.Ordinal)
@@ -537,6 +550,7 @@ namespace NativeSsh.Herramientas
                 string filtroEscapado = Escapar(filtro);
                 filtroRg = $"-g {filtroEscapado} ";
                 filtroGrep = $"--include={filtroEscapado} ";
+                filtroFind = $"-name {filtroEscapado} ";
             }
 
             string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
@@ -560,14 +574,27 @@ namespace NativeSsh.Herramientas
                   rg --no-config --line-number --no-heading --with-filename --color never --no-messages --no-ignore --hidden \
                     {{exclusionesRg}} {{filtroRg}}-m {{limite}} -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
                   rc=${PIPESTATUS[0]}
-                elif printf '1\n' | grep -qP '\d' 2>/dev/null; then
-                  printf '{{PrefijoMotor}}grep -P\n'
-                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -P -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                  rc=${PIPESTATUS[0]}
+                elif printf 'x\n' | grep -q --exclude-dir=x --exclude=x --include=x -E x 2>/dev/null; then
+                  if printf '1\n' | grep -qP '\d' 2>/dev/null; then
+                    printf '{{PrefijoMotor}}grep -P\n'
+                    grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -P -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
+                  else
+                    printf '{{PrefijoMotor}}grep -E\n'
+                    grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                    rc=${PIPESTATUS[0]}
+                  fi
                 else
                   printf '{{PrefijoMotor}}grep -E\n'
-                  grep -rnIs {{filtroGrep}}{{exclusionesGrep}} -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
-                  rc=${PIPESTATUS[0]}
+                  printf 'x\n' | grep -E -e {{patronEscapado}} >/dev/null
+                  [ "$?" = 2 ] && exit 2
+                  if [ -d {{rutaEscapada}} ]; then
+                    find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
+                      -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>/dev/null | head -n {{limite + 1}}
+                  else
+                    grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {{rutaEscapada}} | head -n {{limite + 1}}
+                  fi
+                  rc=0
                 fi
                 [ "$rc" -eq 141 ] && rc=0
                 exit "$rc"
@@ -600,7 +627,8 @@ namespace NativeSsh.Herramientas
             if (codigo != 0 && isVacio && hasErrores)
                 throw new NativeSshException(motor == "desconocido" ? errores : $"{errores}\n{pie}");
 
-            if (codigo is 1 or 2 && isVacio)
+            // 0 sin resultados: el recorrido con find sin grep de GNU, que no da un código de «sin coincidencias».
+            if (codigo is 0 or 1 or 2 && isVacio)
                 return $"No se encontraron coincidencias para el patrón: '{patron}' en '{rutaEfectiva}'.\n\n{pie}";
 
             if (codigo is not (0 or 2))
