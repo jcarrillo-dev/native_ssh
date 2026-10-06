@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Test.Integracion
@@ -12,7 +13,8 @@ namespace NativeSsh.Test.Integracion
     // 'exec bash' y cierra el canal; aquí un ForceCommand que hace lo mismo). Las herramientas que van por ese shell
     // (ssh_write_file, ssh_replace_file_content, ssh_set_cwd) no llegan a enviar su comando: el error lo dice, da la causa
     // de la sesión y no remite a ssh_stat, ssh_read_file ni ssh_output, que no aportan nada (no se ejecutó nada) y en un
-    // servidor sin bash tampoco funcionan (A-nonies, AN4).
+    // servidor sin bash tampoco funcionan (A-nonies, AN4). La causa es la de la sesión: el aviso de que el servidor no tiene
+    // bash (RespuestaSinBash, E-nonies, EN4).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
@@ -71,7 +73,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             string mensaje = error.Should().BeOfType<NativeSshException>().Which.Message;
-            _ = mensaje.Should().Contain($"El shell de {destino} se cerró durante la inicialización.").And.Contain("no llegó a ejecutarse");
+            _ = mensaje.Should().Contain(RespuestaSinBash.MarcaMensaje).And.Contain("no llegó a ejecutarse");
             _ = mensaje.Should().NotContain("ssh_stat").And.NotContain("ssh_read_file").And.NotContain("ssh_output");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("uno\n");
             _ = File.Exists(Path.Combine(_directorio, "b.txt")).Should().BeFalse();
