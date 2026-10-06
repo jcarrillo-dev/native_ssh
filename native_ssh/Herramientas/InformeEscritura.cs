@@ -29,7 +29,8 @@ namespace NativeSsh.Herramientas
         Tomado,
 
         // "sin_comprobar": tomado, pero no se pudo comprobar que esté sobre el archivo que sigue en la ruta (sin /proc ni
-        // stat de GNU coreutils, python3 o perl en el servidor).
+        // stat de GNU coreutils, python3 o perl en el servidor, o la ruta no se pudo consultar por algo distinto de que no
+        // exista, p. ej. sin permiso para atravesar un directorio).
         SinComprobar,
 
         // "ninguno": ninguna herramienta pudo tomarlo (no hay flock, python3 ni perl que funcionen, o el sistema de
@@ -277,7 +278,7 @@ namespace NativeSsh.Herramientas
         };
 
         private const string CandadoTomadoEnCurso = "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.";
-        private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos)";
+        private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta)";
         private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
         private const string SinCandadoPorApertura = "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto).";
         private const string SinCandadoEnCurso = "Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.";

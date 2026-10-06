@@ -10,7 +10,7 @@ namespace NativeSsh.Test.Integracion
     // sustituyó (auditoría del A-sexies, sonda X02).
     public sealed partial class HerramientasArchivoIntegracionTests
     {
-        private const string AvisoCandadoSinComprobar = " El script tomó el candado del archivo (flock), pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos): si otro proceso lo sustituyó justo mientras se tomaba, la escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
+        private const string AvisoCandadoSinComprobar = " El script tomó el candado del archivo (flock), pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta): si otro proceso lo sustituyó justo mientras se tomaba, la escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
 
         // Antes, sin /proc, toda sobrescritura de un archivo existente fallaba tras 3 intentos con «se sustituyó por otro
         // archivo cada vez que se tomaba su candado… reintenta», y reintentar nunca servía. Las cinco operaciones funcionan y
