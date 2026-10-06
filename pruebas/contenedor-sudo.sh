@@ -9,6 +9,8 @@
 #   iniciar <distro>    construye si hace falta, arranca el contenedor y escribe el puerto cuando sshd ya responde.
 #   parar <distro>      elimina el contenedor y espera a que el puerto quede libre.
 #   root <distro> CMD   ejecuta CMD con 'sh -c' como root DENTRO del contenedor (preparar archivos de root, xattrs...).
+#   sondear <distro>    con el contenedor en marcha, lista qué herramientas y opciones de las que usan los scripts de
+#                       native_ssh hay en la distro (para clasificar los fallos: producto o limitación de la distro).
 #   disponible          sale con 0 si podman funciona (lo usan las pruebas para omitirse si no).
 #   limpiar             elimina todos los contenedores e imágenes construidas por este script (también restos de una
 #                       ejecución interrumpida). Conserva las imágenes base descargadas (debian:13-slim, alpine:3.24).
@@ -162,6 +164,30 @@ limpiar() {
     rm -f "$RAIZ"/.estado-contenedor-*/contenedor
 }
 
+sondear() {
+    root "$1" '
+        for h in bash flock python3 perl getfattr setfattr getfacl setcap getcap rg sha256sum cksum timeout base64 mktemp stat readlink; do
+            printf "%-10s %s\n" "$h" "$(command -v "$h" || echo -)"
+        done
+        prueba() { if eval "$2" >/dev/null 2>&1; then printf "%-28s si\n" "$1"; else printf "%-28s no\n" "$1"; fi; }
+        cd /tmp
+        printf x > ns_sondeo
+        prueba "flock -E" "flock -n -E 75 ns_sondeo true"
+        prueba "mv -T" "cp ns_sondeo ns_sondeo2 && mv -T ns_sondeo2 ns_sondeo"
+        prueba "cp --attributes-only" "cp --attributes-only ns_sondeo ns_sondeo3"
+        prueba "stat -c %C" "stat -c %C ns_sondeo"
+        prueba "stat --version GNU" "stat --version | grep -q GNU"
+        prueba "grep -P" "echo 1 | grep -qP \"\\d\""
+        prueba "grep --exclude-dir" "grep -r --exclude-dir=x -e x ns_sondeo"
+        prueba "timeout -k" "timeout -k 1 1 true"
+        prueba "sed conserva sin salto" "[ \"\$(printf a | sed -n 1p | wc -c)\" = 1 ]"
+        rm -f ns_sondeo ns_sondeo2 ns_sondeo3
+        sudo -V | head -n 1
+        grep -hv "^#" /etc/sudoers /etc/sudoers.d/* 2>/dev/null | grep -i "defaults" || true
+        sudo -V 2>/dev/null | grep -v "^Configure" | grep -iE "pseudo-terminal|lecture user|timestamp type|Authentication timestamp timeout" || true
+    '
+}
+
 disponible() { command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; }
 
 case "${1:-}" in
@@ -169,7 +195,8 @@ case "${1:-}" in
     iniciar) distro_valida "${2:-}"; iniciar "$2" ;;
     parar) distro_valida "${2:-}"; parar "$2" ;;
     root) distro_valida "${2:-}"; root "$2" "${3:?falta el comando}" ;;
+    sondear) distro_valida "${2:-}"; sondear "$2" ;;
     disponible) disponible ;;
     limpiar) limpiar ;;
-    *) echo "Uso: $0 construir|iniciar|parar|root <distro> | disponible | limpiar" >&2; exit 2 ;;
+    *) echo "Uso: $0 construir|iniciar|parar|root|sondear <distro> | disponible | limpiar" >&2; exit 2 ;;
 esac
