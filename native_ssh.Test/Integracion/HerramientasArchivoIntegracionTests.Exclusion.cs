@@ -157,7 +157,10 @@ namespace NativeSsh.Test.Integracion
         // no funciona (aquí, una falsa que sale con 127, como una orden que no existe) nunca cuenta como «ocupado»: se prueba
         // la siguiente. Sin ninguna, se escribe sin exclusión y la respuesta lo avisa. Con una sola herramienta disponible
         // (solo_flock, solo_python3), basta ella: así ninguna de las otras puede tapar que su rama falle o desaparezca (p.
-        // ej. un flock sin -E 75, cuyo «ocupado» sería el 1 de «no funciona»).
+        // ej. un flock sin -E 75, cuyo «ocupado» sería el 1 de «no funciona»). Un flock sin -E como el de busybox (sale con
+        // 1 y sin escribir nada si está ocupado; rechaza -E con su ayuda), sin python3 ni perl, también basta (Bloque S,
+        // L1); uno que no supera la comprobación sobre el temporal (siempre 1, o siempre 0: no detecta el candado de otro)
+        // no se usa y se escribe sin exclusión, con el aviso.
         [Theory]
         [InlineData("flock", false)]
         [InlineData("flock", true)]
@@ -166,6 +169,10 @@ namespace NativeSsh.Test.Integracion
         [InlineData("python3", true)]
         [InlineData("solo_python3", false)]
         [InlineData("perl", false)]
+        [InlineData("busybox", false)]
+        [InlineData("busybox", true)]
+        [InlineData("sin_e_siempre_1", false)]
+        [InlineData("sin_e_siempre_0", false)]
         [InlineData("ninguna", false)]
         public async Task CandadoEnManosDeOtroProceso_LasOperacionesFallanSinTocarYAlSoltarloFuncionan(string herramienta, bool isSudo)
         {
@@ -179,10 +186,21 @@ namespace NativeSsh.Test.Integracion
                 "python3" => ["flock"],
                 "solo_python3" => ["flock", "perl"],
                 "perl" => ["flock", "python3"],
+                "busybox" or "sin_e_siempre_1" or "sin_e_siempre_0" => ["python3", "perl"],
                 _ => ["flock", "python3", "perl"]
             };
             foreach (string nombre in inservibles)
                 await SustituirComandoAsync(herramientas, nombre, "exit 127");
+            string? flockSinE = herramienta switch
+            {
+                "busybox" => "exec /usr/bin/flock \"$@\" 2>/dev/null",
+                "sin_e_siempre_1" => "exit 1",
+                "sin_e_siempre_0" => "exit 0",
+                _ => null
+            };
+            if (flockSinE is not null)
+                await SustituirComandoAsync(herramientas, "flock", $"for a; do [ \"$a\" = -E ] && {{ printf 'flock: unrecognized option: E\\nBusyBox v1.37.0 multi-call binary.\\n\\nUsage: flock [-sxun] FD | {{ FILE [-c] PROG ARGS }}\\n' >&2; exit 1; }}; done\n{flockSinE}");
+            bool isSinExclusion = herramienta is "ninguna" or "sin_e_siempre_1" or "sin_e_siempre_0";
             if (isSudo)
                 await SimularSudoAsync(herramientas);
             string[] entradas = Directory.GetFileSystemEntries(carpeta);
@@ -202,7 +220,7 @@ namespace NativeSsh.Test.Integracion
                 ResultadoEscritura libreAnexado = await herramientas.EscribirArchivoAsync(Destino, archivo, "MAS\n", append: true, sudo: isSudo);
 
                 // Assert
-                if (herramienta == "ninguna")
+                if (isSinExclusion)
                 {
                     _ = escritura.Should().BeNull();
                     _ = anexado.Should().BeNull();

@@ -279,7 +279,7 @@ namespace NativeSsh.Herramientas
 
         private const string CandadoTomadoEnCurso = "Mientras el script siga en marcha tiene tomado el candado del archivo (flock): las escrituras, los anexados y los reemplazos nuevos sobre él fallan al momento sin tocarlo; reintenta cuando termine.";
         private const string CandadoSinComprobar = "no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta)";
-        private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock de util-linux, python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
+        private const string SinCandadoPorHerramientas = "El script no pudo tomar el candado del archivo (flock): en el servidor no hay flock (de util-linux, o uno sin -E como el de busybox que funcione), python3 ni perl que lo consigan, o el sistema de archivos no admite flock.";
         private const string SinCandadoPorApertura = "El script no pudo tomar el candado del archivo (flock): no pudo abrirlo ni para leer ni para anexar (sin permiso, o el archivo desapareció entretanto).";
         private const string SinCandadoEnCurso = "Hasta que el script termine, una escritura nueva sobre el archivo podría mezclarse con la restauración: antes de escribir, comprueba con ssh_stat o ssh_read_file que ya terminó.";
         private const string SinProteccion = "no estuvo protegida frente a otra simultánea sobre el mismo archivo.";
