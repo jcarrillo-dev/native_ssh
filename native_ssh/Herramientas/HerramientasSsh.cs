@@ -2204,6 +2204,9 @@ namespace NativeSsh.Herramientas
             if (estado == EstadoPeticionEnum.Completado && !isCancelada)
                 return (peticion, informe);
 
+            if (IsNoEnviadaAlShell(peticion))
+                throw new NativeSshException($"La escritura en '{ruta}' no se hizo: {NoEnviadaAlShell} '{ruta}' no se ha modificado. {peticion.Aviso}");
+
             // Una petición cancelada en la cola nunca empezó a ejecutarse (no tiene instante de inicio).
             string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: peticion.TiempoEjecucion > TimeSpan.Zero);
             throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
@@ -2260,10 +2263,31 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
+        // El comando no llegó al shell: la sesión finaliza la petición en Error, con código -1 y la causa en el aviso, cuando
+        // falla la conexión o la apertura e inicialización del shell (p. ej. en un servidor sin bash, cuyo shell de login
+        // sale al fallar 'exec bash': «El shell de … se cerró durante la inicialización.»), o cuando la sesión ya está
+        // cerrada, siempre antes de enviarlo. El otro Error de la sesión, «Error interno: …», puede llegar después de
+        // enviarlo y no cuenta; sin ninguna salida recibida, por si acaso. Entonces no se ejecutó nada y el error no remite
+        // a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco funcionan).
+        private static bool IsNoEnviadaAlShell(Peticion peticion) =>
+            peticion.Estado == EstadoPeticionEnum.Error
+            && peticion.CodigoSalida == -1
+            && peticion.Salida.Longitud == 0
+            && peticion.Aviso is { Length: > 0 } aviso
+            && !aviso.StartsWith(PrefijoErrorInterno, StringComparison.Ordinal);
+
+        // Prefijo del aviso de SesionShell para una excepción inesperada al ejecutar un comando.
+        private const string PrefijoErrorInterno = "Error interno:";
+
+        private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse, porque no se pudo abrir el shell de ssh_exec en el servidor (conexión, inicio de sesión o inicialización); no se ejecutó nada.";
+
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
         // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
         private static void ExigirCompletada(Peticion peticion, string? consecuencia = null)
         {
+            if (IsNoEnviadaAlShell(peticion))
+                throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia)}");
+
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
                 throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia)}");

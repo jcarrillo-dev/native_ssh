@@ -12,14 +12,15 @@ namespace NativeSsh.Test.Integracion
         // Otra prueba en paralelo puede elegir el mismo puerto libre justo antes: sshd no arranca y se prueba con otro.
         private const int Intentos = 3;
 
-        public SshdPropio(string configuracionExtra)
+        // forceCommand: el shell interactivo forzado (por defecto el de sshd-local.sh, /bin/bash -l).
+        public SshdPropio(string configuracionExtra, string? forceCommand = null)
         {
             Directorio = Path.Combine(Path.GetTempPath(), $"ns_sshd_{Guid.NewGuid():N}");
             for (int intento = 1; ; intento++)
             {
                 try
                 {
-                    Sshd = new SshdLocal(PuertosPruebas.Libre().ToString(CultureInfo.InvariantCulture), Directorio, null, configuracionExtra);
+                    Sshd = new SshdLocal(PuertosPruebas.Libre().ToString(CultureInfo.InvariantCulture), Directorio, forceCommand, configuracionExtra);
                     return;
                 }
                 catch (InvalidOperationException) when (intento < Intentos)
