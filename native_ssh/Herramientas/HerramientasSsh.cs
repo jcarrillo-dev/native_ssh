@@ -1194,7 +1194,8 @@ namespace NativeSsh.Herramientas
         // y otra llamada puede haberlo cambiado entre medias. 'guardado' es el directorio de C# al empezar (null = $HOME) y
         // 'sesionEsperada', la sesión que había (null si aún no había ninguna). Si nada de eso pasó, C# no ha cambiado:
         // - sin 'nuevo' (la validación, que va en un subshell, o un comando que el shell rechazó con un código distinto de
-        //   0), sin enviar al shell o cancelado en la cola: todo sigue en el anterior, con certeza;
+        //   0) o terminado sin llegar al shell (IsNoEnviadaAlShell, IsInterrumpidaSinEnviar): todo sigue en el anterior,
+        //   con certeza;
         // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
         // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
         internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
@@ -1208,8 +1209,8 @@ namespace NativeSsh.Herramientas
             if (sesionEsperada is not null && !ReferenceEquals(sesion, sesionEsperada))
                 return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y ya se abrió otra: el directorio de trabajo es {actualVisible}, el de esa sesión nueva.";
 
-            bool isCanceladaEnLaCola = peticion is not null && IsCanceladaEnLaCola(peticion);
-            bool isSinEfectoEnElShell = nuevo is null || peticion is null || isCanceladaEnLaCola || IsNoEnviadaAlShell(peticion);
+            bool isInterrumpidaSinEnviar = peticion is not null && IsInterrumpidaSinEnviar(peticion);
+            bool isSinEfectoEnElShell = nuevo is null || peticion is null || isInterrumpidaSinEnviar || IsNoEnviadaAlShell(peticion);
             bool isShellPerdido = peticion?.Estado == EstadoPeticionEnum.ShellPerdido;
             if (actual != guardado)
                 return isSinEfectoEnElShell || isShellPerdido
@@ -1217,8 +1218,8 @@ namespace NativeSsh.Herramientas
                     : $"Mientras tanto otra llamada cambió el directorio de trabajo a {actualVisible} (lo usan las herramientas de lectura y un shell nuevo), pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd.";
 
             string anterior = guardado ?? DirectorioHome;
-            return isCanceladaEnLaCola
-                ? $"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {anterior}."
+            return isInterrumpidaSinEnviar
+                ? $"El comando no llegó a enviarse al shell{(peticion!.TiempoEjecucion == TimeSpan.Zero ? " (seguía en la cola)" : string.Empty)}: el directorio de trabajo sigue siendo {anterior}."
                 : isSinEfectoEnElShell
                     ? $"El directorio de trabajo sigue siendo {anterior}."
                     : isShellPerdido
@@ -1226,11 +1227,13 @@ namespace NativeSsh.Herramientas
                         : ConsecuenciaCwdIncierta(anterior, nuevo!);
         }
 
-        // Cancelada mientras esperaba en la cola (ssh_cancel, el plazo de la herramienta o el token): no llegó a empezar, así
-        // que el shell no recibió el comando (SolicitarCancelacion la finaliza bajo el mismo candado que la marca como en
-        // ejecución). Con las señales del E-nonies, '!peticion.IsComandoEnviado' cubre este caso y el de IsNoEnviadaAlShell.
-        private static bool IsCanceladaEnLaCola(Peticion peticion) =>
-            peticion.Estado == EstadoPeticionEnum.Cancelado && peticion.TiempoEjecucion == TimeSpan.Zero;
+        // Interrumpida (ssh_cancel, el plazo o el token) y ya terminada sin que el comando llegara a escribirse en el shell:
+        // en la cola (SolicitarCancelacion la finaliza bajo el mismo candado que la marca como en ejecución) o mientras se
+        // abría el shell. Solo con la petición terminada: mientras sigue en ejecución, la sesión aún puede enviarlo (entre
+        // su última comprobación del token y la escritura). El estado se lee antes que la señal, que la sesión marca antes de
+        // finalizarla. ShellPerdido sin la señal no cuenta: la escritura pudo quedarse a medias.
+        private static bool IsInterrumpidaSinEnviar(Peticion peticion) =>
+            peticion.Estado is EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado && !peticion.IsComandoEnviado;
 
         private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
             $"El directorio de trabajo sigue siendo {anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {anterior}).";
@@ -2371,28 +2374,15 @@ namespace NativeSsh.Herramientas
         private const int CodigoTimeoutRemoto = 124;
         private const int CodigoTimeoutRemotoKill = 137;
 
-        // El comando no llegó al shell: la sesión finaliza la petición en Error, con código -1 y la causa en el aviso, cuando
-        // falla la conexión o la apertura e inicialización del shell (p. ej. en un servidor sin bash, cuyo shell de login
-        // sale al fallar 'exec bash': «El shell de … se cerró durante la inicialización.»), o cuando la sesión ya está
-        // cerrada, siempre antes de enviarlo. El otro Error de la sesión, «Error interno: …», puede llegar después de
-        // enviarlo y no cuenta; sin ninguna salida recibida, por si acaso. Entonces no se ejecutó nada y el error no remite
-        // a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco funcionan).
-        // Punto de enganche con el E-nonies (A-decies, AD4): es el único sitio que decide si el comando llegó al shell
-        // (lo usan ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd; para ConsecuenciaCwd, IsCanceladaEnLaCola
-        // añade el caso de la petición cancelada antes de empezar). Al integrar r2-enoveno, la heurística se
-        // sustituye por su señal: 'peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado' (la sesión la
-        // marca con MarcarComandoEnviado al escribir el comando entero; ya no depende del literal «Error interno:» ni de que
-        // no haya salida, y PrefijoErrorInterno sobra). El aviso de un servidor sin bash (RespuestaSinBash.IsMensajeSinBash)
-        // ya dice que no se ejecutó nada y que ninguna herramienta funcionará: va tal cual detrás de NoEnviadaAlShell.
-        private static bool IsNoEnviadaAlShell(Peticion peticion) =>
-            peticion.Estado == EstadoPeticionEnum.Error
-            && peticion.CodigoSalida == -1
-            && peticion.Salida.Longitud == 0
-            && peticion.Aviso is { Length: > 0 } aviso
-            && !aviso.StartsWith(PrefijoErrorInterno, StringComparison.Ordinal);
-
-        // Prefijo del aviso de SesionShell para una excepción inesperada al ejecutar un comando.
-        private const string PrefijoErrorInterno = "Error interno:";
+        // El comando no llegó al shell: la sesión finaliza la petición en Error sin haberlo escrito en el canal
+        // (Peticion.IsComandoEnviado) cuando falla la conexión o la apertura e inicialización del shell (en un servidor sin
+        // bash, con el aviso de RespuestaSinBash, que ya dice que no se ejecutó nada y que ninguna herramienta funcionará),
+        // cuando la sesión ya está cerrada o con un error interno antes de enviarlo. Entonces no se ejecutó nada y el error no
+        // remite a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco
+        // funcionan). Es el único sitio que lo decide para ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd (que
+        // añade IsInterrumpidaSinEnviar). El estado se lee antes que la señal, que la sesión marca antes de finalizarla.
+        internal static bool IsNoEnviadaAlShell(Peticion peticion) =>
+            peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado;
 
         private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse (no se envió al shell de ssh_exec: no se pudo abrir —conexión, inicio de sesión o inicialización— o la sesión ya estaba cerrada).";
 

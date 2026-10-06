@@ -428,5 +428,111 @@ namespace NativeSsh.Test.Herramientas
                 .And.NotContain("no llegó a enviarse");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
+
+        // Petición del export hecha a mano, ya terminada: 'isEnviado' dice si el comando llegó a escribirse en el shell.
+        private static Peticion PeticionExport(EstadoPeticionEnum estado, string? aviso, bool isEnviado, bool isEmpezada = true)
+        {
+            _ = DestinoSsh.TryParse(Destino, "ana", out DestinoSsh destino);
+            Peticion peticion = new(destino, "export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
+            if (isEmpezada)
+                _ = peticion.TryMarcarEjecutando();
+            if (isEnviado)
+                peticion.MarcarComandoEnviado();
+            _ = peticion.TryFinalizar(estado, -1, aviso);
+            return peticion;
+        }
+
+        // Con las señales de Sesion/ (Peticion.IsComandoEnviado, integración de las líneas A y E): un export que terminó
+        // sin llegar al shell no pudo cambiar su directorio, aunque ya hubiera empezado (se estaba abriendo el shell) o el
+        // error fuera interno; antes la consecuencia era la incierta («puede haber pasado ya»).
+        [Theory]
+        [InlineData(EstadoPeticionEnum.Cancelado)]
+        [InlineData(EstadoPeticionEnum.TiempoAgotado)]
+        public async Task ConsecuenciaCwd_InterrumpidoSinEnviarTrasEmpezar_DiceConCertezaQueNoSeEnvio(EstadoPeticionEnum estado)
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+            Peticion export = PeticionExport(estado, "Se canceló mientras se abría el shell: el comando no llegó a enviarse.", isEnviado: false);
+
+            // Act
+            string consecuencia = _herramientas.ConsecuenciaCwd(Destino, sesion, Anterior, export, "/srv/nuevo");
+
+            // Assert
+            _ = consecuencia.Should().Be($"El comando no llegó a enviarse al shell: el directorio de trabajo sigue siendo {Anterior}.");
+        }
+
+        // En la cola (sin empezar) lo dice también.
+        [Fact]
+        public async Task ConsecuenciaCwd_CanceladoEnLaColaSinEnviar_DiceQueSeguiaEnLaCola()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+            Peticion export = PeticionExport(EstadoPeticionEnum.Cancelado, "Cancelada antes de empezar.", isEnviado: false, isEmpezada: false);
+
+            // Act
+            string consecuencia = _herramientas.ConsecuenciaCwd(Destino, sesion, Anterior, export, "/srv/nuevo");
+
+            // Assert
+            _ = consecuencia.Should().Be($"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {Anterior}.");
+        }
+
+        // Error interno antes de enviar el comando: nada llegó al shell (antes, el literal «Error interno:» lo hacía incierto).
+        [Fact]
+        public async Task ConsecuenciaCwd_ErrorInternoSinEnviar_DiceQueSigueElAnterior()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+            Peticion export = PeticionExport(EstadoPeticionEnum.Error, "Error interno: fallo inesperado", isEnviado: false);
+
+            // Act
+            string consecuencia = _herramientas.ConsecuenciaCwd(Destino, sesion, Anterior, export, "/srv/nuevo");
+
+            // Assert
+            _ = consecuencia.Should().Be($"El directorio de trabajo sigue siendo {Anterior}.");
+        }
+
+        // Con el comando ya enviado, interrumpido o con un error interno, el shell pudo exportarlo: la incierta.
+        [Theory]
+        [InlineData(EstadoPeticionEnum.Cancelado, "Cancelado por ssh_cancel.")]
+        [InlineData(EstadoPeticionEnum.TiempoAgotado, "Tiempo agotado.")]
+        [InlineData(EstadoPeticionEnum.Error, "Error interno: fallo inesperado")]
+        [InlineData(EstadoPeticionEnum.Error, "Fallo sin prefijo")]
+        public async Task ConsecuenciaCwd_InterrumpidoTrasEnviar_DiceQueElShellPuedeHaberlo(EstadoPeticionEnum estado, string aviso)
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+            Peticion export = PeticionExport(estado, aviso, isEnviado: true);
+
+            // Act
+            string consecuencia = _herramientas.ConsecuenciaCwd(Destino, sesion, Anterior, export, "/srv/nuevo");
+
+            // Assert
+            _ = consecuencia.Should().Contain("puede haber pasado ya a /srv/nuevo").And.NotContain("no llegó a enviarse");
+        }
+
+        // El único punto que decide si el comando llegó al shell para los errores de las herramientas que van por él: una
+        // petición en Error sin el comando enviado (también con un error interno); con él enviado, no.
+        [Theory]
+        [InlineData(EstadoPeticionEnum.Error, "Error interno: fallo inesperado", false, true)]
+        [InlineData(EstadoPeticionEnum.Error, "El shell de ana@servidor:22 se cerró durante la inicialización.", false, true)]
+        [InlineData(EstadoPeticionEnum.Error, "Fallo sin prefijo", true, false)]
+        [InlineData(EstadoPeticionEnum.Error, "Error interno: fallo inesperado", true, false)]
+        [InlineData(EstadoPeticionEnum.Cancelado, "Cancelada antes de empezar.", false, false)]
+        [InlineData(EstadoPeticionEnum.ShellPerdido, "No se pudo enviar el comando.", false, false)]
+        public void IsNoEnviadaAlShell_SoloErrorSinElComandoEnviado(EstadoPeticionEnum estado, string aviso, bool isEnviado, bool isEsperado)
+        {
+            // Arrange
+            Peticion peticion = PeticionExport(estado, aviso, isEnviado);
+
+            // Act
+            bool isNoEnviada = HerramientasSsh.IsNoEnviadaAlShell(peticion);
+
+            // Assert
+            _ = isNoEnviada.Should().Be(isEsperado);
+        }
     }
 }
