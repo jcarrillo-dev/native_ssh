@@ -13,10 +13,12 @@ namespace NativeSsh.Test.Integracion
     // Z06 de la auditoría del E-septies (B1, preexistente): Ctrl+C (ssh_cancel o el plazo de ssh_exec) a un comando que
     // abrió un shell interactivo anidado (sudo -i, su -, ssh a otra máquina, bash -i). El anidado no muere, la línea de
     // recuperación se ejecutaba dentro de él y su marcador daba la cancelación por buena: los comandos siguientes corrían
-    // dentro (como root o en otra máquina) y volvían Completado sin aviso. Ahora la línea comprueba $$ y $PPID contra los
-    // del shell de la sesión y, si no coinciden, se cierra el canal y se dice.
-    // También lo que no debe detectarse como anidado: subshells, bash -c, tuberías, funciones, source, exec (mismo pid),
-    // cancelaciones normales y ssh_reset_shell.
+    // dentro (como root o en otra máquina) y volvían Completado sin aviso. Ahora la línea comprueba $$, $PPID y el testigo
+    // del canal contra los del shell de la sesión y, si no coinciden, se cierra el canal y se dice.
+    // También lo que no debe detectarse como anidado: subshells, bash -c, tuberías, funciones, source, exec de
+    // redirecciones, cancelaciones normales y ssh_reset_shell. Un exec que sustituye al shell de la sesión por otro programa
+    // (exec bash, exec sh, exec env … bash) sí se detecta (B1 de la auditoría del E-octies): ese programa no tiene el
+    // testigo, y el mismo mecanismo cubre exec su, exec setpriv … bash, chroot o nsenter (otro usuario o mismo pid).
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
@@ -160,10 +162,6 @@ namespace NativeSsh.Test.Integracion
 
             ResultadoComando trasCancelar = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_FP", esperarSegundos: 20);
 
-            // exec conserva el pid y el padre: el bash nuevo es el mismo proceso (no es otro usuario ni otra máquina). No
-            // termina la línea, así que vence su plazo y el Ctrl+C lo recibe ese bash interactivo, que sigue.
-            ResultadoComando conExec = await _herramientas.EjecutarAsync(Destino, "exec bash --noediting --norc --noprofile", timeoutSegundos: 2, esperarSegundos: 20);
-            ResultadoComando trasExec = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_FP", esperarSegundos: 20);
             ResultadoAccion reinicio = _herramientas.ReiniciarShell(Destino);
             ResultadoComando trasReinicio = await _herramientas.EjecutarAsync(Destino, "echo v=$NS_FP", esperarSegundos: 20);
             ResultadoComando enCursoTrasReinicio = await _herramientas.EjecutarAsync(Destino, Proceso, timeoutSegundos: 300, esperarSegundos: 1);
@@ -181,11 +179,6 @@ namespace NativeSsh.Test.Integracion
             _ = cancelados.Should().OnlyContain(c => c.Estado == EstadoPeticionEnum.Cancelado && c.Aviso == Cancelado);
             _ = trasCancelar.Salida.Should().Be($"pid={pid} v=si\n");
             _ = trasCancelar.Aviso.Should().BeNull();
-            _ = conExec.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
-            _ = conExec.Aviso.Should().Be("Tiempo agotado (2 s): se envió Ctrl+C al proceso.");
-            _ = trasExec.Estado.Should().Be(EstadoPeticionEnum.Completado);
-            _ = trasExec.Salida.Should().Contain($"pid={pid} v=si\n");
-            _ = trasExec.Aviso.Should().BeNull();
             _ = reinicio.IsHecho.Should().BeTrue();
             _ = trasReinicio.Salida.Should().Be("v=\n");
             _ = trasReinicio.Aviso.Should().BeNull();
@@ -193,6 +186,33 @@ namespace NativeSsh.Test.Integracion
             _ = canceladoTrasReinicio.Aviso.Should().Be(Cancelado);
             _ = final.Salida.Should().Be("fin\n");
             _ = final.Aviso.Should().BeNull();
+        }
+
+        // Un exec que deja otro programa en el proceso del shell de la sesión (mismo $$ y $PPID, sin el testigo del canal)
+        // no termina la línea: vence su plazo, el Ctrl+C lo recibe ese programa y la recuperación lo detecta; el canal se cierra
+        // y el siguiente comando va a un shell nuevo. Antes pasaba por el shell de la sesión (los comandos siguientes corrían
+        // en el programa del exec, que puede ser de otro usuario: exec su, exec setpriv … bash).
+        [Theory]
+        [InlineData("exec bash --noediting --norc --noprofile")]
+        [InlineData("exec sh")]
+        [InlineData("exec env -i HOME=/ PATH=/usr/bin:/bin bash --norc --noprofile")]
+        public async Task ExecQueSustituyeAlShellDeLaSesion_SeDetectaYElSiguienteVaAUnShellNuevo(string comando)
+        {
+            // Arrange
+            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EX=si; echo $$", esperarSegundos: 20);
+            string pid = inicio.Salida.Trim();
+
+            // Act
+            ResultadoComando conExec = await _herramientas.EjecutarAsync(Destino, comando, timeoutSegundos: 2, esperarSegundos: 20);
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EX", esperarSegundos: 20);
+
+            // Assert
+            _ = conExec.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
+            _ = conExec.Aviso.Should().StartWith("Tiempo agotado (2 s): se envió Ctrl+C, pero no lo recibió el shell de la sesión")
+                .And.Contain("sustituyó al de la sesión con exec").And.Contain("se cerró el canal del shell").And.Contain("shell nuevo");
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.Salida.Should().StartWith("pid=").And.NotBe($"pid={pid} v=si\n").And.EndWith(" v=\n");
+            _ = siguiente.Aviso.Should().Contain("recreado");
         }
     }
 }

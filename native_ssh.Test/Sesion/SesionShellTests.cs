@@ -32,6 +32,7 @@ namespace NativeSsh.Test.Sesion
             "exit" => new("", 0, ComportamientoFalsoEnum.Salir),
             "sudo -i" => new("root# ", 0, ComportamientoFalsoEnum.AbreShellAnidado),
             "termina-anidado" => new("dentro\n", 0, ComportamientoFalsoEnum.TerminaEnShellAnidado),
+            "ssh -tt gemelo" => new("gemelo$ ", 0, ComportamientoFalsoEnum.AbreShellSinTestigo),
             "falla" => new("error\n", 3),
             _ => new($"eco:{comando}\n")
         };
@@ -298,7 +299,7 @@ namespace NativeSsh.Test.Sesion
             // Assert: no se da la cancelación por buena en silencio; el canal se cierra y el siguiente va a un shell nuevo.
             _ = anidado.Estado.Should().Be(isPlazo ? EstadoPeticionEnum.TiempoAgotado : EstadoPeticionEnum.Cancelado);
             _ = anidado.Aviso.Should().Contain("shell interactivo anidado").And.Contain("se cerró el canal del shell").And.Contain("SIGHUP")
-                .And.Contain("shell nuevo").And.Contain("se perderán").And.Contain("ssh_set_cwd");
+                .And.Contain("tmux").And.Contain("shell nuevo").And.Contain("se perderán").And.Contain("ssh_set_cwd").And.NotContain("no confirmó");
             _ = viejo.LineasEnShellAjeno.Should().Be(1);
             _ = viejo.IsDispuesto.Should().BeTrue();
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
@@ -356,10 +357,97 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = ajeno.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
             _ = ajeno.CodigoSalida.Should().Be(-1);
-            _ = ajeno.Aviso.Should().Contain("no se ejecutó en el shell de ssh_exec").And.Contain("Se cerró el canal del shell").And.Contain("shell nuevo");
+            _ = ajeno.Aviso.Should().Contain("no la ejecutó el shell de la sesión").And.Contain("o uno que sustituyó al de la sesión con exec")
+                .And.Contain("no son fiables").And.Contain("Se cerró el canal del shell").And.Contain("shell nuevo").And.NotContain("no confirmó");
             _ = viejo.IsDispuesto.Should().BeTrue();
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Aviso.Should().Contain("recreado");
+        }
+
+        // B1 de la auditoría del E-octies: el shell que recibe Ctrl+C tiene el mismo $$ y $PPID que el de la sesión (un shell en
+        // un contenedor gemelo, al que se entró con ssh -tt, o el programa que deja un exec), pero no el testigo del canal.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task CtrlCAUnShellConLaMismaIdentidadPeroSinElTestigo_CierraElCanalYElSiguienteNoSeEjecutaDentro(bool isPlazo)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            CanalFalso viejo = fabrica.Ultima!.CanalActual!;
+            Peticion gemelo = Nueva("ssh -tt gemelo", timeoutSegundos: isPlazo ? 0.5 : 60);
+            sesion.Encolar(gemelo);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(gemelo).Contains("gemelo$ "));
+
+            // Act
+            if (!isPlazo)
+                _ = gemelo.SolicitarCancelacion();
+            await gemelo.Finalizacion.WaitAsync(Limite);
+            Peticion siguiente = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = viejo.IdentidadActual.Should().StartWith($"{viejo.Pid} {viejo.PidPadre} ", "el otro shell tiene el mismo $$ y $PPID");
+            _ = gemelo.Estado.Should().Be(isPlazo ? EstadoPeticionEnum.TiempoAgotado : EstadoPeticionEnum.Cancelado);
+            _ = gemelo.Aviso.Should().Contain("shell interactivo anidado").And.Contain("sustituyó al de la sesión con exec").And.Contain("se cerró el canal del shell");
+            _ = viejo.LineasEnShellAjeno.Should().Be(1);
+            _ = viejo.IsDispuesto.Should().BeTrue();
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(siguiente).Should().Be("eco:hola\n");
+            _ = siguiente.Aviso.Should().Contain("recreado");
+            _ = fabrica.Ultima.CanalActual.Should().NotBeSameAs(viejo);
+        }
+
+        // Cada canal guarda su propio testigo: el de un shell recreado (ssh_reset_shell) no es el del anterior.
+        [Fact]
+        public async Task CadaShellNuevo_GuardaUnTestigoDistinto()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            string primero = fabrica.Ultima!.CanalActual!.IdentidadActual;
+
+            // Act
+            sesion.SolicitarReset();
+            Peticion tras = await EjecutarAsync(sesion, "hola");
+            string segundo = fabrica.Ultima.CanalActual!.IdentidadActual;
+
+            // Assert
+            _ = tras.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = primero.Split(' ')[2].Should().MatchRegex("^[0-9a-f]{32}$");
+            _ = segundo.Split(' ')[2].Should().MatchRegex("^[0-9a-f]{32}$").And.NotBe(primero.Split(' ')[2]);
+        }
+
+        // A05 de la auditoría del E-octies: el aviso dice si el servidor confirmó el cierre del canal o no.
+        [Fact]
+        public async Task CtrlCAUnShellAnidado_ConElCierreSinConfirmar_LoDiceSinAfirmarQueTermino()
+        {
+            // Arrange
+            using ManualResetEventSlim confirmacion = new(false);
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "hola");
+            fabrica.Ultima!.CanalActual!.RetenerCierre(confirmacion);
+            Peticion anidado = Nueva("sudo -i");
+            sesion.Encolar(anidado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(anidado).Contains("root# "));
+
+            // Act
+            try
+            {
+                _ = anidado.SolicitarCancelacion();
+                await anidado.Finalizacion.WaitAsync(Limite);
+            }
+            finally
+            {
+                confirmacion.Set();
+            }
+
+            // Assert
+            _ = anidado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = anidado.Aviso.Should().Contain("se cerró el canal del shell de ssh_exec, aunque el servidor no confirmó el cierre").And.Contain("siga vivo sin terminal")
+                .And.NotContain("normalmente termina");
         }
 
         [Fact]
