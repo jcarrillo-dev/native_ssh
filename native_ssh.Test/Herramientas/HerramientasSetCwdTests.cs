@@ -406,5 +406,27 @@ namespace NativeSsh.Test.Herramientas
             _ = sinSesionAlEmpezar.Should().Be(mismaSesion);
             _ = otraLlamada.Should().Be($"Mientras tanto otra llamada cambió el directorio de trabajo: ahora es {Anterior}.");
         }
+
+        // ssh_cancel del export ya en ejecución (no en la cola): el shell pudo exportarlo, así que la consecuencia es la
+        // incierta, no «no llegó a enviarse» (A-undecies, AU3).
+        [Fact]
+        public async Task ExportCanceladoConSshCancelEnEjecucion_DiceQueElShellPuedeHaberlo()
+        {
+            // Arrange
+            _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
+            Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "/srv/colgado");
+            await EsperarEjecutandoAsync("export __NS_CWD='/srv/colgado'");
+            Peticion export = _gestor.ListarPeticiones().Single(p => p.Comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal));
+
+            // Act
+            _ = await _herramientas.CancelarAsync(export.IdTexto);
+            NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("(estado: Cancelado;")
+                .And.EndWith($"El directorio de trabajo sigue siendo {Anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a /srv/colgado: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {Anterior}).")
+                .And.NotContain("no llegó a enviarse");
+            _ = DirectorioDeLaSesion().Should().Be(Anterior);
+        }
     }
 }
