@@ -73,7 +73,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // grep como el de busybox: sin -P, -I ni las opciones largas de GNU (--exclude-dir, --exclude, --include), que
-        // rechaza con su ayuda y código 2; el resto lo hace el grep real.
+        // rechaza con su ayuda y código 2; el resto lo hace el grep real con -a, porque busybox da las líneas de un binario
+        // como las de cualquier otro archivo (el de GNU las calla con un aviso).
         private void InstalarGrepDeBusybox()
         {
             string envoltorio = Path.Combine(_bin, "grep");
@@ -88,7 +89,7 @@ namespace NativeSsh.Test.Integracion
                   esac
                   anterior=$a
                 done
-                exec {{Ruta("grep")}} "$@"
+                exec {{Ruta("grep")}} -a "$@"
 
                 """);
             File.SetUnixFileMode(envoltorio, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
