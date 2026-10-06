@@ -6,8 +6,9 @@ using NativeSsh.Sesion;
 namespace NativeSsh.Ssh
 {
     // Canal exec con SshCommand de SSH.NET 2026.0.0 (CreateCommand + ExecuteAsync):
-    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions sin atender
-    //   ningún token y, tras conectar, sin plazo: ConexionSshNet quita ConnectionInfo.Timeout para que SSH.NET no dé por
+    // - ExecuteAsync abre el canal de forma síncrona (Open espera la confirmación y el semáforo de MaxSessions; el
+    //   semáforo atiende el token de ExecuteAsync, que aquí no se usa, y ambas esperan como mucho ConnectionInfo.Timeout,
+    //   que tras conectar es infinito: ConexionSshNet quita ConnectionInfo.Timeout para que SSH.NET no dé por
     //   fallida una apertura que el servidor confirmará después, lo que dejaba el canal abierto en el servidor sin que
     //   nadie lo cerrara): se invoca en el pool (Task.Factory.StartNew) y se espera después la tarea que devuelve. Si el
     //   token se cancela durante la apertura, esta tarea espera a que termine (confirmación, rechazo o caída de la
