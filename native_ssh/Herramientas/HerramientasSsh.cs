@@ -620,7 +620,9 @@ namespace NativeSsh.Herramientas
         //   (compara el nombre, y lo que sigue a cada '/', con el patrón): un directorio pedido va con la barra final, con
         //   la que ningún patrón casa (sale igual, 'dir/archivo'), y un archivo pedido va sin esas opciones ni -r y con -H
         //   (con -r y un solo archivo, grep no da su nombre).
-        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido.
+        // - rg y find ya buscan en la ruta pedida aunque se llame como un excluido; en rg las exclusiones de directorios
+        //   llevan la barra final de los globs de gitignore, para que, como en grep y find, no excluyan un archivo que se
+        //   llama igual (un script 'build' o 'bin').
         // - En el recorrido con find, un error de find nunca es «sin coincidencias»: su stderr se filtra (con sus mensajes
         //   en inglés) y lo que grep -rs y rg callan se calla también (subdirectorio sin permiso o desaparecido a mitad,
         //   grep muerto por SIGPIPE, o por EPIPE si lo ignora, cuando head ya tiene bastantes líneas); cualquier otro
@@ -649,7 +651,7 @@ namespace NativeSsh.Herramientas
                 filtroFind = $"-name {filtroEscapado} ";
             }
 
-            string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
+            string exclusionesRg = $"-g '!{{{ExclusionDirectorios}}}/' -g '!{{{ExclusionArchivos.Replace("'", string.Empty, StringComparison.Ordinal)}}}'";
             string exclusionesGrep = $"--exclude-dir={{{ExclusionDirectorios}}} --exclude={{{ExclusionArchivos}}}";
             return PlantillaBash.Crear($$"""
                 (

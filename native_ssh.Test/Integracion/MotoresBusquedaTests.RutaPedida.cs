@@ -132,6 +132,35 @@ namespace NativeSsh.Test.Integracion
             return casos;
         }
 
+        // Dentro del árbol, los cuatro caminos excluyen lo mismo: los directorios de la lista se podan a cualquier
+        // profundidad, pero un archivo que se llama como uno de ellos (aquí 'bin' y 'build', p. ej. un script) se busca
+        // (rg los excluía también como archivos), y un enlace a un directorio no se sigue (como grep -r y rg sin -L; el
+        // recorrido con find no debe usar -L).
+        [Theory]
+        [MemberData(nameof(Motores))]
+        public void DentroDelArbol_MismasExclusionesYSinSeguirEnlacesEnLosCuatroMotores(string motor)
+        {
+            // Arrange
+            string? anunciado = InstalarMotor(motor);
+            if (anunciado is null)
+                return;
+            Escribir("q/real/r.txt", "valor real");
+            Escribir("q/herramientas/bin", "valor script bin");
+            Escribir("q/build", "valor script build");
+            Escribir("q/bin/x.txt", "valor dir bin");
+            Escribir("q/sub/build/y.txt", "valor dir build");
+            _ = Directory.CreateSymbolicLink(Path.Combine(_datos, "q", "enlace"), Path.Combine(_datos, "q", "real"));
+
+            // Act
+            (int codigo, string salida, string errores) = EjecutarConErrores(HerramientasSsh.ConstruirComandoBusqueda("valor [a-z]+", "q", null, 50));
+
+            // Assert
+            _ = (codigo, errores).Should().Be((0, string.Empty));
+            string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            _ = lineas[0].Should().Be($"__NS_MOTOR:{anunciado}");
+            _ = lineas[1..].Should().BeEquivalentTo("q/real/r.txt:1:valor real", "q/herramientas/bin:1:valor script bin", "q/build:1:valor script build");
+        }
+
         // Sin grep de GNU, un error de find nunca es «sin coincidencias» (AN1): si find falla (aquí, uno que no admite la
         // expresión), el script sale con 2 y su error va a stderr. Lo que grep -rs y rg callan también se calla aquí: un
         // subdirectorio sin permiso dentro del árbol y el grep que muere por SIGPIPE cuando head ya tiene bastantes líneas.
