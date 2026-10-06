@@ -1079,6 +1079,37 @@ namespace NativeSsh.Test.Sesion
         }
 
         [Fact]
+        public async Task Cancelar_ConElMarcadorDeRecuperacionLento_ElReenvioNoDejaUnMarcadorSueltoEnLaSalidaDelSiguiente()
+        {
+            // Arrange: la primera línea de recuperación sí llega, pero su marcador tarda más que media espera tras Ctrl+C,
+            // así que también se ejecuta el reenvío y su marcador llega durante el comando siguiente.
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado", timeoutSegundos: 60);
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            CanalFalso canal = fabrica.Ultima!.CanalActual!;
+            canal.RetrasoMarcadorRecuperacion = TimeSpan.FromMilliseconds(250);
+
+            // Act
+            _ = colgado.SolicitarCancelacion();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("¿Nombre?"));
+            await Task.Delay(800);
+            bool isEnviada = sesion.EnviarEntrada(pregunta, "ana", isEnviarEnter: true);
+            await pregunta.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = colgado.Aviso.Should().Be("Cancelado: se envió Ctrl+C al proceso.");
+            _ = isEnviada.Should().BeTrue();
+            _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(pregunta).Should().Be("¿Nombre? recibido:ana\n");
+            _ = fabrica.Ultima.ShellsAbiertos.Should().Be(1);
+        }
+
+        [Fact]
         public async Task EntradaQueFallaAlEscribir_LanzaConLaCausaRealEnLugarDeDevolverFalse()
         {
             // Arrange: la conexión cae sin que el canal se entere (escribir en él falla).

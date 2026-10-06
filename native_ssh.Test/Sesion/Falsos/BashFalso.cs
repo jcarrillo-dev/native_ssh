@@ -371,6 +371,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Intentos de escribir con el canal ya cerrado.
         public int EscriturasTrasCerrar => Volatile.Read(ref _escriturasTrasCerrar);
 
+        // Retraso de la salida del marcador de cada línea de recuperación tras Ctrl+C (servidor lento).
+        public TimeSpan RetrasoMarcadorRecuperacion { get; set; }
+
         // Líneas completas recibidas por el canal (las tragadas también cuentan).
         public int LineasRecibidas => Volatile.Read(ref _lineasRecibidas);
 
@@ -635,7 +638,19 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
             else if (linea.StartsWith("__ns_rc=130", StringComparison.Ordinal))
             {
-                EmitirConMarcador("", ExtraerId(linea), 130);
+                if (RetrasoMarcadorRecuperacion <= TimeSpan.Zero)
+                    EmitirConMarcador("", ExtraerId(linea), 130);
+                else
+                {
+                    // bash ya espera en su 'read'; lo que llega tarde es la salida del marcador.
+                    _isReadPendiente = true;
+                    string marcador = $"__NSX_{ExtraerId(linea)}_130__\n";
+                    _ = Task.Delay(RetrasoMarcadorRecuperacion).ContinueWith(_ =>
+                    {
+                        lock (_candado)
+                            Emitir(marcador);
+                    }, TaskScheduler.Default);
+                }
             }
         }
 

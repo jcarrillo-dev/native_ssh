@@ -122,6 +122,10 @@ namespace NativeSsh.Sesion
         // Canales exec cuya apertura sigue sin confirmar por el servidor (cuentan para el cupo y no tienen plazo conocido).
         private int _aperturasExecSinConfirmar;
 
+        // Id de una línea de recuperación reenviada (InterrumpirAsync): si llegaron las dos, el marcador de la segunda
+        // puede llegar durante el comando siguiente, que lo descarta. Bajo _candadoProceso.
+        private Guid? _idRecuperacionReenviada;
+
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
         private int _shellsAbandonados;
 
@@ -685,7 +689,8 @@ namespace NativeSsh.Sesion
                     if (!ReferenceEquals(_canal, canal))
                         return false;
 
-                    _escaner.Reiniciar(peticion.Id);
+                    _escaner.Reiniciar(peticion.Id, _idRecuperacionReenviada);
+                    _idRecuperacionReenviada = null;
                     _salidaActual = peticion.Salida;
                     _esperaMarcador = espera;
                 }
@@ -759,7 +764,9 @@ namespace NativeSsh.Sesion
             // La línea de recuperación va en otra escritura y tras una pausa: un 'sudo <cmd>' con use_pty se traga lo que llega
             // mientras termina, y si estaba pidiendo la contraseña lo tomaría como contraseñas (intentos gastados; con
             // pam_faillock, la cuenta bloqueada). Mientras tanto la entrada sigue rechazada (_isInterrumpiendo). Si el marcador
-            // no llega en la mitad de la espera, se reenvía una vez antes de escalar al cierre del canal.
+            // no llega en la mitad de la espera, se reenvía una vez antes de escalar al cierre del canal (si la primera sí había
+            // llegado, se ejecutan las dos: el 'read' de la primera se come el '\n' inicial del reenvío, y el marcador de la
+            // segunda, si llega durante el comando siguiente, se descarta con _idRecuperacionReenviada).
             bool isRecuperacionEnviada = false;
             if (isEnviado)
             {
@@ -772,7 +779,11 @@ namespace NativeSsh.Sesion
                 TimeSpan primeraEspera = _opciones.EsperaTrasCtrlC / 2;
                 int? codigo = await EsperarRecuperacionAsync(recuperacion, primeraEspera).ConfigureAwait(false);
                 if (codigo is null && TryEscribirRecuperacion(canal, idRecuperacion))
+                {
+                    lock (_candadoProceso)
+                        _idRecuperacionReenviada = idRecuperacion;
                     codigo = await EsperarRecuperacionAsync(recuperacion, _opciones.EsperaTrasCtrlC - primeraEspera).ConfigureAwait(false);
+                }
 
                 if (codigo is null && recuperacion.Task.IsCompletedSuccessfully)
                     codigo = recuperacion.Task.Result;
