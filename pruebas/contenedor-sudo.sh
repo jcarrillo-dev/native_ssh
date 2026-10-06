@@ -17,9 +17,9 @@
 #
 # Distros: debian, alpine (pruebas/contenedor/Containerfile.<distro>).
 # Deja en pruebas/.estado-contenedor-<distro>/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto,
-# contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 25000 y 25999; por defecto 25352 para
-# debian y 25362 para alpine: fuera del rango X400-X999 de los sshd manuales de las pruebas y distinto del 25022 del sshd
-# de login lento por defecto).
+# contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 23000 y 25999, para que cada agente
+# en paralelo use su rango; por defecto 25352 para debian y 25362 para alpine: fuera del rango X400-X999 de los sshd
+# manuales de las pruebas con el puerto de pruebas por defecto y distinto del 25022 del sshd de login lento por defecto).
 # Usuario de prueba: 'prueba', contraseña 'contrasena-de-prueba' (solo existe dentro del contenedor), sudo con contraseña.
 set -euo pipefail
 
@@ -99,8 +99,8 @@ iniciar() {
     parar "$distro"
     dir="$(directorio_estado "$distro")"
     puerto="${NATIVE_SSH_PUERTO_CONTENEDOR:-$(puerto_por_defecto "$distro")}"
-    if (( puerto < 25000 || puerto > 25999 )); then
-        echo "El puerto de los contenedores debe estar en 25000-25999 (es $puerto)." >&2
+    if (( puerto < 23000 || puerto > 25999 )); then
+        echo "El puerto de los contenedores debe estar en 23000-25999 (es $puerto)." >&2
         return 2
     fi
     if ! puerto_libre "$puerto"; then
