@@ -143,8 +143,11 @@ namespace NativeSsh.Sesion
             return true;
         }
 
+        // La salida se cierra antes de publicar el estado final: quien ve el estado final lee ya la salida sin nada retenido
+        // por si era el principio de un secreto (BufferSalida.Cerrar).
         private void FinalizarBajoCandado(EstadoPeticionEnum estado, int codigo, string? aviso)
         {
+            Salida.Cerrar();
             Volatile.Write(ref _codigoSalida, codigo);
             Volatile.Write(ref _aviso, aviso);
             Volatile.Write(ref _avisoEnCurso, null);

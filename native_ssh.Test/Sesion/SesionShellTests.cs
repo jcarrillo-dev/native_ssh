@@ -1092,7 +1092,7 @@ namespace NativeSsh.Test.Sesion
             Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
-            Func<Task> cancelada = () => Task.Run(() => sesion.EnviarEntrada(colgado, "x", isEnviarEnter: true, cancelacion.Token)).WaitAsync(Limite);
+            Func<Task> cancelada = () => Task.Run(() => sesion.EnviarEntrada(colgado, "x", isEnviarEnter: true, cancellationToken: cancelacion.Token)).WaitAsync(Limite);
             Task<bool> durante = Task.Run(() => sesion.EnviarEntrada(colgado, "y", isEnviarEnter: true));
             _ = await cancelada.Should().ThrowAsync<OperationCanceledException>();
             TimeSpan tiempoCancelada = reloj.Elapsed;

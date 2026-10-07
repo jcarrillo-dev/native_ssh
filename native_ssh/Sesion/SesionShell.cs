@@ -254,7 +254,10 @@ namespace NativeSsh.Sesion
         // retiene mientras escribe el comando, y esa escritura no termina mientras el servidor no acepte los datos. El canal
         // se elige antes de tomar su candado y se vuelve a comprobar con él tomado: mientras tanto pudo cerrarse o abandonarse
         // (AbandonarCanal), y en un canal que ya no es el vigente no se escribe nada.
-        public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter, CancellationToken cancellationToken = default)
+        //
+        // isSecreto: tras enviarlo (o fallar), los bytes se borran del búfer de escritura del canal (que se reutiliza y, si no,
+        // los conservaría hasta que otra escritura los pisara).
+        public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter, bool isSecreto = false, CancellationToken cancellationToken = default)
         {
             if (peticion.Estado != EstadoPeticionEnum.Ejecutando)
                 return false;
@@ -294,7 +297,15 @@ namespace NativeSsh.Sesion
                 if (isEnviarEnter)
                     destino[escritos++] = (byte)'\n';
                 escritor.Advance(escritos);
-                return TryEnviarBajoCandado(canal) ? true : throw new NativeSshException(DescribirEntradaFallida(peticion, conexion));
+                try
+                {
+                    return TryEnviarBajoCandado(canal) ? true : throw new NativeSshException(DescribirEntradaFallida(peticion, conexion));
+                }
+                finally
+                {
+                    if (isSecreto)
+                        escritor.Clear();
+                }
             }
             finally
             {

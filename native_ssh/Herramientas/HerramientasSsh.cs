@@ -299,15 +299,25 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_input", Destructive = true)]
-        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío.")]
+        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true.")]
         public async Task<ResultadoComando> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
+            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
+            // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
+            if (secreto)
+            {
+                byte[] bytesSecreto = Encoding.UTF8.GetBytes(texto);
+                peticion.Salida.RegistrarSecreto(bytesSecreto);
+                CryptographicOperations.ZeroMemory(bytesSecreto);
+            }
+
             long desde = peticion.Salida.Longitud;
             // Se mira antes de enviar y otra vez tras el rechazo: si el shell se activa justo entre los dos, la entrada se
             // rechazó igualmente porque todavía se estaba abriendo. La señal del comando enviado se lee antes de intentarlo:
@@ -315,15 +325,18 @@ namespace NativeSsh.Herramientas
             // así que un rechazo con la señal aún sin marcar es de un comando que todavía no se había enviado.
             bool isComandoEnviado = peticion.IsComandoEnviado;
             ShellEntradaEnum antes = ObservarShell(peticion);
-            if (!gestor.EnviarEntrada(peticion, texto, enter))
+            if (!gestor.EnviarEntrada(peticion, texto, enter, secreto))
             {
                 ShellEntradaEnum despues = ObservarShell(peticion);
                 throw new NativeSshException(MensajeEntradaNoEnviada(peticion, antes == ShellEntradaEnum.Inactivo ? antes : despues, isComandoEnviado));
             }
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
-            return Resultado(peticion, desde);
+            ResultadoComando resultado = Resultado(peticion, desde);
+            return secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado;
         }
+
+        internal const string AvisoEntradaSecreta = "Entrada enviada como secreto: no se ha escrito en los logs y sus apariciones en la salida (p. ej. el eco del terminal) se sustituyen por asteriscos.";
 
         // Lo que la sesión del destino deja ver de su shell respecto a una petición en ejecución (ver ShellEntradaEnum). Si el
         // comando ya se envió al shell lo dice la petición (Peticion.IsComandoEnviado).

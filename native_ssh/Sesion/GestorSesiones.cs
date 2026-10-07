@@ -51,13 +51,15 @@ namespace NativeSsh.Sesion
         public Peticion BuscarPeticion(string id) =>
             registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
 
-        public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter)
+        // isSecreto: el texto no debe quedar en ningún sitio (ssh_input con secreto=true): la salida de la petición ya lo
+        // enmascara (BufferSalida.RegistrarSecreto, antes de llamar aquí) y la sesión borra su copia tras enviarlo.
+        public bool EnviarEntrada(Peticion peticion, ReadOnlySpan<char> texto, bool isEnviarEnter, bool isSecreto = false)
         {
             SesionShell? sesion;
             lock (_candado)
                 _ = _sesiones.TryGetValue(peticion.Destino.Clave, out sesion);
 
-            return sesion is not null && sesion.EnviarEntrada(peticion, texto, isEnviarEnter);
+            return sesion is not null && sesion.EnviarEntrada(peticion, texto, isEnviarEnter, isSecreto);
         }
 
         public IReadOnlyList<SesionShell> ListarSesiones()
