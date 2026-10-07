@@ -146,5 +146,30 @@ namespace NativeSsh.Test.Sesion
             _ = peticion.TiempoEjecucion.Should().Be(TimeSpan.FromSeconds(4));
             _ = peticion.TiempoSinSalida.Should().BeNull();
         }
+
+        // Al terminar, la salida se cierra: lo retenido por si era el principio de un secreto (ssh_input con secreto=true) ya
+        // no se completará, se enmascara y se puede leer (BufferSalida.Cerrar); sin cerrarla quedaría oculto para siempre.
+        [Theory]
+        [InlineData(EstadoPeticionEnum.Completado)]
+        [InlineData(EstadoPeticionEnum.Cancelado)]
+        public void AlTerminar_CierraLaSalidaYEnmascaraLoRetenidoDeUnSecreto(EstadoPeticionEnum estado)
+        {
+            // Arrange
+            Peticion peticion = Nueva();
+            _ = peticion.TryMarcarEjecutando();
+            peticion.Salida.RegistrarSecreto("Clave-9xZ"u8);
+            peticion.Salida.Escribir("fin Clave"u8);
+            long antes = peticion.Salida.Longitud;
+
+            // Act
+            _ = peticion.TryFinalizar(estado, estado == EstadoPeticionEnum.Cancelado ? 130 : 0, null);
+
+            // Assert
+            byte[] destino = new byte[64];
+            int copiados = peticion.Salida.Leer(0, destino).Copiados;
+            _ = antes.Should().Be(4);
+            _ = peticion.Salida.Longitud.Should().Be(9);
+            _ = System.Text.Encoding.UTF8.GetString(destino, 0, copiados).Should().Be("fin *****");
+        }
     }
 }

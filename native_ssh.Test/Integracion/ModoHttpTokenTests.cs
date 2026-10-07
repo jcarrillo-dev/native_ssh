@@ -117,6 +117,9 @@ namespace NativeSsh.Test.Integracion
             // Act
             Process proceso = Arrancar(puerto, entorno);
             bool isTerminado = proceso.WaitForExit(TimeSpan.FromSeconds(20));
+            bool isEscuchando = IsEscuchando(puerto);
+            if (!isTerminado)
+                proceso.Kill(entireProcessTree: true);
             string errores = await _errores!;
             salida.WriteLine(errores);
 
@@ -130,7 +133,7 @@ namespace NativeSsh.Test.Integracion
                 _ => TokenHttp.VariableToken
             });
             _ = errores.Should().NotContain(Token).And.NotContain("corto123");
-            _ = IsEscuchando(puerto).Should().BeFalse();
+            _ = isEscuchando.Should().BeFalse();
         }
 
         [Theory]
