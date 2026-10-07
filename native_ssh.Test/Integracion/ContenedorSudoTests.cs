@@ -53,10 +53,28 @@ namespace NativeSsh.Test.Integracion
                 _ = respuesta.CodigoSalida.Should().Be(0, respuesta.Salida);
             }
 
+            // Registro propio de sudo (Defaults logfile en /etc/sudoers.d, solo mientras dura la prueba): sudo anota en él
+            // cada contraseña errónea («N incorrect password attempt»), también si después lo interrumpe un Ctrl+C o se cierra
+            // el terminal. Es lo que gastaría intentos (y con pam_faillock podría bloquear la cuenta).
+            private string? _registroSudo;
+
+            public void ActivarRegistroSudo()
+            {
+                string id = Guid.NewGuid().ToString("N");
+                _registroSudo = $"/var/log/ns_sudo_{id}.log";
+                _ = Root("printf 'Defaults logfile=%s\\n' \"$1\" > \"$2\" && chmod 0440 \"$2\" && : > \"$1\"", _registroSudo, RutaRegistroSudoers);
+            }
+
+            public string IntentosFallidosSudo() => Root("grep 'incorrect password attempt' \"$1\" || true", _registroSudo!);
+
+            private string RutaRegistroSudoers => $"/etc/sudoers.d/zz_ns_registro_{Path.GetFileNameWithoutExtension(_registroSudo)}";
+
             public async ValueTask DisposeAsync()
             {
                 await Gestor.DisposeAsync();
                 _ = Servidor.RootConCodigo("rm -rf -- \"$1\" \"$2\"", DirectorioUsuario, DirectorioRoot);
+                if (_registroSudo is not null)
+                    _ = Servidor.RootConCodigo("rm -f -- \"$1\" \"$2\"", RutaRegistroSudoers, _registroSudo);
             }
         }
 
@@ -166,21 +184,21 @@ namespace NativeSsh.Test.Integracion
             _ = siguiente.Salida.Should().Be("siguiente\nsin_cache=1\n");
         }
 
-        // FALLO CONOCIDO (producto, Bloque S): ssh_cancel con sudo esperando la contraseña debería interrumpirlo como un
-        // Ctrl+C interactivo (sudo sale con «a password is required», sin gastar intentos) y conservar el shell. Pero la
-        // interrupción escribe en el terminal "\x03\n__ns_rc=130; ...; read -r __ns_d\n" de una vez
-        // (ConstructorComando.EscribirInterrupcion): sudo, que lee la contraseña del terminal, se queda con la línea vacía y
-        // con la línea de recuperación del protocolo como contraseñas («Sorry, try again.»: intentos fallidos registrados,
-        // que con pam_faillock pueden bloquear la cuenta), no responde al Ctrl+C a tiempo y el producto cierra el canal del
-        // shell: se pierden el shell y sus variables exportadas.
-        [TheoryContenedor(FalloConocido = "producto: el texto que sigue al Ctrl+C de la interrupción llega a sudo como contraseña; intentos fallidos y shell perdido")]
-        [Trait("Categoria", "FalloConocido")]
+        // ssh_cancel con sudo esperando la contraseña lo interrumpe como un Ctrl+C interactivo (sudo sale con «a password is
+        // required», sin gastar intentos) y conserva el shell. Cuando la interrupción escribía "\x03\n__ns_rc=130; ...; read
+        // -r __ns_d\n" de una vez, sudo, que lee la contraseña del terminal, se quedaba con la línea vacía y con la línea de
+        // recuperación como contraseñas («Sorry, try again.»: intentos fallidos registrados, que con pam_faillock pueden
+        // bloquear la cuenta), no respondía al Ctrl+C a tiempo y se cerraba el canal del shell. Ahora el Ctrl+C va solo y la
+        // línea de recuperación 0,3 s después (Bloque S, P1; ET3; era un fallo conocido). Los intentos se cuentan en el
+        // registro de sudo.
+        [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
-        public async Task FalloConocido_Sudo_CanceladoMientrasPideLaContrasena_NoGastaIntentosYConservaElShell(string distro)
+        public async Task Sudo_CanceladoMientrasPideLaContrasena_NoGastaIntentosYConservaElShell(string distro)
         {
             // Arrange
             await using Entorno entorno = Preparar(distro);
+            entorno.ActivarRegistroSudo();
             HerramientasSsh herramientas = entorno.Herramientas();
             _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10);
             ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v", esperarSegundos: 3);
@@ -192,6 +210,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = cancelado.Salida.Should().NotContain("Sorry, try again", "el Ctrl+C no puede convertirse en intentos de contraseña fallidos");
+            _ = entorno.IntentosFallidosSudo().Should().BeEmpty("el Ctrl+C no puede convertirse en intentos de contraseña fallidos");
             _ = cancelado.Aviso.Should().NotContain("se cerró el canal del shell");
             _ = siguiente.Salida.Should().Be("vivo=si\n");
             _ = siguiente.Aviso.Should().BeNull();
@@ -224,18 +243,18 @@ namespace NativeSsh.Test.Integracion
             _ = entorno.Root("ls -A \"$1\"", entorno.DirectorioRoot).Should().Be("config\n");
         }
 
-        // FALLO CONOCIDO (producto, Bloque S; misma causa que el de ssh_cancel): al vencer el plazo de una escritura con
-        // sudo=true que espera la contraseña, la interrupción ("\x03\n__ns_rc=130; ...") llega a sudo como contraseñas
-        // (en Debian, «Sorry, try again.» y un segundo intento con la línea de recuperación), sudo no muere a tiempo y el
-        // producto cierra el canal del shell: intentos fallidos registrados y shell perdido con sus variables.
-        [TheoryContenedor(FalloConocido = "producto: el texto que sigue al Ctrl+C de la interrupción llega a sudo como contraseña; intentos fallidos y shell perdido")]
-        [Trait("Categoria", "FalloConocido")]
+        // Al vencer el plazo de una escritura con sudo=true que espera la contraseña, la interrupción no llega a sudo como
+        // contraseña y el shell se conserva (misma causa y corrección que la de ssh_cancel: Bloque S, P1; ET3; era un fallo
+        // conocido). El error de la escritura no trae la salida del script (el «Sorry, try again.» de sudo no llegaría a
+        // él), así que los intentos se cuentan en el registro de sudo, que los anota aunque después lo interrumpan.
+        [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
-        public async Task FalloConocido_EscribirConSudo_PlazoVencidoPidiendoLaContrasena_NoGastaIntentosYConservaElShell(string distro)
+        public async Task EscribirConSudo_PlazoVencidoPidiendoLaContrasena_NoGastaIntentosYConservaElShell(string distro)
         {
             // Arrange
             await using Entorno entorno = Preparar(distro);
+            entorno.ActivarRegistroSudo();
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(4));
             string archivo = $"{entorno.DirectorioRoot}/config";
             _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
@@ -248,7 +267,8 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(error.Message);
 
             // Assert
-            _ = error.Message.Should().NotContain("Sorry, try again").And.NotContain("se cerró el canal del shell");
+            _ = entorno.IntentosFallidosSudo().Should().BeEmpty("la interrupción no puede convertirse en intentos de contraseña fallidos");
+            _ = error.Message.Should().NotContain("se cerró el canal del shell");
             _ = siguiente.Salida.Should().Be("vivo=si\n");
         }
 

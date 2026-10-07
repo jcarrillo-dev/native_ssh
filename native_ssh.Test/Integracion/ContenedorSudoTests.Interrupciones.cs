@@ -89,19 +89,17 @@ namespace NativeSsh.Test.Integracion
             await EsperarEnContenedorAsync(entorno, "! pgrep -f '^[s]leep 301$' >/dev/null", 10);
         }
 
-        // FALLO CONOCIDO (producto, Bloque S): ssh_cancel (y el plazo de ssh_exec) de un comando lanzado con sudo pierde
-        // siempre el shell. sudo, con use_pty (lo de serie en Debian y desde sudo 1.9.14), lee el terminal del usuario y
-        // reenvía lo que llega al terminal propio del comando; la interrupción escribe "\x03\n__ns_rc=130; ...; read -r
-        // __ns_d\n" de una vez (ConstructorComando.EscribirInterrupcion), así que sudo se traga la línea de recuperación
-        // del protocolo antes de morir: su marcador no llega, el producto cierra el canal del shell al cabo de
-        // EsperaTrasCtrlC y se pierden las variables exportadas. Reproducción a mano: con 'ssh -tt', enviar
-        // "sudo sleep 301" y después "\x03\necho MARCA\n" en una sola escritura (MARCA no se ejecuta); con una pausa de
-        // 0,3 s entre el \x03 y la línea, sí.
-        [TheoryContenedor(FalloConocido = "producto: sudo (use_pty) se traga la línea de recuperación que sigue al Ctrl+C en la misma escritura; el canal del shell se cierra y se pierden las variables")]
-        [Trait("Categoria", "FalloConocido")]
+        // ssh_cancel (y el plazo de ssh_exec) de un comando lanzado con sudo conserva el shell y sus variables. sudo, con
+        // use_pty (lo de serie en Debian y desde sudo 1.9.14), lee el terminal del usuario y reenvía lo que llega al terminal
+        // propio del comando: cuando la interrupción escribía el Ctrl+C y la línea de recuperación de una vez, sudo se la
+        // tragaba antes de morir, su marcador no llegaba y se cerraba el canal del shell. Ahora el Ctrl+C va en su propia
+        // escritura y la línea de recuperación 0,3 s después (ConstructorComando.EscribirCtrlC y EscribirRecuperacion; Bloque
+        // S, P1; ET3; era un fallo conocido). Reproducción a mano del fallo: con 'ssh -tt', enviar "sudo sleep 301" y
+        // después "\x03\necho MARCA\n" en una sola escritura (MARCA no se ejecuta); con la pausa, sí.
+        [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
-        public async Task FalloConocido_CancelarComandoConSudo_ConservaElShell(string distro)
+        public async Task CancelarComandoConSudo_ConservaElShell(string distro)
         {
             // Arrange
             await using Entorno entorno = Preparar(distro);
@@ -251,20 +249,14 @@ namespace NativeSsh.Test.Integracion
 
         // Dos escrituras con sudo sobre el mismo archivo desde dos conexiones: la primera se queda a medias en el sitio (el
         // 'cat' lento, solo para ella); la segunda debe fallar al momento por el candado y, cuando la primera vence su plazo,
-        // su trampa restaura el original. En Debian pasa; en Alpine (sin herramienta de candado aceptada) es un fallo
-        // conocido.
+        // su trampa restaura el original. En Alpine (sin python3 ni perl) el candado lo toma el flock de busybox, sin -E,
+        // tras comprobar sobre un temporal que funciona (AO3); antes se escribía sin candado y la segunda escritura,
+        // confirmada como correcta, se perdía bajo la restauración de la primera (era un fallo conocido).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
         public async Task EscrituraConSudo_OtraEscrituraEnCursoSobreElMismoArchivo_LaSegundaFallaAlMomento(string distro) =>
             await DosEscriturasConcurrentesAsync(distro);
-
-        // FALLO CONOCIDO (limitación de la distribución, decisión aceptada en el A-sexies): en Alpine no hay candado, la
-        // segunda escritura se confirma como correcta y, cuando la primera vence su plazo, su trampa restaura encima la
-        // copia que hizo antes: la segunda escritura se pierde (la respuesta solo avisaba de que no hubo exclusión).
-        [FactContenedor(FalloConocido = "limitación de la distribución (Alpine: flock de busybox sin -E, sin python3 ni perl): sin candado, una escritura confirmada se pierde bajo la restauración de otra interrumpida")]
-        [Trait("Categoria", "FalloConocido")]
-        public async Task FalloConocido_Alpine_EscrituraConSudo_OtraEscrituraEnCursoSobreElMismoArchivo_LaSegundaFallaAlMomento() =>
-            await DosEscriturasConcurrentesAsync(ContenedorSudo.Alpine);
 
         private async Task DosEscriturasConcurrentesAsync(string distro)
         {

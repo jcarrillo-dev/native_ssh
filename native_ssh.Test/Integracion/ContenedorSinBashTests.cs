@@ -19,7 +19,9 @@ namespace NativeSsh.Test.Integracion
     //   los canales exec termina con 127, así que todas vuelven en segundos, sin esperar al plazo de inicialización (15 s);
     // - una sola conexión TCP para todas las llamadas (y otra tras ssh_disconnect), y un solo canal por llamada: sin bucles
     //   de reconexión ni reintentos (se cuentan en el log VERBOSE del sshd del contenedor);
-    // - el error dice la causa real («el servidor no tiene bash; native_ssh lo necesita...»): hoy no (FalloConocido).
+    // - el error dice la causa real («el servidor no tiene bash; native_ssh lo necesita...»), por el shell y por los canales
+    //   exec (RespuestaSinBash, EN4; antes «El shell de … se cerró durante la inicialización» y el stderr crudo «ash: bash:
+    //   not found»: era un fallo conocido).
     // Con la herramienta (HerramientasSsh en el proceso de la prueba) y con el binario (MCP por stdio, en
     // ContenedorSinBashTests.Binario.cs).
     [Collection(ColeccionContenedores.Nombre)]
@@ -33,10 +35,6 @@ namespace NativeSsh.Test.Integracion
 
         // Límite de seguridad para que una llamada colgada no cuelgue la suite (falla la prueba con TimeoutException).
         private static readonly TimeSpan LimiteSeguridad = TimeSpan.FromSeconds(60);
-
-        private const string MotivoMensaje = "producto: sin bash en el servidor, el error no dice la causa ni que native_ssh necesita bash: " +
-            "ssh_exec y las herramientas que van por el shell dicen «El shell de … se cerró durante la inicialización» (se descarta lo que " +
-            "el ash de login escribió: «-ash: exec: line 1: bash: not found») y las de canal exec devuelven el stderr crudo «ash: bash: not found»";
 
         // El texto que debe ver el LLM: que falta bash y que native_ssh lo necesita.
         [GeneratedRegex(@"\bbash\b[\s\S]*\b(necesita|requiere)\b|\b(necesita|requiere)\b[\s\S]*\bbash\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
@@ -209,16 +207,15 @@ namespace NativeSsh.Test.Integracion
             _ = (despues - antes).Should().Be(new RegistroSshd(Conexiones: 2, Shells: 2, Exec: 0));
         }
 
-        // FALLO CONOCIDO (producto, Bloque S, S4): el error no dice que falta bash. Por el shell, SesionShell.AbrirShellAsync
-        // ve el canal cerrado durante la inicialización y responde «El shell de … se cerró durante la inicialización»,
-        // descartando lo que escribió el ash («-ash: exec: line 1: bash: not found»); el texto que sí nombra bash solo sale si
-        // vence el plazo de inicialización. Por los canales exec, EjecutarLecturaAsync devuelve el stderr tal cual
-        // («ash: bash: not found», código 127). Además, el error de ssh_write_file remite a ssh_stat/ssh_read_file, que aquí
+        // Cada herramienta dice que falta bash y que native_ssh lo necesita (Bloque S, S4; EN4 en la sesión y AN4 en las
+        // escrituras; era un fallo conocido). Antes, por el shell, SesionShell.AbrirShellAsync veía el canal cerrado durante
+        // la inicialización y respondía «El shell de … se cerró durante la inicialización», descartando lo que escribió el ash
+        // («-ash: exec: line 1: bash: not found»); por los canales exec, EjecutarLecturaAsync devolvía el stderr tal cual
+        // («ash: bash: not found», código 127), y el error de ssh_write_file remitía a ssh_stat/ssh_read_file, que aquí
         // tampoco funcionan.
         // Reproducción: ssh -tt al contenedor sinbash y 'exec bash' → «-ash: exec: line 1: bash: not found» y se cierra la
         // conexión; ssh al contenedor 'bash -c true; echo $?' → «ash: bash: not found», 127.
-        [TheoryContenedor(FalloConocido = MotivoMensaje)]
-        [Trait("Categoria", "FalloConocido")]
+        [TheoryContenedor]
         [InlineData("ssh_exec")]
         [InlineData("ssh_exec siguiente")]
         [InlineData("ssh_exec tras ssh_reset_shell")]
@@ -230,7 +227,7 @@ namespace NativeSsh.Test.Integracion
         [InlineData("ssh_find")]
         [InlineData("ssh_search")]
         [InlineData("ssh_stat")]
-        public async Task FalloConocido_SinBash_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita(string herramienta)
+        public async Task SinBash_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita(string herramienta)
         {
             // Arrange
             ServidorContenedor servidor = Preparar();

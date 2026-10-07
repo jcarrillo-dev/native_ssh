@@ -57,20 +57,15 @@ namespace NativeSsh.Test.Integracion
             _ = colaSinSalto.Should().Be("[Líneas 2-2 de 2]\nsin salto");
         }
 
-        // Un archivo sin salto de línea final se devuelve tal cual (sin añadirle uno) al leerlo por rango.
+        // Un archivo sin salto de línea final se devuelve tal cual (sin añadirle uno) al leerlo por rango, también con
+        // busybox: la lectura por rango usaba 'sed -n "A,Bp"', y el sed de busybox añade un salto de línea a una última
+        // línea que no lo tiene; ahora usa 'head -n B | tail -n +A', que lo conserva en los dos (Bloque S, P3; AO2; era un
+        // fallo conocido en Alpine).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
         public async Task LeerArchivo_SinSaltoFinal_DevuelveElContenidoTalCual(string distro) =>
             await LeerSinSaltoFinalAsync(distro);
-
-        // FALLO CONOCIDO (producto, Bloque S): ssh_read_file por rango usa 'sed -n "A,Bp"', y el sed de busybox añade un
-        // salto de línea a una última línea que no lo tiene (el de GNU no): en Alpine el contenido no llega «tal cual».
-        // Reproducción: printf 'uno\nsin salto' > f; sed -n '1,800p' f | od -c (termina en \n); 'head -n 800 f | tail -n +1'
-        // lo conserva en los dos.
-        [FactContenedor(FalloConocido = "producto: con el sed de busybox, la lectura por rango añade un salto de línea final que el archivo no tiene")]
-        [Trait("Categoria", "FalloConocido")]
-        public async Task FalloConocido_Alpine_LeerArchivo_SinSaltoFinal_DevuelveElContenidoTalCual() =>
-            await LeerSinSaltoFinalAsync(ContenedorSudo.Alpine);
 
         private async Task LeerSinSaltoFinalAsync(string distro)
         {
@@ -158,13 +153,12 @@ namespace NativeSsh.Test.Integracion
             _ = python.Should().Be($"{proyecto}/sub/b.py:2:    return 42\n\n{AvisoCodigoDosSinDetalle}\n[motor: grep -P]");
         }
 
-        // FALLO CONOCIDO (producto, Bloque S): sin rg ni grep -P, ssh_search usa 'grep -E' con opciones de GNU grep
-        // (--exclude-dir, --include) que el grep de busybox no tiene: en Alpine toda búsqueda falla con la ayuda de
-        // busybox («unrecognized option: exclude-dir=.git») y la respuesta anuncia «[motor: grep -E]».
-        // Reproducción: en Alpine, grep -rnIs --exclude-dir=.git -E -e x -- . → «unrecognized option».
-        [FactContenedor(FalloConocido = "producto: el respaldo 'grep -E' de ssh_search usa --exclude-dir/--include de GNU grep; con busybox (Alpine) toda búsqueda falla")]
-        [Trait("Categoria", "FalloConocido")]
-        public async Task FalloConocido_Alpine_Buscar_EreExtensionYExclusiones_ConGrepDeBusybox()
+        // Sin rg ni grep de GNU (busybox, Alpine), ssh_search recorre el árbol con find y busca con grep -E, con las mismas
+        // exclusiones y el filtro de extensión. Antes usaba 'grep -E' con opciones de GNU grep (--exclude-dir, --include)
+        // que el de busybox no tiene: toda búsqueda fallaba con su ayuda y aun así anunciaba «[motor: grep -E]» (Bloque S,
+        // P2; AO1; era un fallo conocido).
+        [FactContenedor]
+        public async Task Alpine_Buscar_EreExtensionYExclusiones_ConGrepDeBusybox()
         {
             // Arrange
             await using Entorno entorno = Preparar(ContenedorSudo.Alpine);

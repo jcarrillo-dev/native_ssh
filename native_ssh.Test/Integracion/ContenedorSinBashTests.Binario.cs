@@ -94,11 +94,9 @@ namespace NativeSsh.Test.Integracion
             _ = (despues - antesDeDesconectar).Should().Be(new RegistroSshd(Conexiones: 1, Shells: 1, Exec: 0));
         }
 
-        // FALLO CONOCIDO (producto, Bloque S, S4): el mismo que FalloConocido_SinBash_ElErrorDiceQueFaltaBash…, visto por el
-        // LLM a través del binario.
-        [FactContenedor(FalloConocido = MotivoMensaje)]
-        [Trait("Categoria", "FalloConocido")]
-        public async Task FalloConocido_SinBash_Binario_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita()
+        // Lo mismo que SinBash_ElErrorDiceQueFaltaBash…, visto por el LLM a través del binario (era un fallo conocido).
+        [FactContenedor]
+        public async Task SinBash_Binario_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita()
         {
             // Arrange y Act
             (List<RespuestaMcp> respuestas, _, _, _) = await RecorrerConElBinarioAsync();

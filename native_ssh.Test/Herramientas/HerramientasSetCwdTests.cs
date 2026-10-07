@@ -534,5 +534,46 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = isNoEnviada.Should().Be(isEsperado);
         }
+
+        // Interrumpida y terminada sin el comando enviado: no se ejecutó nada, con certeza (escrituras y ssh_set_cwd lo
+        // afirman). ShellPerdido sin la señal no cuenta, porque la escritura del comando pudo quedarse a medias (I05 de la
+        // auditoría de la integración); tampoco una petición aún en ejecución (la sesión puede enviarlo todavía), ni una con
+        // el comando enviado.
+        [Theory]
+        [InlineData(EstadoPeticionEnum.Cancelado, false, true, true)]
+        [InlineData(EstadoPeticionEnum.TiempoAgotado, false, true, true)]
+        [InlineData(EstadoPeticionEnum.Cancelado, false, false, true)]
+        [InlineData(EstadoPeticionEnum.ShellPerdido, false, true, false)]
+        [InlineData(EstadoPeticionEnum.Error, false, true, false)]
+        [InlineData(EstadoPeticionEnum.Cancelado, true, true, false)]
+        [InlineData(EstadoPeticionEnum.TiempoAgotado, true, true, false)]
+        public void IsInterrumpidaSinEnviar_SoloCanceladaOVencidaYTerminadaSinElComandoEnviado(EstadoPeticionEnum estado, bool isEnviado, bool isEmpezada, bool isEsperado)
+        {
+            // Arrange
+            Peticion peticion = PeticionExport(estado, "aviso", isEnviado, isEmpezada);
+
+            // Act
+            bool isInterrumpida = HerramientasSsh.IsInterrumpidaSinEnviar(peticion);
+
+            // Assert
+            _ = isInterrumpida.Should().Be(isEsperado);
+        }
+
+        [Fact]
+        public void IsInterrumpidaSinEnviar_EnEjecucionConLaCancelacionPedida_NoCuenta()
+        {
+            // Arrange
+            _ = DestinoSsh.TryParse(Destino, "ana", out DestinoSsh destino);
+            Peticion peticion = new(destino, "export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
+            _ = peticion.TryMarcarEjecutando();
+            _ = peticion.SolicitarCancelacion();
+
+            // Act
+            bool isInterrumpida = HerramientasSsh.IsInterrumpidaSinEnviar(peticion);
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+            _ = isInterrumpida.Should().BeFalse();
+        }
     }
 }
