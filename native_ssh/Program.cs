@@ -17,6 +17,21 @@ if (!arranque.IsHttp)
     return 0;
 }
 
+// Sin token no se arranca el modo HTTP (TokenHttp); el modo stdio no lo lee. En Windows no se puede comprobar que el fichero
+// sea solo de su dueño: allí el modo HTTP no arranca.
+TokenHttp? token = null;
+string? errorToken = "El modo HTTP solo está disponible en Linux y macOS (el fichero del token se comprueba con permisos Unix).";
+if (!OperatingSystem.IsWindows() && !TokenHttp.TryCargar(Environment.GetEnvironmentVariable, out token, out errorToken))
+    token = null;
+
+if (token is null)
+{
+    Console.Error.WriteLine(errorToken);
+    return 2;
+}
+
+TokenHttp tokenHttp = token;
+
 // Todos los clientes HTTP comparten el mismo GestorSesiones: mismas sesiones SSH y mismo cupo de ufw.
 WebApplicationBuilder web = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
 Arranque.ConfigurarLogs(web.Logging);
@@ -45,6 +60,26 @@ if (arranque.Modo == ModoTransporteEnum.HttpLoopback)
         await next().ConfigureAwait(false);
     });
 }
+
+// Todas las peticiones (POST, GET del flujo SSE, DELETE de la sesión) llevan el token. El rechazo no dice nada del token
+// presentado, ni en la respuesta ni en el log (solo si faltaba la cabecera o no coincidía, y desde dónde).
+_ = app.Use(async (context, next) =>
+{
+    string? cabecera = context.Request.Headers.Authorization;
+    if (!tokenHttp.IsValido(cabecera))
+    {
+        bool isSinCabecera = string.IsNullOrEmpty(cabecera);
+        app.Logger.PeticionHttpRechazada(context.Connection.RemoteIpAddress?.ToString() ?? "desconocido", isSinCabecera ? "sin cabecera Authorization" : "token incorrecto");
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.Headers.WWWAuthenticate = "Bearer realm=\"native_ssh\"";
+        await context.Response.WriteAsync(isSinCabecera
+            ? "Unauthorized: falta la cabecera 'Authorization: Bearer <token>' (el token de NATIVE_SSH_TOKEN_HTTP o NATIVE_SSH_TOKEN_HTTP_FICHERO)."
+            : "Unauthorized: el token de la cabecera Authorization no es el configurado en el servidor.").ConfigureAwait(false);
+        return;
+    }
+
+    await next().ConfigureAwait(false);
+});
 
 _ = app.MapMcp("/mcp");
 

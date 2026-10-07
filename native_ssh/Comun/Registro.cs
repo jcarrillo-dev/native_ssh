@@ -31,11 +31,14 @@ namespace NativeSsh.Comun
         [LoggerMessage(EventId = 9, Level = LogLevel.Debug, Message = "Escritura fallida en el shell de {Destino}.")]
         public static partial void EscrituraFallida(this ILogger logger, Exception ex, string destino);
 
-        [LoggerMessage(EventId = 10, Level = LogLevel.Warning, Message = "--http-unsecure: MCP escuchando en todas las interfaces (puerto {Puerto}) SIN autenticación. Cualquiera que alcance el puerto puede ejecutar comandos en tus servidores.")]
+        [LoggerMessage(EventId = 10, Level = LogLevel.Warning, Message = "--http-unsecure: MCP escuchando en todas las interfaces (puerto {Puerto}), con token pero SIN cifrar (HTTP, no HTTPS): el token y todo lo que se envía (comandos, contenido de archivos, contraseñas de ssh_input) viajan en claro por la red. Úsalo solo en una red de confianza o detrás de un proxy con TLS.")]
         public static partial void HttpInseguro(this ILogger logger, int puerto);
 
-        [LoggerMessage(EventId = 11, Level = LogLevel.Information, Message = "MCP escuchando en http://localhost:{Puerto}/mcp (solo loopback).")]
+        [LoggerMessage(EventId = 11, Level = LogLevel.Information, Message = "MCP escuchando en http://localhost:{Puerto}/mcp (solo loopback, con token).")]
         public static partial void HttpLoopback(this ILogger logger, int puerto);
+
+        [LoggerMessage(EventId = 13, Level = LogLevel.Warning, Message = "Petición HTTP rechazada desde {Origen}: {Motivo}.")]
+        public static partial void PeticionHttpRechazada(this ILogger logger, string origen, string motivo);
 
         [LoggerMessage(EventId = 12, Level = LogLevel.Debug, Message = "Error liberando una conexión caída con {Destino}.")]
         public static partial void ErrorLiberandoConexion(this ILogger logger, Exception ex, string destino);
