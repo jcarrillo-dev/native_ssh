@@ -42,10 +42,10 @@ namespace NativeSsh.Test.Integracion
         private const string Reintento = "Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.";
 
         private string MensajeShellInactivo(string id) =>
-            $"No se envió la entrada al comando {id}, que sigue en ejecución: el shell de {_sshd.Destino.Clave} todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). {Reintento}";
+            $"No se envió la entrada al comando {id}, que sigue en ejecución: el shell de {_sshd.Destino.Clave} todavía se está abriendo (conexión, inicio de sesión o inicialización del shell) y el comando aún no se le ha enviado. {Reintento}";
 
         private string MensajeShellInicializandose(string id) =>
-            $"No se envió la entrada al comando {id}, que sigue en ejecución: el shell de {_sshd.Destino.Clave} no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). {Reintento}";
+            $"No se envió la entrada al comando {id}, que sigue en ejecución: el shell de {_sshd.Destino.Clave} tiene el canal abierto, pero aún se está inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento) y el comando todavía no se le ha enviado. {Reintento}";
 
         // Primer comando de un destino (conexión + login de 3 s) con esperarSegundos=0 y ssh_input al momento: el patrón
         // habitual de un LLM con un comando interactivo. Según llegue, el canal aún no está abierto (conexión) o ya lo está
@@ -70,7 +70,8 @@ namespace NativeSsh.Test.Integracion
 
         // Tras ssh_reset_shell, el comando siguiente reabre el shell sobre la misma conexión (otro login de 3 s). Con el
         // canal ya abierto (ssh_status lo muestra activo) y el login en curso, la entrada se sigue rechazando: el error no
-        // dice que el shell no esté activo, sino que aún se puede estar inicializando.
+        // dice que el shell no esté activo, sino que aún se está inicializando (una sola causa: el comando no se ha enviado,
+        // según la señal de la sesión).
         [Fact]
         public async Task Input_MientrasSeReabreElShellTrasReset_DiceQueAunSePuedeEstarInicializando()
         {

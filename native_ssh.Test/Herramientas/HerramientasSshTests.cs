@@ -393,14 +393,15 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = estado.Sesiones.Should().ContainSingle().Which.IsShellActivo.Should().BeFalse();
-            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía no está activo (se está abriendo: conexión, inicio de sesión o inicialización del shell, y el comando aún no se le ha enviado; o su canal se acaba de cerrar o se perdió la conexión). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 todavía se está abriendo (conexión, inicio de sesión o inicialización del shell) y el comando aún no se le ha enviado. Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
             _ = reintento.Salida.Should().Contain("recibido:x");
         }
 
         // Con el canal del shell ya abierto pero el inicio de sesión todavía en curso (aquí tarda 1,5 s), la sesión sigue
-        // rechazando la entrada: ssh_status muestra el shell activo, así que el error no dice que no lo esté, sino las dos
-        // causas posibles con el canal abierto y el comando dentro de su plazo (inicialización pendiente o fallo de la
-        // escritura) (auditoría del A-septies, sonda Y02).
+        // rechazando la entrada: ssh_status muestra el shell activo, así que el error no dice que no lo esté, sino que aún se
+        // está inicializando: con la señal de la sesión (el comando no se ha enviado) es la única causa (auditoría del
+        // A-septies, sonda Y02; antes daba dos posibles, la otra un fallo de la escritura, que no rechaza sino que lanza su
+        // propio error).
         [Fact]
         public async Task Input_ConElCanalAbiertoYLaInicializacionEnCurso_DiceQueAunSePuedeEstarInicializando()
         {
@@ -418,7 +419,7 @@ namespace NativeSsh.Test.Herramientas
             ResultadoComando reintento = await herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
 
             // Assert
-            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 no la admitió. Con su canal abierto y el comando dentro de su plazo, las causas posibles son dos: que el shell aún se esté inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento: el comando todavía no se le ha enviado) o que fallara la escritura en el canal (entonces pudo llegar una parte). Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
+            _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 tiene el canal abierto, pero aún se está inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento) y el comando todavía no se le ha enviado. Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
             _ = reintento.Salida.Should().Contain("recibido:x");
         }
 
@@ -452,6 +453,32 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().StartWith(isCancelado
                 ? $"No se envió la entrada: el comando {comando.Id} se está cancelando"
                 : $"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell no la admitió en este momento (se está interrumpiendo por su timeout");
+        }
+
+        // Con la señal de la sesión (Peticion.IsComandoEnviado, leída antes de intentar el envío) el rechazo da una sola
+        // causa: sin el comando enviado, el shell se está abriendo o inicializando; con él enviado y el shell inactivo, su
+        // canal se cerró después; con él enviado y el canal abierto, la interrupción o el cierre en curso. Nunca un fallo de
+        // la escritura, que no rechaza la entrada sino que da su propio error (SesionShell.DescribirEntradaFallida).
+        [Theory]
+        [InlineData(false, "Inactivo", "todavía se está abriendo (conexión, inicio de sesión o inicialización del shell) y el comando aún no se le ha enviado.")]
+        [InlineData(false, "ActivoConElComando", "tiene el canal abierto, pero aún se está inicializando")]
+        [InlineData(true, "Inactivo", "se acaba de cerrar o se perdió la conexión después de enviarle el comando: el comando terminará como shell perdido")]
+        [InlineData(true, "ActivoConElComando", "el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect o ya no es el comando que ocupa el shell)")]
+        [InlineData(true, "Indeterminado", "el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect o ya no es el comando que ocupa el shell)")]
+        public void MensajeEntradaNoEnviada_EnEjecucion_UnaSolaCausaSegunLaSenalDeLaSesion(bool isEnviado, string shell, string esperado)
+        {
+            // Arrange
+            _ = DestinoSsh.TryParse("ana@servidor", "ana", out DestinoSsh destino);
+            Peticion peticion = new(destino, "pregunta", TimeSpan.FromSeconds(30), 1024, TimeProvider.System);
+            _ = peticion.TryMarcarEjecutando();
+            if (isEnviado)
+                peticion.MarcarComandoEnviado();
+
+            // Act
+            string mensaje = HerramientasSsh.MensajeEntradaNoEnviada(peticion, Enum.Parse<ShellEntradaEnum>(shell), isEnviado);
+
+            // Assert
+            _ = mensaje.Should().Contain(esperado).And.NotContain("falló la escritura").And.NotContain("causas posibles");
         }
 
         [Fact]
