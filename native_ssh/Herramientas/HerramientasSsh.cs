@@ -571,7 +571,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; lo ilegible dentro del árbol se omite y la respuesta avisa de que pueden faltar coincidencias (en el recorrido con find, solo de los directorios ilegibles, no de los archivos). Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; lo ilegible dentro del árbol (directorios o archivos) se omite y la respuesta avisa de que pueden faltar coincidencias. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
@@ -708,10 +708,12 @@ namespace NativeSsh.Herramientas
                       export LANG=$LC_ALL
                       unset LC_ALL LC_CTYPE LC_COLLATE
                     fi
-                    # El filtro sale con 2 si dejó pasar algún error de find, con 3 si solo calló un «Permission denied» y
-                    # con 0 si no hubo nada (o solo lo que nunca es error: desaparecido a mitad o SIGPIPE).
+                    # Al filtro llegan los errores de find (directorios) y los del grep del -exec (archivos; sin -s, para que un
+                    # archivo ilegible también se avise; hereda LC_MESSAGES=C de find). Sale con 2 si dejó pasar algún error,
+                    # con 3 si solo calló un «Permission denied» y con 0 si no hubo nada (o solo lo que nunca es error:
+                    # desaparecido a mitad o SIGPIPE).
                     { LC_MESSAGES=C find -H {{rutaEscapada}} -mindepth 1 {{PodaFind}} -o -type f {{filtroFind}}{{ExclusionArchivosFind}} \
-                        -exec grep -nHs -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- | {
+                        -exec grep -nH -m {{limite}} -E -e {{patronEscapado}} -- {} + 2>&1 >&3 3>&- | {
                         ilegible=0 otro=0
                         while IFS= read -r linea || [ -n "$linea" ]; do
                           case $linea in

@@ -112,7 +112,7 @@ namespace NativeSsh.Test.Integracion
         // archivo que se llama como uno de ellos sí se busca, un enlace a un directorio no se sigue y el subdirectorio sin
         // permiso se omite sin error (find lo avisa por stderr; ahora se filtra, y el resto de sus errores no se calla).
         // Las dos avisan igual de que pueden faltar coincidencias: grep de GNU sale con 2 sin mensaje y el recorrido con
-        // find, al callar el «Permission denied», también (A-undecies, AU3).
+        // find, al callar el «Permission denied» de find o del grep de su -exec, también (A-undecies, AU3; O1).
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
@@ -140,6 +140,32 @@ namespace NativeSsh.Test.Integracion
             _ = lineas[^2].Should().Be(AvisoCodigoDosSinDetalle);
             _ = lineas[^3].Should().BeEmpty();
             _ = lineas[..^3].Should().BeEquivalentTo(esperadas);
+        }
+
+        // Un archivo ilegible (no un directorio) dentro del árbol: las dos distros avisan de que pueden faltar coincidencias.
+        // Con busybox (recorrido con find) el «Permission denied» lo da el grep del -exec, que antes lo callaba con -s, así
+        // que no avisaba (O1 del A-undecies).
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task Buscar_ArchivoIlegibleDentroDelArbol_AvisaDeQuePuedenFaltarCoincidencias(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+            _ = entorno.Servidor.ComoUsuario("""
+                cd "$1" && mkdir -p ilegible/sub
+                printf 'valor visible\n' > ilegible/sub/a.txt
+                printf 'valor oculto\n' > ilegible/b.txt
+                chmod 000 ilegible/b.txt
+                """, entorno.DirectorioUsuario);
+            string arbol = $"{entorno.DirectorioUsuario}/ilegible";
+
+            // Act
+            string resultado = await herramientas.BuscarAsync(entorno.Destino, "valor [a-z]+", arbol);
+
+            // Assert
+            _ = resultado.Should().Be($"{arbol}/sub/a.txt:1:valor visible\n\n{AvisoCodigoDosSinDetalle}\n[motor: {Motor(distro)}]");
         }
 
         private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
