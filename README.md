@@ -16,7 +16,7 @@ El servidor mantiene una sesión SSH persistente con un shell PTY interactivo po
 | `ssh_disconnect` | `destino` (string) | `ResultadoAccion` | Cierra la conexión SSH activa con el destino indicado. |
 | `ssh_exec` | `destino` (string), `comando` (string), `timeoutSegundos` (300), `esperarSegundos` (20) | `ResultadoComando` | Ejecuta un comando en el shell del destino; devuelve la salida desde el byte 0. |
 | `ssh_find` | `destino` (string), `patron` (string), `ruta` ("."), `tipo` ("file"), `profundidadMax` (10), `maxResultados` (100) | `string` | Busca archivos o carpetas por nombre o patrón glob (`*.service`, `docker-compose*.yml`, etc.) con soporte para poda inteligente ("Imprimir pero Podar") de carpetas excluidas. |
-| `ssh_input` | `id` (string), `texto` (string), `enter` (true), `esperarSegundos` (2) | `ResultadoComando` | Envía texto a la entrada estándar del proceso en ejecución y captura la salida posterior. |
+| `ssh_input` | `id` (string), `texto` (string), `enter` (true), `esperarSegundos` (2), `secreto` (false) | `ResultadoComando` | Envía texto a la entrada estándar del proceso en ejecución y captura la salida posterior. Con `secreto=true` (contraseñas, tokens), las apariciones literales del texto en la salida (eco del terminal, un programa que lo imprime) se sustituyen por `*` y el aviso lo confirma. |
 | `ssh_list_dir` | `destino` (string), `ruta` ("."), `profundidadMax` (3), `maxResultados` (100), `incluirArchivos` (false) | `string` | Explora la estructura topológica de carpetas y subcarpetas (o también archivos con `incluirArchivos=true`) en rutas relativas limpias excluyendo carpetas ruidosas. |
 | `ssh_output` | `id` (string), `desdeByte` (0), `esperarSegundos` (0) | `ResultadoComando` | Lee la salida acumulada a partir del offset indicado en `desdeByte`. |
 | `ssh_read_file` | `destino` (string), `ruta` (string), `lineaInicio` (1), `lineaFin` (null) | `string` (TextContent) | Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed). Devuelve texto plano con saltos de línea reales sin envoltorios JSON. |
@@ -149,7 +149,9 @@ El servidor busca credenciales en el siguiente orden de precedencia:
 | `NATIVE_SSH_IDENTIDADES` | Rutas (`:`) | Claves estándar en `DirectorioSsh` | Lista de rutas a claves privadas separadas por `:`. |
 | `NATIVE_SSH_PASSWORD` | Cadena | *(Vacío)* | Contraseña de autenticación para destinos remotos. |
 | `NATIVE_SSH_PUERTO_HTTP` | Entero | `8722` | Puerto TCP de escucha para los modos HTTP. |
-| `NATIVE_SSH_NIVEL_LOG` | Nivel log | `Information` | Nivel mínimo de trazas (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Todos los logs se emiten invariablemente por `stderr`. |
+| `NATIVE_SSH_NIVEL_LOG` | Nivel log | `Information` | Nivel mínimo de trazas (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Todos los logs se emiten invariablemente por `stderr`. Las categorías del SDK de MCP (`ModelContextProtocol.*`) nunca bajan de `Debug`: en `Trace` escribirían cada mensaje JSON-RPC completo (argumentos como el texto de `ssh_input` y respuestas con salidas y archivos). |
+| `NATIVE_SSH_TOKEN_HTTP` | Cadena | *(Vacío)* | Token de los modos HTTP (al menos 16 caracteres). Obligatorio en `--http` y `--http-unsecure` (o el fichero de la variable siguiente, nunca las dos); no se usa con stdio. |
+| `NATIVE_SSH_TOKEN_HTTP_FICHERO` | Ruta | *(Vacío)* | Fichero con el token (sin enlaces simbólicos y solo legible por su dueño: `chmod 600`; con permisos para el grupo u otros no arranca). Se quitan los saltos de línea finales. |
 
 ---
 
@@ -164,11 +166,13 @@ NativeSsh [--http | --http-unsecure] [--puerto N]
 | Modo | Escucha | Autenticación | Log al arrancar |
 |---|---|---|---|
 | *(sin argumentos)* | stdio | — | — |
-| `--http` | `127.0.0.1` y `[::1]` (`ListenLocalhost`) | Ninguna | `Information: URL http://localhost:8722/mcp` |
-| `--http-unsecure` | Todas las interfaces (`ListenAnyIP`) | **Ninguna** | `Warning: «SIN autenticación…»` |
+| `--http` | `127.0.0.1` y `[::1]` (`ListenLocalhost`) | Token obligatorio (`Authorization: Bearer <token>`) | `Information: URL http://localhost:8722/mcp` |
+| `--http-unsecure` | Todas las interfaces (`ListenAnyIP`) | Token obligatorio, **sin cifrar** | `Warning: «… SIN cifrar …»` |
+
+Los dos modos HTTP exigen un token (`NATIVE_SSH_TOKEN_HTTP` o `NATIVE_SSH_TOKEN_HTTP_FICHERO`); sin él, o con un fichero legible por otros usuarios, el servidor no arranca (código 2 y el motivo en `stderr`). Cada petición sin `Authorization: Bearer <token>` exacto recibe `401` con un mensaje claro; el token se compara en tiempo constante y nunca se escribe en los logs.
 
 > [!WARNING]
-> El modo `--http-unsecure` expone sin autenticación un servicio con capacidad para ejecutar comandos arbitrarios en los servidores remotos configurados. Este modo debe reservarse exclusivamente para redes privadas de total confianza o entornos aislados tras un proxy inverso con autenticación perimetral estricta.
+> El modo `--http-unsecure` expone en la red, por HTTP sin cifrar, un servicio con capacidad para ejecutar comandos arbitrarios en los servidores remotos configurados: el token y todo lo enviado (comandos, archivos, contraseñas de `ssh_input`) viajan en claro. Este modo debe reservarse exclusivamente para redes privadas de total confianza o detrás de un proxy inverso con TLS.
 
 ---
 
@@ -184,16 +188,17 @@ claude mcp add native_ssh -- /ruta/artefactos/NativeSsh
 
 ### Transporte por HTTP
 
-Arrancar el servidor en modo HTTP:
+Arrancar el servidor en modo HTTP con un token en un fichero propio:
 
 ```bash
-/ruta/artefactos/NativeSsh --http
+umask 077; head -c 32 /dev/urandom | base64 > ~/.config/native_ssh_token
+NATIVE_SSH_TOKEN_HTTP_FICHERO=~/.config/native_ssh_token /ruta/artefactos/NativeSsh --http
 ```
 
-Y registrar el endpoint correspondiente:
+Y registrar el endpoint correspondiente con el mismo token:
 
 ```bash
-claude mcp add --transport http native_ssh http://localhost:8722/mcp
+claude mcp add --transport http native_ssh http://localhost:8722/mcp --header "Authorization: Bearer $(cat ~/.config/native_ssh_token)"
 ```
 
 ### Configuración declarativa en `.mcp.json`
