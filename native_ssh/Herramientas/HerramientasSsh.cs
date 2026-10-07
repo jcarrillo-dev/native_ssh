@@ -1232,7 +1232,7 @@ namespace NativeSsh.Herramientas
         // abría el shell. Solo con la petición terminada: mientras sigue en ejecución, la sesión aún puede enviarlo (entre
         // su última comprobación del token y la escritura). El estado se lee antes que la señal, que la sesión marca antes de
         // finalizarla. ShellPerdido sin la señal no cuenta: la escritura pudo quedarse a medias.
-        private static bool IsInterrumpidaSinEnviar(Peticion peticion) =>
+        internal static bool IsInterrumpidaSinEnviar(Peticion peticion) =>
             peticion.Estado is EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado && !peticion.IsComandoEnviado;
 
         private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
@@ -2318,8 +2318,11 @@ namespace NativeSsh.Herramientas
             if (IsNoEnviadaAlShell(peticion))
                 throw new NativeSshException($"La escritura en '{ruta}' no se hizo: {NoEnviadaAlShell} '{ruta}' no se ha modificado. {peticion.Aviso}");
 
-            // Una petición cancelada en la cola nunca empezó a ejecutarse (no tiene instante de inicio).
-            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: peticion.TiempoEjecucion > TimeSpan.Zero);
+            // Interrumpida y terminada sin que el comando llegara al shell (en la cola o mientras se abría el shell): no se
+            // ejecutó nada, con certeza (IsInterrumpidaSinEnviar). Que la petición saliera de la cola (TiempoEjecucion > 0)
+            // no dice que el script empezara: la apertura del shell puede durar segundos. ShellPerdido sin la señal sigue en el
+            // camino incierto (la escritura del comando pudo quedarse a medias).
+            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: !IsInterrumpidaSinEnviar(peticion));
             throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
         }
 
@@ -2379,8 +2382,8 @@ namespace NativeSsh.Herramientas
         // bash, con el aviso de RespuestaSinBash, que ya dice que no se ejecutó nada y que ninguna herramienta funcionará),
         // cuando la sesión ya está cerrada o con un error interno antes de enviarlo. Entonces no se ejecutó nada y el error no
         // remite a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco
-        // funcionan). Es el único sitio que lo decide para ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd (que
-        // añade IsInterrumpidaSinEnviar). El estado se lee antes que la señal, que la sesión marca antes de finalizarla.
+        // funcionan). Es el único sitio que lo decide para ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd (estas
+        // dos añaden IsInterrumpidaSinEnviar). El estado se lee antes que la señal, que la sesión marca antes de finalizarla.
         internal static bool IsNoEnviadaAlShell(Peticion peticion) =>
             peticion.Estado == EstadoPeticionEnum.Error && !peticion.IsComandoEnviado;
 

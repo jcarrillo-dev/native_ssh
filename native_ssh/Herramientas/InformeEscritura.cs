@@ -211,7 +211,8 @@ namespace NativeSsh.Herramientas
         };
 
         // Error de una escritura que no terminó: estado y id de la petición, qué pasó con el archivo y qué queda en el servidor.
-        // isEjecutada: la petición llegó a ejecutarse (no se canceló en la cola).
+        // isEjecutada: el comando del script pudo llegar al shell (si no, se sabe con certeza que no se ejecutó: se interrumpió
+        // y terminó sin enviarse, en la cola o mientras se abría el shell; ver HerramientasSsh.IsInterrumpidaSinEnviar).
         public string MensajeInterrupcion(string ruta, EstadoPeticionEnum estado, string idPeticion, string? aviso, bool isEjecutada)
         {
             StringBuilder mensaje = new($"La escritura en '{ruta}' no terminó (estado: {estado}; petición {idPeticion}, su salida completa con ssh_output). ");
