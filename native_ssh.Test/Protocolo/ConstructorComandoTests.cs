@@ -122,6 +122,7 @@ namespace NativeSsh.Test.Protocolo
             _ = texto.Should().EndWith(linea);
             _ = linea.Should().StartWith("PS1=");
             _ = linea.Should().Contain("stty -echo -onlcr");
+            _ = linea.Should().Contain("stty -echo -onlcr; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null;");
             _ = linea.Should().Contain("set +o history +m");
             _ = linea.Should().Contain($"'{Id:N}'");
             _ = linea.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();

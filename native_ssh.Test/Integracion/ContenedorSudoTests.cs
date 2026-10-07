@@ -60,6 +60,28 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
+        // El terminal del shell no admite mensajes de otros usuarios (C9, 'mesg n' en la inicialización), con el mesg de
+        // busybox (Alpine) y sin mesg (la imagen de Debian 13 slim no lo trae: se quita a mano la escritura del grupo): el
+        // shell se inicializa igual y el grupo del terminal no puede escribir en él.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task Terminal_NoAdmiteMensajesDeOtrosUsuarios(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+
+            // Act
+            ResultadoComando resultado = await herramientas.EjecutarAsync(entorno.Destino, "stat -L -c '%A' \"$(tty)\"; if command -v mesg >/dev/null; then LC_ALL=C mesg; else echo sin-mesg; fi", esperarSegundos: 30);
+
+            // Assert
+            string[] lineas = resultado.Salida.Split('\n');
+            _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Completado, resultado.Salida);
+            _ = lineas[0].Should().MatchRegex("^c.{4}-", "sin escritura para el grupo: {0}", lineas[0]);
+            _ = lineas[1].Should().Be(distro == ContenedorSudo.Alpine ? "is n" : "sin-mesg");
+        }
+
         // Flujo real de la contraseña: sudo la pide por el terminal del shell, ssh_input la responde (sin que aparezca en la
         // salida) y la caché de credenciales del terminal sirve a los comandos siguientes y a las escrituras con sudo=true,
         // que van por el mismo shell.

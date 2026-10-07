@@ -48,7 +48,10 @@ namespace NativeSsh.Protocolo
         // rompa la línea. La llamada lo acota a SesionShell.MaxBytesDirectorioTrabajo.
         public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
         {
-            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; stty -echo -onlcr; __ns_rc=0; "u8);
+            // 'mesg n': otro usuario local del servidor no puede escribir en el terminal (write, wall) y falsificar líneas de la
+            // salida, como los anuncios de las escrituras. Sin mesg (Debian slim) se quita a mano la escritura del grupo, que
+            // es lo que hace mesg; sin terminal o sin permiso, nada, en silencio. Repetirlo (reenvío de la línea) no cambia nada.
+            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; stty -echo -onlcr; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null; __ns_rc=0; "u8);
             if (!string.IsNullOrEmpty(directorioTrabajo))
             {
                 escritor.Write("export __NS_CWD=\"$(printf '%s' '"u8);
