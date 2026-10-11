@@ -70,6 +70,20 @@ namespace NativeSsh.Test.Integracion
             _ = salida.Should().Be($"normal/objetivo.txt\n\n[montajes_no_explorados: {_raiz}/datos con espacio, {_raiz}/proc con espacio]");
         }
 
+        // Un bind del mismo sistema de ficheros tiene su mismo dispositivo: find -xdev entra en él, así que no se nombra.
+        [FactUnshare]
+        public void Script_SinCruzarMontajes_UnBindDelMismoSistemaSeRecorreYNoSeNombra()
+        {
+            // Arrange
+            _ = Directory.CreateDirectory(Path.Combine(_raiz, "enlazado"));
+
+            // Act
+            string salida = Buscar($"mount --bind '{_raiz}/normal' '{_raiz}/enlazado'", _raiz, isCruzarMontajes: false);
+
+            // Assert
+            _ = salida.Should().Be("enlazado/objetivo.txt\nnormal/objetivo.txt");
+        }
+
         // Con la ruta dentro del proc montado no se poda nada: lo pidió explícitamente.
         [FactUnshare]
         public void Script_RutaDentroDelProc_NoSePoda()
