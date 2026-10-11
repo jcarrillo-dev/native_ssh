@@ -173,5 +173,127 @@ namespace NativeSsh.Test.Buffers
             _ = buffer.Longitud.Should().Be(4);
             _ = LeerTodo(buffer).Should().Be(Secreto[..4]);
         }
+
+        // Escribe 'flujo' en trozos, lee lo nuevo tras cada escritura (como ssh_output con desdeByte = siguienteByte) y cierra:
+        // lo leído una vez ya no cambia, así que la concatenación es todo lo que llegó a ver el modelo.
+        private static string EscribirYLeerPorTrozos(BufferSalida buffer, string flujo, IEnumerable<int> trozos)
+        {
+            byte[] datos = Utf8(flujo);
+            StringBuilder visto = new();
+            long desde = 0;
+            int posicion = 0;
+            foreach (int trozo in trozos)
+            {
+                int n = Math.Min(trozo, datos.Length - posicion);
+                buffer.Escribir(datos.AsSpan(posicion, n));
+                posicion += n;
+                desde = LeerNuevo(buffer, desde, visto);
+            }
+
+            buffer.Cerrar();
+            _ = LeerNuevo(buffer, desde, visto);
+            return visto.ToString();
+        }
+
+        private static long LeerNuevo(BufferSalida buffer, long desde, StringBuilder visto)
+        {
+            byte[] destino = new byte[1 << 16];
+            LecturaSalida lectura = buffer.Leer(desde, destino);
+            _ = visto.Append(Encoding.Latin1.GetString(destino, 0, lectura.Copiados));
+            return lectura.Desde + lectura.Copiados;
+        }
+
+        // Oráculo: toda aparición (también solapada) de cada secreto en el flujo completo, enmascarada; y la cola final que es
+        // principio de algún secreto (se enmascara al cerrar).
+        private static string Oraculo(string flujo, string[] secretos)
+        {
+            char[] resultado = flujo.ToCharArray();
+            foreach (string secreto in secretos)
+                for (int i = flujo.IndexOf(secreto, StringComparison.Ordinal); i >= 0; i = flujo.IndexOf(secreto, i + 1, StringComparison.Ordinal))
+                    Array.Fill(resultado, '*', i, secreto.Length);
+            int cola = 0;
+            foreach (string secreto in secretos)
+                for (int k = Math.Min(secreto.Length - 1, flujo.Length); k > cola; k--)
+                    if (flujo.EndsWith(secreto[..k], StringComparison.Ordinal))
+                    {
+                        cola = k;
+                        break;
+                    }
+
+            Array.Fill(resultado, '*', flujo.Length - cola, cola);
+            return new string(resultado);
+        }
+
+        // Apariciones solapadas repartidas entre dos escrituras (CB2a): la búsqueda se hace sobre los bytes originales de la
+        // escritura anterior, no sobre los ya enmascarados, y lo retenido se decide también sobre los originales.
+        [Theory]
+        [InlineData("ababab.", new[] { 4, 3 }, new[] { "abab" }, "******.")]
+        [InlineData("abcXYZ.", new[] { 3, 4 }, new[] { "abc", "abcXYZ" }, "******.")]
+        [InlineData("abcd.", new[] { 3, 2 }, new[] { "bc", "abcd" }, "****.")]
+        [InlineData("ababa.", new[] { 4, 2 }, new[] { "aba" }, "*****.")]
+        public void SolapadosEntreDosEscrituras_SeEnmascaranEnteros(string flujo, int[] trozos, string[] secretos, string esperado)
+        {
+            // Arrange
+            BufferSalida buffer = ConSecreto(1 << 20, secretos);
+
+            // Act
+            string visto = EscribirYLeerPorTrozos(buffer, flujo, trozos);
+
+            // Assert
+            _ = visto.Should().Be(esperado).And.Be(Oraculo(flujo, secretos));
+        }
+
+        // Aleatoria contra el oráculo (alfabetos de 2 o 3 letras para forzar solapamientos; trozos de 1 a 11 bytes): lo que se
+        // lee tras cada escritura más lo que queda al cerrar es exactamente el flujo con el oráculo aplicado (ni de menos, que
+        // sería una fuga, ni de más).
+        [Fact]
+        public void Aleatoria_LoLeidoEsIgualAlOraculo()
+        {
+            Random azar = new(20261011);
+            for (int vuelta = 0; vuelta < 20000; vuelta++)
+            {
+                // Arrange
+                string alfabeto = azar.Next(2) == 0 ? "ab" : "abc";
+                string[] secretos = new string[azar.Next(1, 4)];
+                for (int i = 0; i < secretos.Length; i++)
+                    secretos[i] = string.Create(azar.Next(1, 8), azar, (letras, a) =>
+                    {
+                        for (int j = 0; j < letras.Length; j++)
+                            letras[j] = alfabeto[a.Next(alfabeto.Length)];
+                    });
+                StringBuilder flujo = new();
+                int longitud = azar.Next(1, 200);
+                while (flujo.Length < longitud)
+                    _ = azar.Next(4) == 0 ? flujo.Append(secretos[azar.Next(secretos.Length)]) : flujo.Append(alfabeto[azar.Next(alfabeto.Length)]);
+                List<int> trozos = [];
+                for (int total = 0; total < flujo.Length; total += trozos[^1])
+                    trozos.Add(azar.Next(1, 12));
+                BufferSalida buffer = ConSecreto(1 << 20, secretos);
+
+                // Act
+                string visto = EscribirYLeerPorTrozos(buffer, flujo.ToString(), trozos);
+
+                // Assert
+                _ = visto.Should().Be(Oraculo(flujo.ToString(), secretos), $"secretos [{string.Join(",", secretos)}], trozos [{string.Join(",", trozos)}]");
+            }
+        }
+
+        // Un secreto registrado a mitad de la salida no oculta lo que ya se pudo leer: Longitud nunca retrocede.
+        [Fact]
+        public void SecretoRegistradoTarde_LongitudNoRetrocede()
+        {
+            // Arrange
+            BufferSalida buffer = new(1 << 20, TimeProvider.System);
+            buffer.Escribir(Utf8("xyab"));
+            long antes = buffer.Longitud;
+
+            // Act
+            buffer.RegistrarSecreto(Utf8("abcd"));
+            buffer.Escribir(Utf8("c"));
+
+            // Assert
+            _ = antes.Should().Be(4);
+            _ = buffer.Longitud.Should().BeGreaterThanOrEqualTo(antes);
+        }
     }
 }

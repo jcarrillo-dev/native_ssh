@@ -14,8 +14,12 @@ namespace NativeSsh.Buffers
     // de lo escrito podría ser el principio de un secreto (el eco llega carácter a carácter) se retiene: Longitud y Leer no
     // lo cuentan hasta que la escritura siguiente lo aclara. Al cerrar la salida (la petición terminó, Cerrar) lo retenido
     // ya no se completará y se enmascara (lado seguro: si el final de la salida coincide por casualidad con el principio de
-    // un secreto, sale con '*'). Solo se reconocen los bytes UTF-8 tal cual: un eco transformado (^X de ECHOCTL, secuencias
-    // intercaladas por un readline, un programa que lo imprime alterado) no.
+    // un secreto, sale con '*'). La búsqueda y lo retenido se deciden sobre los bytes originales, no sobre los ya
+    // enmascarados: se guardan aparte los últimos (máximo - 1) bytes tal como llegaron (_colaOriginal), para que una
+    // aparición solapada con otra ya tapada y repartida entre dos escrituras se encuentre entera. El resultado es el mismo
+    // que enmascarar el flujo completo de una vez. Lo ya legible no se vuelve a retener (un secreto registrado a mitad de la
+    // salida no hace retroceder Longitud). Solo se reconocen los bytes UTF-8 tal cual: un eco transformado (^X de ECHOCTL,
+    // secuencias intercaladas por un readline, un programa que lo imprime alterado) no.
     public sealed class BufferSalida
     {
         public const int TamanoSegmento = 16 * 1024;
@@ -32,6 +36,8 @@ namespace NativeSsh.Buffers
         private int _maxBytesSecreto;
         private int _retenidos;
         private bool _isCerrado;
+        private byte[]? _colaOriginal;
+        private int _longitudColaOriginal;
 
         public BufferSalida(int capacidadMaxima, TimeProvider reloj)
         {
@@ -65,8 +71,28 @@ namespace NativeSsh.Buffers
                     return;
 
                 (_secretos ??= []).Add(secreto.ToArray());
+                if (secreto.Length > _maxBytesSecreto)
+                    AmpliarColaOriginal(secreto.Length - 1);
                 _maxBytesSecreto = Math.Max(_maxBytesSecreto, secreto.Length);
             }
+        }
+
+        // La cola original pasa a guardar 'capacidad' bytes: los que ya tenía (originales) y, delante, los anteriores que
+        // queden en el búfer (antes del primer secreto, originales; si no, pueden estar ya enmascarados).
+        private void AmpliarColaOriginal(int capacidad)
+        {
+            byte[] nueva = new byte[capacidad];
+            int disponibles = (int)Math.Min(capacidad, _finAbsoluto - _inicioAbsoluto);
+            Copiar(_finAbsoluto - disponibles, nueva.AsSpan(0, disponibles));
+            if (_colaOriginal is not null)
+            {
+                int conocidos = Math.Min(_longitudColaOriginal, disponibles);
+                _colaOriginal.AsSpan(_longitudColaOriginal - conocidos, conocidos).CopyTo(nueva.AsSpan(disponibles - conocidos));
+                CryptographicOperations.ZeroMemory(_colaOriginal);
+            }
+
+            _colaOriginal = nueva;
+            _longitudColaOriginal = disponibles;
         }
 
         // La petición terminó: lo retenido ya no se completará y se enmascara; lo que llegue después se enmascara sin retener.
@@ -79,7 +105,7 @@ namespace NativeSsh.Buffers
 
                 _isCerrado = true;
                 if (_retenidos > 0 && !_isLiberado)
-                    Rellenar(_finAbsoluto - _retenidos, _retenidos);
+                    RellenarDesde(_finAbsoluto - _retenidos, _retenidos);
                 _retenidos = 0;
             }
         }
@@ -106,6 +132,8 @@ namespace NativeSsh.Buffers
                     return;
 
                 long inicioNuevos = _finAbsoluto;
+                long finVisibleAnterior = FinVisible;
+                ReadOnlySpan<byte> nuevos = datos;
                 while (!datos.IsEmpty)
                 {
                     long usados = _finAbsoluto - _inicioAbsoluto;
@@ -121,7 +149,7 @@ namespace NativeSsh.Buffers
                 }
 
                 if (_secretos is not null)
-                    EnmascararSecretos(inicioNuevos);
+                    EnmascararSecretos(nuevos, inicioNuevos, finVisibleAnterior);
 
                 while (_finAbsoluto - _inicioAbsoluto - TamanoSegmento >= _capacidadMaxima)
                 {
@@ -174,21 +202,28 @@ namespace NativeSsh.Buffers
                     foreach (byte[] secreto in _secretos)
                         CryptographicOperations.ZeroMemory(secreto);
                 _secretos = null;
+                if (_colaOriginal is not null)
+                    CryptographicOperations.ZeroMemory(_colaOriginal);
+                _colaOriginal = null;
+                _longitudColaOriginal = 0;
             }
         }
 
-        // Busca los secretos en lo recién escrito más los (máximo - 1) bytes anteriores (un secreto partido entre dos
-        // escrituras), enmascara cada aparición (también solapadas) y calcula lo que hay que retener al final. Bajo _candado,
-        // antes de descartar segmentos por el tope.
-        private void EnmascararSecretos(long inicioNuevos)
+        // Busca los secretos en lo recién escrito más los (máximo - 1) bytes anteriores tal como llegaron (_colaOriginal: un
+        // secreto partido entre dos escrituras, aunque se solape con otra aparición ya enmascarada), enmascara cada aparición
+        // (también solapadas) y calcula lo que hay que retener al final, también sobre los originales. Bajo _candado, antes
+        // de descartar segmentos por el tope.
+        private void EnmascararSecretos(ReadOnlySpan<byte> nuevos, long inicioNuevos, long finVisibleAnterior)
         {
-            long inicio = Math.Max(_inicioAbsoluto, inicioNuevos - (_maxBytesSecreto - 1));
-            int longitud = (int)(_finAbsoluto - inicio);
+            int previos = _longitudColaOriginal;
+            int longitud = previos + nuevos.Length;
+            long inicio = inicioNuevos - previos;
             byte[] ventana = ArrayPool<byte>.Shared.Rent(longitud);
             try
             {
                 Span<byte> datos = ventana.AsSpan(0, longitud);
-                Copiar(inicio, datos);
+                _colaOriginal.AsSpan(0, previos).CopyTo(datos);
+                nuevos.CopyTo(datos[previos..]);
                 foreach (byte[] secreto in _secretos!)
                     for (int desde = 0; desde <= datos.Length - secreto.Length;)
                     {
@@ -197,24 +232,27 @@ namespace NativeSsh.Buffers
                             break;
 
                         desde += posicion;
-                        Rellenar(inicio + desde, secreto.Length);
+                        RellenarDesde(inicio + desde, secreto.Length);
                         desde++;
                     }
 
-                // Tras enmascarar, lo que queda al final y empieza como algún secreto: se retiene (o, cerrada la salida,
-                // se enmascara ya). Se vuelve a copiar la cola: lo enmascarado ya no cuenta como principio de nada.
-                Copiar(inicio, datos);
-                int retenidos = LongitudPrefijoDeSecretoAlFinal(datos);
+                // Lo que queda al final y empieza como algún secreto: se retiene (o, cerrada la salida, se enmascara ya). Nunca
+                // lo que ya se podía leer antes de esta escritura.
+                int retenidos = (int)Math.Min(LongitudPrefijoDeSecretoAlFinal(datos), _finAbsoluto - finVisibleAnterior);
                 if (_isCerrado)
                 {
                     if (retenidos > 0)
-                        Rellenar(_finAbsoluto - retenidos, retenidos);
+                        RellenarDesde(_finAbsoluto - retenidos, retenidos);
                     _retenidos = 0;
                 }
                 else
                 {
                     _retenidos = retenidos;
                 }
+
+                int capacidad = _colaOriginal!.Length;
+                _longitudColaOriginal = Math.Min(capacidad, longitud);
+                datos[(longitud - _longitudColaOriginal)..].CopyTo(_colaOriginal);
             }
             finally
             {
@@ -249,6 +287,15 @@ namespace NativeSsh.Buffers
                 _segmentos[indice].AsSpan(desplazamiento, trozo).CopyTo(destino.Slice(copiados, trozo));
                 copiados += trozo;
             }
+        }
+
+        // Enmascara [inicio, inicio + longitud) en lo que sigue en el búfer: lo anterior a _inicioAbsoluto ya se descartó por el
+        // tope (una aparición que empezaba allí).
+        private void RellenarDesde(long inicio, int longitud)
+        {
+            long recorte = Math.Max(0, _inicioAbsoluto - inicio);
+            if (recorte < longitud)
+                Rellenar(inicio + recorte, (int)(longitud - recorte));
         }
 
         private void Rellenar(long inicio, int longitud)
