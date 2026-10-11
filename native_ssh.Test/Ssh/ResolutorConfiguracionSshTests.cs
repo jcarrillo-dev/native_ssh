@@ -162,6 +162,21 @@ namespace NativeSsh.Test.Ssh
             _ = destino.Identidades.Should().Equal($"{_directorio}/b", $"{_directorio}/a", $"{_directorio}/c");
         }
 
+        // ssh -G ya quita las líneas repetidas literalmente; las que solo coinciden tras expandirlas las quita native_ssh.
+        [Fact]
+        public void IdentityFileQueCoincidenTrasExpandir_SinRepetir()
+        {
+            // Arrange
+            string casa = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion("Host web\n  HostName 127.0.0.1\n  IdentityFile ~/clave_ns\n  IdentityFile %d/clave_ns\n"));
+
+            // Act
+            DestinoSsh destino = Resolver(resolutor, "web");
+
+            // Assert
+            _ = destino.Identidades.Should().Equal($"{casa}/clave_ns");
+        }
+
         [Fact]
         public void IdentityFileConTildeYTokens_SeExpanden()
         {
