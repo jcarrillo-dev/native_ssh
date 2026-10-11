@@ -211,7 +211,7 @@ namespace NativeSsh.Ssh
             }
 
             string? leida = null;
-            string? errorFichero = "el fichero de la passphrase solo se admite en Linux y macOS.";
+            string? errorFichero = $"{VariableFicheroPassphrase} solo se admite en Linux: en este sistema usa {VariablePassphrase}.";
             if (!OperatingSystem.IsWindows())
                 _ = FicheroSecreto.TryLeer(opciones.FicheroPassphrase!, OperatingSystem.IsLinux() ? InteropLinux.UsuarioEfectivo() : 0, DescripcionPassphrase, out leida, out errorFichero);
             if (leida is null)

@@ -381,11 +381,12 @@ namespace NativeSsh.Test.Ssh
     {
         private static readonly string[] Variables = ["NATIVE_SSH_PASSWORD", "NATIVE_SSH_PASSPHRASE", "NATIVE_SSH_TOKEN_HTTP"];
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfg_env_{Guid.NewGuid():N}")).FullName;
+        private readonly Dictionary<string, string?> _anteriores = Variables.ToDictionary(v => v, Environment.GetEnvironmentVariable);
 
         public void Dispose()
         {
-            foreach (string variable in Variables)
-                Environment.SetEnvironmentVariable(variable, null);
+            foreach ((string variable, string? valor) in _anteriores)
+                Environment.SetEnvironmentVariable(variable, valor);
             Directory.Delete(_directorio, recursive: true);
         }
 
