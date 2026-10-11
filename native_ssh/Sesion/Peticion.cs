@@ -18,6 +18,8 @@ namespace NativeSsh.Sesion
         private volatile bool _isCancelacionSolicitada;
         private volatile bool _isComandoEnviado;
         private volatile bool _isEnvioIniciado;
+        private volatile bool _isResultadoFinalEntregado;
+        private int _lineasTecleadoDescartadas;
         private int _codigoSalida = -1;
         private string? _aviso;
         private Func<string?>? _avisoEnCurso;
@@ -60,6 +62,17 @@ namespace NativeSsh.Sesion
         // true desde que la sesión empieza a escribir el comando en el canal del shell (antes de IsComandoEnviado): si la
         // petición termina con esta señal y sin la otra, la escritura se quedó a medias y no se sabe qué llegó al shell.
         public bool IsEnvioIniciado => _isEnvioIniciado;
+        // Líneas tecleadas con ssh_input que el comando no leyó y que la cola descartó al terminar (ConstructorComando): se
+        // fija antes del estado final.
+        public int LineasTecleadoDescartadas => Volatile.Read(ref _lineasTecleadoDescartadas);
+
+        // El comando anterior del mismo shell, si descartó líneas tecleadas: su aviso se repite en la respuesta de este
+        // mientras nadie haya devuelto el resultado final de aquel (HerramientasSsh.Resultado).
+        public Peticion? AnteriorConTecleadoDescartado { get; private set; }
+
+        // Alguna respuesta de herramienta devolvió ya el estado final de esta petición (con su aviso).
+        public bool IsResultadoFinalEntregado => _isResultadoFinalEntregado;
+
         public Task Finalizacion => _finalizacion.Task;
         public CancellationToken TokenInterrupcion => _interrupcion.Token;
         public long FinTimestamp => Volatile.Read(ref _finTimestamp);
@@ -107,6 +120,13 @@ namespace NativeSsh.Sesion
         public void MarcarComandoEnviado() => _isComandoEnviado = true;
 
         public void MarcarEnvioIniciado() => _isEnvioIniciado = true;
+
+        public void MarcarResultadoFinalEntregado() => _isResultadoFinalEntregado = true;
+
+        public void FijarLineasTecleadoDescartadas(int lineas) => Volatile.Write(ref _lineasTecleadoDescartadas, lineas);
+
+        // Antes de enviar el comando (lo lee quien construye las respuestas, en otro hilo, después).
+        public void FijarAnteriorConTecleadoDescartado(Peticion? anterior) => AnteriorConTecleadoDescartado = anterior;
 
         public bool TryFinalizar(EstadoPeticionEnum estado, int codigo, string? aviso)
         {

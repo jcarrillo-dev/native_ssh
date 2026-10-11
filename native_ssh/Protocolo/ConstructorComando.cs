@@ -35,7 +35,7 @@ namespace NativeSsh.Protocolo
             }
 
             escritor.Write("'\neval \"$(printf '%s' \"$__ns_b\" | base64 -d)\"; __ns_rc=$?; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
-            EscribirCola(id, escritor, identidad);
+            EscribirCola(id, escritor, identidad, isDescartarTecleado: true);
         }
 
         public static void EscribirInicializacion(Guid id, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
@@ -141,11 +141,32 @@ namespace NativeSsh.Protocolo
         // el resto; si no empieza por él, queda entero, y nunca está vacío porque lleva espacios): vacío = mismo shell.
         // Cualquier shell POSIX la entiende (dash, el ash de busybox): en uno ajeno el testigo falta y el marcador sale con
         // el código.
-        // Tras el marcador, 'read' espera la línea siguiente (la primera, vacía, del próximo envío): lo que se teclee mientras
-        // el comando no lee la entrada (ssh_input por adelantado, también una contraseña) lo consume este 'read' y se borra
-        // en la misma línea con 'unset', sin quedar en el shell hasta el comando siguiente ('declare -p', 'set'). Ni el
-        // marcador ni __ns_rc dependen de lo que devuelvan.
-        private static void EscribirCola(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
+        // Tras el marcador, 'read' espera la línea siguiente (la primera, vacía, del próximo envío) y se borra en la misma línea
+        // con 'unset', sin quedar en el shell hasta el comando siguiente ('declare -p', 'set'). Ni el marcador ni __ns_rc
+        // dependen de lo que devuelvan.
+        //
+        // isDescartarTecleado (solo la cola de un comando, EscribirComando): lo tecleado con ssh_input que el comando no leyó
+        // (una contraseña enviada antes de que la pidiera, varias líneas, o un ssh_input con '\n' o '\r' dentro) sigue en
+        // el terminal al terminar el comando, y bash ejecutaría como orden todo lo que pasara del 'read' final. Antes del
+        // marcador C# aún no ha enviado nada del comando siguiente, así que todo lo pendiente sobra: se descartan las líneas
+        // completas ('read -t 0' solo dice si hay una: en modo canónico, el terminal no da una línea sin su salto), sin
+        // ejecutarlas y borrando su contenido (el 'unset' final), y su número va en el marcador (MarcadorFin) para
+        // avisar al LLM sin su contenido. Una línea a medias (ssh_input con enter=false) no se ve, no se cuenta y se queda:
+        // la consume el 'read' final junto con el salto del envío siguiente, como antes. El 'read -t 1' acota lo que espera
+        // una línea que no termina (un terminal que el comando dejó en modo crudo): a 1 s, se abandona. El recuento se
+        // queda en MarcadorFin.MaxLineasDescartadas (más cifras romperían el marcador), pero el bucle descarta todas.
+        // Ventana residual: lo que llegue al terminal después del bucle (en camino mientras termina, o enviado antes de
+        // que C# reciba el marcador y dé el comando por terminado) ya no se descarta: el 'read' final consume una línea y
+        // bash ejecutaría las demás. Medido con el sshd local (c1ter/ventana.py: un ssh_input de dos líneas lanzado al azar
+        // alrededor del final del comando): se ejecutó la segunda línea en 5 de 300 envíos, todos entre 1,4 ms antes y
+        // 0,4 ms después del final; con una red, la ventana crece con su latencia. No se puede cerrar sin cambiar el 'read'
+        // final (que espera el salto del envío siguiente): la descripción de ssh_input lo advierte.
+        // Las demás colas no descartan: durante la inicialización y la recuperación ssh_input se rechaza, y el reenvío de
+        // la inicialización y de la recuperación cuenta con que cada 'read' consuma una sola línea (un bucle se comería la
+        // línea de sincronización que sigue a la copia de la inicialización que bash ya tiene en su búfer, SincronizarAsync).
+        // Un shell sin 'read -t' (dash, solo si la cola la ejecuta otro shell anidado: el marcador lleva entonces
+        // MarcadorFin.CodigoShellAnidado y el canal se cierra) se salta el bucle sin mensajes.
+        private static void EscribirCola(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null, bool isDescartarTecleado = false)
         {
             if (identidad is { } esperada)
             {
@@ -157,9 +178,18 @@ namespace NativeSsh.Protocolo
                 escritor.Write("'}; __ns_t=${__ns_t:+999}; __ns_rc=${__ns_t:-$__ns_rc}; "u8);
             }
 
-            escritor.Write("printf '%s_%s_%d__\\n' '__NSX' '"u8);
+            if (!isDescartarTecleado)
+            {
+                escritor.Write("printf '%s_%s_%d__\\n' '__NSX' '"u8);
+                MarcadorFin.EscribirId(id, escritor);
+                escritor.Write("' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n"u8);
+                return;
+            }
+
+            // 999999 = MarcadorFin.MaxLineasDescartadas.
+            escritor.Write("__ns_n=; while read -r -t 0 __ns_d && read -r -t 1 __ns_d; do __ns_n=$((${__ns_n:-0}+(${__ns_n:-0}<999999))); done 2>/dev/null; printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n"u8);
+            escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; read -r __ns_d; unset __ns_d __ns_n\n"u8);
         }
     }
 }

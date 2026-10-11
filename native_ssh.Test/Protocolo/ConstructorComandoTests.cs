@@ -71,10 +71,33 @@ namespace NativeSsh.Test.Protocolo
 
             // Act & Assert
             _ = texto.Should().StartWith("\n__ns_b='");
-            _ = texto.Should().EndWith("; read -r __ns_d; unset __ns_d\n");
+            _ = texto.Should().EndWith($"cd ~; {ColaDelComando}");
             _ = texto.Should().Contain("__ns_rc=$?; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ");
-            _ = texto.Should().Contain($"printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"");
             _ = texto.Should().NotContain($"__NSX_{Id:N}_");
+        }
+
+        // La cola de un comando descarta antes del marcador las líneas tecleadas que el comando no leyó, sin ejecutarlas, y
+        // pone su número en el marcador ("_<n>" solo si hubo alguna, hasta MarcadorFin.MaxLineasDescartadas); el 'unset'
+        // final borra su contenido. Las demás colas no descartan (ConstructorComando.EscribirCola).
+        private static string ColaDelComando => $"__ns_n=; while read -r -t 0 __ns_d && read -r -t 1 __ns_d; do __ns_n=$((${{__ns_n:-0}}+(${{__ns_n:-0}}<{MarcadorFin.MaxLineasDescartadas}))); done 2>/dev/null; printf '%s_%s_%d%s__\\n' '__NSX' '{Id:N}' \"$__ns_rc\" \"${{__ns_n:+_$__ns_n}}\"; read -r __ns_d; unset __ns_d __ns_n\n";
+
+        [Fact]
+        public void SoloLaColaDelComando_DescartaLoTecleado()
+        {
+            // Arrange
+            const string Bucle = "while read -r -t 0";
+
+            // Act
+            string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w));
+            string inicializacion = Componer(w => ConstructorComando.EscribirInicializacion(Id, w));
+            string sincronizacion = Componer(w => ConstructorComando.EscribirSincronizacion(Id, w));
+            string captura = Componer(w => ConstructorComando.EscribirCapturaPath(Id, Testigo, w));
+            string recuperacion = Componer(w => ConstructorComando.EscribirRecuperacion(Id, w));
+
+            // Assert
+            _ = comando.Should().Contain(Bucle);
+            _ = comando.IndexOf(Bucle, StringComparison.Ordinal).Should().BeLessThan(comando.IndexOf("'__NSX'", StringComparison.Ordinal));
+            _ = new[] { inicializacion, sincronizacion, captura, recuperacion }.Should().AllSatisfy(t => t.Should().NotContain(Bucle).And.EndWith("; read -r __ns_d; unset __ns_d\n"));
         }
 
         [Fact]
@@ -157,7 +180,8 @@ namespace NativeSsh.Test.Protocolo
         {
             // Arrange
             IdentidadShell identidad = new(123456, 789, Testigo);
-            string cola = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n";
+            string comprobacion = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; ";
+            string cola = $"{comprobacion}printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w, identidad));
@@ -165,7 +189,7 @@ namespace NativeSsh.Test.Protocolo
             string sinIdentidad = Componer(w => ConstructorComando.EscribirComando("ls", Id, w));
 
             // Assert: la comprobación va después del eval (y del cd), así que la ejecuta el shell que ejecuta la cola.
-            _ = comando.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
+            _ = comando.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {comprobacion}{ColaDelComando}");
             _ = recuperacion.Should().EndWith($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {cola}");
             _ = sinIdentidad.Should().NotContain("$PPID").And.NotContain("__NS_TESTIGO");
             _ = MarcadorFin.CodigoShellAnidado.Should().BeInRange(256, 999, "ningún código de salida (0-255) puede coincidir y cabe en los 3 dígitos del marcador");

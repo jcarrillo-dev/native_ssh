@@ -299,16 +299,22 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_input", Destructive = true)]
-        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true.")]
+        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y una línea por llamada: lo que el comando no lea (líneas de más, o texto enviado antes de que lo pida o cuando ya no lee) se DESCARTA al terminar el comando, sin ejecutarse, y la respuesta avisa de cuántas líneas. NUNCA envíes varias líneas a un comando que está terminando: si la entrada llega justo cuando termina (unos milisegundos; con una red lenta, del orden de su latencia), el shell puede ejecutar como órdenes las líneas de más.")]
         public async Task<ResultadoComando> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
-            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto.")] bool secreto = false,
+            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea, sin '\\n' ni '\\r' en medio: si no, se rechaza sin enviar nada.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            // Un secreto de varias líneas: si el comando lee solo la primera, las demás se descartan al terminar
+            // (ConstructorComando), pero en la ventana residual bash podría ejecutarlas y devolverlas sin enmascarar en un
+            // error ('orden no encontrada'), fuera de esta petición. Se rechaza antes de registrarlo y de enviar nada.
+            if (secreto && IsVariasLineas(texto, enter))
+                throw new NativeSshException(MensajeSecretoDeVariasLineas);
+
             // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
             // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
             if (secreto)
@@ -334,6 +340,18 @@ namespace NativeSsh.Herramientas
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             ResultadoComando resultado = Resultado(peticion, desde);
             return secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado;
+        }
+
+        internal const string MensajeSecretoDeVariasLineas = "No se envió la entrada: con secreto=true el texto debe ser una sola línea, sin saltos de línea ('\\n' o '\\r') en medio (el salto final lo añade enter=true). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida.";
+
+        // Más de una línea: algún '\n' o '\r' que no sea el salto final. Con enter=true el salto lo añade la herramienta, así
+        // que cualquiera del texto es otra línea; con enter=false se admite uno al final ('\n' o '\r'; "\r\n" son dos
+        // líneas para el terminal, que convierte '\r' en '\n').
+        internal static bool IsVariasLineas(ReadOnlySpan<char> texto, bool isEnter)
+        {
+            if (!isEnter && (texto.EndsWith('\n') || texto.EndsWith('\r')))
+                texto = texto[..^1];
+            return texto.IndexOfAny('\n', '\r') >= 0;
         }
 
         internal const string AvisoEntradaSecreta = "Entrada enviada como secreto: no se ha escrito en los logs y sus apariciones en la salida (p. ej. el eco del terminal) se sustituyen por asteriscos.";
@@ -2026,9 +2044,17 @@ namespace NativeSsh.Herramientas
             PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal());
 
             string? avisoFinal = peticion.Aviso;
+            if (estado.IsFinal())
+                peticion.MarcarResultadoFinalEntregado();
+
+            // Si nadie ha visto aún el final del comando anterior del mismo shell, que descartó líneas tecleadas (p. ej. una
+            // contraseña con ssh_input y esperarSegundos=0, y después otro ssh_exec), su aviso va también aquí.
+            if (peticion.AnteriorConTecleadoDescartado is { IsResultadoFinalEntregado: false } anterior)
+                avisoFinal = Unir(avisoFinal, $"El comando anterior de este shell ({anterior.IdTexto}) no leyó {SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas)} de entrada tecleada con ssh_input: al terminar se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
             if (avisoAntipatron is not null)
-                avisoFinal = avisoFinal is null ? avisoAntipatron : $"{avisoFinal} {avisoAntipatron}";
+                avisoFinal = Unir(avisoFinal, avisoAntipatron);
 
             return new ResultadoComando(
                 peticion.IdTexto,
@@ -2044,6 +2070,9 @@ namespace NativeSsh.Herramientas
                 tiempoSinSalida is { } sinSalida ? Math.Round(sinSalida.TotalSeconds, 1) : null,
                 avisoFinal);
         }
+
+        private static string? Unir(string? primero, string? segundo) =>
+            primero is null ? segundo : segundo is null ? primero : $"{primero} {segundo}";
 
         [GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", RegexOptions.CultureInvariant)]
         private static partial Regex RegexFlagsRecursivosGrep();

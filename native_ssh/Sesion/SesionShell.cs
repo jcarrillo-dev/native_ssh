@@ -135,6 +135,14 @@ namespace NativeSsh.Sesion
         // puede llegar durante el comando siguiente, que lo descarta. Bajo _candadoProceso.
         private Guid? _idRecuperacionReenviada;
 
+        // Líneas tecleadas descartadas que trae el último marcador encontrado (EscanerMarcador.LineasDescartadas). Bajo
+        // _candadoProceso: la bomba lo fija antes de completar la espera y el bucle lo lee después.
+        private int _lineasDescartadasMarcador;
+
+        // Último comando terminado que descartó líneas tecleadas (solo el bucle): el siguiente lo enlaza para repetir el
+        // aviso (Peticion.AnteriorConTecleadoDescartado).
+        private Peticion? _ultimaConTecleadoDescartado;
+
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
         private int _shellsAbandonados;
 
@@ -649,6 +657,8 @@ namespace NativeSsh.Sesion
 
                     _peticionActual = peticion;
                     peticion.FijarAvisoEnCurso(() => DescribirEscrituraBloqueada(peticion));
+                    peticion.FijarAnteriorConTecleadoDescartado(_ultimaConTecleadoDescartado);
+                    _ultimaConTecleadoDescartado = null;
                     try
                     {
                         await EjecutarAsync(peticion).ConfigureAwait(false);
@@ -775,10 +785,30 @@ namespace NativeSsh.Sesion
                 return;
             }
 
-            _ = codigo == CodigoCanalCerrado
-                ? peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, DescribirShellPerdido(conexionDelCanal)))
-                : peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
+            if (codigo == CodigoCanalCerrado)
+            {
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.ShellPerdido, -1, Unir(avisoShell, DescribirShellPerdido(conexionDelCanal)));
+                return;
+            }
+
+            int descartadas;
+            lock (_candadoProceso)
+                descartadas = _lineasDescartadasMarcador;
+            peticion.FijarLineasTecleadoDescartadas(descartadas);
+            if (descartadas > 0)
+                _ultimaConTecleadoDescartado = peticion;
+            _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, Unir(avisoShell, DescribirTecleadoDescartado(descartadas)));
         }
+
+        // Lo tecleado con ssh_input que el comando no leyó: la cola lo descarta sin ejecutarlo (ConstructorComando). Sin su
+        // contenido: puede ser un secreto.
+        internal static string? DescribirTecleadoDescartado(int lineas) => lineas <= 0
+            ? null
+            : $"El comando no leyó {DescribirLineas(lineas)} de entrada tecleada con ssh_input (enviada cuando ya no la leía, o de más): al terminar se descartaron sin ejecutarse. Envía la entrada solo cuando el comando la pida (mira su salida con ssh_output) y una línea por respuesta.";
+
+        internal static string DescribirLineas(int lineas) => lineas >= MarcadorFin.MaxLineasDescartadas
+            ? $"{lineas} o más líneas"
+            : lineas == 1 ? "1 línea" : $"{lineas} líneas";
 
         // Con el candado de escritura del canal tomado, y solo si sigue siendo el vigente: false si no lo es o si la escritura
         // falla.
@@ -1431,6 +1461,7 @@ namespace NativeSsh.Sesion
                 completada = _esperaMarcador;
                 _esperaMarcador = null;
                 _salidaActual = null;
+                _lineasDescartadasMarcador = _escaner.LineasDescartadas;
             }
 
             _ = (completada?.TrySetResult(codigo));
