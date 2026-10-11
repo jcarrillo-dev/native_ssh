@@ -58,12 +58,12 @@ namespace NativeSsh.Test.Integracion
                 Directory.Delete(_directorio, recursive: true);
         }
 
-        // Antes salía también como proc/<pid>/cwd/<objetivo> (y por cada hilo, proc/<pid>/task/<tid>/cwd/<objetivo>).
+        // Antes salía también como proc/<pid>/cwd/<objetivo> (profundidad 4; y por cada hilo, proc/<pid>/task/<tid>/cwd/<objetivo>).
         [Fact]
         public async Task Find_DesdeLaRaiz_DevuelveElObjetivoUnaSolaVezYNoEntraEnProc()
         {
             // Act
-            string salida = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, "/", "dir", profundidadMax: Profundidad + 3);
+            string salida = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, "/", "dir", profundidadMax: Math.Max(Profundidad, 4));
 
             // Assert
             string[] lineas = salida.Split('\n');
@@ -84,8 +84,8 @@ namespace NativeSsh.Test.Integracion
             bool isOtroSistema = medida[0] != medida[1].Split(' ')[0] && montaje != "/";
 
             // Act
-            string sinCruzar = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, "/", "dir", profundidadMax: Profundidad + 3, cruzarMontajes: false);
-            string enSuMontaje = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, montaje, "dir", profundidadMax: Profundidad + 3, cruzarMontajes: false);
+            string sinCruzar = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, "/", "dir", profundidadMax: Math.Max(Profundidad, 4), cruzarMontajes: false);
+            string enSuMontaje = await _herramientas.BuscarPorNombreAsync(Destino, _objetivo, montaje, "dir", profundidadMax: Math.Max(Profundidad, 4), cruzarMontajes: false);
 
             // Assert
             _ = isOtroSistema.Should().BeTrue($"el directorio temporal debe estar en otro sistema de ficheros que '/' para esta prueba (medido: {string.Join(" | ", medida)})");

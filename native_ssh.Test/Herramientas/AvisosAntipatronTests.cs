@@ -143,5 +143,39 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("perl -ne 'print if /-i/' app.log")]
         public void FalsoPositivo_NoAvisa(string comando) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
+
+        // El análisis corre en cada respuesta de ssh_exec, ssh_output y ssh_input: con una entrada malformada no lanza (si
+        // lanzara, la salida de ese comando quedaría ilegible) y no inventa avisos.
+        [Theory]
+        [InlineData("\\")]
+        [InlineData("cat 2>")]
+        [InlineData("&>")]
+        [InlineData("cat <<")]
+        [InlineData("cat <<-")]
+        [InlineData("echo $(cat x")]
+        [InlineData("echo `cat x")]
+        [InlineData("echo \"abierta")]
+        [InlineData("echo 'abierta")]
+        [InlineData("|||")]
+        [InlineData("&&&")]
+        [InlineData(";;;")]
+        [InlineData("\r")]
+        [InlineData("cat <<EOF")]
+        [InlineData("echo $((1+(2)")]
+        [InlineData("diff <(ls")]
+        [InlineData("{ ; }")]
+        [InlineData("( ) ) (")]
+        [InlineData("sudo -u")]
+        [InlineData("env -u")]
+        [InlineData("nice -n")]
+        [InlineData("tail -n")]
+        [InlineData("sed -e")]
+        [InlineData("x=1 y=2")]
+        [InlineData("!")]
+        [InlineData("2>&1")]
+        [InlineData(">")]
+        [InlineData("<<<")]
+        public void EntradaMalformada_NoLanzaNiAvisa(string comando) =>
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
     }
 }

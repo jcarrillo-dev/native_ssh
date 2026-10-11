@@ -1018,9 +1018,10 @@ namespace NativeSsh.Herramientas
         // la raíz no está por debajo: ruta='/proc' no se poda. En mountinfo el punto de montaje va con el espacio, el
         // tabulador, el salto de línea y la barra invertida en octal (\040, \011, \012, \134): se decodifica con printf %b
         // tras convertir cada '\' en '\0'. El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
-        // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null); el stat
-        // del dispositivo solo se hace con CRUZAR=0 y para los no virtuales (un NFS caído podría bloquearlo). /dev/fd, si es
-        // un enlace (a /proc/self/fd), se poda siempre por su ruta: no es un montaje y no sale en la línea.
+        // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null): se mira
+        // con -d cada montaje dentro de la profundidad que se recorre (find lo consultaría igual al recorrer su padre); el
+        // dispositivo (stat %d) solo con CRUZAR=0 y para los no virtuales. /dev/fd, si es un enlace (a /proc/self/fd), se
+        // poda siempre por su ruta: no es un montaje y no sale en la línea.
         // Sin /proc/self/mountinfo (busybox sin /proc, chroot): se podan /proc, /sys y /dev por su ruta y 'sin_tabla' lo
         // anota (con CRUZAR=0 no se puede saber qué otros montajes quedan fuera).
         private static readonly string DefinicionMontajes = $$"""
