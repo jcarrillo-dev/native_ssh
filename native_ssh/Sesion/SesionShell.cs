@@ -799,6 +799,7 @@ namespace NativeSsh.Sesion
                 }
 
                 Componer(canal, EscrituraEnum.Comando, peticion.Id, peticion.Comando);
+                peticion.MarcarEnvioIniciado();
                 return TryEnviarBajoCandado(canal);
             }
             finally

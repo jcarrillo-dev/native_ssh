@@ -1252,9 +1252,10 @@ namespace NativeSsh.Herramientas
         // en la cola (SolicitarCancelacion la finaliza bajo el mismo candado que la marca como en ejecución) o mientras se
         // abría el shell. Solo con la petición terminada: mientras sigue en ejecución, la sesión aún puede enviarlo (entre
         // su última comprobación del token y la escritura). El estado se lee antes que la señal, que la sesión marca antes de
-        // finalizarla. ShellPerdido sin la señal no cuenta: la escritura pudo quedarse a medias.
+        // finalizarla. Tampoco cuenta si la escritura del comando ya había empezado (IsEnvioIniciado): pudo quedarse a medias,
+        // tanto si terminó en ShellPerdido como en Cancelado porque el cierre de la sesión (ssh_disconnect) la cortó.
         internal static bool IsInterrumpidaSinEnviar(Peticion peticion) =>
-            peticion.Estado is EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado && !peticion.IsComandoEnviado;
+            peticion.Estado is EstadoPeticionEnum.Cancelado or EstadoPeticionEnum.TiempoAgotado && !peticion.IsComandoEnviado && !peticion.IsEnvioIniciado;
 
         private static string ConsecuenciaCwdIncierta(string anterior, string nuevo) =>
             $"El directorio de trabajo sigue siendo {anterior} para las herramientas de lectura y para un shell nuevo, pero el shell actual de ssh_exec puede haber pasado ya a {nuevo}: repite ssh_set_cwd (o usa ssh_reset_shell para recrearlo en {anterior}).";
@@ -2341,8 +2342,10 @@ namespace NativeSsh.Herramientas
 
             // Interrumpida y terminada sin que el comando llegara al shell (en la cola o mientras se abría el shell): no se
             // ejecutó nada, con certeza (IsInterrumpidaSinEnviar). Que la petición saliera de la cola (TiempoEjecucion > 0)
-            // no dice que el script empezara: la apertura del shell puede durar segundos. ShellPerdido sin la señal sigue en el
-            // camino incierto (la escritura del comando pudo quedarse a medias).
+            // no dice que el script empezara: la apertura del shell puede durar segundos. Si la escritura del comando ya había
+            // empezado, va al camino incierto aunque falte la señal: pudo quedarse a medias, tanto si la petición terminó en
+            // ShellPerdido (falló la escritura) como en Cancelado (el cierre de la sesión, ssh_disconnect, la cortó;
+            // SesionShell.BucleComandosAsync).
             string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: !IsInterrumpidaSinEnviar(peticion));
             throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
         }

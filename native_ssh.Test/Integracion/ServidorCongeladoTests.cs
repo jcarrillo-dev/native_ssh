@@ -168,8 +168,10 @@ namespace NativeSsh.Test.Integracion
             _ = isDesconectado.Should().BeTrue();
             _ = duracionDesconexion.Should().BeLessThan(TimeSpan.FromSeconds(8));
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            // La escritura se cortó a medias al desconectar (Cancelado sin la señal de comando enviado): no se puede afirmar que
+            // el archivo no se modificara (CB2c, como con ShellPerdido en CT1).
             if (isEscrituraArchivo)
-                _ = fallo.Should().Contain(id);
+                _ = fallo.Should().Contain(id).And.NotContain("no se ha modificado").And.NotContain("No se llegó a ejecutar");
             _ = siguiente.Salida.Should().Be("siguiente\n");
             _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas + 1);
         }
