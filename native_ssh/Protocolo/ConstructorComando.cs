@@ -159,7 +159,8 @@ namespace NativeSsh.Protocolo
         // que C# reciba el marcador y dé el comando por terminado) ya no se descarta: el 'read' final consume una línea y
         // bash ejecutaría las demás. Medido con el sshd local (c1ter/ventana.py: un ssh_input de dos líneas lanzado al azar
         // alrededor del final del comando): se ejecutó la segunda línea en 5 de 300 envíos, todos entre 1,4 ms antes y
-        // 0,4 ms después del final; con una red, la ventana crece con su latencia. No se puede cerrar sin cambiar el 'read'
+        // 0,4 ms después del final (con el binario AOT, 8 de 300, entre 0,2 ms antes y 0,2 ms después); con una red, la
+        // ventana crece con su latencia. No se puede cerrar sin cambiar el 'read'
         // final (que espera el salto del envío siguiente): la descripción de ssh_input lo advierte.
         // Las demás colas no descartan: durante la inicialización y la recuperación ssh_input se rechaza, y el reenvío de
         // la inicialización y de la recuperación cuenta con que cada 'read' consuma una sola línea (un bucle se comería la

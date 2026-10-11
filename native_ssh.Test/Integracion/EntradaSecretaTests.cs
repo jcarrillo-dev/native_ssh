@@ -130,11 +130,14 @@ namespace NativeSsh.Test.Integracion
         // Tecleado por adelantado (CB1): el comando no lee la entrada, así que la línea la consume el 'read' de la cola del
         // protocolo (ConstructorComando.EscribirCola) al terminar. No debe quedar en ninguna variable del shell (antes quedaba
         // en __ns_d hasta el comando siguiente, y 'declare -p' o 'set' lo devolvían tal cual), ni en el historial, ni en $_,
-        // ni salir en la respuesta del comando siguiente.
+        // ni salir en la respuesta del comando siguiente. Con la línea entera la descarta la cola antes del marcador; a medias
+        // (enter=false) la consume el 'read' final con el salto del envío siguiente: tampoco queda.
         [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public async Task TecleadoPorAdelantado_NoQuedaEnElShellNiLoDevuelveElComandoSiguiente(bool isSecreto)
+        [InlineData(false, true)]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        [InlineData(true, false)]
+        public async Task TecleadoPorAdelantado_NoQuedaEnElShellNiLoDevuelveElComandoSiguiente(bool isSecreto, bool isEnter)
         {
             // Arrange
             HerramientasSsh herramientas = Herramientas();
@@ -143,7 +146,7 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando lento = await herramientas.EjecutarAsync(destino, "sleep 3", esperarSegundos: 1);
 
             // Act
-            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, canario, esperarSegundos: 6, secreto: isSecreto);
+            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, canario, enter: isEnter, esperarSegundos: 6, secreto: isSecreto);
             // El canario se busca partido en dos: el comando no lo contiene.
             string busqueda = $"printf '%s%s' '{canario[..10]}' '{canario[10..]}'";
             ResultadoComando siguiente = await herramientas.EjecutarAsync(destino,
