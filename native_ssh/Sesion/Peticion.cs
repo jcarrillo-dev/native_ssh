@@ -20,6 +20,7 @@ namespace NativeSsh.Sesion
         private volatile bool _isEnvioIniciado;
         private volatile bool _isResultadoFinalEntregado;
         private int _lineasTecleadoDescartadas;
+        private volatile Peticion? _anteriorConTecleadoDescartado;
         private int _codigoSalida = -1;
         private string? _aviso;
         private Func<string?>? _avisoEnCurso;
@@ -68,7 +69,7 @@ namespace NativeSsh.Sesion
 
         // El comando anterior del mismo shell, si descartó líneas tecleadas: su aviso se repite en la respuesta de este
         // mientras nadie haya devuelto el resultado final de aquel (HerramientasSsh.Resultado).
-        public Peticion? AnteriorConTecleadoDescartado { get; private set; }
+        public Peticion? AnteriorConTecleadoDescartado => _anteriorConTecleadoDescartado;
 
         // Alguna respuesta de herramienta devolvió ya el estado final de esta petición (con su aviso).
         public bool IsResultadoFinalEntregado => _isResultadoFinalEntregado;
@@ -126,7 +127,7 @@ namespace NativeSsh.Sesion
         public void FijarLineasTecleadoDescartadas(int lineas) => Volatile.Write(ref _lineasTecleadoDescartadas, lineas);
 
         // Antes de enviar el comando (lo lee quien construye las respuestas, en otro hilo, después).
-        public void FijarAnteriorConTecleadoDescartado(Peticion? anterior) => AnteriorConTecleadoDescartado = anterior;
+        public void FijarAnteriorConTecleadoDescartado(Peticion? anterior) => _anteriorConTecleadoDescartado = anterior;
 
         public bool TryFinalizar(EstadoPeticionEnum estado, int codigo, string? aviso)
         {
