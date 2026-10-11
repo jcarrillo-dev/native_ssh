@@ -96,6 +96,113 @@ namespace NativeSsh.Test.Protocolo
             _ = Texto(salida).Should().Be("abc");
         }
 
+        // Marcador con el recuento de líneas tecleadas que el comando no leyó y la cola descartó (EscribirComando):
+        // "__NSX_<id>_<código>_<descartadas>__"; sin recuento, Descartadas = 0.
+        [Theory]
+        [InlineData(0, 1)]
+        [InlineData(7, 2)]
+        [InlineData(130, 999999)]
+        public void MarcadorConDescartadas_DaCodigoYRecuento(int codigo, int descartadas)
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Id);
+            BufferSalida salida = NuevaSalida();
+
+            // Act
+            (bool IsCompleto, int Codigo) resultado = Alimentar(escaner, salida, $"hola\n__NSX_{Id:N}_{codigo}_{descartadas}__\n");
+
+            // Assert
+            _ = resultado.Should().Be((true, codigo));
+            _ = escaner.LineasDescartadas.Should().Be(descartadas);
+            _ = Texto(salida).Should().Be("hola\n");
+        }
+
+        [Fact]
+        public void MarcadorSinDescartadas_TrasUnoConEllas_DaCero()
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Id);
+            BufferSalida salida = NuevaSalida();
+            _ = Alimentar(escaner, salida, $"__NSX_{Id:N}_0_3__\n").IsCompleto.Should().BeTrue();
+
+            // Act
+            escaner.Reiniciar(Otro);
+            (bool isCompleto, _) = Alimentar(escaner, salida, Marcador(Otro, 0));
+
+            // Assert
+            _ = isCompleto.Should().BeTrue();
+            _ = escaner.LineasDescartadas.Should().Be(0);
+        }
+
+        [Fact]
+        public void MarcadorConDescartadas_PartidoEnCualquierPosicion()
+        {
+            // Arrange
+            string flujo = $"salida previa\n__NSX_{Id:N}_7_12__\n";
+            for (int corte = 1; corte < flujo.Length; corte++)
+            {
+                EscanerMarcador escaner = Nuevo(Id);
+                BufferSalida salida = NuevaSalida();
+
+                // Act
+                (bool isCompleto, int codigo) = Alimentar(escaner, salida, flujo[..corte], flujo[corte..]);
+
+                // Assert
+                _ = isCompleto.Should().BeTrue($"corte {corte}");
+                _ = (codigo, escaner.LineasDescartadas).Should().Be((7, 12), $"corte {corte}");
+                _ = Texto(salida).Should().Be("salida previa\n");
+            }
+        }
+
+        // El recuento lleva como mucho MarcadorFin.MaxDigitosDescartadas cifras y termina en "__": lo demás es texto.
+        [Fact]
+        public void MarcadorConDescartadasMalFormado_SeEmiteComoTexto()
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Id);
+            BufferSalida salida = NuevaSalida();
+            string imitaciones = $"__NSX_{Id:N}_0_1234567__\n__NSX_{Id:N}_0_x__\n__NSX_{Id:N}_0_12_x\n__NSX_{Id:N}_0_12x__\n";
+
+            // Act & Assert
+            _ = Alimentar(escaner, salida, imitaciones).IsCompleto.Should().BeFalse();
+            _ = Alimentar(escaner, salida, Marcador(Id, 0)).IsCompleto.Should().BeTrue();
+            _ = Texto(salida).Should().Be(imitaciones);
+        }
+
+        [Fact]
+        public void SaltoDeLineaDelMarcadorConDescartadas_EnElBloqueSiguiente_SeDescarta()
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Id);
+            BufferSalida primera = NuevaSalida();
+            _ = Alimentar(escaner, primera, $"__NSX_{Id:N}_0_2__").IsCompleto.Should().BeTrue();
+
+            // Act
+            escaner.Reiniciar(Otro);
+            BufferSalida segunda = NuevaSalida();
+            _ = Alimentar(escaner, segunda, "\nresto");
+
+            // Assert
+            _ = Texto(segunda).Should().Be("resto");
+        }
+
+        // El marcador ignorado (reenvío de una recuperación) se traga aunque lleve recuento, y no pisa el del bueno.
+        [Fact]
+        public void IdIgnoradoConDescartadas_SeTragaYNoPisaElRecuento()
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Otro, Id);
+            BufferSalida salida = NuevaSalida();
+
+            // Act
+            (bool IsCompleto, int Codigo) resultado = Alimentar(escaner, salida, $"a__NSX_{Id:N}_0_5__\nb" + Marcador(Otro, 0));
+
+            // Assert
+            _ = resultado.Should().Be((true, 0));
+            _ = escaner.LineasDescartadas.Should().Be(0);
+            _ = Texto(salida).Should().Be("ab");
+        }
+
         [Fact]
         public void MarcadorDeOtraPeticion_SeTrataComoTexto()
         {

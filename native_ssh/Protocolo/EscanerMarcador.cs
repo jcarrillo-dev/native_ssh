@@ -31,6 +31,9 @@ namespace NativeSsh.Protocolo
 
         public bool IsActivo { get; private set; }
 
+        // Las del último marcador esperado que se encontró (0 si no llevaba recuento): ver MarcadorFin.
+        public int LineasDescartadas { get; private set; }
+
         // idIgnorado: marcador que se descarta sin emitirlo (el del comando original durante una interrupción).
         public void Reiniciar(Guid id, Guid? idIgnorado = null)
         {
@@ -76,7 +79,7 @@ namespace NativeSsh.Protocolo
                     break;
 
                 int inicio = busqueda + relativo;
-                ResultadoMarcadorEnum resultado = Analizar(ventana[inicio..], out int codigoLeido, out int longitud);
+                ResultadoMarcadorEnum resultado = Analizar(ventana[inicio..], out int codigoLeido, out int descartadas, out int longitud);
                 if (resultado == ResultadoMarcadorEnum.Incompleta)
                 {
                     Emitir(salida, ventana[emitido..inicio]);
@@ -97,6 +100,7 @@ namespace NativeSsh.Protocolo
                     _isSaltarSaltoLinea = inicio + longitud == ventana.Length;
                     IsActivo = false;
                     codigo = codigoLeido;
+                    LineasDescartadas = descartadas;
                     return true;
                 }
 
@@ -121,9 +125,10 @@ namespace NativeSsh.Protocolo
             return false;
         }
 
-        public static ResultadoMarcadorEnum Analizar(ReadOnlySpan<byte> datos, out int codigo, out int longitud)
+        public static ResultadoMarcadorEnum Analizar(ReadOnlySpan<byte> datos, out int codigo, out int descartadas, out int longitud)
         {
             codigo = 0;
+            descartadas = 0;
             longitud = 0;
             int i = MarcadorFin.LongitudCabecera;
             int finId = i + MarcadorFin.LongitudId;
@@ -140,6 +145,37 @@ namespace NativeSsh.Protocolo
             if (datos[i++] != (byte)'_')
                 return ResultadoMarcadorEnum.Invalida;
 
+            ResultadoMarcadorEnum resultado = LeerNumero(datos, ref i, MarcadorFin.MaxDigitosCodigo, out codigo);
+            if (resultado != ResultadoMarcadorEnum.Completa)
+                return resultado;
+            if (datos[i++] != (byte)'_')
+                return ResultadoMarcadorEnum.Invalida;
+            if (i >= datos.Length)
+                return ResultadoMarcadorEnum.Incompleta;
+
+            // Recuento opcional de líneas descartadas: "_<n>" antes del "__" final.
+            if (char.IsAsciiDigit((char)datos[i]))
+            {
+                resultado = LeerNumero(datos, ref i, MarcadorFin.MaxDigitosDescartadas, out descartadas);
+                if (resultado != ResultadoMarcadorEnum.Completa)
+                    return resultado;
+                if (datos[i++] != (byte)'_')
+                    return ResultadoMarcadorEnum.Invalida;
+                if (i >= datos.Length)
+                    return ResultadoMarcadorEnum.Incompleta;
+            }
+
+            if (datos[i] != (byte)'_')
+                return ResultadoMarcadorEnum.Invalida;
+
+            longitud = i + 1;
+            return ResultadoMarcadorEnum.Completa;
+        }
+
+        // Número decimal de 1 a 'maxDigitos' cifras desde 'i'; Completa deja 'i' en el primer byte que no es cifra (existe).
+        private static ResultadoMarcadorEnum LeerNumero(ReadOnlySpan<byte> datos, ref int i, int maxDigitos, out int valor)
+        {
+            valor = 0;
             int digitos = 0;
             while (true)
             {
@@ -148,23 +184,13 @@ namespace NativeSsh.Protocolo
 
                 byte actual = datos[i];
                 if (!char.IsAsciiDigit((char)actual))
-                    break;
-                if (++digitos > MarcadorFin.MaxDigitosCodigo)
+                    return digitos == 0 ? ResultadoMarcadorEnum.Invalida : ResultadoMarcadorEnum.Completa;
+                if (++digitos > maxDigitos)
                     return ResultadoMarcadorEnum.Invalida;
 
-                codigo = (codigo * 10) + (actual - '0');
+                valor = (valor * 10) + (actual - '0');
                 i++;
             }
-
-            if (digitos == 0 || datos[i] != (byte)'_')
-                return ResultadoMarcadorEnum.Invalida;
-            if (i + 1 >= datos.Length)
-                return ResultadoMarcadorEnum.Incompleta;
-            if (datos[i + 1] != (byte)'_')
-                return ResultadoMarcadorEnum.Invalida;
-
-            longitud = i + 2;
-            return ResultadoMarcadorEnum.Completa;
         }
 
         // Sufijo más largo (hasta 5 bytes) que coincide con el principio de la cabecera.
