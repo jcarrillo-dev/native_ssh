@@ -119,9 +119,24 @@ El host remoto al que se conecta el servidor debe disponer de:
 
 ### Verificación de identidad (`known_hosts`)
 
-Por motivos de seguridad, el destino debe estar registrado previamente en el archivo `~/.ssh/known_hosts` local (admite entradas en texto plano, con hashing estándar y formatos `[host]:puerto`).
+Por motivos de seguridad, el destino debe estar registrado previamente en el archivo `~/.ssh/known_hosts` local (admite entradas en texto plano, con hashing estándar y formatos `[host]:puerto`). Con un alias de `~/.ssh/config` se busca el `HostName` y el `Port` reales (ver «Configuración de ssh»).
 
 Si el host no se encuentra registrado, la primera llamada fallará inmediatamente devolviendo el comando `ssh-keyscan` exacto que debe ejecutarse de forma manual tras verificar la huella digital del servidor remoto.
+
+### Configuración de ssh (`~/.ssh/config`)
+
+Si el cliente de OpenSSH está instalado, cada destino se resuelve con `ssh -G <destino>` (la misma lógica de `Host`, `Match` e `Include` que ssh) antes de conectar, y se usan su `HostName`, `User`, `Port` e `IdentityFile`. Así el destino puede ser un alias (`ssh_exec(destino="web", …)`). Se ejecuta en cada llamada (unos milisegundos), así que un cambio en la configuración vale desde la llamada siguiente; se aplica también a IPs y nombres reales (`Host *`, `Match`).
+
+- **Qué fichero:** `NATIVE_SSH_CONFIG_SSH` con una ruta usa ese fichero (`ssh -F`, que no lee `/etc/ssh/ssh_config`); `NATIVE_SSH_CONFIG_SSH=none` no usa ninguna configuración (el destino se toma tal cual). Sin ella: si está definida `NATIVE_SSH_DIRECTORIO_SSH`, se usa el `config` de ese directorio si existe al arrancar, y si no, ninguno (nunca el `~/.ssh/config` real cuando se ha pedido otro directorio); si no, la configuración de ssh por defecto (`~/.ssh/config` y `/etc/ssh/ssh_config`).
+- **Precedencia:** lo que lleva el destino manda: `usuario@` se pasa a ssh con `-l` y `:puerto` con `-p` (así `Match user` y `%r` lo ven, como en ssh). Para las claves, `NATIVE_SSH_IDENTIDADES`, si está definida, manda y los `IdentityFile` se ignoran; si no, los `IdentityFile` de la configuración sustituyen a las claves por defecto de native_ssh. Si la configuración no pone ningún `IdentityFile`, se usan las de native_ssh (las de `NATIVE_SSH_DIRECTORIO_SSH`), no las `~/.ssh/id_*` que ssh listaría por defecto.
+- **Varios `IdentityFile`:** se prueban todos, en orden y sin repetir; los que no existen se saltan, como en ssh. Ojo con `MaxAuthTries` del servidor (6 por defecto) si son muchos.
+- **Rutas de `IdentityFile`:** `ssh -G` no las expande; native_ssh expande `~` inicial, `%d`, `%u`, `%h` (el `HostName`), `%r`, `%p`, `%n` (el alias), `%%` y `${VARIABLE}`. Cualquier otro token (`%C`, `%l`, `%i`…), `~usuario`, una variable sin definir o una ruta relativa (sería relativa al directorio de trabajo de native_ssh) dan un error del destino que lo dice, como haría ssh.
+- **`known_hosts` y límites intactos:** la verificación estricta usa siempre los `known_hosts` de `NATIVE_SSH_DIRECTORIO_SSH`, buscando el `HostName` y el `Port` reales; `StrictHostKeyChecking`, `UserKnownHostsFile` y `HostKeyAlias` de la configuración se ignoran. El límite de conexiones también va por el servidor real, y un alias y su `usuario@HostName:Port` comparten la misma sesión.
+- **`ProxyJump` y `ProxyCommand`:** no se admiten; un destino cuya configuración los usa se rechaza con un error que lo dice (conectar directamente al `HostName` se saltaría el salto y podría llegar a otra máquina). Queda como posible bloque futuro.
+- **Destino seguro para ssh:** el destino lo escribe el LLM; con la configuración activa, servidor y usuario solo admiten letras y números ASCII, `.`, `_`, `-` (y `:` el servidor, para IPv6), sin empezar por `-`, y el servidor se pasa tras `--`. Así no puede inyectar opciones a `ssh -G` ni URIs `ssh://` que cambien usuario o puerto.
+- **Plazo:** si `ssh -G` no termina en 5 s (un `Match exec` o una búsqueda DNS de `CanonicalizeHostname` que se cuelga), se mata junto con lo que lanzó y el destino da un error.
+- **Sin el programa `ssh`:** el destino se usa tal cual (comportamiento anterior) y se anota un aviso en el log una sola vez.
+- `ssh -G` se ejecuta sin `NATIVE_SSH_PASSWORD`, `NATIVE_SSH_PASSPHRASE` ni `NATIVE_SSH_TOKEN_HTTP` en su entorno (un `Match exec` los vería). Los `Match exec` de tu configuración sí se ejecutan, como al usar ssh.
 
 ---
 
@@ -129,15 +144,24 @@ Si el host no se encuentra registrado, la primera llamada fallará inmediatament
 
 El servidor busca credenciales en el siguiente orden de precedencia:
 
-1. **Claves privadas sin frase de paso:** Búsqueda automática en las rutas por defecto:
+1. **Claves privadas:** Búsqueda automática en las rutas por defecto:
    - `~/.ssh/id_ed25519`
    - `~/.ssh/id_ecdsa`
    - `~/.ssh/id_rsa`
-   O en las rutas especificadas mediante la variable `NATIVE_SSH_IDENTIDADES`.
+   O en las rutas especificadas mediante la variable `NATIVE_SSH_IDENTIDADES`, o en los `IdentityFile` de la configuración de ssh (ver «Configuración de ssh»).
 2. **Contraseña explícita:** Configurada mediante la variable de entorno `NATIVE_SSH_PASSWORD`.
 
+### Claves con passphrase
+
+Una clave cifrada (formatos OpenSSH, PEM y PKCS#8) se abre con la passphrase de `NATIVE_SSH_PASSPHRASE_FICHERO` (recomendado) o de `NATIVE_SSH_PASSPHRASE`, nunca las dos. Nunca sale del LLM: ninguna herramienta la pide ni la acepta.
+
+- El fichero se comprueba igual que el del token HTTP: un fichero normal (no un enlace simbólico, una FIFO ni un directorio) del usuario que ejecuta native_ssh y sin permisos para el grupo ni para otros (`chmod 600`), comprobado en el fichero ya abierto. Solo Linux. Se quitan los saltos de línea finales; los espacios de los extremos sí son parte de la passphrase.
+- Una sola passphrase para todas las claves cifradas. Solo se lee cuando alguna clave está cifrada (con claves sin cifrar, el fichero ni se abre), no se guarda y nunca aparece en respuestas ni logs.
+- Si falta, es incorrecta o el fichero no cumple lo anterior, la conexión falla con un mensaje que da el motivo de cada clave («La clave … no se pudo cargar: está cifrada con passphrase y no hay ninguna configurada…», «…la passphrase de NATIVE_SSH_PASSPHRASE no la abre…», «…tiene permisos 0644…»). Una clave que no se pudo abrir se reintenta en la conexión siguiente: basta con arreglar la passphrase, sin reiniciar.
+- La variable de entorno queda visible para los procesos del mismo usuario (`/proc/<pid>/environ`): por eso se recomienda el fichero.
+
 > [!NOTE]
-> No se admite `ssh-agent` ni claves privadas protegidas mediante frase de paso (*passphrase*).
+> No se admite `ssh-agent`.
 
 ---
 
@@ -145,9 +169,12 @@ El servidor busca credenciales en el siguiente orden de precedencia:
 
 | Variable | Tipo | Valor por defecto | Descripción |
 |---|---|---|---|
-| `NATIVE_SSH_DIRECTORIO_SSH` | Ruta | `~/.ssh` | Directorio base donde se ubican las claves y el archivo `known_hosts`. |
+| `NATIVE_SSH_DIRECTORIO_SSH` | Ruta | `~/.ssh` | Directorio base donde se ubican las claves, el archivo `known_hosts` y, si existe, el `config` de ssh (ver «Configuración de ssh»). |
 | `NATIVE_SSH_IDENTIDADES` | Rutas (`:`) | Claves estándar en `DirectorioSsh` | Lista de rutas a claves privadas separadas por `:`. |
 | `NATIVE_SSH_PASSWORD` | Cadena | *(Vacío)* | Contraseña de autenticación para destinos remotos. |
+| `NATIVE_SSH_PASSPHRASE` | Cadena | *(Vacío)* | Passphrase de las claves cifradas (ver «Claves con passphrase»). Mejor el fichero de la variable siguiente; nunca las dos. |
+| `NATIVE_SSH_PASSPHRASE_FICHERO` | Ruta | *(Vacío)* | Solo Linux. Fichero con la passphrase, con los mismos requisitos que el del token HTTP (`chmod 600`, propio, sin enlaces). Se quitan los saltos de línea finales; los espacios se conservan. |
+| `NATIVE_SSH_CONFIG_SSH` | Ruta o `none` | Ver «Configuración de ssh» | Fichero de configuración de ssh con el que se resuelven los destinos (`ssh -G -F`), o `none` para no usar ninguno. Sin ella: el `config` de `NATIVE_SSH_DIRECTORIO_SSH` si está definida (y existe), o la configuración de ssh por defecto. |
 | `NATIVE_SSH_PUERTO_HTTP` | Entero | `8722` | Puerto TCP de escucha para los modos HTTP. |
 | `NATIVE_SSH_NIVEL_LOG` | Nivel log | `Information` | Nivel mínimo de trazas (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Todos los logs se emiten invariablemente por `stderr`. Las categorías del SDK de MCP (`ModelContextProtocol.*`) nunca bajan de `Debug`: en `Trace` escribirían cada mensaje JSON-RPC completo (argumentos como el texto de `ssh_input` y respuestas con salidas y archivos). |
 | `NATIVE_SSH_TOKEN_HTTP` | Cadena | *(Vacío)* | Token de los modos HTTP (al menos 16 caracteres). Obligatorio en `--http` y `--http-unsecure` (o el fichero de la variable siguiente, nunca las dos); no se usa con stdio. |
@@ -288,7 +315,8 @@ No deben aplicarse correcciones automatizadas globales procedentes de `dotnet fo
 
 - **Interfaces de usuario en terminal (TUI):** No se admiten utilidades interactivas basadas en curses o terminal completa (como `vim`, `nano`, `top` o `less` sin `PAGER=cat`).
 - **Segmentación de secuencias ANSI:** Si una secuencia de escape ANSI queda dividida exactamente en el límite de un bloque de 64 KiB durante la paginación, la fracción restante se interpretará como texto sin formato en la página siguiente.
-- **Agentes y claves cifradas:** No existe soporte para reenvío de credenciales vía `ssh-agent` ni descifrado de claves privadas con frase de paso.
+- **Agentes:** No existe soporte para reenvío de credenciales vía `ssh-agent`. Las claves con passphrase sí se admiten (ver «Claves con passphrase»).
+- **Saltos (`ProxyJump`, `ProxyCommand`):** Un destino cuya configuración de ssh los usa se rechaza; tampoco se usan `HostKeyAlias`, `UserKnownHostsFile`, `CertificateFile` ni `IdentitiesOnly` de la configuración.
 - **Túneles SSH:** No se contempla el reenvío de puertos locales o remotos (*port forwarding*).
 - **Seguridad en HTTP:** El transporte HTTP no implementa mecanismos integrados de autenticación ni autorización.
 - **Renegociación de claves con strict-kex (corregido en el submódulo):** SSH.NET 2026.0.0 aplica la regla estricta de *strict key exchange* («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, §1.9, que remite al borrador IETF `draft-miller-sshm-strict-kex`) la limita al intercambio inicial; como OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar, SSH.NET cortaba la conexión (se perdía el shell con sus `export` y se gastaba una conexión del cupo de `ufw limit`; medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s). native_ssh compila SSH.NET desde el submódulo `externo/SSH.NET` (rama `native-ssh`), que lo corrige: la regla estricta solo en el intercambio inicial, manteniendo el reinicio de los números de secuencia tras cada `NEWKEYS`. Ya no es una limitación de native_ssh; sí lo es del paquete NuGet de SSH.NET 2026.0.0 mientras la corrección no llegue al proyecto original.
