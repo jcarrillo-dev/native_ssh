@@ -6,6 +6,8 @@ namespace NativeSsh.Comun
         public string DirectorioSsh { get; init; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");
         public IReadOnlyList<string> RutasIdentidad { get; init; } = [];
         public string? Contrasena { get; init; }
+        public string? Passphrase { get; init; }
+        public string? FicheroPassphrase { get; init; }
         public int MaxBytesSalidaPorPeticion { get; init; } = 1024 * 1024;
         public int MaxBytesPorRespuesta { get; init; } = 64 * 1024;
         public int MaxPeticionesRetenidas { get; init; } = 64;
@@ -17,7 +19,8 @@ namespace NativeSsh.Comun
         public int MaxConexionesPorVentana { get; init; } = 4;
         public TimeSpan VentanaConexiones { get; init; } = TimeSpan.FromSeconds(30);
 
-        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD.
+        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD,
+        /// NATIVE_SSH_PASSPHRASE y NATIVE_SSH_PASSPHRASE_FICHERO (la passphrase de las claves cifradas: FabricaConexionSsh).
         public static OpcionesNativeSsh DesdeEntorno()
         {
             OpcionesNativeSsh porDefecto = new();
@@ -31,7 +34,9 @@ namespace NativeSsh.Comun
             {
                 DirectorioSsh = directorio,
                 RutasIdentidad = rutas,
-                Contrasena = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSWORD")
+                Contrasena = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSWORD"),
+                Passphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE"),
+                FicheroPassphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE_FICHERO")
             };
         }
     }
