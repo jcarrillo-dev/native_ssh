@@ -71,7 +71,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Act & Assert
             _ = texto.Should().StartWith("\n__ns_b='");
-            _ = texto.Should().EndWith("; read -r __ns_d\n");
+            _ = texto.Should().EndWith("; read -r __ns_d; unset __ns_d\n");
             _ = texto.Should().Contain("__ns_rc=$?; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ");
             _ = texto.Should().Contain($"printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"");
             _ = texto.Should().NotContain($"__NSX_{Id:N}_");
@@ -97,7 +97,7 @@ namespace NativeSsh.Test.Protocolo
             _ = texto.Should().StartWith("\n__ns_rc=130; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ");
             _ = texto.Should().NotContain("\u0003");
             _ = texto.Should().Contain($"'{Id:N}'");
-            _ = texto.Should().EndWith("; read -r __ns_d\n");
+            _ = texto.Should().EndWith("; read -r __ns_d; unset __ns_d\n");
         }
 
         [Fact]
@@ -107,7 +107,7 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirSincronizacion(Id, w));
 
             // Act & Assert
-            _ = texto.Should().Be($"\n\n__ns_rc=0; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            _ = texto.Should().Be($"\n\n__ns_rc=0; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n");
         }
 
         [Fact]
@@ -148,7 +148,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Assert: el primer '\n' satisface el 'read' del marcador anterior; los marcadores no aparecen en el texto. El
             // testigo se guarda en un array de solo lectura y la cabecera de la identidad solo sale entera si quedó guardado.
-            _ = texto.Should().Be($"\n__ns_rc=0; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n");
+            _ = texto.Should().Be($"\n__ns_rc=0; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n");
             _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}").And.NotContain($"__NSI_{Id:N}");
         }
 
@@ -157,7 +157,7 @@ namespace NativeSsh.Test.Protocolo
         {
             // Arrange
             IdentidadShell identidad = new(123456, 789, Testigo);
-            string cola = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
+            string cola = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, w, identidad));

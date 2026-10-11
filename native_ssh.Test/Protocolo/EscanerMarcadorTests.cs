@@ -116,7 +116,7 @@ namespace NativeSsh.Test.Protocolo
             // Arrange
             EscanerMarcador escaner = Nuevo(Id);
             BufferSalida salida = NuevaSalida();
-            string eco = $"printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d\n";
+            string eco = $"printf '%s_%s_%d__\\n' '__NSX' '{Id:N}' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n";
 
             // Act & Assert
             _ = Alimentar(escaner, salida, eco).IsCompleto.Should().BeFalse();

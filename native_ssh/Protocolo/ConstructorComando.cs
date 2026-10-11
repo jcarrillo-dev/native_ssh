@@ -141,6 +141,10 @@ namespace NativeSsh.Protocolo
         // el resto; si no empieza por él, queda entero, y nunca está vacío porque lleva espacios): vacío = mismo shell.
         // Cualquier shell POSIX la entiende (dash, el ash de busybox): en uno ajeno el testigo falta y el marcador sale con
         // el código.
+        // Tras el marcador, 'read' espera la línea siguiente (la primera, vacía, del próximo envío): lo que se teclee mientras
+        // el comando no lee la entrada (ssh_input por adelantado, también una contraseña) lo consume este 'read' y se borra
+        // en la misma línea con 'unset', sin quedar en el shell hasta el comando siguiente ('declare -p', 'set'). Ni el
+        // marcador ni __ns_rc dependen de lo que devuelvan.
         private static void EscribirCola(Guid id, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             if (identidad is { } esperada)
@@ -155,7 +159,7 @@ namespace NativeSsh.Protocolo
 
             escritor.Write("printf '%s_%s_%d__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("' \"$__ns_rc\"; read -r __ns_d\n"u8);
+            escritor.Write("' \"$__ns_rc\"; read -r __ns_d; unset __ns_d\n"u8);
         }
     }
 }

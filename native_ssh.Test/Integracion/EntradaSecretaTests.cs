@@ -126,5 +126,35 @@ namespace NativeSsh.Test.Integracion
                 ? respuestas.Should().NotContain(canario[..4])
                 : respuestas.Should().Contain(canario, "sin secreto, el eco del terminal lo devuelve: la prueba detecta la fuga");
         }
+
+        // Tecleado por adelantado (CB1): el comando no lee la entrada, así que la línea la consume el 'read' de la cola del
+        // protocolo (ConstructorComando.EscribirCola) al terminar. No debe quedar en ninguna variable del shell (antes quedaba
+        // en __ns_d hasta el comando siguiente, y 'declare -p' o 'set' lo devolvían tal cual), ni en el historial, ni en $_,
+        // ni salir en la respuesta del comando siguiente.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task TecleadoPorAdelantado_NoQuedaEnElShellNiLoDevuelveElComandoSiguiente(bool isSecreto)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            string canario = Canario();
+            ResultadoComando lento = await herramientas.EjecutarAsync(destino, "sleep 3", esperarSegundos: 1);
+
+            // Act
+            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, canario, esperarSegundos: 6, secreto: isSecreto);
+            // El canario se busca partido en dos: el comando no lo contiene.
+            string busqueda = $"printf '%s%s' '{canario[..10]}' '{canario[10..]}'";
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino,
+                $"history | grep -cF \"$({busqueda})\"; printf '[%s]\\n' \"$_\"; declare -p __ns_d 2>/dev/null; set | grep -cF \"$({busqueda})\"; env | grep -cF \"$({busqueda})\"; echo fin", esperarSegundos: 10);
+            salida.WriteLine($"entrada: {entrada.Estado} '{entrada.Salida}'\nsiguiente: '{siguiente.Salida}'");
+
+            // Assert
+            _ = entrada.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = siguiente.CodigoSalida.Should().Be(0);
+            _ = siguiente.Salida.Should().NotContain(canario[..10]).And.NotContain("__ns_d").And.EndWith("0\n0\nfin\n").And.StartWith("0\n[");
+        }
     }
 }
