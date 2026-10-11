@@ -11,6 +11,8 @@
     <TrimMode>full</TrimMode>
     <IsAotCompatible>true</IsAotCompatible>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- LibraryImport (InteropLinux: open sin seguir enlaces y statx del fichero del token HTTP) genera código unsafe -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <EnableAotAnalyzer>true</EnableAotAnalyzer>

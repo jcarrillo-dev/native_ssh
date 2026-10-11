@@ -1,15 +1,22 @@
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
+using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace NativeSsh.Comun
 {
     // Token obligatorio de los modos HTTP (--http y --http-unsecure): sin él, cualquier proceso de la máquina (o de la red,
     // con --http-unsecure) que alcance el puerto podría ejecutar comandos en los servidores. Sale de NATIVE_SSH_TOKEN_HTTP o
-    // del fichero de NATIVE_SSH_TOKEN_HTTP_FICHERO, que no puede ser un enlace ni tener ningún permiso para el grupo ni para
-    // otros (0600 o 0400): con permisos más abiertos, otro usuario de la máquina podría leerlo. Del fichero se quitan los
-    // saltos de línea finales. Los clientes lo envían en cada petición: 'Authorization: Bearer <token>'.
+    // del fichero de NATIVE_SSH_TOKEN_HTTP_FICHERO (solo en Linux), que debe ser un fichero normal (no un enlace, una FIFO ni
+    // un directorio) del usuario del proceso y sin ningún permiso para el grupo ni para otros (0600 o 0400): si no, otro
+    // usuario de la máquina podría leerlo o elegir su contenido. Se abre sin seguir un enlace en el último componente y sin
+    // bloquearse (O_NOFOLLOW | O_NONBLOCK: una FIFO no cuelga el arranque), y el tipo, el dueño y los permisos se comprueban
+    // en el descriptor ya abierto (statx), no en la ruta: lo comprobado es lo que se lee, sin carrera entre comprobar y
+    // abrir. Un enlace en un directorio intermedio se acepta a propósito (p. ej. /home -> /var/home): aunque lo controle
+    // otro usuario, solo puede llevar a un fichero propio y 0600, cuyo contenido ese usuario no conoce. Del fichero se quitan
+    // los saltos de línea finales; un token que empieza o termina con espacios se rechaza (los extremos de una cabecera HTTP
+    // no se conservan: nunca coincidiría). Los clientes lo envían en cada petición: 'Authorization: Bearer <token>'.
     // Se guarda y se compara su SHA-256 en tiempo constante (CryptographicOperations.FixedTimeEquals): ni la duración de la
     // comparación ni la longitud del token presentado dicen cuánto se parece al bueno. Ningún mensaje lleva el token.
     // El modo stdio no lo lee.
@@ -21,8 +28,8 @@ namespace NativeSsh.Comun
         private const int MaxBytesFichero = 4096;
         private const string Esquema = "Bearer";
 
-        private const UnixFileMode PermisosAjenos = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
-            | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+        private const int PermisosAjenos = 0x3F; // 0077: cualquier permiso del grupo o de otros.
+        private const int PermisosTodos = 0xFFF; // 07777
 
         private static readonly string ComoConfigurarlo = $"define {VariableToken} con el token (al menos {MinCaracteres} caracteres) o {VariableFichero} con la ruta de un fichero que lo contenga y que solo pueda leer su dueño (chmod 600). Los clientes lo envían en cada petición con la cabecera 'Authorization: {Esquema} <token>'.";
 
@@ -32,7 +39,12 @@ namespace NativeSsh.Comun
 
         // entorno: lectura de las variables (Environment.GetEnvironmentVariable; en las pruebas, un diccionario).
         [UnsupportedOSPlatform("windows")]
-        public static bool TryCargar(Func<string, string?> entorno, out TokenHttp? token, out string? error)
+        public static bool TryCargar(Func<string, string?> entorno, out TokenHttp? token, out string? error) =>
+            TryCargar(entorno, OperatingSystem.IsLinux() ? InteropLinux.UsuarioEfectivo() : 0, out token, out error);
+
+        // usuario: el uid que debe ser dueño del fichero (el efectivo del proceso; en las pruebas, otro).
+        [UnsupportedOSPlatform("windows")]
+        internal static bool TryCargar(Func<string, string?> entorno, uint usuario, out TokenHttp? token, out string? error)
         {
             token = null;
             string? valor = entorno(VariableToken) is { Length: > 0 } v ? v : null;
@@ -51,12 +63,19 @@ namespace NativeSsh.Comun
                 return false;
             }
 
-            if (hasFichero && !TryLeerFichero(fichero!, out valor, out error))
+            if (hasFichero && !TryLeerFichero(fichero!, usuario, out valor, out error))
                 return false;
 
-            if (valor!.Length < MinCaracteres)
+            string origen = hasFichero ? $"fichero {fichero}" : VariableToken;
+            if (char.IsWhiteSpace(valor![0]) || char.IsWhiteSpace(valor[^1]))
             {
-                error = $"El token del modo HTTP ({(hasFichero ? $"fichero {fichero}" : VariableToken)}) es demasiado corto: necesita al menos {MinCaracteres} caracteres.";
+                error = $"El token del modo HTTP ({origen}) empieza o termina con espacios: los extremos de una cabecera HTTP no se conservan, así que nunca coincidiría. Quítalos.";
+                return false;
+            }
+
+            if (valor.Length < MinCaracteres)
+            {
+                error = $"El token del modo HTTP ({origen}) es demasiado corto: necesita al menos {MinCaracteres} caracteres.";
                 return false;
             }
 
@@ -80,51 +99,78 @@ namespace NativeSsh.Comun
             return CryptographicOperations.FixedTimeEquals(presentado, _hash);
         }
 
-        // Los permisos se miran en el descriptor ya abierto (no en la ruta): lo comprobado es lo que se lee. Antes, el enlace
-        // se rechaza sin seguirlo.
+        // Ver la cabecera: todo se comprueba en el descriptor abierto sin seguir el enlace final ni bloquearse.
         [UnsupportedOSPlatform("windows")]
-        private static bool TryLeerFichero(string ruta, out string? valor, out string? error)
+        private static bool TryLeerFichero(string ruta, uint usuario, out string? valor, out string? error)
         {
             valor = null;
-            FileInfo info = new(ruta);
-            if (info.LinkTarget is not null)
+            if (!OperatingSystem.IsLinux())
             {
-                error = $"El fichero del token del modo HTTP ({ruta}) es un enlace simbólico: indica la ruta del fichero real.";
+                error = $"{VariableFichero} solo se admite en Linux (allí se comprueban el tipo, el dueño y los permisos del fichero abierto): en este sistema usa {VariableToken}.";
                 return false;
             }
 
-            if (!info.Exists)
+            using SafeFileHandle descriptor = InteropLinux.AbrirSinSeguirEnlace(ruta, out int errorApertura);
+            if (errorApertura != 0)
             {
-                error = $"No existe el fichero del token del modo HTTP ({ruta}, de {VariableFichero}).";
+                error = errorApertura switch
+                {
+                    InteropLinux.ErrorEnlace => $"El fichero del token del modo HTTP ({ruta}) es un enlace simbólico: indica la ruta del fichero real.",
+                    InteropLinux.ErrorNoExiste => $"No existe el fichero del token del modo HTTP ({ruta}, de {VariableFichero}).",
+                    _ => $"No se pudo abrir el fichero del token del modo HTTP ({ruta}): {Marshal.GetPInvokeErrorMessage(errorApertura)}."
+                };
                 return false;
             }
 
+            if (!InteropLinux.TryLeerEstado(descriptor, out InteropLinux.Estado estado, out int errorEstado))
+            {
+                error = $"No se pudo comprobar el fichero del token del modo HTTP ({ruta}): {(errorEstado != 0 ? Marshal.GetPInvokeErrorMessage(errorEstado) : "statx no devolvió el tipo, los permisos y el dueño")}.";
+                return false;
+            }
+
+            int tipo = estado.Modo & InteropLinux.TipoMascara;
+            if (tipo != InteropLinux.TipoFichero)
+            {
+                error = tipo == InteropLinux.TipoDirectorio
+                    ? $"El fichero del token del modo HTTP ({ruta}) es un directorio: indica la ruta del fichero que contiene el token."
+                    : $"El fichero del token del modo HTTP ({ruta}) no es un fichero normal (es {DescribirTipo(tipo)}): indica la ruta de un fichero normal con el token.";
+                return false;
+            }
+
+            if (estado.Dueno != usuario)
+            {
+                error = $"El fichero del token del modo HTTP ({ruta}) es del usuario con uid {estado.Dueno}, no del que ejecuta native_ssh (uid {usuario}): su dueño podría cambiarlo. Usa un fichero tuyo (chmod 600).";
+                return false;
+            }
+
+            if ((estado.Modo & PermisosAjenos) != 0)
+            {
+                error = $"El fichero del token del modo HTTP ({ruta}) tiene permisos {Convert.ToString(estado.Modo & PermisosTodos, 8).PadLeft(4, '0')}: otros usuarios de la máquina podrían leerlo o cambiarlo. Déjalo solo para su dueño (chmod 600 {ruta}).";
+                return false;
+            }
+
+            if (estado.Longitud > MaxBytesFichero)
+            {
+                error = $"El fichero del token del modo HTTP ({ruta}) ocupa {estado.Longitud} bytes: no parece un token (máximo {MaxBytesFichero}).";
+                return false;
+            }
+
+            byte[] bytes = new byte[estado.Longitud];
             try
             {
-                using SafeFileHandle descriptor = File.OpenHandle(ruta);
-                UnixFileMode modo = File.GetUnixFileMode(descriptor);
-                if ((modo & PermisosAjenos) != 0)
-                {
-                    error = $"El fichero del token del modo HTTP ({ruta}) tiene permisos {Convert.ToString((int)modo, 8).PadLeft(4, '0')}: otros usuarios de la máquina podrían leerlo o cambiarlo. Déjalo solo para su dueño (chmod 600 {ruta}).";
-                    return false;
-                }
-
-                long longitud = RandomAccess.GetLength(descriptor);
-                if (longitud > MaxBytesFichero)
-                {
-                    error = $"El fichero del token del modo HTTP ({ruta}) ocupa {longitud} bytes: no parece un token (máximo {MaxBytesFichero}).";
-                    return false;
-                }
-
-                byte[] bytes = new byte[longitud];
-                int leidos = RandomAccess.Read(descriptor, bytes, 0);
+                int leidos = 0;
+                for (int n = 1; leidos < bytes.Length && n > 0; leidos += n)
+                    n = RandomAccess.Read(descriptor, bytes.AsSpan(leidos), leidos);
                 valor = Encoding.UTF8.GetString(bytes, 0, leidos).TrimEnd('\n', '\r');
-                CryptographicOperations.ZeroMemory(bytes);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 error = $"No se pudo leer el fichero del token del modo HTTP ({ruta}): {ex.Message}";
                 return false;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(bytes);
             }
 
             if (valor.Length == 0)
@@ -136,5 +182,14 @@ namespace NativeSsh.Comun
             error = null;
             return true;
         }
+
+        [SupportedOSPlatform("linux")]
+        private static string DescribirTipo(int tipo) => tipo switch
+        {
+            InteropLinux.TipoFifo => "una FIFO",
+            InteropLinux.TipoSocket => "un socket",
+            InteropLinux.TipoEnlace => "un enlace simbólico",
+            _ => "un dispositivo"
+        };
     }
 }
