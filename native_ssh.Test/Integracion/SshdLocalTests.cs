@@ -22,6 +22,40 @@ namespace NativeSsh.Test.Integracion
                 Directory.Delete(ruta, recursive: true);
         }
 
+        // sshd-local.sh hace caso de NATIVE_SSH_DIR_ESTADO, NATIVE_SSH_FORCE_COMMAND y NATIVE_SSH_SSHD_EXTRA: si el fixture
+        // no las fijara, las heredaría del entorno de quien lanza las pruebas (el script dejaría la clave y known_hosts en
+        // otro directorio que el que lee C#, o forzaría otro shell). Vacías, el script usa sus valores por defecto.
+        [Fact]
+        public void EntornoDelScript_SinValoresPropios_FijaElDirectorioDeEstadoDeCSharpYLosValoresPorDefecto()
+        {
+            // Act
+            Dictionary<string, string> entorno = SshdLocal.EntornoScript("/ruta/del/estado", null, null, null);
+
+            // Assert
+            _ = entorno.Should().Equal(new Dictionary<string, string>
+            {
+                ["NATIVE_SSH_DIR_ESTADO"] = "/ruta/del/estado",
+                ["NATIVE_SSH_FORCE_COMMAND"] = string.Empty,
+                ["NATIVE_SSH_SSHD_EXTRA"] = string.Empty
+            });
+        }
+
+        [Fact]
+        public void EntornoDelScript_ConValoresPropios_LosPasaTodos()
+        {
+            // Act
+            Dictionary<string, string> entorno = SshdLocal.EntornoScript("/e", "22500", "/bin/sh", "MaxSessions 2");
+
+            // Assert
+            _ = entorno.Should().Equal(new Dictionary<string, string>
+            {
+                ["NATIVE_SSH_DIR_ESTADO"] = "/e",
+                ["NATIVE_SSH_FORCE_COMMAND"] = "/bin/sh",
+                ["NATIVE_SSH_SSHD_EXTRA"] = "MaxSessions 2",
+                ["NATIVE_SSH_PUERTO_PRUEBAS"] = "22500"
+            });
+        }
+
         [Fact]
         public void PuertoLibre_EsDelRangoManualDelBloqueDeLasPruebasYNoEsEfimero()
         {

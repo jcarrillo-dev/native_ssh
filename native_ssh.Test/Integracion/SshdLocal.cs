@@ -17,7 +17,7 @@ namespace NativeSsh.Test.Integracion
         // un canal ya liberado ("unknown channel", "nonexistent channel").
         public static readonly string[] LineasSenalODesconexion = ["refusing to send signal", "no pid for session", "req signal", "unknown channel", "nonexistent channel"];
 
-        private readonly Dictionary<string, string> _entorno = [];
+        private readonly Dictionary<string, string> _entorno;
 
         public SshdLocal()
             : this(null, null, null)
@@ -30,19 +30,30 @@ namespace NativeSsh.Test.Integracion
         {
             DirectorioPruebas = BuscarDirectorioPruebas();
             DirectorioEstado = Path.Combine(DirectorioPruebas, directorioEstado ?? ".estado");
-            if (puerto is not null)
-                _entorno["NATIVE_SSH_PUERTO_PRUEBAS"] = puerto;
-            if (directorioEstado is not null)
-                _entorno["NATIVE_SSH_DIR_ESTADO"] = DirectorioEstado;
-            if (forceCommand is not null)
-                _entorno["NATIVE_SSH_FORCE_COMMAND"] = forceCommand;
-            if (configuracionExtra is not null)
-                _entorno["NATIVE_SSH_SSHD_EXTRA"] = configuracionExtra;
+            _entorno = EntornoScript(DirectorioEstado, puerto, forceCommand, configuracionExtra);
 
             string salida = Ejecutar("iniciar");
             Puerto = int.Parse(salida.Trim().Split('\n')[^1], CultureInfo.InvariantCulture);
             RutaClave = Path.Combine(DirectorioEstado, "cliente_ed25519");
             RutaKnownHosts = Path.Combine(DirectorioEstado, "known_hosts");
+        }
+
+        // Lo que recibe sshd-local.sh, siempre explícito para no heredar NATIVE_SSH_DIR_ESTADO, NATIVE_SSH_FORCE_COMMAND ni
+        // NATIVE_SSH_SSHD_EXTRA del entorno de quien lanza las pruebas: el directorio de estado es el mismo que lee C# (la
+        // clave, known_hosts, el log) y un ForceCommand o unas líneas extra vacías son los valores por defecto del script,
+        // que trata una variable vacía como no definida. El puerto solo si se pide uno; si no, el de
+        // NATIVE_SSH_PUERTO_PRUEBAS, que sí es del entorno a propósito (el bloque de puertos de cada ejecución).
+        internal static Dictionary<string, string> EntornoScript(string directorioEstado, string? puerto, string? forceCommand, string? configuracionExtra)
+        {
+            Dictionary<string, string> entorno = new()
+            {
+                ["NATIVE_SSH_DIR_ESTADO"] = directorioEstado,
+                ["NATIVE_SSH_FORCE_COMMAND"] = forceCommand ?? string.Empty,
+                ["NATIVE_SSH_SSHD_EXTRA"] = configuracionExtra ?? string.Empty
+            };
+            if (puerto is not null)
+                entorno["NATIVE_SSH_PUERTO_PRUEBAS"] = puerto;
+            return entorno;
         }
 
         public string DirectorioPruebas { get; }
