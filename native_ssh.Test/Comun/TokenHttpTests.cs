@@ -1,5 +1,6 @@
 using System.Runtime.Versioning;
 using System.Globalization;
+using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Test.Utilidades;
@@ -265,6 +266,93 @@ namespace NativeSsh.Test.Comun
             _ = token!.IsValido(cabecera).Should().BeFalse();
             _ = token.IsValido($"Bearer {TokenValido}").Should().BeTrue();
             _ = token.IsValido($"bearer {TokenValido}").Should().BeTrue("el esquema no distingue mayúsculas (RFC 7235)");
+        }
+
+        // Un token con un salto de línea dentro nunca coincidiría con una cabecera HTTP (no puede llevarlo): un fichero con
+        // más de una línea no vacía (o la variable con un salto) se rechaza con un mensaje claro, sin el token.
+        [Theory]
+        [InlineData("fichero", TokenValido + "\n" + "token-dos-0123456789\n")]
+        [InlineData("fichero", TokenValido + "\r\n\r\n" + "token-dos-0123456789")]
+        [InlineData("fichero", "\n" + TokenValido + "\n")]
+        [InlineData("variable", TokenValido + "\nsegunda")]
+        [InlineData("variable", TokenValido + "\rsegunda")]
+        public void TokenDeVariasLineas_SeRechaza(string fuente, string valor)
+        {
+            // Arrange
+            Func<string, string?> entorno = fuente == "fichero"
+                ? Entorno(fichero: Fichero(valor, UnixFileMode.UserRead | UnixFileMode.UserWrite))
+                : Entorno(token: valor);
+
+            // Act
+            bool isCargado = TokenHttp.TryCargar(entorno, out TokenHttp? token, out string? error);
+
+            // Assert
+            _ = isCargado.Should().BeFalse();
+            _ = token.Should().BeNull();
+            _ = error.Should().Contain("más de una línea").And.NotContain(TokenValido);
+        }
+
+        // Un fichero con solo saltos de línea está vacío; uno enorme (disperso: no ocupa disco) se rechaza por su tamaño sin
+        // leerlo.
+        [Fact]
+        public void SoloSaltosDeLineaOFicheroEnorme_SeRechazan()
+        {
+            // Arrange
+            string saltos = Fichero("\n\r\n\n", UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            string enorme = Fichero("", UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using (FileStream f = new(enorme, FileMode.Open, FileAccess.Write))
+                f.SetLength(50_000_000);
+
+            // Act
+            bool isSaltos = TokenHttp.TryCargar(Entorno(fichero: saltos), out _, out string? errorSaltos);
+            bool isEnorme = TokenHttp.TryCargar(Entorno(fichero: enorme), out _, out string? errorEnorme);
+
+            // Assert
+            _ = isSaltos.Should().BeFalse();
+            _ = errorSaltos.Should().Contain("vacío");
+            _ = isEnorme.Should().BeFalse();
+            _ = errorEnorme.Should().Contain("50000000 bytes");
+        }
+
+        // El dueño es stx_uid (desplazamiento 20 de struct statx), no stx_gid (24): un statx simulado con uid y gid distintos.
+        [Fact]
+        public void Statx_DuenoEsElUidNoElGid()
+        {
+            // Arrange
+            byte[] statx = new byte[256];
+            _ = BitConverter.TryWriteBytes(statx.AsSpan(20), 1234u);
+            _ = BitConverter.TryWriteBytes(statx.AsSpan(24), 5678u);
+            _ = BitConverter.TryWriteBytes(statx.AsSpan(28), (ushort)0x8180);
+            _ = BitConverter.TryWriteBytes(statx.AsSpan(40), 99ul);
+
+            // Act
+            InteropLinux.Estado estado = InteropLinux.InterpretarStatx(statx);
+
+            // Assert
+            _ = estado.Should().Be(new InteropLinux.Estado(0x8180, 1234u, 99));
+        }
+
+        // Y con el statx real: un fichero propio cuyo grupo es otro (un grupo suplementario del usuario) se acepta, y se
+        // rechaza si el uid pedido es ese gid. Sin grupos suplementarios no hay cómo crearlo sin root: lo cubre la anterior.
+        [Fact]
+        public void FicheroPropioDeOtroGrupo_ElDuenoEsElUid()
+        {
+            // Arrange
+            uint uid = uint.Parse(BashLocal.Ejecutar("id -u"), CultureInfo.InvariantCulture);
+            string? otroGrupo = BashLocal.Ejecutar("id -G").Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(g => g != uid.ToString(CultureInfo.InvariantCulture));
+            if (otroGrupo is null)
+                return;
+            string ruta = Fichero(TokenValido, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            _ = BashLocal.Ejecutar($"chgrp {otroGrupo} '{ruta}' && stat -c %g '{ruta}'").Should().Be(otroGrupo);
+
+            // Act
+            bool isPropio = TokenHttp.TryCargar(Entorno(fichero: ruta), uid, out _, out string? errorPropio);
+            bool isConElGid = TokenHttp.TryCargar(Entorno(fichero: ruta), uint.Parse(otroGrupo, CultureInfo.InvariantCulture), out _, out string? errorGid);
+
+            // Assert
+            _ = isPropio.Should().BeTrue(errorPropio);
+            _ = isConElGid.Should().BeFalse();
+            _ = errorGid.Should().Contain($"uid {uid}");
         }
     }
 }

@@ -15,8 +15,8 @@ namespace NativeSsh.Comun
     // en el descriptor ya abierto (statx), no en la ruta: lo comprobado es lo que se lee, sin carrera entre comprobar y
     // abrir. Un enlace en un directorio intermedio se acepta a propósito (p. ej. /home -> /var/home): aunque lo controle
     // otro usuario, solo puede llevar a un fichero propio y 0600, cuyo contenido ese usuario no conoce. Del fichero se quitan
-    // los saltos de línea finales; un token que empieza o termina con espacios se rechaza (los extremos de una cabecera HTTP
-    // no se conservan: nunca coincidiría). Los clientes lo envían en cada petición: 'Authorization: Bearer <token>'.
+    // los saltos de línea finales; un token con más de una línea, o que empieza o termina con espacios, se rechaza (una
+    // cabecera HTTP no lleva saltos de línea y no conserva sus extremos: nunca coincidiría). Los clientes lo envían en cada petición: 'Authorization: Bearer <token>'.
     // Se guarda y se compara su SHA-256 en tiempo constante (CryptographicOperations.FixedTimeEquals): ni la duración de la
     // comparación ni la longitud del token presentado dicen cuánto se parece al bueno. Ningún mensaje lleva el token.
     // El modo stdio no lo lee.
@@ -67,6 +67,12 @@ namespace NativeSsh.Comun
                 return false;
 
             string origen = hasFichero ? $"fichero {fichero}" : VariableToken;
+            if (valor.AsSpan().IndexOfAny('\n', '\r') >= 0)
+            {
+                error = $"El token del modo HTTP ({origen}) tiene más de una línea: una cabecera HTTP no puede llevar saltos de línea, así que nunca coincidiría. Deja solo el token, en una línea.";
+                return false;
+            }
+
             if (char.IsWhiteSpace(valor![0]) || char.IsWhiteSpace(valor[^1]))
             {
                 error = $"El token del modo HTTP ({origen}) empieza o termina con espacios: los extremos de una cabecera HTTP no se conservan, así que nunca coincidiría. Quítalos.";

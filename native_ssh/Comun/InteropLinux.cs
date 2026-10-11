@@ -65,12 +65,16 @@ namespace NativeSsh.Comun
                     descriptor.DangerousRelease();
             }
 
-            // struct statx: stx_mask (u32) en 0, stx_uid (u32) en 20, stx_mode (u16) en 28, stx_size (u64) en 40.
+            // struct statx: stx_mask (u32) en 0.
             uint campos = MemoryMarshal.Read<uint>(buffer);
             bool isCompleto = error == 0 && (campos & CamposImprescindibles) == CamposImprescindibles;
-            estado = isCompleto ? new Estado(MemoryMarshal.Read<ushort>(buffer[28..]), MemoryMarshal.Read<uint>(buffer[20..]), (long)MemoryMarshal.Read<ulong>(buffer[40..])) : default;
+            estado = isCompleto ? InterpretarStatx(buffer) : default;
             return isCompleto;
         }
+
+        // struct statx: stx_uid (u32) en 20 (stx_gid, en 24, no cuenta), stx_mode (u16) en 28, stx_size (u64) en 40.
+        internal static Estado InterpretarStatx(ReadOnlySpan<byte> buffer) =>
+            new(MemoryMarshal.Read<ushort>(buffer[28..]), MemoryMarshal.Read<uint>(buffer[20..]), (long)MemoryMarshal.Read<ulong>(buffer[40..]));
 
         public static uint UsuarioEfectivo() => GetEuid();
 
