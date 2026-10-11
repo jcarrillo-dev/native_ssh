@@ -1,8 +1,6 @@
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
-using System.Runtime.InteropServices;
-using Microsoft.Win32.SafeHandles;
 
 namespace NativeSsh.Comun
 {
@@ -25,11 +23,9 @@ namespace NativeSsh.Comun
         public const string VariableToken = "NATIVE_SSH_TOKEN_HTTP";
         public const string VariableFichero = "NATIVE_SSH_TOKEN_HTTP_FICHERO";
         public const int MinCaracteres = 16;
-        private const int MaxBytesFichero = 4096;
         private const string Esquema = "Bearer";
 
-        private const int PermisosAjenos = 0x3F; // 0077: cualquier permiso del grupo o de otros.
-        private const int PermisosTodos = 0xFFF; // 07777
+        private static readonly DescripcionSecreto Descripcion = new("del token del modo HTTP", "el token", "un token", VariableFichero, VariableToken);
 
         private static readonly string ComoConfigurarlo = $"define {VariableToken} con el token (al menos {MinCaracteres} caracteres) o {VariableFichero} con la ruta de un fichero que lo contenga y que solo pueda leer su dueño (chmod 600). Los clientes lo envían en cada petición con la cabecera 'Authorization: {Esquema} <token>'.";
 
@@ -99,97 +95,9 @@ namespace NativeSsh.Comun
             return CryptographicOperations.FixedTimeEquals(presentado, _hash);
         }
 
-        // Ver la cabecera: todo se comprueba en el descriptor abierto sin seguir el enlace final ni bloquearse.
+        // Ver la cabecera y FicheroSecreto: todo se comprueba en el descriptor abierto sin seguir el enlace final ni bloquearse.
         [UnsupportedOSPlatform("windows")]
-        private static bool TryLeerFichero(string ruta, uint usuario, out string? valor, out string? error)
-        {
-            valor = null;
-            if (!OperatingSystem.IsLinux())
-            {
-                error = $"{VariableFichero} solo se admite en Linux (allí se comprueban el tipo, el dueño y los permisos del fichero abierto): en este sistema usa {VariableToken}.";
-                return false;
-            }
-
-            using SafeFileHandle descriptor = InteropLinux.AbrirSinSeguirEnlace(ruta, out int errorApertura);
-            if (errorApertura != 0)
-            {
-                error = errorApertura switch
-                {
-                    InteropLinux.ErrorEnlace => $"El fichero del token del modo HTTP ({ruta}) es un enlace simbólico: indica la ruta del fichero real.",
-                    InteropLinux.ErrorNoExiste => $"No existe el fichero del token del modo HTTP ({ruta}, de {VariableFichero}).",
-                    _ => $"No se pudo abrir el fichero del token del modo HTTP ({ruta}): {Marshal.GetPInvokeErrorMessage(errorApertura)}."
-                };
-                return false;
-            }
-
-            if (!InteropLinux.TryLeerEstado(descriptor, out InteropLinux.Estado estado, out int errorEstado))
-            {
-                error = $"No se pudo comprobar el fichero del token del modo HTTP ({ruta}): {(errorEstado != 0 ? Marshal.GetPInvokeErrorMessage(errorEstado) : "statx no devolvió el tipo, los permisos y el dueño")}.";
-                return false;
-            }
-
-            int tipo = estado.Modo & InteropLinux.TipoMascara;
-            if (tipo != InteropLinux.TipoFichero)
-            {
-                error = tipo == InteropLinux.TipoDirectorio
-                    ? $"El fichero del token del modo HTTP ({ruta}) es un directorio: indica la ruta del fichero que contiene el token."
-                    : $"El fichero del token del modo HTTP ({ruta}) no es un fichero normal (es {DescribirTipo(tipo)}): indica la ruta de un fichero normal con el token.";
-                return false;
-            }
-
-            if (estado.Dueno != usuario)
-            {
-                error = $"El fichero del token del modo HTTP ({ruta}) es del usuario con uid {estado.Dueno}, no del que ejecuta native_ssh (uid {usuario}): su dueño podría cambiarlo. Usa un fichero tuyo (chmod 600).";
-                return false;
-            }
-
-            if ((estado.Modo & PermisosAjenos) != 0)
-            {
-                error = $"El fichero del token del modo HTTP ({ruta}) tiene permisos {Convert.ToString(estado.Modo & PermisosTodos, 8).PadLeft(4, '0')}: otros usuarios de la máquina podrían leerlo o cambiarlo. Déjalo solo para su dueño (chmod 600 {ruta}).";
-                return false;
-            }
-
-            if (estado.Longitud > MaxBytesFichero)
-            {
-                error = $"El fichero del token del modo HTTP ({ruta}) ocupa {estado.Longitud} bytes: no parece un token (máximo {MaxBytesFichero}).";
-                return false;
-            }
-
-            byte[] bytes = new byte[estado.Longitud];
-            try
-            {
-                int leidos = 0;
-                for (int n = 1; leidos < bytes.Length && n > 0; leidos += n)
-                    n = RandomAccess.Read(descriptor, bytes.AsSpan(leidos), leidos);
-                valor = Encoding.UTF8.GetString(bytes, 0, leidos).TrimEnd('\n', '\r');
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                error = $"No se pudo leer el fichero del token del modo HTTP ({ruta}): {ex.Message}";
-                return false;
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(bytes);
-            }
-
-            if (valor.Length == 0)
-            {
-                error = $"El fichero del token del modo HTTP ({ruta}) está vacío.";
-                return false;
-            }
-
-            error = null;
-            return true;
-        }
-
-        [SupportedOSPlatform("linux")]
-        private static string DescribirTipo(int tipo) => tipo switch
-        {
-            InteropLinux.TipoFifo => "una FIFO",
-            InteropLinux.TipoSocket => "un socket",
-            InteropLinux.TipoEnlace => "un enlace simbólico",
-            _ => "un dispositivo"
-        };
+        private static bool TryLeerFichero(string ruta, uint usuario, out string? valor, out string? error) =>
+            FicheroSecreto.TryLeer(ruta, usuario, Descripcion, out valor, out error);
     }
 }
