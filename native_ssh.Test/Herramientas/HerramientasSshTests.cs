@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using System.Globalization;
 using System.Linq;
@@ -12,7 +13,8 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Herramientas
 {
-    public sealed class HerramientasSshTests : IAsyncDisposable
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    public sealed class HerramientasSshTests : IAsyncLifetime
     {
         private readonly FabricaFalsa _fabrica = new(Guion);
         private readonly GestorSesiones _gestor;
@@ -254,7 +256,10 @@ namespace NativeSsh.Test.Herramientas
             return new("linea 1\nlinea 2\nlinea 3\n", 0);
         }
 
-        public ValueTask DisposeAsync() => _gestor.DisposeAsync();
+        // IAsyncLifetime (no IAsyncDisposable): es lo que xUnit v2 invoca al terminar cada prueba.
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public Task DisposeAsync() => _gestor.DisposeAsync().AsTask();
 
         [Fact]
         public async Task Exec_EsperaYDevuelveResultado()
