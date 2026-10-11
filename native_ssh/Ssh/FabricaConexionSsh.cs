@@ -27,8 +27,8 @@ namespace NativeSsh.Ssh
 
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
-            bool isDeConfiguracion = false;
-            IReadOnlyList<string> rutas = opciones.RutasIdentidad;
+            bool isDeConfiguracion = destino.Identidades is not null;
+            IReadOnlyList<string> rutas = destino.Identidades ?? opciones.RutasIdentidad;
             List<string> motivos = [];
             List<AuthenticationMethod> metodos = CrearMetodos(destino.Usuario, rutas, motivos);
             string origen = isDeConfiguracion ? "IdentityFile de la configuración de ssh" : "NATIVE_SSH_IDENTIDADES";

@@ -274,7 +274,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_exec", Destructive = true, OpenWorld = true)]
         [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd.")]
         public async Task<ResultadoComando> EjecutarAsync(
-            [Description("usuario@servidor[:puerto]. Sin usuario se usa el usuario local.")] string destino,
+            [Description("usuario@servidor[:puerto]; el servidor puede ser un alias de ~/.ssh/config. Sin usuario se usa el User de ~/.ssh/config o, si no lo hay, el usuario local.")] string destino,
             [Description("Comando bash. Admite varias líneas, heredocs y comillas.")] string comando,
             [Description("Tiempo máximo de ejecución; al agotarse se envía Ctrl+C. Entre 1 y 3600.")] int timeoutSegundos = 300,
             [Description("Cuánto esperar el resultado antes de responder. Entre 0 y 120.")] int esperarSegundos = 20,

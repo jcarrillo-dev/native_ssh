@@ -49,4 +49,11 @@ namespace NativeSsh.Sesion
     {
         Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken);
     }
+
+    // Resolución de un destino con la configuración de ssh (alias, HostName, User, Port, IdentityFile). Lo explícito del
+    // destino (usuario@, :puerto) manda sobre la configuración. Lanza NativeSshException si no se puede resolver.
+    public interface IResolutorDestino
+    {
+        DestinoSsh Resolver(DestinoSsh destino, bool isUsuarioExplicito, bool isPuertoExplicito);
+    }
 }

@@ -10,7 +10,8 @@ namespace NativeSsh.Sesion
         RegistroPeticiones registro,
         OpcionesNativeSsh opciones,
         TimeProvider reloj,
-        ILoggerFactory loggerFactory) : IAsyncDisposable
+        ILoggerFactory loggerFactory,
+        IResolutorDestino? resolutor = null) : IAsyncDisposable
     {
         public static readonly TimeSpan TimeoutMinimo = TimeSpan.FromSeconds(1);
         public static readonly TimeSpan TimeoutMaximo = TimeSpan.FromHours(1);
@@ -98,9 +99,12 @@ namespace NativeSsh.Sesion
             return sesion is not null;
         }
 
-        public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)
+        // Con resolutor (la configuración de ssh: alias, HostName, User, Port, IdentityFile), el destino que se devuelve, y
+        // con él la clave de la sesión, es el resuelto: un alias y su usuario@HostName:Port comparten sesión.
+        public DestinoSsh ParsearDestino(string destinoTexto) =>
+            !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino, out bool isUsuarioExplicito, out bool isPuertoExplicito)
                 ? throw new NativeSshException($"Destino '{destinoTexto}' no válido. Formato: usuario@servidor[:puerto], o [ipv6]:puerto.")
-                : destino;
+                : resolutor?.Resolver(destino, isUsuarioExplicito, isPuertoExplicito) ?? destino;
 
         public async ValueTask DisposeAsync()
         {

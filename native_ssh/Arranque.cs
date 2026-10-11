@@ -34,6 +34,7 @@ namespace NativeSsh
             _ = servicios.AddSingleton<RegistroPeticiones>();
             _ = servicios.AddSingleton<FabricaConexionSsh>();
             _ = servicios.AddSingleton<IFabricaConexion>(sp => sp.GetRequiredService<FabricaConexionSsh>());
+            _ = servicios.AddSingleton<IResolutorDestino, ResolutorConfiguracionSsh>();
             _ = servicios.AddSingleton<GestorSesiones>();
 
             return servicios
