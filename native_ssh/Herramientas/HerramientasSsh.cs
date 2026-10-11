@@ -961,7 +961,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -969,6 +969,7 @@ namespace NativeSsh.Herramientas
             [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' o 'directory' (directorios) o 'all' (ambos), sin distinguir mayúsculas. Por defecto (o vacío), 'file'. Otro valor, también con blancos alrededor, da error.")] string tipo = "file",
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
+            [Description("true (por defecto): entra también en los demás sistemas de ficheros montados por debajo de la ruta (nunca en los virtuales del kernel). false: no sale del sistema de ficheros de la ruta, como 'find -xdev'; úsalo para ir montaje por montaje con la línea '[montajes_no_explorados: …]'.")] bool cruzarMontajes = true,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(patron))
@@ -979,8 +980,6 @@ namespace NativeSsh.Herramientas
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
-            string rutaEscapada = Escapar(rutaEfectiva);
-            string patronEscapado = Escapar(patron);
             // Sin tipo, 'file'; sin distinguir mayúsculas y con 'directory' como sinónimo de 'dir' (lo dice la descripción); un
             // tipo desconocido es un error, no una búsqueda de archivos.
             string filtroTipo = (string.IsNullOrEmpty(tipo) ? "file" : tipo.ToLowerInvariant()) switch
@@ -991,7 +990,108 @@ namespace NativeSsh.Herramientas
                 _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
-            string comando = PlantillaBash.Crear($$"""
+            string idMarca = Guid.NewGuid().ToString("N");
+            string comando = ConstruirComandoBusquedaNombre(patron, rutaEfectiva, filtroTipo, profundidad, limite, cruzarMontajes, idMarca);
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
+            return lectura.Codigo != 0
+                ? throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"))
+                : InterpretarBusquedaNombre(lectura.Salida, idMarca, patron, rutaEfectiva, profundidad, limite, cruzarMontajes);
+        }
+
+        // Tipos de los sistemas de ficheros virtuales del kernel que ssh_find nunca recorre por debajo de la ruta (C13): con
+        // 'find -L', /proc/<pid>/cwd y /proc/<pid>/task/<tid>/cwd llevan al directorio de trabajo de cada proceso y el árbol
+        // se recorría una vez por proceso (find solo salta los enlaces a un antecesor). autofs, además, montaría lo que vigila.
+        private const string TiposVirtuales = "proc sysfs devtmpfs devpts cgroup cgroup2 debugfs tracefs securityfs pstore bpf mqueue hugetlbfs configfs fusectl binfmt_misc autofs efivarfs selinuxfs nsfs rpc_pipefs";
+
+        private const string PrefijoMarcaMontaje = "__NS_MONTAJE_";
+        private const string PrefijoMarcaSinTabla = "__NS_SIN_TABLA_";
+        private const int MaxMontajesNoExplorados = 20;
+
+        // explorar_montajes CRUZAR PROFUNDIDAD: con el directorio actual en la raíz de la búsqueda (ya resuelta en 'raiz', sin
+        // enlaces), lee /proc/self/mountinfo y, para cada punto de montaje estrictamente por debajo de 'raiz' y a menos de
+        // PROFUNDIDAD niveles (más abajo find no entra de todos modos), deja en 'poda' los argumentos de find que podan los
+        // virtuales (por su ruta relativa, con los comodines de -path escapados) y en 'no_explorados' los que no se
+        // recorrerán: los virtuales y, con CRUZAR=0, los demás directorios montados cuyo dispositivo (stat, como compara
+        // 'find -xdev') no es el de la raíz (un bind del mismo sistema de ficheros sí se recorre). Un montaje que contiene a
+        // la raíz no está por debajo: ruta='/proc' no se poda. En mountinfo el punto de montaje va con el espacio, el
+        // tabulador, el salto de línea y la barra invertida en octal (\040, \011, \012, \134): se decodifica con printf %b
+        // tras convertir cada '\' en '\0'. El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
+        // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null); el stat
+        // del dispositivo solo se hace con CRUZAR=0 y para los no virtuales (un NFS caído podría bloquearlo). /dev/fd, si es
+        // un enlace (a /proc/self/fd), se poda siempre por su ruta: no es un montaje y no sale en la línea.
+        // Sin /proc/self/mountinfo (busybox sin /proc, chroot): se podan /proc, /sys y /dev por su ruta y 'sin_tabla' lo
+        // anota (con CRUZAR=0 no se puede saber qué otros montajes quedan fuera).
+        private static readonly string DefinicionMontajes = $$"""
+            montaje() {
+              local punto=$1 tipo=$2 rel nivel dispositivo
+              case $raiz in
+                /) [ "$punto" = / ] && return 0; rel=.$punto ;;
+                *) case $punto in
+                     "$raiz"/*) rel=.${punto#"$raiz"} ;;
+                     *) return 0 ;;
+                   esac ;;
+              esac
+              nivel=${rel//[!\/]/}
+              [ "${#nivel}" -lt "$profundidad_montajes" ] || return 0
+              [ -d "$punto" ] || return 0
+              case " {{TiposVirtuales}} " in
+                *" $tipo "*)
+                  podar "$rel"
+                  no_explorados+=("$punto")
+                  return 0 ;;
+              esac
+              [ "$cruzar_montajes" = 1 ] && return 0
+              dispositivo=$(stat -L -c %d -- "$punto" 2>/dev/null)
+              [ -n "$dispositivo" ] && [ "$dispositivo" = "$dispositivo_raiz" ] && return 0
+              no_explorados+=("$punto")
+            }
+            podar() {
+              local glob
+              glob=${1//\\/\\\\}; glob=${glob//\*/\\*}; glob=${glob//\?/\\?}; glob=${glob//\[/\\[}
+              poda+=(-o -path "$glob")
+            }
+            explorar_montajes() {
+              local punto resto tipo
+              cruzar_montajes=$1 profundidad_montajes=$2
+              poda=() no_explorados=() sin_tabla=
+              dispositivo_raiz=$(stat -L -c %d . 2>/dev/null)
+              if [ -r /proc/self/mountinfo ]; then
+                while IFS=' ' read -r _ _ _ _ punto resto; do
+                  tipo=${resto#* - }
+                  tipo=${tipo%% *}
+                  punto=${punto//\\/\\0}
+                  printf -v punto '%b' "$punto"
+                  montaje "$punto" "$tipo"
+                done < /proc/self/mountinfo
+              else
+                sin_tabla=1
+                for punto in /proc /sys /dev; do
+                  [ -d "$punto" ] && montaje "$punto" proc
+                done
+              fi
+              # /dev/fd lleva a /proc/self/fd, donde el descriptor de un directorio abierto por find vuelve a un directorio
+              # ya recorrido (el find de busybox no detecta ese bucle): con /dev sin podar (un tmpfs, como en los
+              # contenedores), se poda el enlace.
+              case $raiz in
+                /) [ -L /dev/fd ] && podar ./dev/fd ;;
+                /dev) [ -L /dev/fd ] && podar ./fd ;;
+              esac
+              [ "${#poda[@]}" = 0 ] || poda[0]='('
+              [ "${#poda[@]}" = 0 ] || poda+=(')')
+            }
+            """.ReplaceLineEndings("\n");
+
+        // Script de ssh_find. Tras resolver la raíz (pwd -P) y los montajes (explorar_montajes), find recorre '.' con la poda
+        // de los virtuales delante ('\( -path ./proc -o … \)', «imprimir pero podar» como los directorios pesados) y, con
+        // cruzarMontajes=false, -xdev. Los montajes no recorridos salen detrás de los nombres, cada uno como un nombre más
+        // con la marca '__NS_MONTAJE_<id>__' (id aleatorio por petición: ningún archivo la puede imitar), y '__NS_SIN_TABLA_<id>__'
+        // si no se pudo leer la tabla de montajes.
+        internal static string ConstruirComandoBusquedaNombre(string patron, string rutaEfectiva, string filtroTipo, int profundidad, int limite, bool isCruzarMontajes, string idMarca)
+        {
+            string rutaEscapada = Escapar(rutaEfectiva);
+            string patronEscapado = Escapar(patron);
+            string xdev = isCruzarMontajes ? string.Empty : "-xdev ";
+            return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
@@ -1003,26 +1103,87 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso para recorrer la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                cd -- {{rutaEscapada}} && \
-                find -L . -maxdepth {{profundidad}} -mindepth 1 \
+                cd -- {{rutaEscapada}} || exit 1
+                {{SustitucionLiteral("raiz", "pwd -P")}}
+                {{DefinicionMontajes}}
+                explorar_montajes {{(isCruzarMontajes ? 1 : 0)}} {{profundidad}}
+                [ "${#poda[@]}" = 0 ] || poda+=(\( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) -o)
+                find -L . {{xdev}}-maxdepth {{profundidad}} -mindepth 1 "${poda[@]}" \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
                   \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
                   -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
+                for punto in "${no_explorados[@]}"; do
+                  printf '{{PrefijoMarcaMontaje}}{{idMarca}}__%s\0' "$punto"
+                done
+                [ -z "$sin_tabla" ] || printf '{{PrefijoMarcaSinTabla}}{{idMarca}}__\0'
                 )
                 """);
+        }
 
-            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
-            if (lectura.Codigo != 0)
-                throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
+        // Respuesta de ssh_find: los nombres encontrados (con su límite) y, al final, la línea de los montajes no recorridos.
+        internal static string InterpretarBusquedaNombre(string salida, string idMarca, string patron, string rutaEfectiva, int profundidad, int limite, bool isCruzarMontajes)
+        {
+            string marcaMontaje = $"{PrefijoMarcaMontaje}{idMarca}__";
+            string marcaSinTabla = $"{PrefijoMarcaSinTabla}{idMarca}__";
+            List<string> nombres = [];
+            List<string> montajes = [];
+            bool isSinTabla = false;
+            foreach (string nombre in SepararNombres(salida))
+                if (nombre.StartsWith(marcaMontaje, StringComparison.Ordinal))
+                    montajes.Add(nombre[marcaMontaje.Length..]);
+                else if (nombre == marcaSinTabla)
+                    isSinTabla = true;
+                else
+                    nombres.Add(nombre);
 
-            string[] nombres = SepararNombres(lectura.Salida);
-            if (nombres.Length == 0)
-                return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
+            string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes);
+            string pie = lineaMontajes.Length == 0 ? string.Empty : "\n\n" + lineaMontajes;
+            string listado = UnirNombres([.. nombres], limite);
+            return nombres.Count == 0
+                ? $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.{pie}"
+                : nombres.Count > limite
+                    ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]{pie}"
+                    : listado + pie;
+        }
 
-            string listado = UnirNombres(nombres, limite);
-            return nombres.Length > limite
-                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]"
-                : listado;
+        // '[montajes_no_explorados: …]' con los montajes ordenados, sin repetidos (un punto puede estar montado varias veces) ni
+        // los que están dentro de otro de la lista (no se recorren igualmente), con tope. Vacía si no hay ninguno y la tabla de
+        // montajes se pudo leer. Cada ruta va como un nombre de los listados (EscaparNombre).
+        internal static string LineaMontajesNoExplorados(List<string> montajes, bool isSinTablaSinCruzar)
+        {
+            montajes.Sort(StringComparer.Ordinal);
+            List<string> superiores = [];
+            foreach (string montaje in montajes)
+            {
+                bool isDentroDeOtro = false;
+                foreach (string superior in superiores)
+                    if (montaje == superior || superior == "/" || montaje.StartsWith(superior + "/", StringComparison.Ordinal))
+                    {
+                        isDentroDeOtro = true;
+                        break;
+                    }
+
+                if (!isDentroDeOtro)
+                    superiores.Add(montaje);
+            }
+
+            if (superiores.Count == 0 && !isSinTablaSinCruzar)
+                return string.Empty;
+
+            StringBuilder linea = new("[montajes_no_explorados: ");
+            int mostrados = Math.Min(superiores.Count, MaxMontajesNoExplorados);
+            for (int i = 0; i < mostrados; i++)
+            {
+                if (i > 0)
+                    _ = linea.Append(", ");
+                EscaparNombre(linea, superiores[i]);
+            }
+
+            if (superiores.Count > mostrados)
+                _ = linea.Append(CultureInfo.InvariantCulture, $" (+{superiores.Count - mostrados} más)");
+            if (isSinTablaSinCruzar)
+                _ = linea.Append(superiores.Count == 0 ? string.Empty : "; ").Append("no se pudo leer /proc/self/mountinfo: puede haber otros sistemas de ficheros montados por debajo de la ruta que no se recorrieron");
+            return linea.Append(']').ToString();
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
