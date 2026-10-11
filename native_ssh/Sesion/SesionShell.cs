@@ -68,6 +68,8 @@ namespace NativeSsh.Sesion
         // Base64 del PATH del login: muy por encima de cualquier PATH real.
         private const int MaxBytesCapturaPath = 16 * 1024;
 
+        // Sin respuesta a la inicialización en este tiempo, se reenvía una vez (un login lento pudo consumir la línea);
+        // cuenta dentro de TimeoutInicializacionShell, como la sincronización que sigue al reenvío (ver AbrirShellAsync).
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
         // Lo que DisposeAsync espera al bucle antes de liberar la conexión para sacarlo de una escritura que el servidor no
@@ -1152,6 +1154,10 @@ namespace NativeSsh.Sesion
 
             IniciarBomba(canal);
 
+            // Un solo plazo, TimeoutInicializacionShell, para toda la inicialización desde que el canal está abierto: la
+            // espera de la respuesta, el reenvío a los ReenvioInicializacion, la sincronización que le sigue y la captura de
+            // identidad y PATH. La sincronización no tiene plazo propio: dispone de lo que quede de este (con un login que
+            // tarde casi todo el plazo, muy poco), y si se agota, la inicialización falla con el error de abajo.
             using CancellationTokenSource limite = CancellationTokenSource.CreateLinkedTokenSource(token);
             limite.CancelAfter(_opciones.TimeoutInicializacionShell);
             int codigo;
