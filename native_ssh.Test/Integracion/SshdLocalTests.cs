@@ -56,6 +56,22 @@ namespace NativeSsh.Test.Integracion
             });
         }
 
+        // Sin su variable, los sshd de las colecciones con login lento y restringido siguen al bloque de la ejecución
+        // (antes, 25022 y 26022 fijos: dos ejecuciones en paralelo con NATIVE_SSH_PUERTO_PRUEBAS distintos chocaban).
+        [Theory]
+        [InlineData(null, 22042, PuertosPruebas.DesplazamientoLento, "22242")]
+        [InlineData("", 22042, PuertosPruebas.DesplazamientoLento, "22242")]
+        [InlineData(null, 21042, PuertosPruebas.DesplazamientoRestringido, "21342")]
+        [InlineData("25022", 22042, PuertosPruebas.DesplazamientoLento, "25022")]
+        public void PuertoColeccion_SinSuVariable_SeDerivaDelPuertoDePruebas(string? variable, int puertoPruebas, int desplazamiento, string esperado)
+        {
+            // Act
+            string puerto = PuertosPruebas.PuertoColeccion(variable, puertoPruebas, desplazamiento);
+
+            // Assert
+            _ = puerto.Should().Be(esperado);
+        }
+
         [Fact]
         public void PuertoLibre_EsDelRangoManualDelBloqueDeLasPruebasYNoEsEfimero()
         {

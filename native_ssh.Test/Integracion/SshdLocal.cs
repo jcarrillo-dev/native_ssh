@@ -146,7 +146,7 @@ namespace NativeSsh.Test.Integracion
         public const string ForceCommand = "/bin/bash -c 'sleep 3; exec /bin/bash -l'";
 
         public SshdLocal Sshd { get; } = new(
-            Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_LENTO") ?? "25022",
+            PuertosPruebas.PuertoColeccion("NATIVE_SSH_PUERTO_PRUEBAS_LENTO", PuertosPruebas.DesplazamientoLento),
             ".estado-lento",
             ForceCommand);
 
@@ -161,7 +161,7 @@ namespace NativeSsh.Test.Integracion
         public const string LineaRgFalso = "rg_del_login:1:PATH del shell de login";
 
         public SshdLocalRestringido()
-            : this(Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO") ?? "26022", ".estado-restringido", Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"))
+            : this(PuertosPruebas.PuertoColeccion("NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO", PuertosPruebas.DesplazamientoRestringido), ".estado-restringido", Path.Combine(Path.GetTempPath(), $"ns_login_{Guid.NewGuid():N}"))
         {
         }
 
