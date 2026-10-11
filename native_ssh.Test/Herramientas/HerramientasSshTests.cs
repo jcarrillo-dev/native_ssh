@@ -462,6 +462,8 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData(false, "Inactivo", "todavía se está abriendo (conexión, inicio de sesión o inicialización del shell) y el comando aún no se le ha enviado.")]
         [InlineData(false, "ActivoConElComando", "tiene el canal abierto, pero aún se está inicializando")]
+        [InlineData(false, "InicializadoConElComando", "el shell de ana@servidor:22 ya está abierto e inicializado, pero el comando acaba de empezar y todavía no se le ha enviado")]
+        [InlineData(true, "InicializadoConElComando", "el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect o ya no es el comando que ocupa el shell)")]
         [InlineData(true, "Inactivo", "se acaba de cerrar o se perdió la conexión después de enviarle el comando: el comando terminará como shell perdido")]
         [InlineData(true, "ActivoConElComando", "el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect o ya no es el comando que ocupa el shell)")]
         [InlineData(true, "Indeterminado", "el shell no la admitió en este momento (se está interrumpiendo por su timeout, la sesión se está cerrando con ssh_disconnect o ya no es el comando que ocupa el shell)")]

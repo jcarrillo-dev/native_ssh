@@ -236,6 +236,17 @@ namespace NativeSsh.Sesion
             }
         }
 
+        // El shell activo (IsShellActivo) ya terminó de inicializarse: un comando en ejecución que aún no se le ha enviado
+        // está a punto de enviarse, no esperando a la inicialización (HerramientasSsh.MensajeEntradaNoEnviada).
+        public bool IsShellInicializado
+        {
+            get
+            {
+                lock (_candadoProceso)
+                    return _canal is { IsInicializado: true } && _conexionDelCanal is { IsConectada: true };
+            }
+        }
+
         // Cierre en curso o terminado. DisposeAsync lo marca antes de cancelar _cierre: es el único criterio para decidir
         // si un fallo se debe al cierre (un comando en curso termina como Cancelado, nunca como Error).
         private bool IsCerrando => Volatile.Read(ref _isDispuesto) != 0;
@@ -1745,6 +1756,9 @@ namespace NativeSsh.Sesion
                 datos.CopyTo(cola.AsSpan(_longitudCola));
                 _longitudCola += datos.Length;
             }
+
+            // Terminó la inicialización (TerminarInicializacion). Con _candadoProceso tomado.
+            public bool IsInicializado => _colaInicializacion is null;
 
             // Devuelve la cola como texto y deja de anotar. Con _candadoProceso tomado.
             public string TerminarInicializacion()
