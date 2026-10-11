@@ -151,7 +151,7 @@ El servidor busca credenciales en el siguiente orden de precedencia:
 | `NATIVE_SSH_PUERTO_HTTP` | Entero | `8722` | Puerto TCP de escucha para los modos HTTP. |
 | `NATIVE_SSH_NIVEL_LOG` | Nivel log | `Information` | Nivel mínimo de trazas (`Trace`, `Debug`, `Information`, `Warning`, `Error`, `Critical`, `None`). Todos los logs se emiten invariablemente por `stderr`. Las categorías del SDK de MCP (`ModelContextProtocol.*`) nunca bajan de `Debug`: en `Trace` escribirían cada mensaje JSON-RPC completo (argumentos como el texto de `ssh_input` y respuestas con salidas y archivos). |
 | `NATIVE_SSH_TOKEN_HTTP` | Cadena | *(Vacío)* | Token de los modos HTTP (al menos 16 caracteres). Obligatorio en `--http` y `--http-unsecure` (o el fichero de la variable siguiente, nunca las dos); no se usa con stdio. |
-| `NATIVE_SSH_TOKEN_HTTP_FICHERO` | Ruta | *(Vacío)* | Fichero con el token (sin enlaces simbólicos y solo legible por su dueño: `chmod 600`; con permisos para el grupo u otros no arranca). Se quitan los saltos de línea finales. |
+| `NATIVE_SSH_TOKEN_HTTP_FICHERO` | Ruta | *(Vacío)* | Solo Linux. Fichero con el token: un fichero normal (no un enlace simbólico, una FIFO ni un directorio) del usuario que ejecuta native_ssh y solo legible por él (`chmod 600`); si no, no arranca. Se comprueba en el fichero ya abierto, sin seguir el enlace final. Se quitan los saltos de línea finales; un token que empieza o termina con espacios se rechaza. |
 
 ---
 
@@ -169,7 +169,7 @@ NativeSsh [--http | --http-unsecure] [--puerto N]
 | `--http` | `127.0.0.1` y `[::1]` (`ListenLocalhost`) | Token obligatorio (`Authorization: Bearer <token>`) | `Information: URL http://localhost:8722/mcp` |
 | `--http-unsecure` | Todas las interfaces (`ListenAnyIP`) | Token obligatorio, **sin cifrar** | `Warning: «… SIN cifrar …»` |
 
-Los dos modos HTTP exigen un token (`NATIVE_SSH_TOKEN_HTTP` o `NATIVE_SSH_TOKEN_HTTP_FICHERO`); sin él, o con un fichero legible por otros usuarios, el servidor no arranca (código 2 y el motivo en `stderr`). Cada petición sin `Authorization: Bearer <token>` exacto recibe `401` con un mensaje claro; el token se compara en tiempo constante y nunca se escribe en los logs.
+Los dos modos HTTP exigen un token (`NATIVE_SSH_TOKEN_HTTP` o `NATIVE_SSH_TOKEN_HTTP_FICHERO`); sin él, o con un fichero que no cumple lo anterior, el servidor no arranca (código 2 y el motivo en `stderr`). Cada petición sin `Authorization: Bearer <token>` exacto recibe `401` con un mensaje claro; el token se compara en tiempo constante y nunca se escribe en los logs. Los rechazos se anotan en el log como mucho 10 veces por minuto (después, un recuento de los omitidos).
 
 > [!WARNING]
 > El modo `--http-unsecure` expone en la red, por HTTP sin cifrar, un servicio con capacidad para ejecutar comandos arbitrarios en los servidores remotos configurados: el token y todo lo enviado (comandos, archivos, contraseñas de `ssh_input`) viajan en claro. Este modo debe reservarse exclusivamente para redes privadas de total confianza o detrás de un proxy inverso con TLS.
