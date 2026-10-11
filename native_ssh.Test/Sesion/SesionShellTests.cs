@@ -539,6 +539,29 @@ namespace NativeSsh.Test.Sesion
             _ = otro.CodigoSalida.Should().Be(127, "otro programa que falta no es falta de bash");
         }
 
+        // IsShellInicializado (la causa del rechazo de una entrada, HerramientasSsh.MensajeEntradaNoEnviada): falso sin shell y
+        // con un shell que no terminó de inicializarse; verdadero en cuanto la inicialización termina.
+        [Fact]
+        public async Task IsShellInicializado_SoloTrasTerminarLaInicializacion()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            FabricaFalsa sinIdentidad = new(Guion) { IsSinIdentidad = true };
+            await using SesionShell sesion = Crear(fabrica);
+            await using SesionShell fallida = Crear(sinIdentidad);
+            bool isAntes = sesion.IsShellInicializado;
+
+            // Act
+            Peticion hola = await EjecutarAsync(sesion, "hola");
+            _ = await EjecutarAsync(fallida, "hola");
+
+            // Assert
+            _ = isAntes.Should().BeFalse();
+            _ = hola.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = sesion.IsShellInicializado.Should().BeTrue();
+            _ = fallida.IsShellInicializado.Should().BeFalse();
+        }
+
         [Fact]
         public async Task InicializacionSinIdentidadDelShell_FallaConMensajePropioYCierraElCanal()
         {
