@@ -40,6 +40,9 @@ namespace NativeSsh.Comun
         [LoggerMessage(EventId = 13, Level = LogLevel.Warning, Message = "Petición HTTP rechazada desde {Origen}: {Motivo}.")]
         public static partial void PeticionHttpRechazada(this ILogger logger, string origen, string motivo);
 
+        [LoggerMessage(EventId = 14, Level = LogLevel.Warning, Message = "Se omitieron {Omitidas} avisos de peticiones HTTP rechazadas (como mucho {Maximo} por minuto).")]
+        public static partial void PeticionesHttpRechazadasOmitidas(this ILogger logger, int omitidas, int maximo);
+
         [LoggerMessage(EventId = 12, Level = LogLevel.Debug, Message = "Error liberando una conexión caída con {Destino}.")]
         public static partial void ErrorLiberandoConexion(this ILogger logger, Exception ex, string destino);
 

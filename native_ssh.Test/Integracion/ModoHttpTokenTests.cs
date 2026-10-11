@@ -181,6 +181,33 @@ namespace NativeSsh.Test.Integracion
             _ = errores.Should().NotContain(Token).And.NotContain(TokenIncorrecto);
         }
 
+        // Una ráfaga de peticiones rechazadas no llena el log: como mucho 10 avisos por minuto (CB2d; antes, uno por petición).
+        [Fact]
+        public async Task RafagaDePeticionesRechazadas_ElLogTieneTope()
+        {
+            // Arrange
+            int puerto = PuertosPruebas.Libre();
+            Process proceso = Arrancar(puerto, new() { [TokenHttp.VariableToken] = Token });
+            await EsperarEscuchaAsync(puerto);
+
+            // Act
+            for (int i = 0; i < 25; i++)
+            {
+                using HttpResponseMessage respuesta = await _http.SendAsync(Inicializar(puerto, i % 2 == 0 ? null : $"Bearer {TokenIncorrecto}"));
+                _ = respuesta.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+            }
+
+            proceso.Kill(entireProcessTree: true);
+            await proceso.WaitForExitAsync();
+            string errores = await _errores!;
+            int avisos = errores.Split("Petición HTTP rechazada").Length - 1;
+            salida.WriteLine($"avisos de rechazo en stderr: {avisos}");
+
+            // Assert
+            _ = avisos.Should().Be(10);
+            _ = errores.Should().NotContain(TokenIncorrecto);
+        }
+
         // Con --http, solo loopback: el puerto no responde en otra dirección de la máquina.
         [Fact]
         public async Task ConHttp_SoloEscuchaEnLoopback()

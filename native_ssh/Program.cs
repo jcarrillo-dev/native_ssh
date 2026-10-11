@@ -62,14 +62,22 @@ if (arranque.Modo == ModoTransporteEnum.HttpLoopback)
 }
 
 // Todas las peticiones (POST, GET del flujo SSE, DELETE de la sesión) llevan el token. El rechazo no dice nada del token
-// presentado, ni en la respuesta ni en el log (solo si faltaba la cabecera o no coincidía, y desde dónde).
+// presentado, ni en la respuesta ni en el log (solo si faltaba la cabecera o no coincidía, y desde dónde). El log de rechazos
+// tiene tope (LimitadorAvisos): una ráfaga de peticiones no lo llena.
+LimitadorAvisos avisosRechazo = new(10, TimeSpan.FromMinutes(1), TimeProvider.System);
 _ = app.Use(async (context, next) =>
 {
     string? cabecera = context.Request.Headers.Authorization;
     if (!tokenHttp.IsValido(cabecera))
     {
         bool isSinCabecera = string.IsNullOrEmpty(cabecera);
-        app.Logger.PeticionHttpRechazada(context.Connection.RemoteIpAddress?.ToString() ?? "desconocido", isSinCabecera ? "sin cabecera Authorization" : "token incorrecto");
+        if (avisosRechazo.TryRegistrar(out int omitidos))
+        {
+            if (omitidos > 0)
+                app.Logger.PeticionesHttpRechazadasOmitidas(omitidos, avisosRechazo.Maximo);
+            app.Logger.PeticionHttpRechazada(context.Connection.RemoteIpAddress?.ToString() ?? "desconocido", isSinCabecera ? "sin cabecera Authorization" : "token incorrecto");
+        }
+
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         context.Response.Headers.WWWAuthenticate = "Bearer realm=\"native_ssh\"";
         await context.Response.WriteAsync(isSinCabecera
