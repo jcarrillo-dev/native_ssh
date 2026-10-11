@@ -15,14 +15,22 @@ namespace NativeSsh.Buffers
     // lo cuentan hasta que la escritura siguiente lo aclara. Al cerrar la salida (la petición terminó, Cerrar) lo retenido
     // ya no se completará y se enmascara (lado seguro: si el final de la salida coincide por casualidad con el principio de
     // un secreto, sale con '*'). La búsqueda y lo retenido se deciden sobre los bytes originales, no sobre los ya
-    // enmascarados: se guardan aparte los últimos (máximo - 1) bytes tal como llegaron (_colaOriginal), para que una
-    // aparición solapada con otra ya tapada y repartida entre dos escrituras se encuentre entera. El resultado es el mismo
-    // que enmascarar el flujo completo de una vez. Lo ya legible no se vuelve a retener (un secreto registrado a mitad de la
-    // salida no hace retroceder Longitud). Solo se reconocen los bytes UTF-8 tal cual: un eco transformado (^X de ECHOCTL,
-    // secuencias intercaladas por un readline, un programa que lo imprime alterado) no.
+    // enmascarados: desde el primer secreto se guardan aparte los últimos bytes tal como llegaron (_colaOriginal: al menos
+    // MinBytesColaOriginal y al menos el secreto más largo - 1), para que una aparición solapada con otra ya tapada y
+    // repartida entre dos escrituras se encuentre entera, también la de un secreto registrado después (su principio pudo
+    // quedar tapado por otro más corto). La búsqueda solo mira los últimos (máximo - 1) de esos bytes. El resultado es el
+    // mismo que enmascarar el flujo completo de una vez. Lo ya legible no se vuelve a retener (un secreto registrado a mitad
+    // de la salida no hace retroceder Longitud). Limitación: un secreto de más de MinBytesColaOriginal + 1 bytes registrado
+    // después de que otro se enmascarara puede no encontrarse si su principio llegó antes y quedó tapado (la cola se amplía
+    // con lo que queda en el búfer, que puede estar ya enmascarado). Solo se reconocen los bytes UTF-8 tal cual: un eco
+    // transformado (^X de ECHOCTL, secuencias intercaladas por un readline, un programa que lo imprime alterado) no.
     public sealed class BufferSalida
     {
         public const int TamanoSegmento = 16 * 1024;
+
+        // Bytes originales que se guardan como mínimo desde el primer secreto (ver la cabecera): más que una línea del
+        // terminal en modo canónico (4095), lo más largo que se suele teclear.
+        public const int MinBytesColaOriginal = 4096;
         private const byte Mascara = (byte)'*';
 
         private readonly Lock _candado = new();
@@ -71,8 +79,9 @@ namespace NativeSsh.Buffers
                     return;
 
                 (_secretos ??= []).Add(secreto.ToArray());
-                if (secreto.Length > _maxBytesSecreto)
-                    AmpliarColaOriginal(secreto.Length - 1);
+                int capacidad = Math.Max(secreto.Length - 1, MinBytesColaOriginal);
+                if (_colaOriginal is null || capacidad > _colaOriginal.Length)
+                    AmpliarColaOriginal(capacidad);
                 _maxBytesSecreto = Math.Max(_maxBytesSecreto, secreto.Length);
             }
         }
@@ -153,7 +162,8 @@ namespace NativeSsh.Buffers
 
                 while (_finAbsoluto - _inicioAbsoluto - TamanoSegmento >= _capacidadMaxima)
                 {
-                    ArrayPool<byte>.Shared.Return(_segmentos[0]);
+                    // Como al liberar: con secretos, a cero (pudo tener uno antes de enmascararlo, o lo retenido).
+                    ArrayPool<byte>.Shared.Return(_segmentos[0], clearArray: _secretos is not null);
                     _segmentos.RemoveAt(0);
                     _inicioAbsoluto += TamanoSegmento;
                 }
@@ -166,7 +176,8 @@ namespace NativeSsh.Buffers
         {
             lock (_candado)
             {
-                long fin = FinVisible;
+                // Lo retenido (principio de un secreto más largo que el tope) puede empezar antes de lo que se conserva.
+                long fin = Math.Max(FinVisible, _inicioAbsoluto);
                 bool hasDescartados = desde < _inicioAbsoluto;
                 long inicio = Math.Clamp(desde, _inicioAbsoluto, fin);
                 int total = (int)Math.Min(destino.Length, fin - inicio);
@@ -209,20 +220,20 @@ namespace NativeSsh.Buffers
             }
         }
 
-        // Busca los secretos en lo recién escrito más los (máximo - 1) bytes anteriores tal como llegaron (_colaOriginal: un
-        // secreto partido entre dos escrituras, aunque se solape con otra aparición ya enmascarada), enmascara cada aparición
-        // (también solapadas) y calcula lo que hay que retener al final, también sobre los originales. Bajo _candado, antes
-        // de descartar segmentos por el tope.
+        // Busca los secretos en lo recién escrito más los (máximo - 1) bytes anteriores tal como llegaron (de _colaOriginal:
+        // un secreto partido entre dos escrituras, aunque se solape con otra aparición ya enmascarada), enmascara cada
+        // aparición (también solapadas) y calcula lo que hay que retener al final, también sobre los originales; después
+        // añade lo nuevo a la cola. Bajo _candado, antes de descartar segmentos por el tope.
         private void EnmascararSecretos(ReadOnlySpan<byte> nuevos, long inicioNuevos, long finVisibleAnterior)
         {
-            int previos = _longitudColaOriginal;
+            int previos = Math.Min(_longitudColaOriginal, _maxBytesSecreto - 1);
             int longitud = previos + nuevos.Length;
             long inicio = inicioNuevos - previos;
             byte[] ventana = ArrayPool<byte>.Shared.Rent(longitud);
             try
             {
                 Span<byte> datos = ventana.AsSpan(0, longitud);
-                _colaOriginal.AsSpan(0, previos).CopyTo(datos);
+                _colaOriginal.AsSpan(_longitudColaOriginal - previos, previos).CopyTo(datos);
                 nuevos.CopyTo(datos[previos..]);
                 foreach (byte[] secreto in _secretos!)
                     for (int desde = 0; desde <= datos.Length - secreto.Length;)
@@ -250,14 +261,31 @@ namespace NativeSsh.Buffers
                     _retenidos = retenidos;
                 }
 
-                int capacidad = _colaOriginal!.Length;
-                _longitudColaOriginal = Math.Min(capacidad, longitud);
-                datos[(longitud - _longitudColaOriginal)..].CopyTo(_colaOriginal);
+                AnadirAColaOriginal(nuevos);
             }
             finally
             {
                 ArrayPool<byte>.Shared.Return(ventana, clearArray: true);
             }
+        }
+
+        // La cola original se queda con sus últimos bytes y los nuevos, hasta su capacidad (CopyTo admite el solapamiento).
+        private void AnadirAColaOriginal(ReadOnlySpan<byte> nuevos)
+        {
+            byte[] cola = _colaOriginal!;
+            int conservados = Math.Min(cola.Length, _longitudColaOriginal + nuevos.Length);
+            if (nuevos.Length >= conservados)
+            {
+                nuevos[^conservados..].CopyTo(cola);
+            }
+            else
+            {
+                int deLaCola = conservados - nuevos.Length;
+                cola.AsSpan(_longitudColaOriginal - deLaCola, deLaCola).CopyTo(cola);
+                nuevos.CopyTo(cola.AsSpan(deLaCola));
+            }
+
+            _longitudColaOriginal = conservados;
         }
 
         // Mayor sufijo de 'datos' que es un principio propio (más corto que él) de algún secreto.
