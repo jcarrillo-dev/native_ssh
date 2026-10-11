@@ -169,7 +169,7 @@ NativeSsh [--http | --http-unsecure] [--puerto N]
 | `--http` | `127.0.0.1` y `[::1]` (`ListenLocalhost`) | Token obligatorio (`Authorization: Bearer <token>`) | `Information: URL http://localhost:8722/mcp` |
 | `--http-unsecure` | Todas las interfaces (`ListenAnyIP`) | Token obligatorio, **sin cifrar** | `Warning: «… SIN cifrar …»` |
 
-Los dos modos HTTP exigen un token (`NATIVE_SSH_TOKEN_HTTP` o `NATIVE_SSH_TOKEN_HTTP_FICHERO`); sin él, o con un fichero que no cumple lo anterior, el servidor no arranca (código 2 y el motivo en `stderr`). Cada petición sin `Authorization: Bearer <token>` exacto recibe `401` con un mensaje claro; el token se compara en tiempo constante y nunca se escribe en los logs. Los rechazos se anotan en el log como mucho 10 veces por minuto (después, un recuento de los omitidos).
+Los dos modos HTTP exigen un token (`NATIVE_SSH_TOKEN_HTTP` o `NATIVE_SSH_TOKEN_HTTP_FICHERO`); sin él, o con un fichero que no cumple lo anterior, el servidor no arranca (código 2 y el motivo en `stderr`). Cada petición sin `Authorization: Bearer <token>` exacto recibe `401` con un mensaje claro; el token se compara en tiempo constante y nunca se escribe en los logs. Los rechazos se anotan en el log como mucho 10 veces por minuto; los omitidos se cuentan en el siguiente aviso que se anote (en un minuto posterior), no al terminar la ráfaga.
 
 > [!WARNING]
 > El modo `--http-unsecure` expone en la red, por HTTP sin cifrar, un servicio con capacidad para ejecutar comandos arbitrarios en los servidores remotos configurados: el token y todo lo enviado (comandos, archivos, contraseñas de `ssh_input`) viajan en claro. Este modo debe reservarse exclusivamente para redes privadas de total confianza o detrás de un proxy inverso con TLS.
