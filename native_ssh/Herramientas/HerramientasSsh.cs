@@ -279,6 +279,7 @@ namespace NativeSsh.Herramientas
             [Description("Cuánto esperar el resultado antes de responder. Entre 0 y 120.")] int esperarSegundos = 20,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_exec", cancellationToken).ConfigureAwait(false);
             Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos));
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, 0);
@@ -308,6 +309,7 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            await ExigirEscrituraPermitidaAsync(peticion.Destino, "ssh_input", cancellationToken).ConfigureAwait(false);
             // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
             // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
             if (secreto)
@@ -542,6 +544,7 @@ namespace NativeSsh.Herramientas
             [Description("Ejecutar la escritura con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_write_file", cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
@@ -1469,6 +1472,7 @@ namespace NativeSsh.Herramientas
             [Description("Varias ediciones del mismo archivo en una llamada, en orden y todas o ninguna: lista de {targetContent, replacementContent, allowMultiple (opcional, por defecto false)}. Cada una se busca en todo el archivo tras aplicar las anteriores. No se combina con targetContent, replacementContent, lineaInicio, lineaFin ni allowMultiple.")] EdicionTexto[]? ediciones = null,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_replace_file_content", cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 

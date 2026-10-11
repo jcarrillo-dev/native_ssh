@@ -17,9 +17,16 @@ namespace NativeSsh.Comun
         public int MaxConexionesPorVentana { get; init; } = 4;
         public TimeSpan VentanaConexiones { get; init; } = TimeSpan.FromSeconds(30);
 
-        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD.
+        // Destinos en modo solo lectura (DestinosSoloLectura, NATIVE_SSH_SOLO_LECTURA).
+        public DestinosSoloLectura SoloLectura { get; init; } = DestinosSoloLectura.Ninguno;
+
+        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD y
+        /// NATIVE_SSH_SOLO_LECTURA (si no se entiende, native_ssh no arranca).
         public static OpcionesNativeSsh DesdeEntorno()
         {
+            if (!DestinosSoloLectura.TryParsear(Environment.GetEnvironmentVariable(DestinosSoloLectura.Variable), out DestinosSoloLectura soloLectura, out string? errorSoloLectura))
+                throw new InvalidOperationException(errorSoloLectura);
+
             OpcionesNativeSsh porDefecto = new();
             string directorio = Environment.GetEnvironmentVariable("NATIVE_SSH_DIRECTORIO_SSH") is { Length: > 0 } valor ? valor : porDefecto.DirectorioSsh;
             string? identidades = Environment.GetEnvironmentVariable("NATIVE_SSH_IDENTIDADES");
@@ -31,7 +38,8 @@ namespace NativeSsh.Comun
             {
                 DirectorioSsh = directorio,
                 RutasIdentidad = rutas,
-                Contrasena = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSWORD")
+                Contrasena = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSWORD"),
+                SoloLectura = soloLectura
             };
         }
     }
