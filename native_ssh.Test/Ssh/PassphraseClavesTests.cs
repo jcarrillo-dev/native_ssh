@@ -241,7 +241,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = antes.Should().BeEmpty();
             _ = motivos.Should().BeEmpty();
-            _ = despues.Should().ContainSingle();
+            _ = despues.Should().ContainSingle().Which.Should().NotBeNull();
         }
 
         // Sin ninguna clave utilizable, el error de la conexión lleva el motivo de cada clave (no la passphrase).
