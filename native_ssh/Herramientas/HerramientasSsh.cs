@@ -305,7 +305,7 @@ namespace NativeSsh.Herramientas
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
-            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta.")] bool secreto = false,
+            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
