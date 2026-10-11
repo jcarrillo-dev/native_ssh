@@ -1456,23 +1456,38 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Para varias ediciones del mismo archivo usa SIEMPRE 'ediciones' en una sola llamada (en lugar de targetContent y replacementContent, que no se combinan con ella): se aplican en orden, cada una buscada en todo el archivo tras aplicar las anteriores (sin lineaInicio ni lineaFin), y todas o ninguna: si una no se encuentra o aparece varias veces sin su allowMultiple=true, no se escribe nada y el error dice cuál; la escritura es una sola, con las mismas garantías. Devuelve ruta, bytes (tamaño final del archivo), reemplazos (el total), isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Texto exacto a reemplazar (incluyendo espacios e indentación).")] string targetContent,
-            [Description("Nuevo texto que reemplazará a targetContent.")] string replacementContent,
+            [Description("Texto exacto a reemplazar (incluyendo espacios e indentación). Obligatorio salvo con 'ediciones'.")] string? targetContent = null,
+            [Description("Nuevo texto que reemplazará a targetContent.")] string? replacementContent = null,
             [Description("Línea inicial (1-indexed) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaFin es obligatoria.")] int? lineaInicio = null,
             [Description("Línea final (1-indexed, inclusive) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaInicio es obligatoria.")] int? lineaFin = null,
             [Description("Si es true, permite reemplazar si targetContent aparece múltiples veces en el archivo o el rango (reemplaza todas). Por defecto false (falla si hay ambigüedad).")] bool allowMultiple = false,
             [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
+            [Description("Varias ediciones del mismo archivo en una llamada, en orden y todas o ninguna: lista de {targetContent, replacementContent, allowMultiple (opcional, por defecto false)}. Cada una se busca en todo el archivo tras aplicar las anteriores. No se combina con targetContent, replacementContent, lineaInicio, lineaFin ni allowMultiple.")] EdicionTexto[]? ediciones = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
-            if (string.IsNullOrEmpty(targetContent))
+            bool hasEdiciones = ediciones is { Length: > 0 };
+            if (hasEdiciones && (targetContent is not null || replacementContent is not null || lineaInicio is not null || lineaFin is not null || allowMultiple))
+                throw new NativeSshException("Usa 'ediciones' o targetContent/replacementContent (con lineaInicio, lineaFin y allowMultiple), no los dos a la vez: con 'ediciones', cada edición lleva su targetContent, su replacementContent y su allowMultiple. No se ha enviado nada.");
+
+            if (!hasEdiciones && string.IsNullOrEmpty(targetContent))
                 throw new NativeSshException("El texto a reemplazar (targetContent) no puede estar vacío.");
+
+            for (int i = 0; hasEdiciones && i < ediciones!.Length; i++)
+            {
+                EdicionTexto? edicion = ediciones[i];
+                if (string.IsNullOrEmpty(edicion?.TargetContent))
+                    throw new NativeSshException($"Edición {i + 1} de {ediciones.Length}: su targetContent no puede estar vacío. No se ha enviado nada.");
+
+                ExigirUtf16Valido(edicion.TargetContent, $"El targetContent de la edición {i + 1}");
+                ExigirUtf16Valido(edicion.ReplacementContent ?? string.Empty, $"El replacementContent de la edición {i + 1}");
+            }
 
             bool hasInicio = lineaInicio is not null;
             bool hasFin = lineaFin is not null;
@@ -1487,7 +1502,7 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
             ExigirValorLiteral(ruta, "La ruta");
-            ExigirUtf16Valido(targetContent, "targetContent");
+            ExigirUtf16Valido(targetContent ?? string.Empty, "targetContent");
             ExigirUtf16Valido(replacementContent ?? string.Empty, "replacementContent");
             string rutaEscapada = Escapar(ruta);
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
@@ -1547,6 +1562,27 @@ namespace NativeSsh.Herramientas
             string textoOriginal = DecodificarArchivoUtf8(bytesLeidos, ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            (string textoModificado, int ocurrencias) = hasEdiciones
+                ? AplicarEdiciones(textoOriginal, ediciones!, separador, ruta)
+                : AplicarReemplazo(textoOriginal, targetContent!, replacementContent, separador, lineaInicio, lineaFin, allowMultiple, ruta);
+            byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
+            string payloadBase64 = Convert.ToBase64String(bytesModificados);
+
+            string idEscritura = Guid.NewGuid().ToString("N");
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
+
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
+            string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
+            return peticionEscritura.CodigoSalida != 0
+                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({cuantas}{ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
+        }
+
+        // Una sola edición (targetContent), en todo el archivo o en el rango de líneas: el texto nuevo y las apariciones
+        // reemplazadas.
+        private static (string Texto, int Ocurrencias) AplicarReemplazo(string textoOriginal, string targetContent, string? replacementContent, string separador, int? lineaInicio, int? lineaFin, bool allowMultiple, string ruta)
+        {
+            bool isConRango = lineaInicio is not null;
             string targetNormalizado = AdaptarSaltos(targetContent, separador);
             string replacementNormalizado = AdaptarSaltos(replacementContent ?? string.Empty, separador);
 
@@ -1575,14 +1611,7 @@ namespace NativeSsh.Herramientas
                 textoDespues = textoDespues[separador.Length..];
             }
 
-            int ocurrencias = 0;
-            int pos = 0;
-            while ((pos = textoRango.IndexOf(targetNormalizado, pos, StringComparison.Ordinal)) != -1)
-            {
-                ocurrencias++;
-                pos += targetNormalizado.Length;
-            }
-
+            int ocurrencias = ContarApariciones(textoRango, targetNormalizado);
             if (ocurrencias == 0)
                 throw new NativeSshException(isConRango
                     ? $"No se encontró 'targetContent' en {ambito} de '{ruta}'. Revisa la indentación y el rango exacto."
@@ -1595,17 +1624,50 @@ namespace NativeSsh.Herramientas
                 ? textoRango.Replace(targetNormalizado, replacementNormalizado, StringComparison.Ordinal)
                 : string.Concat(textoRango.AsSpan(0, textoRango.IndexOf(targetNormalizado, StringComparison.Ordinal)), replacementNormalizado, textoRango.AsSpan(textoRango.IndexOf(targetNormalizado, StringComparison.Ordinal) + targetNormalizado.Length));
 
-            string textoModificado = textoAntes + textoRangoModificado + textoDespues;
-            byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
-            string payloadBase64 = Convert.ToBase64String(bytesModificados);
+            return (textoAntes + textoRangoModificado + textoDespues, ocurrencias);
+        }
 
-            string idEscritura = Guid.NewGuid().ToString("N");
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
+        // Varias ediciones (CI5): en orden, cada una en todo el texto que dejaron las anteriores; si una no se encuentra o es
+        // ambigua sin su allowMultiple, error sin escribir nada (todas o ninguna). El total de apariciones reemplazadas.
+        private static (string Texto, int Ocurrencias) AplicarEdiciones(string textoOriginal, EdicionTexto[] ediciones, string separador, string ruta)
+        {
+            const string NadaEscrito = "No se ha modificado el archivo: con 'ediciones' se aplican todas o ninguna.";
+            string texto = textoOriginal;
+            int total = 0;
+            for (int i = 0; i < ediciones.Length; i++)
+            {
+                EdicionTexto edicion = ediciones[i];
+                string target = AdaptarSaltos(edicion.TargetContent, separador);
+                string reemplazo = AdaptarSaltos(edicion.ReplacementContent ?? string.Empty, separador);
+                int ocurrencias = ContarApariciones(texto, target);
+                string cual = $"Edición {i + 1} de {ediciones.Length}";
+                if (ocurrencias == 0)
+                    throw new NativeSshException($"{cual}: no se encontró su 'targetContent' en '{ruta}' (se busca en todo el archivo, tras aplicar las ediciones anteriores). Revisa la indentación y los saltos de línea exactos. {NadaEscrito}");
 
-            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
-            return peticionEscritura.CodigoSalida != 0
-                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
-                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
+                if (ocurrencias > 1 && !edicion.AllowMultiple)
+                    throw new NativeSshException($"{cual}: se encontraron {ocurrencias} apariciones de su 'targetContent' en todo el archivo. Pon allowMultiple=true en esa edición o amplía su targetContent con contexto. {NadaEscrito}");
+
+                int posicion = texto.IndexOf(target, StringComparison.Ordinal);
+                texto = edicion.AllowMultiple
+                    ? texto.Replace(target, reemplazo, StringComparison.Ordinal)
+                    : string.Concat(texto.AsSpan(0, posicion), reemplazo, texto.AsSpan(posicion + target.Length));
+                total += ocurrencias;
+            }
+
+            return (texto, total);
+        }
+
+        private static int ContarApariciones(string texto, string buscado)
+        {
+            int ocurrencias = 0;
+            int pos = 0;
+            while ((pos = texto.IndexOf(buscado, pos, StringComparison.Ordinal)) != -1)
+            {
+                ocurrencias++;
+                pos += buscado.Length;
+            }
+
+            return ocurrencias;
         }
 
         // Solo los saltos '\r\n' y '\n' del texto se adaptan al separador del archivo: FF, NEL, LS, PS y un '\r' suelto son
