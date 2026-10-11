@@ -335,6 +335,24 @@ namespace NativeSsh.Test.Buffers
             _ = LeerTodo(buffer).Should().Be("x" + new string('*', resto.Length + 2) + ".");
         }
 
+        // Lo que ya se pudo leer antes de registrar un secreto no cambia después: una aparición entera anterior al registro
+        // no se tapa (la búsqueda solo mira los últimos (máximo - 1) bytes originales más lo nuevo, no toda la copia).
+        [Fact]
+        public void AparicionEnteraAnteriorAlRegistro_NoSeTapaDespues()
+        {
+            // Arrange
+            BufferSalida buffer = new(1 << 20, TimeProvider.System);
+            buffer.Escribir(Utf8("xxab"));
+
+            // Act
+            buffer.RegistrarSecreto(Utf8("ab"));
+            buffer.Escribir(Utf8("y"));
+            buffer.Cerrar();
+
+            // Assert
+            _ = LeerTodo(buffer).Should().Be("xxaby");
+        }
+
         // Oráculo con registros tardíos: cada secreto se enmascara solo desde la posición en que se registró (lo anterior ya
         // se pudo leer); de una aparición empezada antes del registro, lo que llega después. La cola final que es principio
         // de un secreto se enmascara al cerrar, desde su registro.
