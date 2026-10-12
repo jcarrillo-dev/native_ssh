@@ -239,8 +239,10 @@ namespace NativeSsh.Protocolo
         //   también con líneas vacías tecleadas;
         // - la línea que termina en el centinela: es el centinela o una línea del protocolo que llegó tras un centinela que se
         //   comió otro lector (la de recuperación, EscribirRecuperacion, termina en él): termina la espera y no se cuenta;
-        // - un 'read' interrumpido por una señal que el usuario atrapa en el shell (estado > 128; p. ej. 'trap ... USR1' o
-        //   'trap ... CHLD' y un hijo que termina mientras se espera): no es una línea.
+        // - un 'read' interrumpido por una señal que el usuario atrapa en el shell ('trap ... USR1', 'trap ... CHLD' y un hijo
+        //   que termina mientras se espera), si devuelve más de 128: no es una línea. Defensa: medido, bash 5.2 y 5.3
+        //   ejecutan la trampa y siguen leyendo (no hay vuelta que contar), y dash 0.5 y el ash de busybox 1.37 devuelven 1,
+        //   que se cuenta como un EOF (solo pasa si una de ellos ejecuta la cola, en un shell anidado).
         // El recuento solo se sabe cuando llega el centinela, así que viaja en el marcador del envío SIGUIENTE
         // ("${__ns_n:+_$__ns_n}", MarcadorFin): el aviso va en la respuesta de ese comando. Se queda en
         // MarcadorFin.MaxLineasDescartadas (más cifras romperían el marcador), pero el bucle descarta todas.

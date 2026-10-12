@@ -936,8 +936,10 @@ namespace NativeSsh.Sesion
             // mientras termina, y si estaba pidiendo la contraseña lo tomaría como contraseñas (intentos gastados; con
             // pam_faillock, la cuenta bloqueada). Mientras tanto la entrada sigue rechazada (_isInterrumpiendo). Si el marcador
             // no llega en la mitad de la espera, se reenvía una vez antes de escalar al cierre del canal (si la primera sí había
-            // llegado, se ejecutan las dos: el 'read' de la primera se come el '\n' inicial del reenvío, y el marcador de la
-            // segunda, si llega durante el comando siguiente, se descarta con _idRecuperacionReenviada).
+            // llegado, se ejecutan las dos: la cola de la primera se come el salto y el centinela del reenvío, y el marcador de
+            // la segunda, si llega durante el comando siguiente, se descarta con _idRecuperacionReenviada; si un programa que
+            // atrapa Ctrl+C se comió las dos primeras líneas de la primera, la cola que esperaba consume sin ejecutarla su
+            // tercera, que termina en el centinela, y la ejecuta el reenvío: ConstructorComando.EscribirRecuperacion).
             // Con un proceso que tiene el terminal en modo raw, Ctrl+C no es una señal sino un byte más de su entrada, y las dos
             // líneas (la primera y el reenvío) acaban también en ella (Z05 de la auditoría del E-septies): desde aquí no se puede
             // saber si el terminal está en raw (un proceso que ignora SIGINT tampoco da el marcador), así que no se distingue;
