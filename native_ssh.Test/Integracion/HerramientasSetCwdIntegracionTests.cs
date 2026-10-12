@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -50,7 +51,7 @@ namespace NativeSsh.Test.Integracion
 
         private static async Task<string> PwdDelShellAsync(HerramientasSsh herramientas, string destino)
         {
-            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "printf '%s' \"$PWD\" | base64 -w0", 30, 30);
+            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "printf '%s' \"$PWD\" | base64 -w0", 30, 30).ComoComando();
             _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Completado, resultado.Aviso);
             return Encoding.UTF8.GetString(Convert.FromBase64String(resultado.Salida.Trim()));
         }
@@ -66,7 +67,7 @@ namespace NativeSsh.Test.Integracion
             string x = Directory.CreateDirectory(Path.Combine(_directorio, "x")).FullName;
             string y = Directory.CreateDirectory(Path.Combine(_directorio, "y")).FullName;
             _ = await herramientas.FijarDirectorioAsync(destino, x);
-            _ = await herramientas.EjecutarAsync(destino, "sleep 30", 60, 0);
+            _ = await herramientas.EjecutarAsync(destino, "sleep 30", 60, 0).ComoComando();
             Task<ResultadoDirectorioTrabajo> fijar = herramientas.FijarDirectorioAsync(destino, y);
             for (int i = 0; i < 200 && !_gestor!.ListarPeticiones().Any(p => p.Estado == EstadoPeticionEnum.Encolado && p.Comando.Contains("pwd -P", StringComparison.Ordinal)); i++)
                 await Task.Delay(50);
@@ -93,7 +94,7 @@ namespace NativeSsh.Test.Integracion
             (HerramientasSsh herramientas, string destino) = Crear();
             string x = Directory.CreateDirectory(Path.Combine(_directorio, "x12")).FullName;
             _ = await herramientas.FijarDirectorioAsync(destino, x);
-            ResultadoComando soloLectura = await herramientas.EjecutarAsync(destino, "readonly __NS_CWD", 30, 30);
+            ResultadoComando soloLectura = await herramientas.EjecutarAsync(destino, "readonly __NS_CWD", 30, 30).ComoComando();
             _ = soloLectura.Estado.Should().Be(EstadoPeticionEnum.Completado, soloLectura.Aviso);
 
             // Act

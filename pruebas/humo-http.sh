@@ -123,9 +123,12 @@ enviar("notifications/initialized", notificacion=True)
 herramientas = sorted(h["name"] for h in enviar("tools/list")["result"]["tools"])
 comprobar(len(herramientas) == 15 and herramientas == ["ssh_cancel", "ssh_disconnect", "ssh_exec", "ssh_find", "ssh_input", "ssh_list_dir", "ssh_output", "ssh_read_file", "ssh_replace_file_content", "ssh_reset_shell", "ssh_search", "ssh_set_cwd", "ssh_stat", "ssh_status", "ssh_write_file"], f"tools/list por HTTP: {herramientas}")
 
-resultado = enviar("tools/call", {"name": "ssh_exec", "arguments": {"destino": destino, "comando": "echo hola-http"}})["result"]
-datos = json.loads(resultado["content"][0]["text"])
-comprobar(datos["estado"] == "Completado" and datos["salida"] == "hola-http\n", "ssh_exec por HTTP")
+# Dos bloques de texto: el control (JSON en una sola línea, sin la salida) y la salida tal cual.
+resultado = enviar("tools/call", {"name": "ssh_exec", "arguments": {"destino": destino, "comando": "printf 'hola-http\\n\"c\" \\\\\\n'"}})["result"]
+bloques = resultado["content"]
+datos = json.loads(bloques[0]["text"])
+comprobar(len(bloques) == 2 and all(b["type"] == "text" for b in bloques) and "\n" not in bloques[0]["text"] and "salida" not in datos
+          and datos["estado"] == "Completado" and bloques[1]["text"] == 'hola-http\n"c" \\\n', f"ssh_exec por HTTP en dos bloques: {bloques}")
 
 resultado = enviar("tools/call", {"name": "ssh_stat", "arguments": {"destino": destino, "ruta": "/tmp"}})["result"]
 datos = json.loads(resultado["content"][0]["text"])

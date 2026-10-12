@@ -260,7 +260,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_EsperaYDevuelveResultado()
         {
             // Arrange
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "hola");
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Act & Assert
             _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Completado);
@@ -275,12 +275,12 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_SinEsperar_DevuelveEjecutando_YLuegoSePuedeCancelar()
         {
             // Arrange
-            ResultadoComando parcial = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando parcial = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(parcial.Id).Salida.Longitud > 0);
-            ResultadoComando enCurso = await _herramientas.LeerSalidaAsync(parcial.Id);
+            ResultadoComando enCurso = await _herramientas.LeerSalidaAsync(parcial.Id).ComoComando();
 
             // Act
-            ResultadoComando cancelado = await _herramientas.CancelarAsync(parcial.Id);
+            ResultadoComando cancelado = await _herramientas.CancelarAsync(parcial.Id).ComoComando();
 
             // Assert
             _ = enCurso.CodigoSalida.Should().BeNull();
@@ -295,12 +295,12 @@ namespace NativeSsh.Test.Herramientas
         public async Task Output_PaginaConSiguienteByte()
         {
             // Arrange
-            ResultadoComando primera = await _herramientas.EjecutarAsync("servidor", "largo");
+            ResultadoComando primera = await _herramientas.EjecutarAsync("servidor", "largo").ComoComando();
             string texto = primera.Salida;
             ResultadoComando actual = primera;
             while (actual.HasMasSalida)
             {
-                actual = await _herramientas.LeerSalidaAsync(primera.Id, actual.SiguienteByte);
+                actual = await _herramientas.LeerSalidaAsync(primera.Id, actual.SiguienteByte).ComoComando();
                 texto += actual.Salida;
             }
 
@@ -314,11 +314,11 @@ namespace NativeSsh.Test.Herramientas
         public async Task Input_DevuelveLaSalidaPosteriorAlEnvio()
         {
             // Arrange
-            ResultadoComando pregunta = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            ResultadoComando pregunta = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(pregunta.Id).Salida.Longitud > 0);
 
             // Act
-            ResultadoComando respuesta = await _herramientas.EnviarEntradaAsync(pregunta.Id, "ana", esperarSegundos: 5);
+            ResultadoComando respuesta = await _herramientas.EnviarEntradaAsync(pregunta.Id, "ana", esperarSegundos: 5).ComoComando();
 
             // Assert
             _ = respuesta.Estado.Should().Be(EstadoPeticionEnum.Completado);
@@ -337,18 +337,18 @@ namespace NativeSsh.Test.Herramientas
             const int Ciclos = 200;
             (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
             await using GestorSesiones gestorLiberable = gestor;
-            _ = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10);
-            ResultadoComando actual = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            _ = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10).ComoComando();
+            ResultadoComando actual = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
             int avisos = 0;
             Peticion? ultima = null;
 
             // Act
             for (int k = 0; k < Ciclos; k++)
             {
-                ResultadoComando siguiente = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+                ResultadoComando siguiente = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
                 Peticion peticion = gestor.BuscarPeticion(actual.Id);
                 await EsperasPrueba.EsperarHastaAsync(() => peticion.IsComandoEnviado && peticion.Salida.Longitud > 0);
-                ResultadoComando entrada = await herramientas.EnviarEntradaAsync(actual.Id, "ana\nuno", esperarSegundos: 0);
+                ResultadoComando entrada = await herramientas.EnviarEntradaAsync(actual.Id, "ana\nuno", esperarSegundos: 0).ComoComando();
                 avisos += entrada.Aviso?.Contains("no leyó", StringComparison.Ordinal) == true ? 1 : 0;
                 await peticion.Finalizacion.WaitAsync(TimeSpan.FromSeconds(10));
                 ultima = gestor.BuscarPeticion(siguiente.Id);
@@ -360,8 +360,8 @@ namespace NativeSsh.Test.Herramientas
                 largo++;
             Peticion ultimaPregunta = gestor.BuscarPeticion(actual.Id);
             await EsperasPrueba.EsperarHastaAsync(() => ultimaPregunta.IsComandoEnviado && ultimaPregunta.Salida.Longitud > 0);
-            _ = await herramientas.EnviarEntradaAsync(actual.Id, "ana", esperarSegundos: 5);
-            ResultadoComando final = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10);
+            _ = await herramientas.EnviarEntradaAsync(actual.Id, "ana", esperarSegundos: 5).ComoComando();
+            ResultadoComando final = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10).ComoComando();
 
             // Assert
             _ = largo.Should().BeLessThanOrEqualTo(2);
@@ -432,10 +432,10 @@ namespace NativeSsh.Test.Herramientas
         public async Task Input_EnComandoTerminado_Lanza()
         {
             // Arrange
-            ResultadoComando terminado = await _herramientas.EjecutarAsync("servidor", "hola");
+            ResultadoComando terminado = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Act & Assert
-            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(terminado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(terminado.Id, "x").ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Be($"No se envió la entrada: el comando {terminado.Id} ya terminó (estado Completado).");
         }
 
@@ -444,11 +444,11 @@ namespace NativeSsh.Test.Herramientas
         public async Task Input_EnComandoEncolado_DiceQueSigueEncolado()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
-            ResultadoComando encolado = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            _ = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
+            ResultadoComando encolado = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(encolado.Id, "x")).Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(encolado.Id, "x").ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
             _ = encolado.Estado.Should().Be(EstadoPeticionEnum.Encolado);
@@ -470,16 +470,16 @@ namespace NativeSsh.Test.Herramientas
                 _fabrica.BloqueoConexion = bloqueo;
             else
                 _fabrica.BloqueoAperturaShell = bloqueo;
-            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
             Peticion peticion = _gestor.BuscarPeticion(comando.Id);
             await EsperasPrueba.EsperarHastaAsync(() => fase == "conexion" ? _fabrica.ConexionesRetenidas == 1 : _fabrica.Ultima?.AperturasShellRetenidas == 1);
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0).ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;
             ResultadoEstado estado = _herramientas.Estado("servidor");
             _ = bloqueo.Release();
             await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado("servidor").Sesiones[0].IsShellActivo && _fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)));
-            ResultadoComando reintento = await _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+            ResultadoComando reintento = await _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5).ComoComando();
 
             // Assert
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado);
@@ -501,13 +501,13 @@ namespace NativeSsh.Test.Herramientas
             OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana" };
             await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
-            ResultadoComando comando = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            ResultadoComando comando = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => herramientas.Estado("servidor").Sesiones is [{ IsShellActivo: true }]);
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0)).Should().ThrowAsync<NativeSshException>()).Which;
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0).ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)), TimeSpan.FromSeconds(10));
-            ResultadoComando reintento = await herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5);
+            ResultadoComando reintento = await herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5).ComoComando();
 
             // Assert
             _ = error.Message.Should().Be($"No se envió la entrada al comando {comando.Id}, que sigue en ejecución: el shell de ana@servidor:22 tiene el canal abierto, pero aún se está inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento) y el comando todavía no se le ha enviado. Reintenta en unos segundos (ssh_status muestra isShellActivo=true en cuanto el canal está abierto, aunque la inicialización puede tardar algo más); si sigue fallando, comprueba su estado con ssh_output o ssh_status.");
@@ -523,7 +523,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Input_DuranteLaInterrupcion_DiceQueSeEstaInterrumpiendo(bool isCancelado)
         {
             // Arrange
-            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "ignora_ctrlc", timeoutSegundos: isCancelado ? 300 : 1, esperarSegundos: 0);
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "ignora_ctrlc", timeoutSegundos: isCancelado ? 300 : 1, esperarSegundos: 0).ComoComando();
             Peticion peticion = _gestor.BuscarPeticion(comando.Id);
             await EsperasPrueba.EsperarHastaAsync(() => peticion.Salida.Longitud > 0);
             if (isCancelado)
@@ -533,7 +533,7 @@ namespace NativeSsh.Test.Herramientas
             Exception? error = null;
             for (int intento = 0; intento < 100 && error is null; intento++)
             {
-                error = await Record.ExceptionAsync(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", enter: false, esperarSegundos: 0));
+                error = await Record.ExceptionAsync(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", enter: false, esperarSegundos: 0).ComoComando());
                 if (error is null)
                     await Task.Delay(20);
             }
@@ -578,8 +578,8 @@ namespace NativeSsh.Test.Herramientas
         public async Task Status_FiltraPorDestino()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync("uno", "a");
-            _ = await _herramientas.EjecutarAsync("dos", "b");
+            _ = await _herramientas.EjecutarAsync("uno", "a").ComoComando();
+            _ = await _herramientas.EjecutarAsync("dos", "b").ComoComando();
 
             // Act
             ResultadoEstado todo = _herramientas.Estado();
@@ -597,8 +597,8 @@ namespace NativeSsh.Test.Herramientas
         {
             // Arrange
             for (int i = 0; i < 25; i++)
-                _ = await _herramientas.EjecutarAsync("uno", $"cmd{i}");
-            _ = await _herramientas.EjecutarAsync("dos", "otro");
+                _ = await _herramientas.EjecutarAsync("uno", $"cmd{i}").ComoComando();
+            _ = await _herramientas.EjecutarAsync("dos", "otro").ComoComando();
 
             // Act
             ResultadoEstado todo = _herramientas.Estado();
@@ -616,7 +616,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Disconnect_YReset()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            _ = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
 
             // Act & Assert
             _ = _herramientas.ReiniciarShell("servidor").IsHecho.Should().BeTrue();
@@ -629,7 +629,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Json_CamelCaseEstadoComoTextoYSinNulos()
         {
             // Arrange
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "hola");
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Act
             string json = JsonSerializer.Serialize(resultado, ContextoJsonNativeSsh.OpcionesHerramientas);
@@ -746,7 +746,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task WriteFile_EncoladaYCanceladaPorElToken_DiceQueNoSeModifico()
         {
             // Arrange
-            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
             using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(300));
 
@@ -757,7 +757,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a ejecutar: 'nuevo.txt' no se ha modificado\\. Cancelada antes de empezar\\.$");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
-            _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = (await _herramientas.CancelarAsync(colgado.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         [Fact]
@@ -785,7 +785,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "hola");
             _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "linea 3b");
             _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert
             _ = _fabrica.Ultima!.ComandosExec.Should().BeEmpty();
@@ -796,7 +796,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task ReadFile_ConComandoColgadoEnElShell_NoEsperaDetras()
         {
             // Arrange
-            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
 
             // Act
@@ -808,7 +808,7 @@ namespace NativeSsh.Test.Herramientas
             _ = busqueda.Should().StartWith("archivo.txt:1:coincidencia encontrada");
             _ = _gestor.BuscarPeticion(colgado.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
             _ = _fabrica.Conexiones.Should().Be(1);
-            _ = (await _herramientas.CancelarAsync(colgado.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = (await _herramientas.CancelarAsync(colgado.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         [Fact]
@@ -863,7 +863,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Act
             Task<string>[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3))];
-            Task<ResultadoComando> comando = _herramientas.EjecutarAsync("servidor", "hola");
+            Task<ResultadoComando> comando = _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
             Task<ResultadoMetadatos> metadatos = _herramientas.ConsultarMetadatosAsync("servidor", "archivo.txt");
             _ = await Task.WhenAll(lecturas).WaitAsync(TimeSpan.FromSeconds(5));
             ResultadoComando resultado = await comando.WaitAsync(TimeSpan.FromSeconds(5));
@@ -879,7 +879,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Lectura_TrasCaidaQueNoCierraElCanal_ElSiguienteExecRecreaElShellEnLaNuevaConexion()
         {
             // Arrange: shell vivo en la primera conexión; la caída no cierra su canal (como SSH.NET con un TCP muerto).
-            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            _ = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
             ConexionFalsa primera = _fabrica.Ultima!;
             CanalFalso canalViejo = primera.CanalActual!;
             primera.CaerSinCerrarCanal();
@@ -887,7 +887,7 @@ namespace NativeSsh.Test.Herramientas
             // Act: la lectura reconecta por su canal exec y después llega un ssh_exec.
             string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
             bool isCanalViejoCerradoTrasLectura = canalViejo.IsCerrado;
-            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b");
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b").ComoComando();
 
             // Assert: el canal muere con la conexión que lo abrió y el shell se recrea sobre la nueva.
             _ = texto.Should().StartWith("[Líneas 1-3 de 10]");
@@ -903,13 +903,13 @@ namespace NativeSsh.Test.Herramientas
         public async Task Lectura_TrasCaerLaConexion_ReconectaYElShellReutilizaLaNueva()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync("servidor", "a");
+            _ = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
             ConexionFalsa primera = _fabrica.Ultima!;
             primera.Caer();
 
             // Act
             string texto = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
-            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b");
+            ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "b").ComoComando();
 
             // Assert
             _ = texto.Should().StartWith("[Líneas 1-3 de 10]");
@@ -946,7 +946,7 @@ namespace NativeSsh.Test.Herramientas
             // Act: antes de que exista el shell PTY no hay PATH capturado; después, sí.
             _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
             string? antes = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
             _ = await _herramientas.BuscarAsync("servidor", "algo");
             string? despues = ScriptExec.DecodificarPath(_fabrica.Ultima!.ComandosExec.Last());
 
@@ -965,7 +965,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Act
             _ = _herramientas.ReiniciarShell("servidor");
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert
             ConexionFalsa conexion = _fabrica.Ultima!;
@@ -2228,7 +2228,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConTuberiasGrep_NoGeneraAviso(string comando)
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando).ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().BeNull();
@@ -2242,7 +2242,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConGrepDisco_GeneraAvisoSearch(string comando)
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando).ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().NotBeNull();
@@ -2257,7 +2257,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConOrLogicoGrep_GeneraAvisoSearch(string comando)
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando);
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", comando).ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().NotBeNull();
@@ -2268,7 +2268,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConFindDisco_GeneraAvisoFind()
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "find . -name '*.py'");
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "find . -name '*.py'").ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().NotBeNull();
@@ -2279,7 +2279,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConCdEncadenado_GeneraAvisoSetCwd()
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && npm test");
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && npm test").ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().NotBeNull();
@@ -2290,7 +2290,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task Exec_ConCombinacionCdYGrep_GeneraAvisoCombinado()
         {
             // Act
-            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && grep -rn 'algo' src/");
+            ResultadoComando resultado = await _herramientas.EjecutarAsync("servidor", "cd /root/DiscordBots && grep -rn 'algo' src/").ComoComando();
 
             // Assert
             _ = resultado.Aviso.Should().NotBeNull();

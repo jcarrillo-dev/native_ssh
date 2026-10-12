@@ -6,6 +6,7 @@ using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
@@ -92,14 +93,14 @@ namespace NativeSsh.Test.Integracion
             RegistroSshd antes = await LeerRegistroAsync(servidor);
 
             // Act
-            Llamada<ResultadoComando> primero = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo primero"));
-            Llamada<ResultadoComando> siguiente = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente"));
+            Llamada<ResultadoComando> primero = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo primero").ComoComando());
+            Llamada<ResultadoComando> siguiente = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente").ComoComando());
             Llamada<ResultadoEscritura> escritura = await MedirAsync(() => herramientas.EscribirArchivoAsync(Destino, $"{directorio}/b.txt", "nuevo\n"));
             Llamada<ResultadoEscritura> reemplazo = await MedirAsync(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, $"{directorio}/a.txt", "uno", "UNO"));
             Llamada<ResultadoDirectorioTrabajo> cwd = await MedirAsync(() => herramientas.FijarDirectorioAsync(Destino, directorio));
             ResultadoEstado estado = herramientas.Estado(Destino);
             ResultadoAccion reinicio = herramientas.ReiniciarShell(Destino);
-            Llamada<ResultadoComando> trasReinicio = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo tras_reinicio"));
+            Llamada<ResultadoComando> trasReinicio = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo tras_reinicio").ComoComando());
             ResultadoEstado estadoFinal = herramientas.Estado(Destino);
             RegistroSshd despues = await LeerRegistroAsync(servidor);
             string contenido = servidor.ComoUsuario("ls -A \"$1\"; cat \"$1/a.txt\"", directorio);
@@ -185,12 +186,12 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = servidor.Gestor();
             HerramientasSsh herramientas = servidor.Herramientas(gestor);
             RegistroSshd antes = await LeerRegistroAsync(servidor);
-            Llamada<ResultadoComando> primero = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo primero"));
+            Llamada<ResultadoComando> primero = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo primero").ComoComando());
 
             // Act
             Llamada<ResultadoAccion> desconexion = await MedirAsync(() => herramientas.DesconectarAsync(Destino));
             ResultadoEstado estado = herramientas.Estado(Destino);
-            Llamada<ResultadoComando> siguiente = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente"));
+            Llamada<ResultadoComando> siguiente = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente").ComoComando());
             ResultadoEstado estadoFinal = herramientas.Estado(Destino);
             RegistroSshd despues = await LeerRegistroAsync(servidor);
 
@@ -259,14 +260,14 @@ namespace NativeSsh.Test.Integracion
             switch (herramienta)
             {
                 case "ssh_exec":
-                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo primero"));
+                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo primero").ComoComando());
                 case "ssh_exec siguiente":
-                    _ = await herramientas.EjecutarAsync(Destino, "echo primero");
-                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente"));
+                    _ = await herramientas.EjecutarAsync(Destino, "echo primero").ComoComando();
+                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo siguiente").ComoComando());
                 case "ssh_exec tras ssh_reset_shell":
-                    _ = await herramientas.EjecutarAsync(Destino, "echo primero");
+                    _ = await herramientas.EjecutarAsync(Destino, "echo primero").ComoComando();
                     _ = herramientas.ReiniciarShell(Destino);
-                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo tras_reinicio"));
+                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo tras_reinicio").ComoComando());
                 case "ssh_write_file":
                     return await TextoAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true));
                 case "ssh_replace_file_content":

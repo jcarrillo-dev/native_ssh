@@ -211,7 +211,7 @@ namespace NativeSsh.Test.Integracion
                 await SimularSudoAsync(herramientas);
             // La comprobación del flock sin -E crea su temporal con mktemp en TMPDIR: aquí, uno propio que debe quedar vacío.
             string temporales = Directory.CreateDirectory(Ruta("temporales")).FullName;
-            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{temporales}'", esperarSegundos: 10);
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{temporales}'", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
             string[] entradas = Directory.GetFileSystemEntries(carpeta);
             using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", "37.5"]);

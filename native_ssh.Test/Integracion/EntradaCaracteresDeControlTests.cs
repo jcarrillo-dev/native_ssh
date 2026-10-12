@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
@@ -46,7 +47,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         private static async Task CalentarAsync(HerramientasSsh h, string destino) =>
-            _ = (await h.EjecutarAsync(destino, "true", esperarSegundos: 60, timeoutSegundos: 60)).Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = (await h.EjecutarAsync(destino, "true", esperarSegundos: 60, timeoutSegundos: 60).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Completado);
 
         private string Testigo() => Path.Combine(_testigos, Guid.NewGuid().ToString("N"));
 
@@ -57,7 +58,7 @@ namespace NativeSsh.Test.Integracion
         // El comando siguiente: se ejecuta (no se lo come una espera colgada) y su aviso dice exactamente lo descartado.
         private async Task<ResultadoComando> SiguienteAsync(HerramientasSsh h, string destino, string idAnterior, int descartadas, string texto)
         {
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, $"echo {texto}", esperarSegundos: 15, timeoutSegundos: 10);
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, $"echo {texto}", esperarSegundos: 15, timeoutSegundos: 10).ComoComando();
             salida.WriteLine($"  siguiente {siguiente.Estado} '{siguiente.Salida}' aviso '{siguiente.Aviso}'");
             _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = siguiente.Salida.Should().Be(texto + "\n");
@@ -107,10 +108,10 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(nombre);
 
             // Act y Assert (1): en medio, con dos órdenes detrás, a un comando que no lee.
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
             await EnviarOEsperarRechazoAsync(h, lento.Id, $"uno{caracter}touch {uno}\ntouch {dos}", enter: true, codigoEnMedio);
-            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
             salida.WriteLine($"  (1) fin {fin.Estado} {fin.CodigoSalida} '{fin.Salida}' aviso '{fin.Aviso}'");
             _ = fin.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = fin.CodigoSalida.Should().Be(Math.Max(codigoEnMedio, 0));
@@ -118,21 +119,21 @@ namespace NativeSsh.Test.Integracion
             _ = (File.Exists(uno) || File.Exists(dos)).Should().BeFalse("nada de lo tecleado se ejecuta como orden");
 
             // (2): al final de lo tecleado (enter=false), lo siguiente que llega es el envío del comando siguiente.
-            lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
             await EnviarOEsperarRechazoAsync(h, lento.Id, $"dos{caracter}", enter: false, codigoAlFinal);
-            fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
             salida.WriteLine($"  (2) fin {fin.Estado} {fin.CodigoSalida} '{fin.Salida}' aviso '{fin.Aviso}'");
             _ = fin.CodigoSalida.Should().Be(Math.Max(codigoAlFinal, 0));
             _ = await SiguienteAsync(h, destino, lento.Id, codigoAlFinal < 0 ? 0 : descartadasAlFinal, "dos");
 
             // (3): a un programa que lee una línea.
-            ResultadoComando lector = await h.EjecutarAsync(destino, "head -n 1 | od -An -tx1 | tr -d ' \\n'", esperarSegundos: 0);
+            ResultadoComando lector = await h.EjecutarAsync(destino, "head -n 1 | od -An -tx1 | tr -d ' \\n'", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
             await EnviarOEsperarRechazoAsync(h, lector.Id, $"a{caracter}b", enter: true, codigoEnMedio);
             if (codigoEnMedio < 0)
-                _ = await h.EnviarEntradaAsync(lector.Id, "b", esperarSegundos: 15);
-            fin = await h.LeerSalidaAsync(lector.Id, esperarSegundos: 15);
+                _ = await h.EnviarEntradaAsync(lector.Id, "b", esperarSegundos: 15).ComoComando();
+            fin = await h.LeerSalidaAsync(lector.Id, esperarSegundos: 15).ComoComando();
             salida.WriteLine($"  (3) fin {fin.Estado} {fin.CodigoSalida} '{fin.Salida}' aviso '{fin.Aviso}'");
             if (recibido is not null)
                 _ = fin.Salida.Should().Be(recibido);
@@ -141,7 +142,7 @@ namespace NativeSsh.Test.Integracion
 
         private static async Task EnviarOEsperarRechazoAsync(HerramientasSsh h, string id, string texto, bool enter, int codigo)
         {
-            Func<Task> enviar = () => h.EnviarEntradaAsync(id, texto, enter: enter, esperarSegundos: 0);
+            Func<Task> enviar = () => h.EnviarEntradaAsync(id, texto, enter: enter, esperarSegundos: 0).ComoComando();
             if (codigo < 0)
                 _ = (await enviar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().StartWith("No se envió la entrada");
             else
@@ -165,16 +166,16 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
             string canario = Canario();
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
 
             // Act
-            Func<Task> enviar = () => h.EnviarEntradaAsync(lento.Id, $"{control}{canario}", esperarSegundos: 0, secreto: true);
+            Func<Task> enviar = () => h.EnviarEntradaAsync(lento.Id, $"{control}{canario}", esperarSegundos: 0, secreto: true).ComoComando();
 
             // Assert
             NativeSshException error = (await enviar.Should().ThrowAsync<NativeSshException>()).Which;
             _ = error.Message.Should().Be(HerramientasSsh.MensajeSecretoNoAdmitido).And.NotContain(canario);
-            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 10);
+            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 10).ComoComando();
             _ = fin.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = fin.CodigoSalida.Should().Be(0);
             ResultadoComando siguiente = await SiguienteAsync(h, destino, lento.Id, 0, "siguiente");
@@ -196,13 +197,13 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
             string testigo = Testigo();
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5; echo fin", esperarSegundos: 0, timeoutSegundos: 20);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5; echo fin", esperarSegundos: 0, timeoutSegundos: 20).ComoComando();
             await Task.Delay(esperaMs);
 
             // Act
-            Func<Task> enviar = () => h.EnviarEntradaAsync(lento.Id, string.Format(System.Globalization.CultureInfo.InvariantCulture, plantilla, testigo), enter: enter, esperarSegundos: 0);
+            Func<Task> enviar = () => h.EnviarEntradaAsync(lento.Id, string.Format(System.Globalization.CultureInfo.InvariantCulture, plantilla, testigo), enter: enter, esperarSegundos: 0).ComoComando();
             NativeSshException error = (await enviar.Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
             _ = await SiguienteAsync(h, destino, lento.Id, 0, "siguiente");
             await Task.Delay(300);
 
@@ -226,14 +227,14 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            _ = await h.EjecutarAsync(destino, "export NS_VARIABLE=conservada", esperarSegundos: 10);
-            ResultadoComando bucle = await h.EjecutarAsync(destino, comando, esperarSegundos: 0, timeoutSegundos: 60);
+            _ = await h.EjecutarAsync(destino, "export NS_VARIABLE=conservada", esperarSegundos: 10).ComoComando();
+            ResultadoComando bucle = await h.EjecutarAsync(destino, comando, esperarSegundos: 0, timeoutSegundos: 60).ComoComando();
             await Task.Delay(500);
 
             // Act
-            _ = await h.CancelarAsync(bucle.Id);
-            ResultadoComando final = await h.LeerSalidaAsync(bucle.Id, esperarSegundos: 15);
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo \"$NS_VARIABLE\"", esperarSegundos: 10);
+            _ = await h.CancelarAsync(bucle.Id).ComoComando();
+            ResultadoComando final = await h.LeerSalidaAsync(bucle.Id, esperarSegundos: 15).ComoComando();
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo \"$NS_VARIABLE\"", esperarSegundos: 10).ComoComando();
 
             // Assert
             salida.WriteLine($"final {final.Estado} '{final.Salida}' aviso '{final.Aviso}'; siguiente '{siguiente.Salida}' aviso '{siguiente.Aviso}'");
@@ -258,8 +259,8 @@ namespace NativeSsh.Test.Integracion
             await CalentarAsync(h, destino);
 
             // Act
-            ResultadoComando interrumpido = await h.EjecutarAsync(destino, $"trap '{lectura}; echo leido' INT; sleep 30; trap - INT", esperarSegundos: 30, timeoutSegundos: 3);
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 15);
+            ResultadoComando interrumpido = await h.EjecutarAsync(destino, $"trap '{lectura}; echo leido' INT; sleep 30; trap - INT", esperarSegundos: 30, timeoutSegundos: 3).ComoComando();
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 15).ComoComando();
 
             // Assert
             salida.WriteLine($"interrumpido {interrumpido.Estado} '{interrumpido.Salida}' aviso '{interrumpido.Aviso}'; siguiente '{siguiente.Salida}' aviso '{siguiente.Aviso}'");
@@ -282,9 +283,9 @@ namespace NativeSsh.Test.Integracion
             await CalentarAsync(h, destino);
 
             // Act
-            ResultadoComando lanzado = await h.EjecutarAsync(destino, comando, esperarSegundos: 10);
+            ResultadoComando lanzado = await h.EjecutarAsync(destino, comando, esperarSegundos: 10).ComoComando();
             await Task.Delay(2500);
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "trap - USR1 CHLD; echo siguiente", esperarSegundos: 10);
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "trap - USR1 CHLD; echo siguiente", esperarSegundos: 10).ComoComando();
 
             // Assert
             salida.WriteLine($"lanzado '{lanzado.Salida}'; siguiente '{siguiente.Salida}' aviso '{siguiente.Aviso}'");
@@ -302,14 +303,14 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
             string testigo = Testigo();
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0).ComoComando();
             await Task.Delay(500);
 
             // Act
-            _ = await h.EnviarEntradaAsync(lento.Id, new string('\u0004', 1000) + $"touch {testigo}", esperarSegundos: 0);
-            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 30);
-            ResultadoComando otro = await h.EjecutarAsync(destino, "echo otro", esperarSegundos: 30);
+            _ = await h.EnviarEntradaAsync(lento.Id, new string('\u0004', 1000) + $"touch {testigo}", esperarSegundos: 0).ComoComando();
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 30).ComoComando();
+            ResultadoComando otro = await h.EjecutarAsync(destino, "echo otro", esperarSegundos: 30).ComoComando();
             await Task.Delay(300);
 
             // Assert
@@ -334,14 +335,14 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
             string testigo = Testigo();
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0).ComoComando();
             await Task.Delay(500);
             for (int i = 0; i < veces; i++)
-                _ = await h.EnviarEntradaAsync(lento.Id, new string('x', bytes), enter: false, esperarSegundos: 0);
-            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+                _ = await h.EnviarEntradaAsync(lento.Id, new string('x', bytes), enter: false, esperarSegundos: 0).ComoComando();
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
 
             // Act
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, $"touch {testigo}; echo siguiente", esperarSegundos: 20, timeoutSegundos: 10);
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, $"touch {testigo}; echo siguiente", esperarSegundos: 20, timeoutSegundos: 10).ComoComando();
 
             // Assert
             salida.WriteLine($"siguiente {siguiente.Estado} '{siguiente.Salida}' aviso '{siguiente.Aviso}'");
@@ -363,12 +364,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
 
             // Act
-            _ = await h.EnviarEntradaAsync(lento.Id, texto, enter: enter, esperarSegundos: 0);
-            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            _ = await h.EnviarEntradaAsync(lento.Id, texto, enter: enter, esperarSegundos: 0).ComoComando();
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = await SiguienteAsync(h, destino, lento.Id, descartadas, "siguiente");
@@ -383,21 +384,21 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            ResultadoComando c1 = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            ResultadoComando c1 = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
-            _ = await h.EnviarEntradaAsync(c1.Id, "uno\ndos", esperarSegundos: 0);
-            _ = await h.LeerSalidaAsync(c1.Id, esperarSegundos: 15);
+            _ = await h.EnviarEntradaAsync(c1.Id, "uno\ndos", esperarSegundos: 0).ComoComando();
+            _ = await h.LeerSalidaAsync(c1.Id, esperarSegundos: 15).ComoComando();
 
             // Act
-            ResultadoComando c2 = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0);
+            ResultadoComando c2 = await h.EjecutarAsync(destino, "sleep 2", esperarSegundos: 0).ComoComando();
             await Task.Delay(300);
-            ResultadoComando c3 = await h.EjecutarAsync(destino, "sleep 4; echo c3", esperarSegundos: 0);
+            ResultadoComando c3 = await h.EjecutarAsync(destino, "sleep 4; echo c3", esperarSegundos: 0).ComoComando();
             List<string?> avisos = [c2.Aviso, c3.Aviso];
             for (int i = 0; i < 3; i++)
-                avisos.Add((await h.LeerSalidaAsync(c3.Id, esperarSegundos: 1)).Aviso);
-            avisos.Add((await h.LeerSalidaAsync(c3.Id, esperarSegundos: 10)).Aviso);
-            avisos.Add((await h.LeerSalidaAsync(c2.Id, esperarSegundos: 5)).Aviso);
-            avisos.Add((await h.LeerSalidaAsync(c2.Id, esperarSegundos: 5)).Aviso);
+                avisos.Add((await h.LeerSalidaAsync(c3.Id, esperarSegundos: 1).ComoComando()).Aviso);
+            avisos.Add((await h.LeerSalidaAsync(c3.Id, esperarSegundos: 10).ComoComando()).Aviso);
+            avisos.Add((await h.LeerSalidaAsync(c2.Id, esperarSegundos: 5).ComoComando()).Aviso);
+            avisos.Add((await h.LeerSalidaAsync(c2.Id, esperarSegundos: 5).ComoComando()).Aviso);
 
             // Assert
             foreach (string? aviso in avisos)
@@ -413,12 +414,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1; echo fin", esperarSegundos: 0, timeoutSegundos: 10);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1; echo fin", esperarSegundos: 0, timeoutSegundos: 10).ComoComando();
             await Task.Delay(300);
 
             // Act
-            _ = await h.EnviarEntradaAsync(lento.Id, "\u0013", enter: false, esperarSegundos: 0);
-            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 8);
+            _ = await h.EnviarEntradaAsync(lento.Id, "\u0013", enter: false, esperarSegundos: 0).ComoComando();
+            ResultadoComando fin = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 8).ComoComando();
 
             // Assert
             _ = (fin.Estado, fin.Salida).Should().Be((EstadoPeticionEnum.Completado, "fin\n"));

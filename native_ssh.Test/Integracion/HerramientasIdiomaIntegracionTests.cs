@@ -74,7 +74,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             string listado = await herramientas.ListarDirectoriosAsync(Destino, _directorio, incluirArchivos: true);
-            ResultadoComando stat = await herramientas.EjecutarAsync(Destino, $"stat -- '{Ruta("no_existe")}' 2>&1", esperarSegundos: 10);
+            ResultadoComando stat = await herramientas.EjecutarAsync(Destino, $"stat -- '{Ruta("no_existe")}' 2>&1", esperarSegundos: 10).ComoComando();
 
             // Assert
             _ = listado.Should().Be("a\nB");

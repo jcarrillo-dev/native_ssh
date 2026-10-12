@@ -2,6 +2,7 @@ using System.Diagnostics;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -17,7 +18,7 @@ namespace NativeSsh.Test.Integracion
         {
             Stopwatch reloj = Stopwatch.StartNew();
             ResultadoComando actual;
-            while (!(actual = await herramientas.LeerSalidaAsync(id, esperarSegundos: 0)).Salida.Contains(texto, StringComparison.Ordinal))
+            while (!(actual = await herramientas.LeerSalidaAsync(id, esperarSegundos: 0).ComoComando()).Salida.Contains(texto, StringComparison.Ordinal))
             {
                 if (reloj.Elapsed > TimeSpan.FromSeconds(15))
                     throw new TimeoutException($"La salida del comando {id} no llegó a contener '{texto}': {actual.Estado} '{actual.Salida}' {actual.Aviso}");
@@ -42,18 +43,18 @@ namespace NativeSsh.Test.Integracion
                 _ = entorno.Root("printf 'root:%s\\n' \"$1\" | chpasswd", ContrasenaRoot);
             else
                 await entorno.AutenticarSudoAsync(herramientas);
-            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo uid=$(id -u)", esperarSegundos: 10);
-            ResultadoComando anidado = await herramientas.EjecutarAsync(entorno.Destino, comando, timeoutSegundos: isPlazo ? 8 : 300, esperarSegundos: 2);
+            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo uid=$(id -u)", esperarSegundos: 10).ComoComando();
+            ResultadoComando anidado = await herramientas.EjecutarAsync(entorno.Destino, comando, timeoutSegundos: isPlazo ? 8 : 300, esperarSegundos: 2).ComoComando();
             if (isSu)
-                _ = await herramientas.EnviarEntradaAsync(anidado.Id, ContrasenaRoot, esperarSegundos: 0);
+                _ = await herramientas.EnviarEntradaAsync(anidado.Id, ContrasenaRoot, esperarSegundos: 0).ComoComando();
             await EsperarSalidaAsync(herramientas, anidado.Id, "# ");
             await EsperarEnContenedorAsync(entorno, "pgrep -f '^[-]' >/dev/null");
 
             // Act
             ResultadoComando interrumpido = isPlazo
-                ? await herramientas.LeerSalidaAsync(anidado.Id, esperarSegundos: 30)
-                : await herramientas.CancelarAsync(anidado.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo uid=$(id -u) vivo=$NS_VIVO", esperarSegundos: 15);
+                ? await herramientas.LeerSalidaAsync(anidado.Id, esperarSegundos: 30).ComoComando()
+                : await herramientas.CancelarAsync(anidado.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo uid=$(id -u) vivo=$NS_VIVO", esperarSegundos: 15).ComoComando();
             salida.WriteLine($"{interrumpido.Estado}: {interrumpido.Aviso}");
             salida.WriteLine($"{siguiente.Estado}: '{siguiente.Salida}' {siguiente.Aviso}");
 
@@ -78,14 +79,14 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
             await entorno.AutenticarSudoAsync(herramientas);
-            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo uid=$(id -u)", esperarSegundos: 10);
-            ResultadoComando anidado = await herramientas.EjecutarAsync(entorno.Destino, "sudo -i; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 2);
+            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo uid=$(id -u)", esperarSegundos: 10).ComoComando();
+            ResultadoComando anidado = await herramientas.EjecutarAsync(entorno.Destino, "sudo -i; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 2).ComoComando();
             await EsperarSalidaAsync(herramientas, anidado.Id, "# ");
 
             // Act
-            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(anidado.Id, "echo raiz=$(id -u)", esperarSegundos: 2);
-            ResultadoComando fuera = await herramientas.EnviarEntradaAsync(anidado.Id, "exit 4", esperarSegundos: 20);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo uid=$(id -u) vivo=$NS_VIVO", esperarSegundos: 15);
+            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(anidado.Id, "echo raiz=$(id -u)", esperarSegundos: 2).ComoComando();
+            ResultadoComando fuera = await herramientas.EnviarEntradaAsync(anidado.Id, "exit 4", esperarSegundos: 20).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo uid=$(id -u) vivo=$NS_VIVO", esperarSegundos: 15).ComoComando();
             salida.WriteLine($"{fuera.Estado}: '{fuera.Salida}' {fuera.Aviso}");
 
             // Assert
@@ -108,14 +109,14 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
             await entorno.AutenticarSudoAsync(herramientas);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10).ComoComando();
 
             // Act
-            ResultadoComando conSudo = await herramientas.EjecutarAsync(entorno.Destino, "sudo id -u; sudo sh -c 'echo $$ > /dev/null; echo hijo'", esperarSegundos: 15);
-            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 302", esperarSegundos: 1);
+            ResultadoComando conSudo = await herramientas.EjecutarAsync(entorno.Destino, "sudo id -u; sudo sh -c 'echo $$ > /dev/null; echo hijo'", esperarSegundos: 15).ComoComando();
+            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 302", esperarSegundos: 1).ComoComando();
             await EsperarEnContenedorAsync(entorno, "pgrep -f '^[s]leep 302$' >/dev/null");
-            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo vivo=$NS_VIVO uid=$(id -u)", esperarSegundos: 15);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo vivo=$NS_VIVO uid=$(id -u)", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = conSudo.Salida.Should().Be("0\nhijo\n");

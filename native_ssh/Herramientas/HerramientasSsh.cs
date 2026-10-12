@@ -5,6 +5,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Unicode;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -276,8 +279,8 @@ namespace NativeSsh.Herramientas
         private const string AvisoCdEncadenado = "Sugerencia de rendimiento: Has encadenado 'cd <ruta> &&' en ssh_exec. Utiliza 'ssh_set_cwd(destino, ruta)' para fijar el directorio de trabajo persistente de forma automática y operar con rutas relativas limpias.";
 
         [McpServerTool(Name = "ssh_exec", Destructive = true, OpenWorld = true)]
-        [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd.")]
-        public async Task<ResultadoComando> EjecutarAsync(
+        [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd. La respuesta trae dos bloques: primero el control (JSON en una línea: id, estado, codigoSalida, siguienteByte, hasMasSalida, aviso) y después la salida del comando tal cual.")]
+        public async Task<CallToolResult> EjecutarAsync(
             [Description("usuario@servidor[:puerto]. Sin usuario se usa el usuario local.")] string destino,
             [Description("Comando bash. Admite varias líneas, heredocs y comillas.")] string comando,
             [Description("Tiempo máximo de ejecución; al agotarse se envía Ctrl+C. Entre 1 y 3600.")] int timeoutSegundos = 300,
@@ -286,12 +289,12 @@ namespace NativeSsh.Herramientas
         {
             Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos));
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
-            return Resultado(peticion, 0);
+            return DosBloques(Resultado(peticion, 0));
         }
 
         [McpServerTool(Name = "ssh_output", ReadOnly = true, Idempotent = true)]
-        [Description("Lee la salida de un comando a partir de 'desdeByte' (usa el 'siguienteByte' de la respuesta anterior). Si sigue en ejecución, espera hasta 'esperarSegundos' a que termine.")]
-        public async Task<ResultadoComando> LeerSalidaAsync(
+        [Description("Lee la salida de un comando a partir de 'desdeByte' (usa el 'siguienteByte' de la respuesta anterior). Si sigue en ejecución, espera hasta 'esperarSegundos' a que termine. Responde con los mismos dos bloques que ssh_exec: el control (JSON) y la salida tal cual.")]
+        public async Task<CallToolResult> LeerSalidaAsync(
             [Description("Id devuelto por ssh_exec.")] string id,
             [Description("Posición desde la que leer.")] long desdeByte = 0,
             [Description("Cuánto esperar a que termine. Entre 0 y 120.")] int esperarSegundos = 0,
@@ -299,12 +302,12 @@ namespace NativeSsh.Herramientas
         {
             Peticion peticion = gestor.BuscarPeticion(id);
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
-            return Resultado(peticion, desdeByte);
+            return DosBloques(Resultado(peticion, desdeByte));
         }
 
         [McpServerTool(Name = "ssh_input", Destructive = true)]
         [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y UNA línea por llamada. Lo que el comando no lea (líneas de más, Ctrl+D, o texto enviado antes de que lo pida o cuando ya no lee) NUNCA se ejecuta como orden: se DESCARTA entero y la respuesta del SIGUIENTE ssh_exec de este shell dice exactamente cuántas líneas se descartaron. Esa entrada se pierde: si el comando la necesitaba, vuelve a lanzarlo y envíala cuando la pida. NUNCA envíes Ctrl+C ('\\u0003'), Ctrl+\\ ('\\u001c') ni Ctrl+Z ('\\u001a'): se rechazan sin enviar nada; para interrumpir el comando usa SIEMPRE ssh_cancel.")]
-        public async Task<ResultadoComando> EnviarEntradaAsync(
+        public async Task<CallToolResult> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
@@ -347,7 +350,7 @@ namespace NativeSsh.Herramientas
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             ResultadoComando resultado = Resultado(peticion, desde);
-            return secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado;
+            return DosBloques(secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado);
         }
 
         internal const string MensajeSecretoNoAdmitido = "No se envió la entrada: con secreto=true el texto debe ser UNA sola línea de caracteres imprimibles, sin ningún carácter de control (0x00-0x1F y 0x7F: saltos de línea '\\n' o '\\r' en medio, tabulador, Escape, Ctrl+C, Ctrl+D, Ctrl+U, Ctrl+V...). El salto final lo añade enter=true (con enter=false se admite un '\\n' o un '\\r' al final). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida, y los caracteres de control sin secreto=true.";
@@ -434,14 +437,14 @@ namespace NativeSsh.Herramientas
 
         [McpServerTool(Name = "ssh_cancel", Destructive = true, Idempotent = true)]
         [Description("Cancela un comando: si está encolado no llega a ejecutarse; si está en ejecución se envía Ctrl+C y, si no responde, se cierra el canal del shell (se pierden las variables exportadas).")]
-        public async Task<ResultadoComando> CancelarAsync(
+        public async Task<CallToolResult> CancelarAsync(
             [Description("Id del comando.")] string id,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
             _ = peticion.SolicitarCancelacion();
             await EsperarAsync(peticion.Finalizacion, (int)Math.Ceiling(opciones.EsperaTrasCtrlC.TotalSeconds) + 2, cancellationToken).ConfigureAwait(false);
-            return Resultado(peticion, 0);
+            return DosBloques(Resultado(peticion, 0));
         }
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
@@ -2118,6 +2121,22 @@ namespace NativeSsh.Herramientas
             string cuantas = isAlMenos ? $"{lineas} o más líneas" : SesionShell.DescribirLineas(lineas);
             return $"Además, {comandos} {cuantas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden). No se detallan uno por uno: cada respuesta detalla como mucho {Peticion.MaxAvisosTecleadoEnlazados}.";
         }
+
+        // Respuesta de ssh_exec, ssh_output, ssh_input y ssh_cancel en dos bloques de texto MCP, siempre los dos y en este orden:
+        // el control (ControlComando, JSON compacto en una línea) y la salida tal cual, sin escapar (vacía si no hay). Así el
+        // modelo ve saltos de línea reales y, si el cliente vuelca la respuesta a un archivo (agy lo hace por encima de unos
+        // pocos KB), el archivo tiene líneas reales y empieza por el control. Solo tipos del SDK y el contexto JSON generado:
+        // sin reflexión (Native AOT).
+        internal static CallToolResult DosBloques(ResultadoComando resultado) => new()
+        {
+            Content =
+            [
+                new TextContentBlock { Text = JsonSerializer.Serialize(resultado.Control(), TipoControl) },
+                new TextContentBlock { Text = resultado.Salida }
+            ]
+        };
+
+        private static JsonTypeInfo<ControlComando> TipoControl => field ??= (JsonTypeInfo<ControlComando>)ContextoJsonNativeSsh.OpcionesHerramientas.GetTypeInfo(typeof(ControlComando));
 
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
         {

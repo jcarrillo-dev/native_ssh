@@ -4,6 +4,7 @@ using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
@@ -46,9 +47,9 @@ namespace NativeSsh.Test.Integracion
             // Autentica sudo en el terminal del shell: 'sudo -v' pide la contraseña por el TTY y ssh_input la responde.
             public async Task AutenticarSudoAsync(HerramientasSsh herramientas)
             {
-                ResultadoComando pregunta = await herramientas.EjecutarAsync(Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3);
+                ResultadoComando pregunta = await herramientas.EjecutarAsync(Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3).ComoComando();
                 _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.Ejecutando, "sudo espera la contraseña: {0}", pregunta.Salida);
-                ResultadoComando respuesta = await herramientas.EnviarEntradaAsync(pregunta.Id, Servidor.Contrasena, esperarSegundos: 15);
+                ResultadoComando respuesta = await herramientas.EnviarEntradaAsync(pregunta.Id, Servidor.Contrasena, esperarSegundos: 15).ComoComando();
                 _ = respuesta.Estado.Should().Be(EstadoPeticionEnum.Completado, respuesta.Salida);
                 _ = respuesta.CodigoSalida.Should().Be(0, respuesta.Salida);
             }
@@ -91,7 +92,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = entorno.Herramientas();
 
             // Act
-            ResultadoComando resultado = await herramientas.EjecutarAsync(entorno.Destino, "stat -L -c '%A' \"$(tty)\"; if command -v mesg >/dev/null; then LC_ALL=C mesg; else echo sin-mesg; fi", esperarSegundos: 30);
+            ResultadoComando resultado = await herramientas.EjecutarAsync(entorno.Destino, "stat -L -c '%A' \"$(tty)\"; if command -v mesg >/dev/null; then LC_ALL=C mesg; else echo sin-mesg; fi", esperarSegundos: 30).ComoComando();
 
             // Assert
             string[] lineas = resultado.Salida.Split('\n');
@@ -115,9 +116,9 @@ namespace NativeSsh.Test.Integracion
             _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0640 \"$1\"", archivo);
 
             // Act
-            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3);
-            ResultadoComando respuesta = await herramientas.EnviarEntradaAsync(pregunta.Id, entorno.Servidor.Contrasena, esperarSegundos: 15);
-            ResultadoComando cache = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true && echo con_cache", esperarSegundos: 15);
+            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3).ComoComando();
+            ResultadoComando respuesta = await herramientas.EnviarEntradaAsync(pregunta.Id, entorno.Servidor.Contrasena, esperarSegundos: 15).ComoComando();
+            ResultadoComando cache = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true && echo con_cache", esperarSegundos: 15).ComoComando();
             ResultadoEscritura escritura = await herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true);
 
             // Assert
@@ -141,13 +142,13 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
-            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v", esperarSegundos: 3);
+            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v", esperarSegundos: 3).ComoComando();
 
             // Act
-            ResultadoComando primera = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-1", esperarSegundos: 5);
-            ResultadoComando segunda = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-2", esperarSegundos: 5);
-            ResultadoComando tercera = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-3", esperarSegundos: 15);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente; sudo -n true 2>/dev/null; echo \"sin_cache=$?\"", esperarSegundos: 15);
+            ResultadoComando primera = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-1", esperarSegundos: 5).ComoComando();
+            ResultadoComando segunda = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-2", esperarSegundos: 5).ComoComando();
+            ResultadoComando tercera = await herramientas.EnviarEntradaAsync(pregunta.Id, "mala-3", esperarSegundos: 15).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente; sudo -n true 2>/dev/null; echo \"sin_cache=$?\"", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = primera.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
@@ -170,11 +171,11 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
-            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3);
+            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v && echo autenticado", esperarSegundos: 3).ComoComando();
 
             // Act
-            ResultadoComando cancelado = await herramientas.CancelarAsync(pregunta.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente; sudo -n true 2>/dev/null; echo \"sin_cache=$?\"", esperarSegundos: 15);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(pregunta.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente; sudo -n true 2>/dev/null; echo \"sin_cache=$?\"", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
@@ -200,12 +201,12 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             entorno.ActivarRegistroSudo();
             HerramientasSsh herramientas = entorno.Herramientas();
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10);
-            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v", esperarSegundos: 3);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10).ComoComando();
+            ResultadoComando pregunta = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; sudo -v", esperarSegundos: 3).ComoComando();
 
             // Act
-            ResultadoComando cancelado = await herramientas.CancelarAsync(pregunta.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(pregunta.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
@@ -228,12 +229,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(4));
             string archivo = $"{entorno.DirectorioRoot}/config";
             _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10).ComoComando();
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente", esperarSegundos: 15);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente", esperarSegundos: 15).ComoComando();
             salida.WriteLine(error.Message);
 
             // Assert
@@ -258,12 +259,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(4));
             string archivo = $"{entorno.DirectorioRoot}/config";
             _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; export NS_VIVO=si", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k; export NS_VIVO=si", esperarSegundos: 10).ComoComando();
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15).ComoComando();
             salida.WriteLine(error.Message);
 
             // Assert
@@ -284,12 +285,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(30));
             string archivo = $"{entorno.DirectorioRoot}/config";
             _ = entorno.Root("printf 'antes\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10).ComoComando();
 
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true);
             string id = await EsperarPromptAsync(entorno, herramientas);
-            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0);
+            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0).ComoComando();
             ResultadoEscritura resultado = await escritura;
 
             // Assert
@@ -309,12 +310,12 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(30));
             string archivo = $"{entorno.DirectorioRoot}/config";
             _ = entorno.Root("printf 'clave=1\\notra=2\\n' > \"$1\" && chmod 0600 \"$1\"", archivo);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "sudo -k", esperarSegundos: 10).ComoComando();
 
             // Act
             Task<ResultadoEscritura> reemplazo = herramientas.ReemplazarContenidoArchivoAsync(entorno.Destino, archivo, "clave=1", "clave=2", sudo: true);
             string id = await EsperarPromptAsync(entorno, herramientas);
-            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0);
+            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0).ComoComando();
             ResultadoEscritura resultado = await reemplazo;
 
             // Assert
@@ -334,9 +335,9 @@ namespace NativeSsh.Test.Integracion
             await entorno.AutenticarSudoAsync(herramientas);
 
             // Act
-            ResultadoComando antes = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true; echo \"codigo=$?\"", esperarSegundos: 15);
+            ResultadoComando antes = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true; echo \"codigo=$?\"", esperarSegundos: 15).ComoComando();
             _ = herramientas.ReiniciarShell(entorno.Destino);
-            ResultadoComando despues = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true 2>/dev/null; echo \"codigo=$?\"", esperarSegundos: 15);
+            ResultadoComando despues = await herramientas.EjecutarAsync(entorno.Destino, "sudo -n true 2>/dev/null; echo \"codigo=$?\"", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = antes.Salida.Should().Be("codigo=0\n");
@@ -354,7 +355,7 @@ namespace NativeSsh.Test.Integracion
                     if (p.Estado != EstadoPeticionEnum.Ejecutando)
                         continue;
 
-                    ResultadoComando salida = await herramientas.LeerSalidaAsync(p.IdTexto);
+                    ResultadoComando salida = await herramientas.LeerSalidaAsync(p.IdTexto).ComoComando();
                     if (salida.Salida.Contains("assword", StringComparison.Ordinal))
                         return p.IdTexto;
                 }

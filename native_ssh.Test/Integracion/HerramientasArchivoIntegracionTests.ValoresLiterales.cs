@@ -2,6 +2,7 @@ using System.Linq;
 using System.Text.Json;
 using FluentAssertions;
 using NativeSsh.Herramientas;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -243,7 +244,7 @@ namespace NativeSsh.Test.Integracion
             ResultadoDirectorioTrabajo fijadoEnMedio = await herramientas.FijarDirectorioAsync(Destino, enMedio);
             string leido = await herramientas.LeerArchivoAsync(Destino, "dentro.txt");
             _ = await herramientas.EscribirArchivoAsync(Destino, "nuevo.txt", "NUEVO\n");
-            ResultadoComando comando = await herramientas.EjecutarAsync(Destino, "cat dentro.txt", esperarSegundos: 10);
+            ResultadoComando comando = await herramientas.EjecutarAsync(Destino, "cat dentro.txt", esperarSegundos: 10).ComoComando();
             ResultadoDirectorioTrabajo fijadoAlFinal = await herramientas.FijarDirectorioAsync(Destino, alFinal);
             string leidoAlFinal = await herramientas.LeerArchivoAsync(Destino, "dentro.txt");
 

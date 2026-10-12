@@ -48,7 +48,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = new(sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "export NS_Z01=si", esperarSegundos: 20);
+            _ = await herramientas.EjecutarAsync(destino, "export NS_Z01=si", esperarSegundos: 20).ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             List<Task<string>> entradas = [];
             List<ResultadoComando> siguientes = [];
@@ -63,13 +63,13 @@ namespace NativeSsh.Test.Integracion
             {
                 for (int i = 0; i < maxSessions; i++)
                 {
-                    ResultadoComando comando = await herramientas.EjecutarAsync(destino, $"stty raw -echo; {Proceso}", timeoutSegundos: 200, esperarSegundos: 0);
+                    ResultadoComando comando = await herramientas.EjecutarAsync(destino, $"stty raw -echo; {Proceso}", timeoutSegundos: 200, esperarSegundos: 0).ComoComando();
                     await Task.Delay(1500);
-                    entradas.Add(Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, new string('b', 3 * 1024 * 1024), esperarSegundos: 0))));
+                    entradas.Add(Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, new string('b', 3 * 1024 * 1024), esperarSegundos: 0).ComoComando())));
                     await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
-                    ResultadoComando cancelado = await herramientas.CancelarAsync(comando.Id).WaitAsync(EsperaMaxima);
+                    ResultadoComando cancelado = await herramientas.CancelarAsync(comando.Id).ComoComando().WaitAsync(EsperaMaxima);
                     _ = cancelado.Aviso.Should().Contain("no se envió Ctrl+C");
-                    ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_Z01\"", timeoutSegundos: 30, esperarSegundos: 35);
+                    ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_Z01\"", timeoutSegundos: 30, esperarSegundos: 35).ComoComando();
                     siguientes.Add(siguiente);
                     if (siguiente.Estado != EstadoPeticionEnum.Completado)
                         lecturasActivasAlFallar = sesion.CanalesExecActivos;
@@ -78,7 +78,7 @@ namespace NativeSsh.Test.Integracion
 
                 desconexion = await herramientas.DesconectarAsync(destino).WaitAsync(EsperaMaxima);
                 _ = await Task.WhenAll(entradas).WaitAsync(EsperaMaxima);
-                tras = await herramientas.EjecutarAsync(destino, "echo tras", esperarSegundos: 20);
+                tras = await herramientas.EjecutarAsync(destino, "echo tras", esperarSegundos: 20).ComoComando();
                 lecturaTras = await MensajeDeFalloAsync(herramientas.LeerArchivoAsync(destino, "/etc/hostname"));
             }
             finally
@@ -114,7 +114,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = new(sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = sshd.Sshd.Destino.Clave;
-            ResultadoComando shell = await herramientas.EjecutarAsync(destino, "echo shell", esperarSegundos: 20);
+            ResultadoComando shell = await herramientas.EjecutarAsync(destino, "echo shell", esperarSegundos: 20).ComoComando();
 
             // Act
             string rechazo = await MensajeDeFalloAsync(herramientas.LeerArchivoAsync(destino, "/etc/hostname"));

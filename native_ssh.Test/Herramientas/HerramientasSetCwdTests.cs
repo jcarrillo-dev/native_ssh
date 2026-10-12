@@ -7,6 +7,7 @@ using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
 using NativeSsh.Test.Sesion.Falsos;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Herramientas
 {
@@ -134,7 +135,7 @@ namespace NativeSsh.Test.Herramientas
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", "/srv/perdido"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert
             _ = error.Message.Should().Contain("estado: ShellPerdido").And.NotContain("no llegó a ejecutarse")
@@ -245,7 +246,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.DesconectarAsync("servidor");
             NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
             bool hasSesionTrasElError = _gestor.ListarSesiones().Count > 0;
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert
             _ = error.Message.Should().EndWith($"La sesión con {Destino} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en $HOME (~).")
@@ -267,7 +268,7 @@ namespace NativeSsh.Test.Herramientas
             // Act
             _ = await _herramientas.DesconectarAsync("servidor");
             NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
-            _ = await _herramientas.EjecutarAsync("servidor", "hola");
+            _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert
             _ = error.Message.Should().EndWith($"La sesión con {Destino} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en $HOME (~).")
@@ -419,7 +420,7 @@ namespace NativeSsh.Test.Herramientas
             Peticion export = _gestor.ListarPeticiones().Single(p => p.Comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal));
 
             // Act
-            _ = await _herramientas.CancelarAsync(export.IdTexto);
+            _ = await _herramientas.CancelarAsync(export.IdTexto).ComoComando();
             NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert

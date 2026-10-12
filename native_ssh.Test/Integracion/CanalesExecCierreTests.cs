@@ -49,7 +49,7 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             long sleep = 610_000 + Random.Shared.Next(10_000);
-            _ = await _herramientas.EjecutarAsync(Destino, "export NS_VIVA=si");
+            _ = await _herramientas.EjecutarAsync(Destino, "export NS_VIVA=si").ComoComando();
             int aceptadas = _sshd.ConexionesAceptadas();
             int senales = _sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion);
 
@@ -63,7 +63,7 @@ namespace NativeSsh.Test.Integracion
                 _ = await cancelada.Should().ThrowAsync<OperationCanceledException>();
                 NativeSshException plazoLocal = (await FluentActions.Awaiting(() => ExecAsync($"setsid sleep {sleep + 1} & wait", 1))
                     .Should().ThrowAsync<NativeSshException>()).Which;
-                ResultadoComando viva = await _herramientas.EjecutarAsync(Destino, "echo \"$NS_VIVA\"");
+                ResultadoComando viva = await _herramientas.EjecutarAsync(Destino, "echo \"$NS_VIVA\"").ComoComando();
                 int conexiones = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas;
                 int aceptadasDespues = _sshd.ConexionesAceptadas();
 

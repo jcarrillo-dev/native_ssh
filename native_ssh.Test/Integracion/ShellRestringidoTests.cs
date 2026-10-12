@@ -51,9 +51,9 @@ namespace NativeSsh.Test.Integracion
             await EsperasPrueba.EsperarHastaAsync(() => BashLocal.Ejecutar($"ps -eo args= | awk '$1==\"sleep\" && $2==\"{duracion}\"' | wc -l") == "2");
 
             // Act
-            ResultadoComando sinHueco = await _herramientas.EjecutarAsync(Destino, "echo sin_hueco", esperarSegundos: 10);
+            ResultadoComando sinHueco = await _herramientas.EjecutarAsync(Destino, "echo sin_hueco", esperarSegundos: 10).ComoComando();
             ResultadoCanalExec[] ocupados = await Task.WhenAll(ocupan);
-            ResultadoComando conHueco = await _herramientas.EjecutarAsync(Destino, "echo con_hueco");
+            ResultadoComando conHueco = await _herramientas.EjecutarAsync(Destino, "echo con_hueco").ComoComando();
 
             // Assert
             _ = sinHueco.Estado.Should().Be(EstadoPeticionEnum.Error);

@@ -11,7 +11,7 @@ namespace NativeSsh.Herramientas
         PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         UseStringEnumConverter = true)]
-    [JsonSerializable(typeof(ResultadoComando))]
+    [JsonSerializable(typeof(ControlComando))]
     [JsonSerializable(typeof(ResultadoEstado))]
     [JsonSerializable(typeof(ResultadoAccion))]
     [JsonSerializable(typeof(ResultadoMetadatos))]

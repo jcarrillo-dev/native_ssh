@@ -56,7 +56,7 @@ namespace NativeSsh.Test.Integracion
         {
             Stopwatch reloj = Stopwatch.StartNew();
             ResultadoComando actual;
-            while (!(actual = await _herramientas.LeerSalidaAsync(id)).Salida.Contains(texto, StringComparison.Ordinal))
+            while (!(actual = await _herramientas.LeerSalidaAsync(id).ComoComando()).Salida.Contains(texto, StringComparison.Ordinal))
             {
                 if (reloj.Elapsed > TimeSpan.FromSeconds(15))
                     throw new TimeoutException($"La salida del comando {id} no llegó a contener '{texto}': {actual.Estado} '{actual.Salida}' {actual.Aviso}");
@@ -78,16 +78,16 @@ namespace NativeSsh.Test.Integracion
             string rc = Path.Combine(_sshd.DirectorioEstado, $"rc_{Guid.NewGuid():N}");
             await File.WriteAllTextAsync(rc, "[ () { return 0; }\ntest () { return 0; }\n");
             string opciones = isRcEnganoso ? $"--noprofile --rcfile {rc}" : "--norc --noprofile";
-            ResultadoComando enLaSesion = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo PADRE=$(ps -o comm= -p $PPID)", esperarSegundos: 20);
-            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash {opciones} -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0);
+            ResultadoComando enLaSesion = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo PADRE=$(ps -o comm= -p $PPID)", esperarSegundos: 20).ComoComando();
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash {opciones} -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => ProcesosAnidados() == 1, TimeSpan.FromSeconds(10));
             await Task.Delay(500);
 
             // Act
             ResultadoComando interrumpido = isPlazo
-                ? await _herramientas.LeerSalidaAsync(comando.Id, esperarSegundos: 30)
-                : await _herramientas.CancelarAsync(comando.Id);
-            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo PADRE=$(ps -o comm= -p $PPID) Q=$NS_EO2", esperarSegundos: 20);
+                ? await _herramientas.LeerSalidaAsync(comando.Id, esperarSegundos: 30).ComoComando()
+                : await _herramientas.CancelarAsync(comando.Id).ComoComando();
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo PADRE=$(ps -o comm= -p $PPID) Q=$NS_EO2", esperarSegundos: 20).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => ProcesosAnidados() == 0, TimeSpan.FromSeconds(10));
             File.Delete(rc);
 
@@ -106,15 +106,15 @@ namespace NativeSsh.Test.Integracion
         public async Task ShellAnidadoUsadoConSshInputYCerradoConExit_TerminaCompletadoSinAvisoYConservaElShell()
         {
             // Arrange
-            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo $$", esperarSegundos: 20);
+            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo $$", esperarSegundos: 20).ComoComando();
             string pid = inicio.Salida.Trim();
-            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash --norc --noprofile -i'; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 0);
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash --norc --noprofile -i'; echo salio=$?", timeoutSegundos: 120, esperarSegundos: 0).ComoComando();
             await EsperarSalidaAsync(comando.Id, "$ ");
 
             // Act
-            ResultadoComando dentro = await _herramientas.EnviarEntradaAsync(comando.Id, "echo dentro=$$", esperarSegundos: 2);
-            ResultadoComando fuera = await _herramientas.EnviarEntradaAsync(comando.Id, "exit 3", esperarSegundos: 20);
-            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EO2", esperarSegundos: 20);
+            ResultadoComando dentro = await _herramientas.EnviarEntradaAsync(comando.Id, "echo dentro=$$", esperarSegundos: 2).ComoComando();
+            ResultadoComando fuera = await _herramientas.EnviarEntradaAsync(comando.Id, "exit 3", esperarSegundos: 20).ComoComando();
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EO2", esperarSegundos: 20).ComoComando();
 
             // Assert
             _ = dentro.Salida.Should().Contain("dentro=").And.NotContain($"dentro={pid}");
@@ -131,7 +131,7 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             string fuente = Path.Combine(_sshd.DirectorioEstado, $"fuente_{Guid.NewGuid():N}.sh");
-            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_FP=si; echo $$", esperarSegundos: 20);
+            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_FP=si; echo $$", esperarSegundos: 20).ComoComando();
             string pid = inicio.Salida.Trim();
             (string Comando, string Salida)[] completos =
             [
@@ -153,20 +153,20 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             foreach ((string comando, _) in completos)
-                resultados.Add(await _herramientas.EjecutarAsync(Destino, comando, esperarSegundos: 20));
+                resultados.Add(await _herramientas.EjecutarAsync(Destino, comando, esperarSegundos: 20).ComoComando());
             foreach (string comando in cancelables)
             {
-                ResultadoComando enCurso = await _herramientas.EjecutarAsync(Destino, comando, timeoutSegundos: 300, esperarSegundos: 1);
-                cancelados.Add(await _herramientas.CancelarAsync(enCurso.Id));
+                ResultadoComando enCurso = await _herramientas.EjecutarAsync(Destino, comando, timeoutSegundos: 300, esperarSegundos: 1).ComoComando();
+                cancelados.Add(await _herramientas.CancelarAsync(enCurso.Id).ComoComando());
             }
 
-            ResultadoComando trasCancelar = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_FP", esperarSegundos: 20);
+            ResultadoComando trasCancelar = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_FP", esperarSegundos: 20).ComoComando();
 
             ResultadoAccion reinicio = _herramientas.ReiniciarShell(Destino);
-            ResultadoComando trasReinicio = await _herramientas.EjecutarAsync(Destino, "echo v=$NS_FP", esperarSegundos: 20);
-            ResultadoComando enCursoTrasReinicio = await _herramientas.EjecutarAsync(Destino, Proceso, timeoutSegundos: 300, esperarSegundos: 1);
-            ResultadoComando canceladoTrasReinicio = await _herramientas.CancelarAsync(enCursoTrasReinicio.Id);
-            ResultadoComando final = await _herramientas.EjecutarAsync(Destino, "echo fin", esperarSegundos: 20);
+            ResultadoComando trasReinicio = await _herramientas.EjecutarAsync(Destino, "echo v=$NS_FP", esperarSegundos: 20).ComoComando();
+            ResultadoComando enCursoTrasReinicio = await _herramientas.EjecutarAsync(Destino, Proceso, timeoutSegundos: 300, esperarSegundos: 1).ComoComando();
+            ResultadoComando canceladoTrasReinicio = await _herramientas.CancelarAsync(enCursoTrasReinicio.Id).ComoComando();
+            ResultadoComando final = await _herramientas.EjecutarAsync(Destino, "echo fin", esperarSegundos: 20).ComoComando();
 
             // Assert
             for (int i = 0; i < completos.Length; i++)
@@ -199,12 +199,12 @@ namespace NativeSsh.Test.Integracion
         public async Task ExecQueSustituyeAlShellDeLaSesion_SeDetectaYElSiguienteVaAUnShellNuevo(string comando)
         {
             // Arrange
-            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EX=si; echo $$", esperarSegundos: 20);
+            ResultadoComando inicio = await _herramientas.EjecutarAsync(Destino, "export NS_EX=si; echo $$", esperarSegundos: 20).ComoComando();
             string pid = inicio.Salida.Trim();
 
             // Act
-            ResultadoComando conExec = await _herramientas.EjecutarAsync(Destino, comando, timeoutSegundos: 2, esperarSegundos: 20);
-            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EX", esperarSegundos: 20);
+            ResultadoComando conExec = await _herramientas.EjecutarAsync(Destino, comando, timeoutSegundos: 2, esperarSegundos: 20).ComoComando();
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync(Destino, "echo pid=$$ v=$NS_EX", esperarSegundos: 20).ComoComando();
 
             // Assert
             _ = conExec.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);

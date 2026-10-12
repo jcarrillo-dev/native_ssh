@@ -59,7 +59,7 @@ namespace NativeSsh.Test.Integracion
                 NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "true");
+            _ = await herramientas.EjecutarAsync(destino, "true").ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
             long sleep = 660_000 + Random.Shared.Next(10_000);
@@ -102,7 +102,7 @@ namespace NativeSsh.Test.Integracion
             OpcionesNativeSsh opciones = _sshd.Sshd.Opciones();
             await using GestorSesiones gestor = Gestor(opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await new HerramientasSsh(gestor, opciones).EjecutarAsync(destino, "true");
+            _ = await new HerramientasSsh(gestor, opciones).EjecutarAsync(destino, "true").ComoComando();
 
             // Act
             string mensaje = await MensajeConCupoOcupadoAsync(gestor, destino);
@@ -121,7 +121,7 @@ namespace NativeSsh.Test.Integracion
             OpcionesNativeSsh opciones = _sshd.Sshd.Opciones(maxConexiones: 1000);
             await using GestorSesiones gestor = Gestor(opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await new HerramientasSsh(gestor, opciones).EjecutarAsync(destino, "true");
+            _ = await new HerramientasSsh(gestor, opciones).EjecutarAsync(destino, "true").ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             string abandonada;

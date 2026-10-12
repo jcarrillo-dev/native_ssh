@@ -346,7 +346,7 @@ namespace NativeSsh.Test.Integracion
             string ruta = Path.Combine(bin, nombre);
             await File.WriteAllTextAsync(ruta, "#!/bin/bash\n" + script + "\n");
             _ = Bash($"chmod 700 '{ruta}'");
-            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{bin}':\"$PATH\"", esperarSegundos: 10);
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{bin}':\"$PATH\"", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
         }
 

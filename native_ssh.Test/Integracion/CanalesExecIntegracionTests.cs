@@ -60,7 +60,7 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             await File.WriteAllTextAsync(Ruta("a.txt"), "uno\n");
-            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 20", esperarSegundos: 0);
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 20", esperarSegundos: 0).ComoComando();
             Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
@@ -73,7 +73,7 @@ namespace NativeSsh.Test.Integracion
             _ = metadatos.Existe.Should().BeTrue();
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
             _ = _gestor.BuscarPeticion(largo.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
-            _ = (await _herramientas.CancelarAsync(largo.Id)).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = (await _herramientas.CancelarAsync(largo.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
         }
 
         // Mata los procesos sshd de las conexiones abiertas con el sshd local sin tocar el proceso maestro: el TCP se
@@ -108,7 +108,7 @@ namespace NativeSsh.Test.Integracion
                 NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             await File.WriteAllTextAsync(Ruta("a.txt"), "uno\n");
-            _ = await herramientas.EjecutarAsync(Destino, "echo previo");
+            _ = await herramientas.EjecutarAsync(Destino, "echo previo").ComoComando();
             List<string> fallos = [];
 
             // Act: con el shell vivo, caída y luego ssh_exec directo, o una lectura (reconecta por exec) y ssh_exec.
@@ -118,7 +118,7 @@ namespace NativeSsh.Test.Integracion
                 MatarConexionesDelSshd();
                 await EsperasPrueba.EsperarHastaAsync(() => !gestor.ListarSesiones().Single().IsConectada);
                 string lectura = isConLectura ? await herramientas.LeerArchivoAsync(Destino, Ruta("a.txt")) : "[Líneas 1-1 de 1]\nuno\n";
-                ResultadoComando comando = await herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                ResultadoComando comando = await herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15).ComoComando();
                 if (lectura != "[Líneas 1-1 de 1]\nuno\n" || comando.Estado != EstadoPeticionEnum.Completado || comando.Salida != $"tras_{i}\n" || comando.Aviso?.Contains("Shell remoto recreado", StringComparison.Ordinal) != true)
                     fallos.Add($"{i} (lectura previa: {isConLectura}): lectura='{lectura}' estado={comando.Estado} salida='{comando.Salida}' aviso='{comando.Aviso}'");
             }
@@ -247,7 +247,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             string[] lecturas = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => _herramientas.LeerArchivoAsync(Destino, Ruta("a.txt"))));
-            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, "echo hola");
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, "echo hola").ComoComando();
             _ = await _herramientas.BuscarAsync(Destino, "uno", _directorio);
             _ = await _herramientas.BuscarPorNombreAsync(Destino, "*.txt", _directorio);
             _ = await _herramientas.ListarDirectoriosAsync(Destino, _directorio, incluirArchivos: true);
@@ -271,7 +271,7 @@ namespace NativeSsh.Test.Integracion
             _ = await _herramientas.FijarDirectorioAsync(Destino, _directorio);
             string lectura = await _herramientas.LeerArchivoAsync(Destino, "relativo.txt");
             _ = _herramientas.ReiniciarShell(Destino);
-            ResultadoComando pwd = await _herramientas.EjecutarAsync(Destino, "pwd; echo \"$__NS_CWD\"");
+            ResultadoComando pwd = await _herramientas.EjecutarAsync(Destino, "pwd; echo \"$__NS_CWD\"").ComoComando();
             _ = await _herramientas.FijarDirectorioAsync(Destino, null);
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync(Destino, "relativo.txt"))
                 .Should().ThrowAsync<NativeSshException>()).Which;

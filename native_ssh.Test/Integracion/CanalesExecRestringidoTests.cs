@@ -63,7 +63,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act: sin shell PTY todavía, el canal exec solo tiene el PATH por defecto de sshd.
             string antes = await ExecAsync("command -v ns_sonda_path || echo sin-sonda");
-            ResultadoComando rgDelShell = await _herramientas.EjecutarAsync(Destino, "command -v rg");
+            ResultadoComando rgDelShell = await _herramientas.EjecutarAsync(Destino, "command -v rg").ComoComando();
             string despues = await ExecAsync("command -v ns_sonda_path || echo sin-sonda");
             string busqueda = await _herramientas.BuscarAsync(Destino, "algo", _directorio);
 
@@ -78,7 +78,7 @@ namespace NativeSsh.Test.Integracion
         public async Task SinTimeoutEnElServidor_ElWatchdogMataElScriptYSusHijosAlVencer()
         {
             // Arrange: el shell captura un PATH sin 'timeout'.
-            _ = await _herramientas.EjecutarAsync(Destino, "true");
+            _ = await _herramientas.EjecutarAsync(Destino, "true").ComoComando();
             string sinTimeout = await ExecAsync("command -v timeout || echo sin-timeout");
             long hijo = 500_000 + Random.Shared.Next(100_000);
             long principal = hijo + 100_000;
@@ -105,7 +105,7 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange: el shell ocupa una de las dos sesiones que admite el servidor (su apertura no va en el bucle de
             // comandos: se espera a que termine para que las lecturas no se adelanten).
-            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 4; echo fin", esperarSegundos: 0);
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 4; echo fin", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarSesiones().Single().IsShellActivo);
             await File.WriteAllTextAsync(Path.Combine(_directorio, "a.txt"), "uno\n");
 
@@ -125,8 +125,8 @@ namespace NativeSsh.Test.Integracion
                 }
             }
 
-            ResultadoComando fin = await _herramientas.LeerSalidaAsync(largo.Id, esperarSegundos: 20);
-            ResultadoComando otro = await _herramientas.EjecutarAsync(Destino, "echo sigue");
+            ResultadoComando fin = await _herramientas.LeerSalidaAsync(largo.Id, esperarSegundos: 20).ComoComando();
+            ResultadoComando otro = await _herramientas.EjecutarAsync(Destino, "echo sigue").ComoComando();
             string lectura = await _herramientas.LeerArchivoAsync(Destino, Path.Combine(_directorio, "a.txt"));
 
             // Assert

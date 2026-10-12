@@ -70,7 +70,7 @@ namespace NativeSsh.Test.Integracion
         private async Task QuitarDelPathAsync(HerramientasSsh herramientas, params string[] excluidas)
         {
             string granja = GranjaBinarios.Crear(Ruta("granja"), excluidas);
-            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{granja}'; hash -r", esperarSegundos: 10);
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{granja}'; hash -r", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
         }
 
@@ -150,7 +150,7 @@ namespace NativeSsh.Test.Integracion
         {
             string tmpdir = Ruta("tmpdir");
             _ = Directory.CreateDirectory(tmpdir);
-            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{tmpdir}'", esperarSegundos: 10);
+            ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{tmpdir}'", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
             return tmpdir;
         }
@@ -391,7 +391,7 @@ namespace NativeSsh.Test.Integracion
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message));
+            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando();
 
             // Assert: el script restaura y limpia al salir, tras el Ctrl+C.
             _ = error.Message.Should().Contain("TiempoAgotado").And.Contain($"Se restauró el contenido original de '{archivo}'").And.NotContain("__NS_");
@@ -421,8 +421,8 @@ namespace NativeSsh.Test.Integracion
                     : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
-            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message));
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(Destino, "echo vivo", esperarSegundos: 10);
+            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(Destino, "echo vivo", esperarSegundos: 10).ComoComando();
 
             // Assert
             string copia = Directory.GetFiles(carpeta, ".f.txt.orig.*").Should().ContainSingle().Which;
@@ -458,7 +458,7 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
             _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
             _ = error!.Message.Should().Contain(isPorToken ? "Cancelado" : "TiempoAgotado").And.Contain("no se pudo restaurar").And.Contain($"'{copia}'").And.Contain($"'{nuevo}'").And.NotContain("__NS_");
-            _ = (await herramientas.LeerSalidaAsync(IdDelError(error.Message))).Estado.Should().Be(isPorToken ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
+            _ = (await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando()).Estado.Should().Be(isPorToken ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
         }
 
         // Al escribir en un archivo, el núcleo le quita los bits setuid y setgid (este, si el grupo tiene ejecución): la

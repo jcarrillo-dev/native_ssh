@@ -3,6 +3,7 @@ using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -21,16 +22,16 @@ namespace NativeSsh.Test.Integracion
             OpcionesNativeSsh opciones = gemelos.Opciones();
             await using GestorSesiones gestor = gemelos.Gestor(opciones);
             HerramientasSsh herramientas = new(gestor, opciones);
-            ResultadoComando enA = await herramientas.EjecutarAsync(gemelos.DestinoA, "export NS_GEMELO=si; echo \"$(hostname) $$ $PPID\"", esperarSegundos: 20);
-            ResultadoComando ssh = await herramientas.EjecutarAsync(gemelos.DestinoA, gemelos.SshAlGemelo, timeoutSegundos: isPlazo ? 10 : 300, esperarSegundos: 0);
+            ResultadoComando enA = await herramientas.EjecutarAsync(gemelos.DestinoA, "export NS_GEMELO=si; echo \"$(hostname) $$ $PPID\"", esperarSegundos: 20).ComoComando();
+            ResultadoComando ssh = await herramientas.EjecutarAsync(gemelos.DestinoA, gemelos.SshAlGemelo, timeoutSegundos: isPlazo ? 10 : 300, esperarSegundos: 0).ComoComando();
             await EsperarSalidaAsync(herramientas, ssh.Id, "@gemelo-b");
-            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(ssh.Id, "echo \"REMOTO $(hostname) $$ $PPID\"", esperarSegundos: 2);
+            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(ssh.Id, "echo \"REMOTO $(hostname) $$ $PPID\"", esperarSegundos: 2).ComoComando();
 
             // Act
             ResultadoComando interrumpido = isPlazo
-                ? await herramientas.LeerSalidaAsync(ssh.Id, esperarSegundos: 30)
-                : await herramientas.CancelarAsync(ssh.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(gemelos.DestinoA, "echo \"$(hostname) v=$NS_GEMELO\"", esperarSegundos: 20);
+                ? await herramientas.LeerSalidaAsync(ssh.Id, esperarSegundos: 30).ComoComando()
+                : await herramientas.CancelarAsync(ssh.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(gemelos.DestinoA, "echo \"$(hostname) v=$NS_GEMELO\"", esperarSegundos: 20).ComoComando();
             salida.WriteLine($"sesión: {enA.Salida.Trim()}; dentro: {dentro.Salida.Trim()}");
             salida.WriteLine($"{interrumpido.Estado}: {interrumpido.Aviso}");
             salida.WriteLine($"{siguiente.Estado}: '{siguiente.Salida}' {siguiente.Aviso}");
@@ -63,21 +64,21 @@ namespace NativeSsh.Test.Integracion
             const string Otro = "nsotro";
             const string ContrasenaOtro = "otro-de-prueba";
             _ = entorno.Root("id \"$2\" >/dev/null 2>&1 || useradd -m \"$2\"; printf '%s:%s\\n' \"$2\" \"$3\" | chpasswd; cp /usr/bin/setpriv \"$1\" && setcap cap_setuid,cap_setgid+ep \"$1\"", programa, Otro, ContrasenaOtro);
-            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo \"$(id -un) $$ $PPID\"", esperarSegundos: 10);
+            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo \"$(id -un) $$ $PPID\"", esperarSegundos: 10).ComoComando();
             string comando = via == "setpriv"
                 ? $"exec {programa} --reuid={Otro} --regid={Otro} --clear-groups env -i PS1='{Otro}$ ' TERM=dumb bash --norc --noprofile -i"
                 : $"exec su - {Otro}";
-            ResultadoComando conExec = await herramientas.EjecutarAsync(entorno.Destino, comando, timeoutSegundos: isPlazo ? 8 : 300, esperarSegundos: 2);
+            ResultadoComando conExec = await herramientas.EjecutarAsync(entorno.Destino, comando, timeoutSegundos: isPlazo ? 8 : 300, esperarSegundos: 2).ComoComando();
             if (via == "su")
-                _ = await herramientas.EnviarEntradaAsync(conExec.Id, ContrasenaOtro, esperarSegundos: 0);
+                _ = await herramientas.EnviarEntradaAsync(conExec.Id, ContrasenaOtro, esperarSegundos: 0).ComoComando();
             await EsperarSalidaAsync(herramientas, conExec.Id, "$ ");
-            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(conExec.Id, "echo \"DENTRO $(id -un) $$ $PPID\"", esperarSegundos: 2);
+            ResultadoComando dentro = await herramientas.EnviarEntradaAsync(conExec.Id, "echo \"DENTRO $(id -un) $$ $PPID\"", esperarSegundos: 2).ComoComando();
 
             // Act
             ResultadoComando interrumpido = isPlazo
-                ? await herramientas.LeerSalidaAsync(conExec.Id, esperarSegundos: 30)
-                : await herramientas.CancelarAsync(conExec.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"$(id -un) v=$NS_VIVO\"", esperarSegundos: 15);
+                ? await herramientas.LeerSalidaAsync(conExec.Id, esperarSegundos: 30).ComoComando()
+                : await herramientas.CancelarAsync(conExec.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"$(id -un) v=$NS_VIVO\"", esperarSegundos: 15).ComoComando();
             _ = entorno.Root("rm -f -- \"$1\"; pkill -KILL -u \"$2\" || true", programa, Otro);
             salida.WriteLine($"sesión: {enLaSesion.Salida.Trim()}; dentro: {dentro.Salida.Trim()}");
             salida.WriteLine($"{interrumpido.Estado}: {interrumpido.Aviso}");

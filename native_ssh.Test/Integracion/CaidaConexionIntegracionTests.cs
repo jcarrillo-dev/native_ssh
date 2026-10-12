@@ -63,7 +63,7 @@ namespace NativeSsh.Test.Integracion
         public async Task CaidaDeLaConexion_SinEsperarASuDeteccion_ElSiguienteExecSeEjecutaEnUnShellNuevo()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync(Destino, "echo previo");
+            _ = await _herramientas.EjecutarAsync(Destino, "echo previo").ComoComando();
             int aceptadas = _sshd.ConexionesAceptadas();
             List<string> fallos = [];
             List<string> lecturas = [];
@@ -75,9 +75,9 @@ namespace NativeSsh.Test.Integracion
                 MatarConexiones();
                 if (isConLectura)
                     lecturas.Add(await LeerAsync());
-                ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15).ComoComando();
                 if (!isConLectura && comando.Estado == EstadoPeticionEnum.ShellPerdido)
-                    comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15);
+                    comando = await _herramientas.EjecutarAsync(Destino, $"echo tras_{i}", esperarSegundos: 15).ComoComando();
                 if (comando.Estado != EstadoPeticionEnum.Completado || comando.Salida != $"tras_{i}\n" || comando.Aviso?.Contains("Shell remoto recreado", StringComparison.Ordinal) != true)
                     fallos.Add($"{i} (lectura previa: {isConLectura}): estado={comando.Estado} salida='{comando.Salida}' aviso='{comando.Aviso}'");
             }
@@ -94,7 +94,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             long sleep = 640_000 + Random.Shared.Next(10_000);
             string[] antes = _sshd.ProcesosDeConexion();
-            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, $"sleep {sleep}; echo fin", esperarSegundos: 0);
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, $"sleep {sleep}; echo fin", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep).Length > 0);
             string[] propios = [.. _sshd.ProcesosDeConexion().Except(antes)];
             int aceptadas = _sshd.ConexionesAceptadas();
@@ -104,10 +104,10 @@ namespace NativeSsh.Test.Integracion
                 // Act
                 _ = BashLocal.Ejecutar($"kill -9 {string.Join(' ', propios)}");
                 Stopwatch reloj = Stopwatch.StartNew();
-                ResultadoComando fin = await _herramientas.LeerSalidaAsync(largo.Id, esperarSegundos: 20);
+                ResultadoComando fin = await _herramientas.LeerSalidaAsync(largo.Id, esperarSegundos: 20).ComoComando();
                 reloj.Stop();
                 EstadoSesion estado = _herramientas.Estado().Sesiones.Single();
-                ResultadoComando despues = await _herramientas.EjecutarAsync(Destino, "echo despues");
+                ResultadoComando despues = await _herramientas.EjecutarAsync(Destino, "echo despues").ComoComando();
 
                 // Assert
                 _ = propios.Should().NotBeEmpty();

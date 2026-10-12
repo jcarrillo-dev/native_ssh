@@ -6,6 +6,7 @@ using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
 using NativeSsh.Test.Sesion.Falsos;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Herramientas
 {
@@ -35,7 +36,7 @@ namespace NativeSsh.Test.Herramientas
         public async Task EnvioDelComandoFallido_NoAfirmaQueNoSeModifico()
         {
             // Arrange
-            _ = await _herramientas.EjecutarAsync("servidor", "true", esperarSegundos: 10);
+            _ = await _herramientas.EjecutarAsync("servidor", "true", esperarSegundos: 10).ComoComando();
             _fabrica.Ultima!.CanalActual!.RechazarEscrituras();
 
             // Act

@@ -3,6 +3,7 @@ using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -76,12 +77,12 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
             await entorno.AutenticarSudoAsync(herramientas);
-            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 301", esperarSegundos: 1);
+            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 301", esperarSegundos: 1).ComoComando();
             await EsperarEnContenedorAsync(entorno, "pgrep -f '^[s]leep 301$' >/dev/null");
 
             // Act
-            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente", esperarSegundos: 15);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo siguiente", esperarSegundos: 15).ComoComando();
 
             // Assert
             _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
@@ -105,13 +106,13 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
             await entorno.AutenticarSudoAsync(herramientas);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10);
-            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 301", esperarSegundos: 1);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10).ComoComando();
+            ResultadoComando largo = await herramientas.EjecutarAsync(entorno.Destino, "sudo sleep 301", esperarSegundos: 1).ComoComando();
             await EsperarEnContenedorAsync(entorno, "pgrep -f '^[s]leep 301$' >/dev/null");
 
             // Act
-            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(largo.Id).ComoComando();
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15).ComoComando();
 
             // Assert
             salida.WriteLine($"{cancelado.Estado}: {cancelado.Aviso}");
@@ -131,7 +132,7 @@ namespace NativeSsh.Test.Integracion
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas(TimeSpan.FromSeconds(4));
             await entorno.AutenticarSudoAsync(herramientas);
-            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10);
+            _ = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si", esperarSegundos: 10).ComoComando();
             string archivo = $"{entorno.DirectorioRoot}/{NombreLento}";
             _ = entorno.Root("printf 'original completo\\n' > \"$1\" && chmod 0640 \"$1\" && ln \"$1\" \"$1.enlace\"", archivo);
             string antes = Atributos(entorno, archivo);
@@ -143,7 +144,7 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(error.Message);
             await EsperarEntradasAsync(entorno, 2);
 
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, "echo \"vivo=$NS_VIVO\"", esperarSegundos: 15).ComoComando();
 
             // Assert: restaurado y con el shell intacto (con la entrada del pipe, sudo no lee el terminal).
             _ = entorno.Root("cat \"$1\"", archivo).Should().Be("original completo\n");
@@ -266,8 +267,8 @@ namespace NativeSsh.Test.Integracion
             await entorno.AutenticarSudoAsync(primera);
             await using GestorSesiones otroGestor = entorno.Servidor.Gestor();
             HerramientasSsh segunda = entorno.Servidor.Herramientas(otroGestor, TimeSpan.FromSeconds(20));
-            ResultadoComando pregunta = await segunda.EjecutarAsync(entorno.Destino, "sudo -v", esperarSegundos: 3);
-            _ = await segunda.EnviarEntradaAsync(pregunta.Id, entorno.Servidor.Contrasena, esperarSegundos: 15);
+            ResultadoComando pregunta = await segunda.EjecutarAsync(entorno.Destino, "sudo -v", esperarSegundos: 3).ComoComando();
+            _ = await segunda.EnviarEntradaAsync(pregunta.Id, entorno.Servidor.Contrasena, esperarSegundos: 15).ComoComando();
             string archivo = $"{entorno.DirectorioRoot}/{NombreLento}";
             _ = entorno.Root("printf 'original completo\\n' > \"$1\" && chmod 0640 \"$1\" && ln \"$1\" \"$1.enlace\"", archivo);
 

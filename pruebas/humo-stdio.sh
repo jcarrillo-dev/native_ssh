@@ -87,10 +87,24 @@ def enviar(metodo, parametros=None, notificacion=False):
     finally:
         vigilante.cancel()
 
+HERRAMIENTAS_DOS_BLOQUES = ("ssh_exec", "ssh_output", "ssh_input", "ssh_cancel")
+
+# ssh_exec, ssh_output, ssh_input y ssh_cancel responden con dos bloques de texto: el control (JSON en una sola línea, sin la
+# salida) y la salida tal cual. Se comprueba el contrato y se devuelve el control con la salida dentro, para las comprobaciones.
 def llamar(nombre, argumentos):
     resultado = enviar("tools/call", {"name": nombre, "arguments": argumentos})["result"]
+    es_error = resultado.get("isError", False)
     texto = resultado["content"][0]["text"]
-    return resultado.get("isError", False), texto
+    if nombre in HERRAMIENTAS_DOS_BLOQUES and not es_error:
+        bloques = resultado["content"]
+        if len(bloques) != 2 or any(b.get("type") != "text" for b in bloques) or "\n" in texto:
+            fallar(f"{nombre}: se esperaban dos bloques de texto con el control en una línea: {json.dumps(bloques, ensure_ascii=False)[:2000]}")
+        control = leer_json(texto, nombre)
+        if "salida" in control:
+            fallar(f"{nombre}: el control lleva la salida: {texto}")
+        control["salida"] = bloques[1]["text"]
+        texto = json.dumps(control, ensure_ascii=False)
+    return es_error, texto
 
 def comprobar(condicion, mensaje):
     if not condicion:

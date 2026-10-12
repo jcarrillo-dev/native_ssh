@@ -71,7 +71,7 @@ namespace NativeSsh.Test.Integracion
             {
                 for (int ronda = 0; ronda < rondasPorCierre; ronda++)
                 {
-                    ResultadoComando chorro = await herramientas.EjecutarAsync(destino, Chorro, timeoutSegundos: 60, esperarSegundos: 0);
+                    ResultadoComando chorro = await herramientas.EjecutarAsync(destino, Chorro, timeoutSegundos: 60, esperarSegundos: 0).ComoComando();
                     Peticion peticion = gestor.BuscarPeticion(chorro.Id);
                     await EsperasPrueba.EsperarHastaAsync(() => peticion.Salida.Longitud > 64 * 1024, Tope);
                     await Task.Delay(Random.Shared.Next(0, 30));
@@ -85,7 +85,7 @@ namespace NativeSsh.Test.Integracion
                     };
                     bool isCerrado = await Task.WhenAny(operacion, Task.Delay(Tope)) == operacion;
                     bool isTerminado = await Task.WhenAny(peticion.Finalizacion, Task.Delay(Tope)) == peticion.Finalizacion;
-                    ResultadoComando vivo = await herramientas.EjecutarAsync(destino, "echo vivo", timeoutSegundos: 15, esperarSegundos: 20).WaitAsync(Tope);
+                    ResultadoComando vivo = await herramientas.EjecutarAsync(destino, "echo vivo", timeoutSegundos: 15, esperarSegundos: 20).ComoComando().WaitAsync(Tope);
                     TimeSpan duracion = reloj.Elapsed;
                     peor = duracion > peor ? duracion : peor;
                     if (!isCerrado || !isTerminado || vivo.Salida != "vivo\n")

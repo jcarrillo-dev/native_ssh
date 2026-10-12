@@ -2,12 +2,33 @@ using NativeSsh.Comun;
 
 namespace NativeSsh.Herramientas
 {
+    // Respuesta de ssh_exec, ssh_output, ssh_input y ssh_cancel. No se serializa entera: va en dos bloques de texto MCP
+    // (HerramientasSsh.DosBloques), primero el control (ControlComando, todo menos la salida) y después la salida tal cual.
     public sealed record ResultadoComando(
         string Id,
         string Destino,
         EstadoPeticionEnum Estado,
         int? CodigoSalida,
         string Salida,
+        long DesdeByte,
+        long SiguienteByte,
+        bool HasMasSalida,
+        bool HasSalidaDescartada,
+        double SegundosEjecucion,
+        double? SegundosSinSalida,
+        string? Aviso)
+    {
+        public ControlComando Control() => new(Id, Destino, Estado, CodigoSalida, DesdeByte, SiguienteByte, HasMasSalida, HasSalidaDescartada, SegundosEjecucion, SegundosSinSalida, Aviso);
+    }
+
+    // Bloque 1 (control) de la respuesta de ssh_exec, ssh_output, ssh_input y ssh_cancel: JSON compacto en una sola línea, que
+    // va primero para que sea la primera línea del archivo cuando el cliente vuelca la respuesta a disco. La salida va en el
+    // bloque 2, sin escapar: dentro del JSON el modelo veía '\n', '\"' y '\\', y las tablas anchas llegaban en una línea.
+    public sealed record ControlComando(
+        string Id,
+        string Destino,
+        EstadoPeticionEnum Estado,
+        int? CodigoSalida,
         long DesdeByte,
         long SiguienteByte,
         bool HasMasSalida,

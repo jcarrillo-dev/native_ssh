@@ -56,11 +56,11 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             HerramientasSsh herramientas = Herramientas();
             string destino = _sshd.Destino.Clave;
-            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0);
+            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor!.BuscarPeticion(exec.Id).Estado == EstadoPeticionEnum.Ejecutando);
 
             // Act
-            Exception? error = await Record.ExceptionAsync(() => herramientas.EnviarEntradaAsync(exec.Id, "hola", esperarSegundos: 0));
+            Exception? error = await Record.ExceptionAsync(() => herramientas.EnviarEntradaAsync(exec.Id, "hola", esperarSegundos: 0).ComoComando());
             ResultadoComando reintento = await ReintentarAsync(herramientas, exec.Id);
 
             // Assert
@@ -78,9 +78,9 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             HerramientasSsh herramientas = Herramientas();
             string destino = _sshd.Destino.Clave;
-            _ = (await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 30)).Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = (await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 30).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = herramientas.ReiniciarShell(destino).IsHecho.Should().BeTrue();
-            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0);
+            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0).ComoComando();
             // El canal viejo cuenta como activo hasta que el comando lo cierra para abrir el nuevo: se deja pasar ese
             // instante y después se exige el canal nuevo abierto (el login sigue 3 s).
             await EsperasPrueba.EsperarHastaAsync(() => _gestor!.BuscarPeticion(exec.Id).Estado == EstadoPeticionEnum.Ejecutando);
@@ -88,7 +88,7 @@ namespace NativeSsh.Test.Integracion
             await EsperasPrueba.EsperarHastaAsync(() => herramientas.Estado(destino).Sesiones[0].IsShellActivo);
 
             // Act
-            Exception? error = await Record.ExceptionAsync(() => herramientas.EnviarEntradaAsync(exec.Id, "hola", esperarSegundos: 0));
+            Exception? error = await Record.ExceptionAsync(() => herramientas.EnviarEntradaAsync(exec.Id, "hola", esperarSegundos: 0).ComoComando());
             ResultadoComando reintento = await ReintentarAsync(herramientas, exec.Id);
 
             // Assert
@@ -104,7 +104,7 @@ namespace NativeSsh.Test.Integracion
             {
                 try
                 {
-                    return await herramientas.EnviarEntradaAsync(id, "hola", esperarSegundos: 10);
+                    return await herramientas.EnviarEntradaAsync(id, "hola", esperarSegundos: 10).ComoComando();
                 }
                 catch (NativeSshException) when (intento < 50)
                 {

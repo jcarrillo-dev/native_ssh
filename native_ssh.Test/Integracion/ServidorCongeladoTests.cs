@@ -72,7 +72,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = Gestor(opciones);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "true");
+            _ = await herramientas.EjecutarAsync(destino, "true").ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
@@ -124,7 +124,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = Gestor(opciones);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "true");
+            _ = await herramientas.EjecutarAsync(destino, "true").ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
@@ -142,11 +142,11 @@ namespace NativeSsh.Test.Integracion
                 _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
                 operacion = isEscrituraArchivo
                     ? herramientas.EscribirArchivoAsync(destino, Path.Combine(_sshd.Directorio, "destino.txt"), relleno, overwrite: true)
-                    : herramientas.EjecutarAsync(destino, $": {relleno}; echo grande", timeoutSegundos: 60, esperarSegundos: 0);
+                    : herramientas.EjecutarAsync(destino, $": {relleno}; echo grande", timeoutSegundos: 60, esperarSegundos: 0).ComoComando();
                 await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
                 id = sesion.PeticionActual!.IdTexto;
-                entrada = await MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(id, "x", esperarSegundos: 0).WaitAsync(EsperaMaximaCongelado));
-                cancelado = await herramientas.CancelarAsync(id).WaitAsync(EsperaMaximaCongelado);
+                entrada = await MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(id, "x", esperarSegundos: 0).ComoComando().WaitAsync(EsperaMaximaCongelado));
+                cancelado = await herramientas.CancelarAsync(id).ComoComando().WaitAsync(EsperaMaximaCongelado);
                 Stopwatch reloj = Stopwatch.StartNew();
                 Task<ResultadoAccion> desconexion = herramientas.DesconectarAsync(destino);
                 isDesconectado = await Task.WhenAny(desconexion, Task.Delay(EsperaMaximaCongelado)) == desconexion;
@@ -159,7 +159,7 @@ namespace NativeSsh.Test.Integracion
 
             string fallo = await MensajeDeFalloAsync(operacion.WaitAsync(EsperaMaximaCongelado));
             Peticion peticion = gestor.BuscarPeticion(id);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20).ComoComando();
 
             // Assert
             _ = entrada.Should().Contain("no se envió").And.Contain("ssh_disconnect");
@@ -184,7 +184,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = Gestor(opciones);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "true");
+            _ = await herramientas.EjecutarAsync(destino, "true").ComoComando();
             _ = herramientas.ReiniciarShell(destino);
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
@@ -196,7 +196,7 @@ namespace NativeSsh.Test.Integracion
             {
                 _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
                 Stopwatch reloj = Stopwatch.StartNew();
-                primero = await herramientas.EjecutarAsync(destino, "echo uno", timeoutSegundos: 2, esperarSegundos: 20).WaitAsync(EsperaMaximaCongelado);
+                primero = await herramientas.EjecutarAsync(destino, "echo uno", timeoutSegundos: 2, esperarSegundos: 20).ComoComando().WaitAsync(EsperaMaximaCongelado);
                 duracion = reloj.Elapsed;
                 await EsperarHastaAsync(reloj, TimeSpan.FromSeconds(6));
             }
@@ -205,7 +205,7 @@ namespace NativeSsh.Test.Integracion
                 _ = BashLocal.Ejecutar($"kill -CONT {string.Join(' ', propios)}");
             }
 
-            ResultadoComando segundo = await herramientas.EjecutarAsync(destino, "echo dos", esperarSegundos: 20);
+            ResultadoComando segundo = await herramientas.EjecutarAsync(destino, "echo dos", esperarSegundos: 20).ComoComando();
             await Task.Delay(500);
             int abiertas = _sshd.SesionesAbiertas();
 

@@ -6,6 +6,7 @@ using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
 using NativeSsh.Ssh;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -813,7 +814,7 @@ namespace NativeSsh.Test.Integracion
 
                 // Assert 1: Confirmación y pwd contiene dirTemporal
                 _ = resFijar.Directorio.Should().Be(dirTemporal);
-                ResultadoComando pwd1 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
+                ResultadoComando pwd1 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd").ComoComando();
                 _ = pwd1.Salida.Trim().Should().Be(dirTemporal);
 
                 // Act 2: Restablecer a HOME con null
@@ -822,7 +823,7 @@ namespace NativeSsh.Test.Integracion
                 // Assert 2: Mensaje de confirmación y pwd devuelve HOME
                 _ = resReset.Directorio.Should().BeNull();
                 _ = resReset.Mensaje.Should().Be("Directorio de trabajo persistente restablecido a $HOME (~).");
-                ResultadoComando pwd2 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd");
+                ResultadoComando pwd2 = await herramientas.EjecutarAsync(sshd.Destino.Clave, "pwd").ComoComando();
                 _ = pwd2.Salida.Trim().Should().Be(home);
                 _ = pwd2.Salida.Should().NotContain(dirTemporal);
 

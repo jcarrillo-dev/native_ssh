@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
@@ -45,7 +46,7 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = new(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "export NS_RENEGOCIACION=si");
+            _ = await herramientas.EjecutarAsync(destino, "export NS_RENEGOCIACION=si").ComoComando();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
             int renegociacionesAntes = _sshd.Sshd.ContarLineasLog("SSH2_MSG_KEXINIT sent");
             Stopwatch reloj = Stopwatch.StartNew();
@@ -56,7 +57,7 @@ namespace NativeSsh.Test.Integracion
             while (reloj.Elapsed < Duracion)
             {
                 Task<string>[] lecturas = [.. Enumerable.Range(0, 3).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "head -c 100000 /dev/zero | base64 | wc -c", TimeSpan.FromSeconds(30), CancellationToken.None)))];
-                ResultadoComando comando = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30);
+                ResultadoComando comando = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30).ComoComando();
                 if (comando.Salida != "v=si\n")
                     fallos.Add($"comando: {comando.Estado} '{comando.Salida.Trim()}' '{comando.Aviso}'");
                 fallos.AddRange((await Task.WhenAll(lecturas)).Where(m => m != "sin error"));
@@ -64,7 +65,7 @@ namespace NativeSsh.Test.Integracion
             }
 
             int renegociaciones = _sshd.Sshd.ContarLineasLog("SSH2_MSG_KEXINIT sent") - renegociacionesAntes;
-            ResultadoComando despues = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30);
+            ResultadoComando despues = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_RENEGOCIACION\"", esperarSegundos: 30).ComoComando();
             salida.WriteLine($"{rondas} rondas en {reloj.Elapsed.TotalSeconds:0} s; renegociaciones del servidor: {renegociaciones}; conexiones nuevas: {_sshd.Sshd.ConexionesAceptadas() - aceptadas}; fallos: {fallos.Count}");
 
             // Assert

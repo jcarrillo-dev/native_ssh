@@ -62,6 +62,17 @@ namespace NativeSsh.Test.Utilidades
             return (resultado["isError"]?.GetValue<bool>() ?? false, texto.ToString());
         }
 
+        // Resultado de tools/call con sus bloques de contenido por separado: el tipo y el texto de cada uno, en orden.
+        public async Task<(bool IsError, IReadOnlyList<(string Tipo, string Texto)> Bloques)> LlamarBloquesAsync(string herramienta, JsonObject argumentos)
+        {
+            JsonNode respuesta = await EnviarAsync("tools/call", new JsonObject { ["name"] = herramienta, ["arguments"] = argumentos });
+            JsonNode resultado = respuesta["result"] ?? throw new InvalidOperationException($"{herramienta}: respuesta sin 'result': {respuesta.ToJsonString()}");
+            List<(string Tipo, string Texto)> bloques = [];
+            foreach (JsonNode? bloque in resultado["content"]!.AsArray())
+                bloques.Add((bloque?["type"]?.GetValue<string>() ?? string.Empty, bloque?["text"]?.GetValue<string>() ?? string.Empty));
+            return (resultado["isError"]?.GetValue<bool>() ?? false, bloques);
+        }
+
         // Cierra stdin (el servidor termina, como en pruebas/humo-stdio.sh; si no sale en 10 s, se mata) y devuelve stderr.
         public async Task<string> TerminarAsync()
         {

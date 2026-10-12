@@ -120,8 +120,8 @@ namespace NativeSsh.Test.Integracion
             string pequeno = Path.Combine(_directorio, "pequeno.txt");
             await File.WriteAllLinesAsync(grande, Enumerable.Range(0, 20).Select(i => new string((char)('a' + i), 8 * 1024)));
             await File.WriteAllTextAsync(pequeno, "uno\n");
-            _ = await _herramientas.EjecutarAsync(Destino, "export NS_VIVA=si");
-            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 600; echo fin", esperarSegundos: 0);
+            _ = await _herramientas.EjecutarAsync(Destino, "export NS_VIVA=si").ComoComando();
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, "sleep 600; echo fin", esperarSegundos: 0).ComoComando();
             int aceptadas = _sshd.ConexionesAceptadas();
             int senales = _sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion);
             string etiqueta = $"ns_carga_{Guid.NewGuid():N}";
@@ -149,10 +149,10 @@ namespace NativeSsh.Test.Integracion
             }
 
             reloj.Stop();
-            ResultadoComando enCurso = await _herramientas.LeerSalidaAsync(largo.Id);
-            ResultadoComando viva = await _herramientas.EjecutarAsync(Destino, "echo \"$NS_VIVA\"", esperarSegundos: 0);
-            ResultadoComando cancelado = await _herramientas.CancelarAsync(largo.Id);
-            viva = await _herramientas.LeerSalidaAsync(viva.Id, esperarSegundos: 20);
+            ResultadoComando enCurso = await _herramientas.LeerSalidaAsync(largo.Id).ComoComando();
+            ResultadoComando viva = await _herramientas.EjecutarAsync(Destino, "echo \"$NS_VIVA\"", esperarSegundos: 0).ComoComando();
+            ResultadoComando cancelado = await _herramientas.CancelarAsync(largo.Id).ComoComando();
+            viva = await _herramientas.LeerSalidaAsync(viva.Id, esperarSegundos: 20).ComoComando();
             int nuevas = _sshd.ConexionesAceptadas() - aceptadas;
             int lineas = _sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion) - senales;
             _salida.WriteLine($"{desbordamientos} desbordamientos y {lecturas} lecturas en {reloj.Elapsed.TotalSeconds:0.0} s con {Environment.ProcessorCount * 2} bucles de carga en {Environment.ProcessorCount} CPU: {fallos.Count} fallos, {lineas} líneas de señal o desconexión en el log de sshd, {nuevas} conexiones TCP nuevas; comando largo {enCurso.Estado}; variable '{viva.Salida.Trim()}'.");

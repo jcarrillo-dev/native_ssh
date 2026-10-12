@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
+using NativeSsh.Test.Utilidades;
 using Xunit.Abstractions;
 
 namespace NativeSsh.Test.Integracion
@@ -48,7 +49,7 @@ namespace NativeSsh.Test.Integracion
         {
             HerramientasSsh normal = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
-            ResultadoComando inicial = await normal.EjecutarAsync(destino, "true", esperarSegundos: 30);
+            ResultadoComando inicial = await normal.EjecutarAsync(destino, "true", esperarSegundos: 30).ComoComando();
             _ = inicial.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = normal.ReiniciarShell(destino);
             return (normal, new HerramientasSsh(_gestor!, _opciones!) { TimeoutForzado = TimeSpan.FromSeconds(1) }, destino);

@@ -2,6 +2,7 @@ using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -34,11 +35,11 @@ namespace NativeSsh.Test.Integracion
 
             foreach ((string texto, bool isEnter, string aviso) in casos)
             {
-                ResultadoComando lento = await herramientas.EjecutarAsync(entorno.Destino, "sleep 2; (exit 5)", esperarSegundos: 1);
+                ResultadoComando lento = await herramientas.EjecutarAsync(entorno.Destino, "sleep 2; (exit 5)", esperarSegundos: 1).ComoComando();
 
                 // Act
-                ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, texto, enter: isEnter, esperarSegundos: 10);
-                ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, $"echo siguiente; test -e {testigo} && echo EJECUTADA; true", esperarSegundos: 15);
+                ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, texto, enter: isEnter, esperarSegundos: 10).ComoComando();
+                ResultadoComando siguiente = await herramientas.EjecutarAsync(entorno.Destino, $"echo siguiente; test -e {testigo} && echo EJECUTADA; true", esperarSegundos: 15).ComoComando();
 
                 // Assert
                 salida.WriteLine($"{distro} {texto.Length} bytes, enter={isEnter}: entrada {entrada.Estado} {entrada.CodigoSalida} aviso '{entrada.Aviso}'; siguiente '{siguiente.Salida}'");
@@ -49,19 +50,19 @@ namespace NativeSsh.Test.Integracion
             }
 
             // Dos entradas de una línea.
-            ResultadoComando otro = await herramientas.EjecutarAsync(entorno.Destino, "sleep 2", esperarSegundos: 1);
-            _ = await herramientas.EnviarEntradaAsync(otro.Id, "respuesta1", esperarSegundos: 0);
-            _ = await herramientas.EnviarEntradaAsync(otro.Id, $"touch {testigo}", esperarSegundos: 10);
-            ResultadoComando comprobacion = await herramientas.EjecutarAsync(entorno.Destino, $"test -e {testigo} && echo EJECUTADA; echo fin", esperarSegundos: 15);
+            ResultadoComando otro = await herramientas.EjecutarAsync(entorno.Destino, "sleep 2", esperarSegundos: 1).ComoComando();
+            _ = await herramientas.EnviarEntradaAsync(otro.Id, "respuesta1", esperarSegundos: 0).ComoComando();
+            _ = await herramientas.EnviarEntradaAsync(otro.Id, $"touch {testigo}", esperarSegundos: 10).ComoComando();
+            ResultadoComando comprobacion = await herramientas.EjecutarAsync(entorno.Destino, $"test -e {testigo} && echo EJECUTADA; echo fin", esperarSegundos: 15).ComoComando();
             _ = comprobacion.Aviso.Should().Contain("no leyó 2 líneas");
             _ = comprobacion.Salida.Should().Be("fin\n");
 
             // Lo tecleado pendiente al interrumpir el comando (Ctrl+C, la pausa de ET3 y la línea de recuperación) tampoco se
             // ejecuta: el núcleo vacía la entrada del terminal.
-            ResultadoComando interrumpido = await herramientas.EjecutarAsync(entorno.Destino, "sleep 30", esperarSegundos: 1);
-            _ = await herramientas.EnviarEntradaAsync(interrumpido.Id, $"touch {testigo}\ntouch {testigo}", esperarSegundos: 0);
-            ResultadoComando cancelado = await herramientas.CancelarAsync(interrumpido.Id);
-            ResultadoComando trasCtrlC = await herramientas.EjecutarAsync(entorno.Destino, $"test -e {testigo} && echo EJECUTADA; echo fin", esperarSegundos: 15);
+            ResultadoComando interrumpido = await herramientas.EjecutarAsync(entorno.Destino, "sleep 30", esperarSegundos: 1).ComoComando();
+            _ = await herramientas.EnviarEntradaAsync(interrumpido.Id, $"touch {testigo}\ntouch {testigo}", esperarSegundos: 0).ComoComando();
+            ResultadoComando cancelado = await herramientas.CancelarAsync(interrumpido.Id).ComoComando();
+            ResultadoComando trasCtrlC = await herramientas.EjecutarAsync(entorno.Destino, $"test -e {testigo} && echo EJECUTADA; echo fin", esperarSegundos: 15).ComoComando();
             salida.WriteLine($"{distro} tras Ctrl+C: {cancelado.Estado}; '{trasCtrlC.Salida}' aviso '{trasCtrlC.Aviso}'");
             _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
             _ = trasCtrlC.Salida.Should().Be("fin\n");

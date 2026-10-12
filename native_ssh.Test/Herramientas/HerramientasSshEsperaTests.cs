@@ -44,7 +44,7 @@ namespace NativeSsh.Test.Herramientas
             await cancelado.CancelAsync();
 
             // Act & Assert
-            _ = await FluentActions.Awaiting(() => _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token))
+            _ = await FluentActions.Awaiting(() => _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token).ComoComando())
                 .Should().ThrowAsync<OperationCanceledException>();
         }
 
@@ -57,7 +57,7 @@ namespace NativeSsh.Test.Herramientas
             await cancelado.CancelAsync();
 
             // Act & Assert
-            _ = await FluentActions.Awaiting(() => _herramientas.LeerSalidaAsync(id, esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token))
+            _ = await FluentActions.Awaiting(() => _herramientas.LeerSalidaAsync(id, esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token).ComoComando())
                 .Should().ThrowAsync<OperationCanceledException>();
         }
 
@@ -70,7 +70,7 @@ namespace NativeSsh.Test.Herramientas
             await cancelado.CancelAsync();
 
             // Act & Assert
-            _ = await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(id, "s", esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token))
+            _ = await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(id, "s", esperarSegundos: int.MaxValue, cancellationToken: cancelado.Token).ComoComando())
                 .Should().ThrowAsync<OperationCanceledException>();
         }
 
@@ -82,7 +82,7 @@ namespace NativeSsh.Test.Herramientas
             using CancellationTokenSource cancelacion = new();
 
             // Act
-            Task<ResultadoComando> lectura = _herramientas.LeerSalidaAsync(id, esperarSegundos: int.MaxValue, cancellationToken: cancelacion.Token);
+            Task<ResultadoComando> lectura = _herramientas.LeerSalidaAsync(id, esperarSegundos: int.MaxValue, cancellationToken: cancelacion.Token).ComoComando();
             bool isEsperando = !lectura.IsCompleted;
             await cancelacion.CancelAsync();
 
@@ -101,7 +101,7 @@ namespace NativeSsh.Test.Herramientas
             string id = await LanzarComandoColgadoAsync();
 
             // Act
-            ResultadoComando resultado = await _herramientas.LeerSalidaAsync(id, esperarSegundos: esperarSegundos).WaitAsync(Limite);
+            ResultadoComando resultado = await _herramientas.LeerSalidaAsync(id, esperarSegundos: esperarSegundos).ComoComando().WaitAsync(Limite);
 
             // Assert
             _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
@@ -111,7 +111,7 @@ namespace NativeSsh.Test.Herramientas
         // leyendo, y la primera línea ("empezando") lo confirma.
         private async Task<string> LanzarComandoColgadoAsync()
         {
-            ResultadoComando lanzado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0);
+            ResultadoComando lanzado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
             Peticion peticion = _gestor.BuscarPeticion(lanzado.Id);
             await EsperasPrueba.EsperarHastaAsync(() => peticion.Estado == EstadoPeticionEnum.Ejecutando && peticion.Salida.Longitud > 0);
             return lanzado.Id;

@@ -65,11 +65,11 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             string canario = Canario();
-            ResultadoComando lectura = await herramientas.EjecutarAsync(destino, comando, esperarSegundos: 2);
+            ResultadoComando lectura = await herramientas.EjecutarAsync(destino, comando, esperarSegundos: 2).ComoComando();
 
             // Act
-            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lectura.Id, canario, esperarSegundos: 10, secreto: isSecreto);
-            ResultadoComando completa = await herramientas.LeerSalidaAsync(lectura.Id, 0);
+            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lectura.Id, canario, esperarSegundos: 10, secreto: isSecreto).ComoComando();
+            ResultadoComando completa = await herramientas.LeerSalidaAsync(lectura.Id, 0).ComoComando();
             salida.WriteLine($"entrada: {entrada.Salida}| aviso: {entrada.Aviso}\ncompleta: {completa.Salida}");
 
             // Assert
@@ -105,7 +105,7 @@ namespace NativeSsh.Test.Integracion
             string canarioFallido = Canario();
             await using ClienteMcpBinario cliente = await ClienteMcpBinario.IniciarAsync(EntornoBinario());
             (bool _, string exec) = await cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = destino, ["comando"] = ComandoConEco, ["esperarSegundos"] = 2 });
-            string id = JsonNode.Parse(exec)!["id"]!.GetValue<string>();
+            string id = JsonNode.Parse(exec.Split('\n')[0])!["id"]!.GetValue<string>();
 
             // Act
             (bool isErrorEntrada, string entrada) = await cliente.LlamarAsync("ssh_input", new JsonObject { ["id"] = id, ["texto"] = canario, ["esperarSegundos"] = 10, ["secreto"] = isSecreto });
@@ -143,14 +143,14 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             string canario = Canario();
-            ResultadoComando lento = await herramientas.EjecutarAsync(destino, "sleep 3", esperarSegundos: 1);
+            ResultadoComando lento = await herramientas.EjecutarAsync(destino, "sleep 3", esperarSegundos: 1).ComoComando();
 
             // Act
-            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, canario, enter: isEnter, esperarSegundos: 6, secreto: isSecreto);
+            ResultadoComando entrada = await herramientas.EnviarEntradaAsync(lento.Id, canario, enter: isEnter, esperarSegundos: 6, secreto: isSecreto).ComoComando();
             // El canario se busca partido en dos: el comando no lo contiene.
             string busqueda = $"printf '%s%s' '{canario[..10]}' '{canario[10..]}'";
             ResultadoComando siguiente = await herramientas.EjecutarAsync(destino,
-                $"history | grep -cF \"$({busqueda})\"; printf '[%s]\\n' \"$_\"; declare -p __ns_d 2>/dev/null; set | grep -cF \"$({busqueda})\"; env | grep -cF \"$({busqueda})\"; echo fin", esperarSegundos: 10);
+                $"history | grep -cF \"$({busqueda})\"; printf '[%s]\\n' \"$_\"; declare -p __ns_d 2>/dev/null; set | grep -cF \"$({busqueda})\"; env | grep -cF \"$({busqueda})\"; echo fin", esperarSegundos: 10).ComoComando();
             salida.WriteLine($"entrada: {entrada.Estado} '{entrada.Salida}'\nsiguiente: '{siguiente.Salida}'");
 
             // Assert

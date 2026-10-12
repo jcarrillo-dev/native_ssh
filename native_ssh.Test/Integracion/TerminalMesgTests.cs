@@ -55,9 +55,9 @@ namespace NativeSsh.Test.Integracion
             (HerramientasSsh herramientas, string destino) = Herramientas();
 
             // Act
-            ResultadoComando antes = await herramientas.EjecutarAsync(destino, Comprobacion, esperarSegundos: 30);
+            ResultadoComando antes = await herramientas.EjecutarAsync(destino, Comprobacion, esperarSegundos: 30).ComoComando();
             _ = herramientas.ReiniciarShell(destino);
-            ResultadoComando trasReiniciar = await herramientas.EjecutarAsync(destino, Comprobacion, esperarSegundos: 30);
+            ResultadoComando trasReiniciar = await herramientas.EjecutarAsync(destino, Comprobacion, esperarSegundos: 30).ComoComando();
 
             // Assert
             foreach (ResultadoComando resultado in new[] { antes, trasReiniciar })
@@ -79,7 +79,7 @@ namespace NativeSsh.Test.Integracion
             (HerramientasSsh herramientas, string destino) = Herramientas($"/usr/bin/env PATH={granja} /bin/bash --noprofile --norc");
 
             // Act
-            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "stat -L -c '%A' \"$(tty)\"; command -v mesg || echo sin-mesg", esperarSegundos: 30);
+            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "stat -L -c '%A' \"$(tty)\"; command -v mesg || echo sin-mesg", esperarSegundos: 30).ComoComando();
 
             // Assert
             string[] lineas = resultado.Salida.Split('\n');

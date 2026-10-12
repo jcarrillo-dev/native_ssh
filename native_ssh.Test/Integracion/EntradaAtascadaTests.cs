@@ -73,11 +73,11 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = new(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "export NS_ENTRADA=si", esperarSegundos: 20);
+            _ = await herramientas.EjecutarAsync(destino, "export NS_ENTRADA=si", esperarSegundos: 20).ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
-            ResultadoComando comando = await herramientas.EjecutarAsync(destino, isCongelado ? Proceso : $"stty raw -echo; {Proceso}", timeoutSegundos: 200, esperarSegundos: 0);
+            ResultadoComando comando = await herramientas.EjecutarAsync(destino, isCongelado ? Proceso : $"stty raw -echo; {Proceso}", timeoutSegundos: 200, esperarSegundos: 0).ComoComando();
             await Task.Delay(1500);
             string texto = new('b', 6 * 1024 * 1024);
             Task<string> entrada;
@@ -90,10 +90,10 @@ namespace NativeSsh.Test.Integracion
             {
                 if (isCongelado)
                     _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
-                entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, texto, esperarSegundos: 0)));
+                entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, texto, esperarSegundos: 0).ComoComando()));
                 await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
                 Stopwatch reloj = Stopwatch.StartNew();
-                cancelado = await herramientas.CancelarAsync(comando.Id).WaitAsync(EsperaMaxima);
+                cancelado = await herramientas.CancelarAsync(comando.Id).ComoComando().WaitAsync(EsperaMaxima);
                 duracionCancelacion = reloj.Elapsed;
                 Task<ResultadoAccion> desconexion = herramientas.DesconectarAsync(destino);
                 isDesconectado = await Task.WhenAny(desconexion, Task.Delay(EsperaMaxima)) == desconexion;
@@ -105,7 +105,7 @@ namespace NativeSsh.Test.Integracion
             }
 
             string fallo = await entrada.WaitAsync(EsperaMaxima);
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_ENTRADA\"", esperarSegundos: 20);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_ENTRADA\"", esperarSegundos: 20).ComoComando();
 
             // Assert
             _ = duracionCancelacion.Should().BeLessThan(TimeSpan.FromSeconds(6));
@@ -129,11 +129,11 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
             string archivo = Path.Combine(_sshd.Directorio, "entrada_del_proceso.txt");
-            _ = await herramientas.EjecutarAsync(destino, "export NS_ENTRADA=si", esperarSegundos: 20);
+            _ = await herramientas.EjecutarAsync(destino, "export NS_ENTRADA=si", esperarSegundos: 20).ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             string[] propios = _sshd.Sshd.ProcesosDeConexion();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
-            ResultadoComando comando = await herramientas.EjecutarAsync(destino, isCongelado ? $"cat > '{archivo}'" : $"stty raw -echo; sleep 14; cat > '{archivo}'", timeoutSegundos: 200, esperarSegundos: 0);
+            ResultadoComando comando = await herramientas.EjecutarAsync(destino, isCongelado ? $"cat > '{archivo}'" : $"stty raw -echo; sleep 14; cat > '{archivo}'", timeoutSegundos: 200, esperarSegundos: 0).ComoComando();
             await Task.Delay(1500);
             string texto = isCongelado ? Lineas(1024 * 1024, 'b') : new string('b', 3 * 1024 * 1024);
             Task<string> entrada;
@@ -146,16 +146,16 @@ namespace NativeSsh.Test.Integracion
             {
                 if (isCongelado)
                     _ = BashLocal.Ejecutar($"kill -STOP {string.Join(' ', propios)}");
-                entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, texto, esperarSegundos: 0)));
+                entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, texto, esperarSegundos: 0).ComoComando()));
                 await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
-                cancelado = await herramientas.CancelarAsync(comando.Id).WaitAsync(EsperaMaxima);
-                siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_ENTRADA\"", timeoutSegundos: 60, esperarSegundos: 0);
+                cancelado = await herramientas.CancelarAsync(comando.Id).ComoComando().WaitAsync(EsperaMaxima);
+                siguiente = await herramientas.EjecutarAsync(destino, "echo \"v=$NS_ENTRADA\"", timeoutSegundos: 60, esperarSegundos: 0).ComoComando();
                 if (isCongelado)
                     await Task.Delay(2000);
                 else
                 {
                     // Con el servidor sano, el shell nuevo no espera a que pase la entrada atascada en el viejo.
-                    _ = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 8);
+                    _ = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 8).ComoComando();
                     isEntradaPendienteConElSiguienteTerminado = !entrada.IsCompleted;
                 }
             }
@@ -165,7 +165,7 @@ namespace NativeSsh.Test.Integracion
                     _ = BashLocal.Ejecutar($"kill -CONT {string.Join(' ', propios)}");
             }
 
-            ResultadoComando final = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 60);
+            ResultadoComando final = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 60).ComoComando();
             string fallo = await entrada.WaitAsync(EsperaMaxima);
 
             // El shell abandonado se cierra en cuanto pasa la entrada y el servidor libera su sesión: solo queda la del nuevo.
@@ -196,12 +196,12 @@ namespace NativeSsh.Test.Integracion
             await using GestorSesiones gestor = new(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
-            _ = await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 20);
+            _ = await herramientas.EjecutarAsync(destino, "true", esperarSegundos: 20).ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
-            ResultadoComando comando = await herramientas.EjecutarAsync(destino, $"stty raw -echo; {ProcesoQueNoLee}", timeoutSegundos: 200, esperarSegundos: 0);
+            ResultadoComando comando = await herramientas.EjecutarAsync(destino, $"stty raw -echo; {ProcesoQueNoLee}", timeoutSegundos: 200, esperarSegundos: 0).ComoComando();
             await Task.Delay(1500);
-            Task<string> entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, new string('b', 6 * 1024 * 1024), esperarSegundos: 0)));
+            Task<string> entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, new string('b', 6 * 1024 * 1024), esperarSegundos: 0).ComoComando()));
             await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
 
             // Act: mueren el proceso y el shell de la sesión, y el servidor cierra el canal.
@@ -211,7 +211,7 @@ namespace NativeSsh.Test.Integracion
                 Stopwatch reloj = Stopwatch.StartNew();
                 Task terminada = await Task.WhenAny(entrada, Task.Delay(EsperaMaxima));
                 TimeSpan duracion = reloj.Elapsed;
-                ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20);
+                ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 20).ComoComando();
 
                 // Assert
                 _ = terminada.Should().BeSameAs(entrada, "ssh_input no debe esperar a ssh_disconnect");
@@ -236,17 +236,17 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = new(gestor, opciones);
             string destino = _sshd.Sshd.Destino.Clave;
             const string Padre = "echo PADRE=$(ps -o comm= -p $PPID)";
-            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(destino, Padre, esperarSegundos: 20);
+            ResultadoComando enLaSesion = await herramientas.EjecutarAsync(destino, Padre, esperarSegundos: 20).ComoComando();
             SesionShell sesion = gestor.ListarSesiones().Single();
-            ResultadoComando comando = await herramientas.EjecutarAsync(destino, "stty raw -echo; sleep 14; stty sane -echo; env -i PS1= PS2= TERM=dumb bash --norc --noprofile -i", timeoutSegundos: 200, esperarSegundos: 0);
+            ResultadoComando comando = await herramientas.EjecutarAsync(destino, "stty raw -echo; sleep 14; stty sane -echo; env -i PS1= PS2= TERM=dumb bash --norc --noprofile -i", timeoutSegundos: 200, esperarSegundos: 0).ComoComando();
             await Task.Delay(1500);
-            Task<string> entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, Lineas(3 * 1024 * 1024, '#'), enter: false, esperarSegundos: 0)));
+            Task<string> entrada = Task.Run(() => MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(comando.Id, Lineas(3 * 1024 * 1024, '#'), enter: false, esperarSegundos: 0).ComoComando()));
             await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
-            ResultadoComando cancelado = await herramientas.CancelarAsync(comando.Id).WaitAsync(EsperaMaxima);
+            ResultadoComando cancelado = await herramientas.CancelarAsync(comando.Id).ComoComando().WaitAsync(EsperaMaxima);
 
             // Act
-            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, Padre, timeoutSegundos: 60, esperarSegundos: 0);
-            ResultadoComando final = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 60);
+            ResultadoComando siguiente = await herramientas.EjecutarAsync(destino, Padre, timeoutSegundos: 60, esperarSegundos: 0).ComoComando();
+            ResultadoComando final = await herramientas.LeerSalidaAsync(siguiente.Id, esperarSegundos: 60).ComoComando();
             string fallo = await entrada.WaitAsync(EsperaMaxima);
             await EsperasPrueba.EsperarHastaAsync(() => _sshd.SesionesAbiertas() == 1, EsperaMaxima);
 
