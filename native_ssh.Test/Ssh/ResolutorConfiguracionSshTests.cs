@@ -303,22 +303,25 @@ namespace NativeSsh.Test.Ssh
             await EsperasPruebaSinProceso(marca);
         }
 
-        // Un Match exec que deja en segundo plano algo que escribe en la salida de ssh después de que ssh termine (aquí un
-        // segundo 'hostname'): ssh -G escribe cada opción una sola vez, así que una repetida no es suya y el destino no se
-        // resuelve con ella; da un error que lo dice y no se conecta.
-        [Fact]
-        public void MatchExecQueEscribeEnLaSalidaDeSshTrasTerminar_NoCambiaElDestino()
+        // Un Match exec que deja en segundo plano algo que escribe en la salida de ssh después de que ssh termine (un segundo
+        // 'hostname', 'user' o 'port'): ssh -G escribe cada opción una sola vez, así que una repetida no es suya y el destino
+        // no se resuelve con ella; da un error que lo dice y no se conecta.
+        [Theory]
+        [InlineData("hostname 10.99.99.98", "hostname")]
+        [InlineData("user intruso", "user")]
+        [InlineData("port 2299", "port")]
+        public void MatchExecQueEscribeEnLaSalidaDeSshTrasTerminar_NoCambiaElDestino(string linea, string opcion)
         {
             // Arrange
             ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion(
                 "Host tarde\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n" +
-                "Match originalhost tarde exec \"(exec 3>/proc/$PPID/fd/1; sleep 0.2; echo hostname 10.99.99.98 >&3) & true\"\n  IdentityFile /nada\n"));
+                $"Match originalhost tarde exec \"(exec 3>/proc/$PPID/fd/1; sleep 0.2; echo {linea} >&3) & true\"\n  IdentityFile /nada\n"));
 
             // Act
             Action resolver = () => Resolver(resolutor, "tarde");
 
             // Assert
-            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("'hostname' más de una vez").And.Contain("no se ha conectado");
+            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain($"'{opcion}' más de una vez").And.Contain("no se ha conectado");
         }
 
         // Si lo que dejó en segundo plano salió del grupo (su propio setsid) y retiene la salida, el error dice que ssh sí
