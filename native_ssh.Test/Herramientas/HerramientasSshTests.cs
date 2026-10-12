@@ -358,6 +358,8 @@ namespace NativeSsh.Test.Herramientas
             int largo = 0;
             for (Peticion? p = ultima?.AnteriorConTecleadoDescartado; p is not null; p = p.AnteriorConTecleadoDescartado)
                 largo++;
+            Peticion ultimaPregunta = gestor.BuscarPeticion(actual.Id);
+            await EsperasPrueba.EsperarHastaAsync(() => ultimaPregunta.IsComandoEnviado && ultimaPregunta.Salida.Longitud > 0);
             _ = await herramientas.EnviarEntradaAsync(actual.Id, "ana", esperarSegundos: 5);
             ResultadoComando final = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10);
 
