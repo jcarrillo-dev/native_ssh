@@ -326,6 +326,31 @@ namespace NativeSsh.Test.Integracion
             await EsperasPrueba.EsperarHastaAsync(() => !File.Exists(r.Archivo!), TimeSpan.FromSeconds(15));
         }
 
+        // Con MaxSessions 1 el shell ocupa la única sesión: la limpieza de ssh_reset_shell (un canal exec) la rechaza el
+        // servidor y vuelve a la lista; ssh_disconnect, ya con el shell cerrado, la reintenta y borra el directorio.
+        [Fact]
+        public async Task LimpiezaRechazadaPorMaxSessions_SeReintentaAlDesconectar()
+        {
+            // Arrange
+            using SshdPropio restringido = new("MaxSessions 1");
+            OpcionesNativeSsh opciones = restringido.Sshd.Opciones() with { PrefijoGuardado = Prefijo };
+            await using GestorSesiones gestor = new(restringido.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh h = new(gestor, opciones);
+            string destino = restringido.Sshd.Destino.Clave;
+            ResultadoComando r = await h.EjecutarAsync(destino, "echo hola", esperarSegundos: 30, guardarSalida: true).ComoComando();
+            string directorio = Path.GetDirectoryName(r.Archivo!)!;
+
+            // Act
+            _ = h.ReiniciarShell(destino);
+            await Task.Delay(2000);
+            bool isTrasReset = Directory.Exists(directorio);
+            _ = await h.DesconectarAsync(destino);
+
+            // Assert
+            _ = isTrasReset.Should().BeTrue("el servidor rechaza el canal exec mientras el shell ocupa la única sesión");
+            _ = Directory.Exists(directorio).Should().BeFalse();
+        }
+
         // Tras ssh_reset_shell el siguiente guardarSalida usa otro directorio (el del shell nuevo).
         [Fact]
         public async Task TrasReset_OtroDirectorio()

@@ -733,5 +733,58 @@ namespace NativeSsh.Test.Integracion
             _ = intento.Aviso.Should().Contain("ssh_reset_shell").And.NotContainAny(["set +x", "unset -f", "unalias"], "el mensaje no puede proponer un remedio que no se ejecuta");
             _ = (nuevo.Estado, File.Exists(conReset)).Should().Be((EstadoPeticionEnum.Completado, true));
         }
+        private string Puerta(string nombre) =>
+            $"touch {Path.Combine(_testigos, "s" + nombre)}; while [ ! -e {Path.Combine(_testigos, "g" + nombre)} ]; do sleep 0.02; done";
+
+        private async Task EsperarFicheroAsync(string nombre)
+        {
+            string ruta = Path.Combine(_testigos, nombre);
+            for (int k = 0; k < 1500 && !File.Exists(ruta); k++)
+                await Task.Delay(20);
+        }
+
+        // Más avisos pendientes que el tope de 16 (sonda Y01 de la auditoría del tramo 1-septies, adoptada): 20 escrituras,
+        // cada una con la línea 'x' tecleada al comando anterior pendiente de avisar (la respuesta de ese ssh_input se cancela
+        // en vuelo, así que no recorre la cadena). El ssh_exec siguiente detalla los 16 más recientes y resume los otros 4
+        // con su número de líneas; el de después, ninguno. Antes no decía que hubo más.
+        [Fact]
+        public async Task MasDe16AvisosPendientes_LaRespuestaResumeLosQueNoDetalla()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            const int N = Peticion.MaxAvisosTecleadoEnlazados + 4;
+            ResultadoComando actual = await h.EjecutarAsync(destino, Puerta("0"), esperarSegundos: 0).ComoComando();
+            await EsperarFicheroAsync("s0");
+            for (int k = 0; k < N; k++)
+            {
+                Task<ResultadoEscritura> escritura = h.EscribirArchivoAsync(destino, Path.Combine(_testigos, $"w{k}"), "w\n");
+                await Task.Delay(50);
+                ResultadoComando siguiente = await h.EjecutarAsync(destino, Puerta((k + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)), esperarSegundos: 0).ComoComando();
+                using CancellationTokenSource cancelar = new();
+                Task entrada = h.EnviarEntradaAsync(actual.Id, "x", esperarSegundos: 30, cancellationToken: cancelar.Token);
+                await Task.Delay(200);
+                await cancelar.CancelAsync();
+                await entrada.ContinueWith(_ => { }, TaskScheduler.Default);
+                await File.WriteAllTextAsync(Path.Combine(_testigos, $"g{k}"), "");
+                _ = await escritura;
+                await EsperarFicheroAsync($"s{k + 1}");
+                actual = siguiente;
+            }
+
+            await File.WriteAllTextAsync(Path.Combine(_testigos, $"g{N}"), "");
+
+            // Act
+            ResultadoComando f = await h.EjecutarAsync(destino, "echo F", esperarSegundos: 15).ComoComando();
+            ResultadoComando g = await h.EjecutarAsync(destino, "echo G", esperarSegundos: 15).ComoComando();
+
+            // Assert
+            salida.WriteLine($"F: {f.Aviso}\nG: {g.Aviso}");
+            string avisoF = f.Aviso ?? string.Empty;
+            _ = ((avisoF.Length - avisoF.Replace("no leyó", "", StringComparison.Ordinal).Length) / "no leyó".Length).Should().Be(Peticion.MaxAvisosTecleadoEnlazados);
+            _ = avisoF.Should().Contain("Además, otros 4 comandos anteriores no leyeron 4 líneas de entrada tecleada con ssh_input");
+            _ = g.Aviso.Should().BeNull();
+        }
     }
 }
