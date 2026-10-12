@@ -49,14 +49,17 @@ namespace NativeSsh.Test.Integracion
 
         // Primer comando de un destino (conexión + login de 3 s) con esperarSegundos=0 y ssh_input al momento: el patrón
         // habitual de un LLM con un comando interactivo. Según llegue, el canal aún no está abierto (conexión) o ya lo está
-        // y el login sigue: el error dice una de las dos cosas, nunca una lista de causas que no incluye la real.
-        [Fact]
-        public async Task Input_MientrasSeConectaYAbreElShell_DiceQueElShellSeEstaAbriendo()
+        // y el login sigue: el error dice una de las dos cosas, nunca una lista de causas que no incluye la real (C7: antes,
+        // «no admite entrada: está en estado Ejecutando»). Igual con guardarSalida, cuyo envoltorio se compone al enviar.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Input_MientrasSeConectaYAbreElShell_DiceQueElShellSeEstaAbriendo(bool isGuardarSalida)
         {
             // Arrange
             HerramientasSsh herramientas = Herramientas();
             string destino = _sshd.Destino.Clave;
-            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0).ComoComando();
+            ResultadoComando exec = await herramientas.EjecutarAsync(destino, ComandoLectura, esperarSegundos: 0, guardarSalida: isGuardarSalida).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => _gestor!.BuscarPeticion(exec.Id).Estado == EstadoPeticionEnum.Ejecutando);
 
             // Act
