@@ -112,15 +112,16 @@ namespace NativeSsh.Sesion
             IsDelDestino(peticion.Destino, string.Equals(peticion.Destino.Alias, destino.Alias, StringComparison.Ordinal), destino);
 
         // Para ssh_disconnect y ssh_status con un alias, entre las sesiones que no selecciona (Seleccionar): las abiertas con
-        // ese alias para otro usuario o puerto (su User o Port cambió con la sesión viva, o se pidió otro), y las que llegaron
-        // al tope de alias sin guardar este. Cada destino una vez. Vacías si el destino no es un alias.
-        public PistasAlias BuscarPistasAlias(DestinoSsh destino)
+        // ese alias para otro usuario o puerto (su User o Port cambió con la sesión viva, o se pidió otro), una pista por
+        // usuario y puerto, y las que llegaron al tope de alias sin guardar este, una por usuario@servidor:puerto. Cada pista
+        // lleva lo que cerraría de verdad cada destino con que se podría cerrar (EvaluarCandidato). Vacía si no es un alias.
+        public IReadOnlyList<PistaAlias> BuscarPistasAlias(DestinoSsh destino)
         {
-            List<DestinoSsh> otros = [];
-            List<string> enElTope = [];
             if (destino.Alias is not { } alias)
-                return new PistasAlias(otros, enElTope);
+                return [];
 
+            List<List<SesionShell>> otros = [];
+            List<List<SesionShell>> enElTope = [];
             lock (_candado)
                 foreach (EntradaSesion entrada in _sesiones.Values)
                 {
@@ -129,14 +130,67 @@ namespace NativeSsh.Sesion
                         continue;
 
                     bool isMismoUsuarioYPuerto = IsMismoUsuarioYPuerto(deLaSesion, destino);
-                    if (entrada.Alias.Contains(alias) && !isMismoUsuarioYPuerto && !otros.Exists(d => string.Equals(d.Clave, deLaSesion.Clave, StringComparison.Ordinal)))
-                        otros.Add(deLaSesion);
-                    bool isAliasOlvidado = entrada.AliasOlvidados.Contains(alias) || (entrada.IsOlvidadosDesbordado && isMismoUsuarioYPuerto);
-                    if (isAliasOlvidado && !enElTope.Contains(deLaSesion.Clave))
-                        enElTope.Add(deLaSesion.Clave);
+                    if (entrada.Alias.Contains(alias) && !isMismoUsuarioYPuerto)
+                        Agrupar(otros, entrada.Sesion, v => IsMismoUsuarioYPuerto(v.Destino, deLaSesion));
+                    else if (entrada.AliasOlvidados.Contains(alias) || (entrada.IsOlvidadosDesbordado && isMismoUsuarioYPuerto))
+                        Agrupar(enElTope, entrada.Sesion, v => string.Equals(v.Destino.Clave, deLaSesion.Clave, StringComparison.Ordinal));
                 }
 
-            return new PistasAlias(otros, enElTope);
+            // Fuera del candado: cada candidato pasa por ParsearDestino (ssh -G, hasta su plazo).
+            List<PistaAlias> pistas = new(otros.Count + enElTope.Count);
+            string servidorAlias = ConCorchetes(alias);
+            foreach (List<SesionShell> viejas in otros)
+            {
+                DestinoSsh primera = viejas[0].Destino;
+                List<CandidatoCierre> candidatos = [EvaluarCandidato($"{primera.Usuario}@{servidorAlias}:{primera.Puerto}", viejas)];
+                if (viejas.TrueForAll(v => string.Equals(v.Destino.Clave, primera.Clave, StringComparison.Ordinal)))
+                    candidatos.Add(EvaluarCandidato(TextoServidorReal(primera), viejas));
+                pistas.Add(new PistaAlias(IsEnElTope: false, viejas, candidatos));
+            }
+
+            foreach (List<SesionShell> viejas in enElTope)
+                pistas.Add(new PistaAlias(IsEnElTope: true, viejas, [EvaluarCandidato(TextoServidorReal(viejas[0].Destino), viejas)]));
+            return pistas;
+        }
+
+        // usuario@servidor:puerto escrito como destino (servidor IPv6 entre corchetes): DestinoSsh.Clave no lleva corchetes.
+        private static string TextoServidorReal(DestinoSsh destino) => $"{destino.Usuario}@{ConCorchetes(destino.Servidor)}:{destino.Puerto}";
+
+        private static string ConCorchetes(string servidor) => servidor.Contains(':', StringComparison.Ordinal) ? $"[{servidor}]" : servidor;
+
+        private static void Agrupar(List<List<SesionShell>> grupos, SesionShell sesion, Predicate<SesionShell> isDelGrupo)
+        {
+            foreach (List<SesionShell> grupo in grupos)
+                if (isDelGrupo(grupo[0]))
+                {
+                    grupo.Add(sesion);
+                    return;
+                }
+
+            grupos.Add([sesion]);
+        }
+
+        // Lo que cerraría ssh_disconnect con ese texto, con su mismo criterio (ParsearDestino y Seleccionar): si alcanza todas
+        // las viejas y qué más cierra; Error si el destino se rechaza (p. ej. un User de la configuración con '@' o '+').
+        private CandidatoCierre EvaluarCandidato(string texto, List<SesionShell> viejas)
+        {
+            DestinoSsh candidato;
+            try
+            {
+                candidato = ParsearDestino(texto);
+            }
+            catch (NativeSshException ex)
+            {
+                return new CandidatoCierre(texto, ex.Message, IsAlcanzaTodas: false, []);
+            }
+
+            List<SesionShell> cerraria = [.. Seleccionar(candidato)];
+            List<SesionShell> ademas = [];
+            foreach (SesionShell sesion in cerraria)
+                if (!viejas.Contains(sesion))
+                    ademas.Add(sesion);
+            bool isAlcanzaTodas = viejas.TrueForAll(cerraria.Contains);
+            return new CandidatoCierre(texto, null, isAlcanzaTodas, ademas);
         }
 
         public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
@@ -269,6 +323,28 @@ namespace NativeSsh.Sesion
             timeout < TimeoutMinimo ? TimeoutMinimo : timeout > TimeoutMaximo ? TimeoutMaximo : timeout;
     }
 
-    // Ver GestorSesiones.BuscarPistasAlias. OtrosDestinos: uno por usuario@servidor:puerto; EnElTope: usuario@servidor:puerto.
-    public readonly record struct PistasAlias(IReadOnlyList<DestinoSsh> OtrosDestinos, IReadOnlyList<string> EnElTope);
+    // Ver GestorSesiones.BuscarPistasAlias. Viejas: las sesiones del alias que la pista nombra (no vacía); IsEnElTope: las
+    // de una sesión llena que no guardó el alias (si no, abiertas con él para otro usuario o puerto).
+    public sealed record PistaAlias(bool IsEnElTope, IReadOnlyList<SesionShell> Viejas, IReadOnlyList<CandidatoCierre> Candidatos)
+    {
+        // El primer candidato que cierra justo las viejas, si hay alguno.
+        public CandidatoCierre? Exacto
+        {
+            get
+            {
+                foreach (CandidatoCierre candidato in Candidatos)
+                    if (candidato.IsExacto)
+                        return candidato;
+
+                return null;
+            }
+        }
+    }
+
+    // Un destino con que cerrar las sesiones viejas de una pista: Error (rechazado por ParsearDestino) o, si no, si alcanza
+    // todas y qué más cerraría (Ademas).
+    public sealed record CandidatoCierre(string Texto, string? Error, bool IsAlcanzaTodas, IReadOnlyList<SesionShell> Ademas)
+    {
+        public bool IsExacto => IsAlcanzaTodas && Ademas.Count == 0;
+    }
 }

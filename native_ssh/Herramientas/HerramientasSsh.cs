@@ -395,7 +395,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
         [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
         public ResultadoEstado Estado(
-            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
+            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto, con qué destino cerrarlas y qué más cerraría ese destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
             DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
             bool isSinFiltro = filtro is null;
@@ -417,12 +417,12 @@ namespace NativeSsh.Herramientas
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
-            string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias)) : null;
+            string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias), gestor) : null;
             return new ResultadoEstado(sesiones, peticiones, aviso);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró y, con un alias, qué otras sesiones suyas siguen abiertas y con qué destino cerrarlas.")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró y, con un alias, qué otras sesiones suyas siguen abiertas, con qué destino cerrarlas y qué más cerraría ese destino. Lee lo que cerraría además antes de usarlo: si dice que ningún destino las cierra solas, cerrarlas cierra también las sesiones (y cancela los comandos) que nombra.")]
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
@@ -438,7 +438,7 @@ namespace NativeSsh.Herramientas
                 _ => $"Se cerraron {cerradas.Count} conexiones: {DescribirCerradas(cerradas, isConDestino: true)}."
             };
             // Las cerradas ya no están en el gestor: las pistas son de las que siguen abiertas.
-            string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto));
+            string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto), gestor);
             return new ResultadoAccion(cerradas.Count == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Count > 0, pistas is null ? mensaje : $"{mensaje} {pistas}");
         }
 
@@ -470,35 +470,184 @@ namespace NativeSsh.Herramientas
         }
 
         // Con un alias, ssh_disconnect y ssh_status dicen qué otras sesiones suyas siguen abiertas (null si ninguna): las de
-        // otro usuario o puerto, con el usuario@alias:puerto que cierra exactamente esas (usuario@servidor:puerto cerraría
-        // también las de otros alias a ese destino), y las que llegaron al tope de alias sin guardar este, que solo se
-        // alcanzan con su usuario@servidor:puerto.
-        private static string? TextoPistas(DestinoSsh resuelto, PistasAlias pistas)
+        // otro usuario o puerto y las que llegaron al tope de alias sin guardar este. Para cada grupo, el destino que las
+        // cierra solas si lo hay; si no, lo que cerraría además cada destino posible (GestorSesiones.BuscarPistasAlias lo
+        // calcula con el criterio de ssh_disconnect), o que ninguno se admite. Nunca sugiere un destino que se rechazaría.
+        private static string? TextoPistas(DestinoSsh resuelto, IReadOnlyList<PistaAlias> pistas, GestorSesiones gestor)
         {
-            bool hasOtros = pistas.OtrosDestinos.Count > 0;
-            bool hasEnElTope = pistas.EnElTope.Count > 0;
-            if (resuelto.Alias is not { } alias || (!hasOtros && !hasEnElTope))
+            if (resuelto.Alias is not { } alias || pistas.Count == 0)
                 return null;
 
             StringBuilder texto = new();
-            if (hasOtros)
+            bool isPrimeraOtros = true;
+            foreach (PistaAlias pista in pistas)
             {
-                _ = texto.Append($"Siguen abiertas sesiones de '{alias}' para otro usuario o puerto (su User o Port cambió con la sesión viva, o se abrieron con otro usuario o puerto): ");
-                for (int i = 0; i < pistas.OtrosDestinos.Count; i++)
-                {
-                    DestinoSsh otro = pistas.OtrosDestinos[i];
-                    string servidor = alias.Contains(':', StringComparison.Ordinal) ? $"[{alias}]" : alias;
-                    _ = texto.Append(i == 0 ? "" : "; ").Append($"{otro.Clave}, que se cierra con {otro.Usuario}@{servidor}:{otro.Puerto}");
-                }
+                if (pista.IsEnElTope)
+                    continue;
 
-                _ = texto.Append(" (ssh_status con ese destino las muestra).");
+                _ = isPrimeraOtros
+                    ? texto.Append($"Siguen abiertas sesiones de '{alias}' para otro usuario o puerto (su User o Port cambió con la sesión viva, o se abrieron con otro usuario o puerto): ")
+                    : texto.Append("; ");
+                isPrimeraOtros = false;
+                AnadirPista(texto, pista, gestor, $"ssh_disconnect con '{alias}' la cierra cuando su configuración vuelva a ese usuario y puerto");
             }
 
-            if (hasEnElTope)
-                _ = texto.Append(hasOtros ? " " : "").Append($"Sesiones que ya recuerdan {GestorSesiones.MaxAliasPorSesion} alias y no guardaron '{alias}': ")
-                    .AppendJoin(", ", pistas.EnElTope)
-                    .Append("; si buscas una de ellas (abierta con este alias antes de cambiar su configuración), ciérrala con su usuario@servidor:puerto, que cierra también las de otros alias a ese destino (ssh_status las muestra).");
+            if (!isPrimeraOtros)
+                _ = texto.Append(" (ssh_status sin destino las muestra todas).");
+
+            bool isPrimeraTope = true;
+            foreach (PistaAlias pista in pistas)
+            {
+                if (!pista.IsEnElTope)
+                    continue;
+
+                _ = isPrimeraTope
+                    ? texto.Append(isPrimeraOtros ? "" : " ").Append($"Sesiones que ya recuerdan {GestorSesiones.MaxAliasPorSesion} alias y no guardaron '{alias}' (si buscas una abierta con este alias antes de cambiar su configuración, puede ser una de ellas): ")
+                    : texto.Append("; ");
+                isPrimeraTope = false;
+                AnadirPista(texto, pista, gestor, null);
+            }
+
+            if (!isPrimeraTope)
+                _ = texto.Append(" (ssh_status sin destino las muestra todas).");
             return texto.ToString();
+        }
+
+        // «viejas, que se cierra con X» si un candidato las cierra solas; si no, qué más cerraría cada uno que las alcanza, o
+        // que no hay destino admitido (con el motivo y, si se da, cuándo las cierra el alias).
+        private static void AnadirPista(StringBuilder texto, PistaAlias pista, GestorSesiones gestor, string? cierreConElAlias)
+        {
+            DescribirViejas(texto, pista.Viejas);
+            if (pista.Exacto is { } exacto)
+            {
+                _ = texto.Append(", que se cierra con ").Append(exacto.Texto);
+                return;
+            }
+
+            bool hasAlcanzan = false;
+            foreach (CandidatoCierre candidato in pista.Candidatos)
+                hasAlcanzan |= candidato.IsAlcanzaTodas;
+
+            if (!hasAlcanzan)
+            {
+                _ = texto.Append(": no hay destino con que cerrarla (");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                {
+                    CandidatoCierre candidato = pista.Candidatos[i];
+                    _ = texto.Append(i == 0 ? "" : "; ").Append(candidato.Texto).Append(candidato.Error is { } error ? $" se rechaza: {error.TrimEnd('.')}" : " no la alcanza");
+                }
+
+                _ = texto.Append(')');
+                if (cierreConElAlias is not null)
+                    _ = texto.Append("; ").Append(cierreConElAlias);
+                return;
+            }
+
+            bool isUnCandidato = pista.Candidatos.Count == 1;
+            if (isUnCandidato)
+                _ = texto.Append(": ").Append(pista.Candidatos[0].Texto).Append(" no la cierra sola: ");
+            else
+            {
+                _ = texto.Append(": ni ");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                    _ = texto.Append(i == 0 ? "" : " ni ").Append(pista.Candidatos[i].Texto);
+                _ = texto.Append(" la cierran sola: ");
+            }
+
+            // Los dos cierran lo mismo (p. ej. el IdentityFile del alias pasó a ser el de otra sesión del mismo destino): una vez.
+            if (!isUnCandidato && IsMismoCierre(pista.Candidatos))
+            {
+                DescribirAdemas(texto.Append("los dos cerrarían también "), pista.Candidatos[0], gestor);
+                return;
+            }
+
+            for (int c = 0; c < pista.Candidatos.Count; c++)
+            {
+                CandidatoCierre candidato = pista.Candidatos[c];
+                _ = texto.Append(c == 0 ? "" : "; ");
+                if (!isUnCandidato)
+                    _ = texto.Append(candidato.Texto).Append(' ');
+                if (candidato.Error is { } error)
+                    _ = texto.Append("se rechaza: ").Append(error.TrimEnd('.'));
+                else if (!candidato.IsAlcanzaTodas)
+                    _ = texto.Append("no la alcanza");
+                else
+                    DescribirAdemas(texto.Append("cerraría también "), candidato, gestor);
+            }
+        }
+
+        private static bool IsMismoCierre(IReadOnlyList<CandidatoCierre> candidatos)
+        {
+            IReadOnlyList<SesionShell> primero = candidatos[0].Ademas;
+            foreach (CandidatoCierre candidato in candidatos)
+            {
+                if (!candidato.IsAlcanzaTodas || candidato.Ademas.Count != primero.Count)
+                    return false;
+
+                foreach (SesionShell sesion in candidato.Ademas)
+                    if (!IsIncluida(primero, sesion))
+                        return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsIncluida(IReadOnlyList<SesionShell> sesiones, SesionShell sesion)
+        {
+            foreach (SesionShell otra in sesiones)
+                if (ReferenceEquals(otra, sesion))
+                    return true;
+
+            return false;
+        }
+
+        private static void DescribirAdemas(StringBuilder texto, CandidatoCierre candidato, GestorSesiones gestor)
+        {
+            for (int i = 0; i < candidato.Ademas.Count; i++)
+                DescribirSesion(texto.Append(i == 0 ? "" : ", "), candidato.Ademas[i], gestor);
+        }
+
+        // Los usuario@servidor:puerto de las sesiones viejas, cada uno una vez, con sus comandos en curso.
+        private static void DescribirViejas(StringBuilder texto, IReadOnlyList<SesionShell> viejas)
+        {
+            List<string> claves = [];
+            foreach (SesionShell sesion in viejas)
+                if (!claves.Contains(sesion.Destino.Clave))
+                    claves.Add(sesion.Destino.Clave);
+
+            for (int i = 0; i < claves.Count; i++)
+            {
+                _ = texto.Append(i == 0 ? "" : ", ").Append(claves[i]);
+                StringBuilder enCurso = new();
+                foreach (SesionShell sesion in viejas)
+                    if (string.Equals(sesion.Destino.Clave, claves[i], StringComparison.Ordinal))
+                        DescribirEnCurso(enCurso, sesion);
+                if (enCurso.Length > 0)
+                    _ = texto.Append(" (").Append(enCurso).Append(')');
+            }
+        }
+
+        // «usuario@servidor:puerto (claves; alias a, b; comando en curso id «comando»; N en cola)».
+        private static void DescribirSesion(StringBuilder texto, SesionShell sesion, GestorSesiones gestor)
+        {
+            DestinoSsh destino = sesion.Destino;
+            _ = texto.Append(destino.Clave).Append(" (");
+            _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
+            IReadOnlyList<string> alias = gestor.AliasDe(sesion);
+            if (alias.Count > 0)
+                _ = texto.Append("; alias ").AppendJoin(", ", alias);
+            StringBuilder enCurso = new();
+            DescribirEnCurso(enCurso, sesion);
+            _ = enCurso.Length > 0 ? texto.Append("; ").Append(enCurso).Append(')') : texto.Append(')');
+        }
+
+        private static void DescribirEnCurso(StringBuilder texto, SesionShell sesion)
+        {
+            if (sesion.PeticionActual is { } actual)
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"comando en curso {actual.IdTexto} «{Recortar(actual.Comando)}»");
+            int enCola = sesion.ComandosEnCola;
+            if (enCola > 0)
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"{enCola} en cola");
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]

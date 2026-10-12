@@ -184,7 +184,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         // Pasado el tope, el alias ya no se recuerda: ssh_disconnect no dice solo «No había conexión», sino que remite a
-        // ssh_status y al destino real.
+        // ssh_status y al destino real que la cierra (aquí solo a ella).
         [Fact]
         public async Task AliasPasadoElTopeCuyaConfiguracionCambio_ElMensajeRemiteASshStatus()
         {
@@ -199,7 +199,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.IsHecho.Should().BeFalse();
-            _ = resultado.Mensaje.Should().Contain("ssh_status").And.Contain($"{TopeAlias} alias").And.Contain("usuario@servidor:puerto");
+            _ = resultado.Mensaje.Should().Contain("ssh_status").And.Contain($"{TopeAlias} alias").And.Contain("deploy@127.0.0.1:2222, que se cierra con deploy@127.0.0.1:2222");
             _ = _gestor.ListarSesiones().Should().ContainSingle();
         }
 

@@ -7,8 +7,9 @@ namespace NativeSsh.Test.Ssh
 {
     // La pista de las sesiones de un alias con otro usuario o puerto (su User o Port cambió con la sesión viva, o se abrieron
     // con usuario@alias o alias:puerto): ssh_disconnect y ssh_status con el alias la dan siempre que existan, aunque se cierre
-    // otra, sin repetir destinos, y sugieren usuario@alias:puerto, que cierra exactamente esas (usuario@servidor:puerto
-    // cerraría también las de otros alias). El aviso del tope de alias solo sale si alguna sesión olvidó ese alias.
+    // otra, sin repetir destinos, y sugieren usuario@alias:puerto cuando cierra solo esas (usuario@servidor:puerto cerraría
+    // también las de otros alias; los casos en que tampoco el alias basta, en .PistasVeraces). El aviso del tope de alias solo
+    // sale si alguna sesión olvidó ese alias.
     public sealed partial class SesionesConConfiguracionSshTests
     {
         private const string Otra = "Host otra\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n  IdentityFile /k/b\n";
