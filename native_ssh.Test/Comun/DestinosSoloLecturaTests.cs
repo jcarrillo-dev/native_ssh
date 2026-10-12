@@ -80,6 +80,8 @@ namespace NativeSsh.Test.Comun
         [InlineData("::1", "root@::1%lo")]
         [InlineData("fe80::1%2", "root@[fe80::1]:22")]
         [InlineData("fe80::1", "root@[fe80::1%eth0]:22")]
+        // Por dirección: un nombre que resuelve a loopback (mi-portatil → 127.0.1.1) y el destino ::1 con zona.
+        [InlineData("mi-portatil", "root@[::1%1]:22")]
         public async Task Ipv6ConZona_SigueSiendoSoloLectura(string configuracion, string destino)
         {
             // Arrange
