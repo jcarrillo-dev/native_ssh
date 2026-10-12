@@ -35,6 +35,11 @@ namespace NativeSsh.Test.Utilidades
                 RedirectStandardError = true
             };
             _ = inicio.Environment.Remove("NATIVE_SSH_PASSWORD");
+            _ = inicio.Environment.Remove("NATIVE_SSH_PASSPHRASE");
+            _ = inicio.Environment.Remove("NATIVE_SSH_PASSPHRASE_FICHERO");
+
+            // Nunca la configuración de ssh real del usuario (nombra servidores reales): la prueba que la quiera pone la suya.
+            inicio.Environment["NATIVE_SSH_CONFIG_SSH"] = "none";
             foreach ((string clave, string valor) in entorno)
                 inicio.Environment[clave] = valor;
             ClienteMcpBinario cliente = new(Process.Start(inicio)!);

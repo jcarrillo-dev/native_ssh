@@ -74,11 +74,19 @@ namespace NativeSsh.Comun
 
         public static uint UsuarioEfectivo() => GetEuid();
 
+        // SIGKILL a todo un grupo de procesos (kill(-grupo)); false si ya no queda ninguno (ESRCH) u otro error.
+        public static bool MatarGrupo(int grupo) => grupo > 1 && Kill(-grupo, SenalMatar) == 0;
+
         [LibraryImport("libc", EntryPoint = "open", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
         private static partial int Open(string ruta, int flags);
 
         [LibraryImport("libc", EntryPoint = "statx", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
         private static partial int Statx(int directorio, string ruta, int flags, uint campos, ref byte buffer);
+
+        private const int SenalMatar = 9; // SIGKILL
+
+        [LibraryImport("libc", EntryPoint = "kill", SetLastError = true)]
+        private static partial int Kill(int proceso, int senal);
 
         [LibraryImport("libc", EntryPoint = "geteuid")]
         private static partial uint GetEuid();

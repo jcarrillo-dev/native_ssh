@@ -78,5 +78,11 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 63, Level = LogLevel.Warning, Message = "Una línea del shell de {Destino} la ejecutó otro shell (uno interactivo anidado que dejó el comando: sudo -i, su -, ssh a otra máquina, bash -i): se cierra el canal del shell para que los comandos siguientes no se ejecuten dentro.")]
         public static partial void ShellAnidadoDetectado(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 64, Level = LogLevel.Warning, Message = "No se encontró el programa '{Binario}': los destinos se usan tal cual, sin la configuración de ssh (alias, HostName, User, Port e IdentityFile de ~/.ssh/config). Instala el cliente de OpenSSH y reinicia native_ssh para usarla.")]
+        public static partial void SshNoEncontrado(this ILogger logger, string binario);
+
+        [LoggerMessage(EventId = 65, Level = LogLevel.Debug, Message = "'{Servidor}' resuelto con la configuración de ssh: {Destino} ({Claves}).")]
+        public static partial void DestinoResuelto(this ILogger logger, string servidor, string destino, string claves);
     }
 }

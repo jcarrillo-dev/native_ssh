@@ -24,7 +24,9 @@ namespace NativeSsh.Herramientas
         int ConexionesAbiertas,
         int ComandosEnCola,
         string? PeticionActual,
-        int CanalesExecActivos);
+        int CanalesExecActivos,
+        IReadOnlyList<string>? Alias = null,
+        IReadOnlyList<string>? IdentityFile = null);
 
     public sealed record ResumenPeticion(
         string Id,
@@ -34,7 +36,9 @@ namespace NativeSsh.Herramientas
         string Comando,
         double SegundosEjecucion);
 
-    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones);
+    // Aviso: con un alias, sus sesiones para otro usuario o puerto y las de sesiones llenas que no lo guardaron, con qué
+    // destino cerrarlas y qué más cerraría cada uno (null si no hay).
+    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, string? Aviso = null);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
 

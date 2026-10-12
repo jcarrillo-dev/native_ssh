@@ -274,7 +274,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_exec", Destructive = true, OpenWorld = true)]
         [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd.")]
         public async Task<ResultadoComando> EjecutarAsync(
-            [Description("usuario@servidor[:puerto]. Sin usuario se usa el usuario local.")] string destino,
+            [Description("usuario@servidor[:puerto]; el servidor puede ser un alias de ~/.ssh/config. Sin usuario se usa el User de ~/.ssh/config o, si no lo hay, el usuario local.")] string destino,
             [Description("Comando bash. Admite varias líneas, heredocs y comillas.")] string comando,
             [Description("Tiempo máximo de ejecución; al agotarse se envía Ctrl+C. Entre 1 y 3600.")] int timeoutSegundos = 300,
             [Description("Cuánto esperar el resultado antes de responder. Entre 0 y 120.")] int esperarSegundos = 20,
@@ -344,7 +344,7 @@ namespace NativeSsh.Herramientas
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
             {
-                if (sesion.Destino.Clave != peticion.Destino.Clave)
+                if (sesion.Destino.ClaveSesion != peticion.Destino.ClaveSesion)
                     continue;
 
                 return !sesion.IsShellActivo
@@ -395,14 +395,16 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
         [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
         public ResultadoEstado Estado(
-            [Description("Filtrar por destino (opcional).")] string? destino = null)
+            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto, con qué destino cerrarlas y qué más cerraría ese destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
-            string? clave = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino).Clave;
-            bool isSinFiltro = clave is null;
+            DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
+            bool isSinFiltro = filtro is null;
             List<EstadoSesion> sesiones = [];
-            foreach (SesionShell s in gestor.ListarSesiones())
-                if (isSinFiltro || s.Destino.Clave == clave)
-                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos));
+            foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
+            {
+                IReadOnlyList<string> alias = gestor.AliasDe(s);
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades));
+            }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
             List<ResumenPeticion> peticiones = [];
@@ -411,27 +413,251 @@ namespace NativeSsh.Herramientas
                 if (peticiones.Count == MaxPeticionesEnEstado)
                     break;
 
-                if (isSinFiltro || p.Destino.Clave == clave)
+                if (isSinFiltro || GestorSesiones.IsDelDestino(p, filtro!.Value))
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
-            return new ResultadoEstado(sesiones, peticiones);
+            string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias), gestor) : null;
+            return new ResultadoEstado(sesiones, peticiones, aviso);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor).")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró y, con un alias, qué otras sesiones suyas siguen abiertas, con qué destino cerrarlas y qué más cerraría ese destino. Lee lo que cerraría además antes de usarlo: si dice que ningún destino las cierra solas, cerrarlas cierra también las sesiones (y cancela los comandos) que nombra.")]
         public async Task<ResultadoAccion> DesconectarAsync(
-            [Description("usuario@servidor[:puerto].")] string destino)
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
-            string clave = gestor.ParsearDestino(destino).Clave;
-            bool isHecho = await gestor.DesconectarAsync(destino).ConfigureAwait(false);
-            return new ResultadoAccion(clave, isHecho, isHecho ? "Conexión cerrada." : "No había conexión con ese destino.");
+            DestinoSsh resuelto = gestor.ParsearDestino(destino);
+            IReadOnlyList<DestinoSsh> cerradas = await gestor.DesconectarAsync(resuelto).ConfigureAwait(false);
+            string mensaje = cerradas.Count switch
+            {
+                0 when resuelto.Alias is { } alias => $"No había conexión con '{alias}' ({resuelto.Clave}).",
+                0 => "No había conexión con ese destino.",
+                1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
+                // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
+                _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Count} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
+                _ => $"Se cerraron {cerradas.Count} conexiones: {DescribirCerradas(cerradas, isConDestino: true)}."
+            };
+            // Las cerradas ya no están en el gestor: las pistas son de las que siguen abiertas.
+            string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto), gestor);
+            return new ResultadoAccion(cerradas.Count == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Count > 0, pistas is null ? mensaje : $"{mensaje} {pistas}");
+        }
+
+        private static bool IsMismoDestino(IReadOnlyList<DestinoSsh> destinos)
+        {
+            foreach (DestinoSsh destino in destinos)
+                if (!string.Equals(destino.Clave, destinos[0].Clave, StringComparison.Ordinal))
+                    return false;
+
+            return true;
+        }
+
+        // «usuario@servidor:puerto (claves)» o solo las claves de cada una, separadas por '; '.
+        private static string DescribirCerradas(IReadOnlyList<DestinoSsh> destinos, bool isConDestino)
+        {
+            StringBuilder texto = new();
+            foreach (DestinoSsh destino in destinos)
+            {
+                if (texto.Length > 0)
+                    _ = texto.Append("; ");
+                if (isConDestino)
+                    _ = texto.Append(destino.Clave).Append(" (");
+                _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
+                if (isConDestino)
+                    _ = texto.Append(')');
+            }
+
+            return texto.ToString();
+        }
+
+        // Con un alias, ssh_disconnect y ssh_status dicen qué otras sesiones suyas siguen abiertas (null si ninguna): las de
+        // otro usuario o puerto y las que llegaron al tope de alias sin guardar este. Para cada grupo, el destino que las
+        // cierra solas si lo hay; si no, lo que cerraría además cada destino posible (GestorSesiones.BuscarPistasAlias lo
+        // calcula con el criterio de ssh_disconnect), o que ninguno las cierra y por qué. Nunca sugiere un destino que se rechazaría.
+        private static string? TextoPistas(DestinoSsh resuelto, IReadOnlyList<PistaAlias> pistas, GestorSesiones gestor)
+        {
+            if (resuelto.Alias is not { } alias || pistas.Count == 0)
+                return null;
+
+            StringBuilder texto = new();
+            bool isPrimeraOtros = true;
+            foreach (PistaAlias pista in pistas)
+            {
+                if (pista.IsEnElTope)
+                    continue;
+
+                _ = isPrimeraOtros
+                    ? texto.Append($"Siguen abiertas sesiones de '{alias}' para otro usuario o puerto (su User o Port cambió con la sesión viva, o se abrieron con otro usuario o puerto): ")
+                    : texto.Append("; ");
+                isPrimeraOtros = false;
+                AnadirPista(texto, pista, gestor, $"ssh_disconnect con '{alias}' la cierra cuando su configuración vuelva a ese usuario y puerto");
+            }
+
+            if (!isPrimeraOtros)
+                _ = texto.Append(" (ssh_status sin destino las muestra todas).");
+
+            bool isPrimeraTope = true;
+            foreach (PistaAlias pista in pistas)
+            {
+                if (!pista.IsEnElTope)
+                    continue;
+
+                _ = isPrimeraTope
+                    ? texto.Append(isPrimeraOtros ? "" : " ").Append($"Sesiones que ya recuerdan {GestorSesiones.MaxAliasPorSesion} alias y no guardaron '{alias}' (si buscas una abierta con este alias antes de cambiar su configuración, puede ser una de ellas): ")
+                    : texto.Append("; ");
+                isPrimeraTope = false;
+                AnadirPista(texto, pista, gestor, null);
+            }
+
+            if (!isPrimeraTope)
+                _ = texto.Append(" (ssh_status sin destino las muestra todas).");
+            return texto.ToString();
+        }
+
+        // «viejas, que se cierra con X» si un candidato las cierra solas; si no, qué más cerraría cada uno que las alcanza, o
+        // que ninguno las cierra (con el motivo y, si se da, cuándo las cierra el alias).
+        private static void AnadirPista(StringBuilder texto, PistaAlias pista, GestorSesiones gestor, string? cierreConElAlias)
+        {
+            DescribirViejas(texto, pista.Viejas);
+            if (pista.Exacto is { } exacto)
+            {
+                _ = texto.Append(", que se cierra con ").Append(exacto.Texto);
+                return;
+            }
+
+            bool hasAlcanzan = false;
+            foreach (CandidatoCierre candidato in pista.Candidatos)
+                hasAlcanzan |= candidato.IsAlcanzaTodas;
+
+            if (!hasAlcanzan)
+            {
+                // Solo de los candidatos se sabe: «no hay destino» sería falso si otro alias que la sesión recuerda la alcanza.
+                _ = texto.Append(": no se cierra con ");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                    _ = texto.Append(i == 0 ? "" : " ni con ").Append(pista.Candidatos[i].Texto);
+                _ = texto.Append(" (");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                {
+                    CandidatoCierre candidato = pista.Candidatos[i];
+                    _ = texto.Append(i == 0 ? "" : "; ").Append(candidato.Texto).Append(candidato.Error is { } error ? $" se rechaza: {error.TrimEnd('.')}" : " no la alcanza");
+                }
+
+                _ = texto.Append(')');
+                if (cierreConElAlias is not null)
+                    _ = texto.Append("; ").Append(cierreConElAlias);
+                return;
+            }
+
+            bool isUnCandidato = pista.Candidatos.Count == 1;
+            if (isUnCandidato)
+                _ = texto.Append(": ").Append(pista.Candidatos[0].Texto).Append(" no la cierra sola: ");
+            else
+            {
+                _ = texto.Append(": ni ");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                    _ = texto.Append(i == 0 ? "" : " ni ").Append(pista.Candidatos[i].Texto);
+                _ = texto.Append(" la cierran sola: ");
+            }
+
+            // Los dos cierran lo mismo (p. ej. el IdentityFile del alias pasó a ser el de otra sesión del mismo destino): una vez.
+            if (!isUnCandidato && IsMismoCierre(pista.Candidatos))
+            {
+                DescribirAdemas(texto.Append("los dos cerrarían también "), pista.Candidatos[0], gestor);
+                return;
+            }
+
+            for (int c = 0; c < pista.Candidatos.Count; c++)
+            {
+                CandidatoCierre candidato = pista.Candidatos[c];
+                _ = texto.Append(c == 0 ? "" : "; ");
+                if (!isUnCandidato)
+                    _ = texto.Append(candidato.Texto).Append(' ');
+                if (candidato.Error is { } error)
+                    _ = texto.Append("se rechaza: ").Append(error.TrimEnd('.'));
+                else if (!candidato.IsAlcanzaTodas)
+                    _ = texto.Append("no la alcanza");
+                else
+                    DescribirAdemas(texto.Append("cerraría también "), candidato, gestor);
+            }
+        }
+
+        private static bool IsMismoCierre(IReadOnlyList<CandidatoCierre> candidatos)
+        {
+            IReadOnlyList<SesionShell> primero = candidatos[0].Ademas;
+            foreach (CandidatoCierre candidato in candidatos)
+            {
+                if (!candidato.IsAlcanzaTodas || candidato.Ademas.Count != primero.Count)
+                    return false;
+
+                foreach (SesionShell sesion in candidato.Ademas)
+                    if (!IsIncluida(primero, sesion))
+                        return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsIncluida(IReadOnlyList<SesionShell> sesiones, SesionShell sesion)
+        {
+            foreach (SesionShell otra in sesiones)
+                if (ReferenceEquals(otra, sesion))
+                    return true;
+
+            return false;
+        }
+
+        private static void DescribirAdemas(StringBuilder texto, CandidatoCierre candidato, GestorSesiones gestor)
+        {
+            for (int i = 0; i < candidato.Ademas.Count; i++)
+                DescribirSesion(texto.Append(i == 0 ? "" : ", "), candidato.Ademas[i], gestor);
+        }
+
+        // Los usuario@servidor:puerto de las sesiones viejas, cada uno una vez, con sus comandos en curso.
+        private static void DescribirViejas(StringBuilder texto, IReadOnlyList<SesionShell> viejas)
+        {
+            List<string> claves = [];
+            foreach (SesionShell sesion in viejas)
+                if (!claves.Contains(sesion.Destino.Clave))
+                    claves.Add(sesion.Destino.Clave);
+
+            for (int i = 0; i < claves.Count; i++)
+            {
+                _ = texto.Append(i == 0 ? "" : ", ").Append(claves[i]);
+                StringBuilder enCurso = new();
+                foreach (SesionShell sesion in viejas)
+                    if (string.Equals(sesion.Destino.Clave, claves[i], StringComparison.Ordinal))
+                        DescribirEnCurso(enCurso, sesion);
+                if (enCurso.Length > 0)
+                    _ = texto.Append(" (").Append(enCurso).Append(')');
+            }
+        }
+
+        // «usuario@servidor:puerto (claves; alias a, b; comando en curso id «comando»; N en cola)».
+        private static void DescribirSesion(StringBuilder texto, SesionShell sesion, GestorSesiones gestor)
+        {
+            DestinoSsh destino = sesion.Destino;
+            _ = texto.Append(destino.Clave).Append(" (");
+            _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
+            IReadOnlyList<string> alias = gestor.AliasDe(sesion);
+            if (alias.Count > 0)
+                _ = texto.Append("; alias ").AppendJoin(", ", alias);
+            StringBuilder enCurso = new();
+            DescribirEnCurso(enCurso, sesion);
+            _ = enCurso.Length > 0 ? texto.Append("; ").Append(enCurso).Append(')') : texto.Append(')');
+        }
+
+        private static void DescribirEnCurso(StringBuilder texto, SesionShell sesion)
+        {
+            if (sesion.PeticionActual is { } actual)
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"comando en curso {actual.IdTexto} «{Recortar(actual.Comando)}»");
+            int enCola = sesion.ComandosEnCola;
+            if (enCola > 0)
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"{enCola} en cola");
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
         [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd.")]
         public ResultadoAccion ReiniciarShell(
-            [Description("usuario@servidor[:puerto].")] string destino)
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
             bool isHecho = gestor.ReiniciarShell(destino);
@@ -501,7 +727,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_read_file", ReadOnly = true, Idempotent = true)]
         [Description("Lee un archivo del servidor remoto con soporte para rangos de líneas (1-indexed) o sus últimas N líneas (lineaInicio = -N, como 'tail -n N'). Devuelve el contenido en texto plano con saltos de línea reales (TextContent), sin envoltorios JSON, precedido de la cabecera '[Líneas X-Y de Total]'. El contenido llega tal cual, sin pasar por un terminal (conserva los \\r de CRLF y las secuencias de escape). Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y se añade al final la línea '[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]'. Si la salida supera el máximo por petición (1 MiB por defecto) devuelve un error en lugar de contenido parcial. Distingue en el error si el archivo no existe, si algún directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Si la ruta no es un archivo regular (FIFO, socket o dispositivo) devuelve un error al momento; los archivos de /proc y /sys sí se leen. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> LeerArchivoAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo en el servidor remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Línea inicial (1-indexed, por defecto 1). Un valor negativo -N lee las últimas N líneas (como 'tail -n N') y no admite lineaFin.")] int lineaInicio = 1,
             [Description("Línea final (1-indexed, opcional). Si no se especifica, lee hasta 800 líneas. No se puede combinar con lineaInicio negativo.")] int? lineaFin = null,
@@ -535,7 +761,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
         [Description("Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Contenido textual o datos a escribir.")] string contenido,
             [Description("Sobrescribir si el archivo ya existe (por defecto false). También sobrescribe archivos de solo lectura propios, conservando su modo.")] bool overwrite = false,
@@ -592,7 +818,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
         [Description("Herramienta canónica y obligatoria para buscar cadenas de texto, funciones, clases o expresiones regulares en archivos del servidor remoto. Excluye automáticamente cachés, binarios (.pyc, .o), .git, node_modules y .venv, filtrando opcionalmente por extensión; las exclusiones pesan más que el filtro (con extension='lock' no se busca en ningún *.lock) y, como el filtro, se aplican a lo que hay dentro de la ruta, nunca a la ruta pedida (buscar en node_modules o en un archivo concreto lo busca ahí). Usa rg si el servidor lo tiene; si no, grep -P (PCRE) o, como último recurso, grep -E (ERE); sin grep de GNU (p. ej. busybox) recorre el árbol con find, con las mismas exclusiones, y busca con grep -E (ahí los binarios se omiten solo por extensión). La última línea indica el motor usado y, por tanto, la sintaxis de regex aplicada: '[motor: rg]' (regex de Rust, admite \\d y \\w, sin lookaround ni retroreferencias), '[motor: grep -P]' (PCRE) o '[motor: grep -E]' (ERE POSIX: usa [0-9] en lugar de \\d). Si la ruta indicada no existe o no se puede leer devuelve un error; lo ilegible dentro del árbol (directorios o archivos) se omite y la respuesta avisa de que pueden faltar coincidencias. Mucho más rápido y eficiente en tokens que grep. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Texto o patrón regex a buscar (sintaxis del motor indicado en la respuesta).")] string patron,
             [Description("Directorio o ruta donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Filtro opcional por extensión o patrón glob (ej. 'py', 'ts', '*.json'); no se aplica si la ruta es un archivo.")] string? extension = null,
@@ -906,7 +1132,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
         [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Profundidad máxima de recursión (por defecto 3, entre 1 y 10).")] int profundidadMax = 3,
             [Description("Número máximo de directorios a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
@@ -963,7 +1189,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
         [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
             [Description("Ruta base donde buscar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' o 'directory' (directorios) o 'all' (ambos), sin distinguir mayúsculas. Por defecto (o vacío), 'file'. Otro valor, también con blancos alrededor, da error.")] string tipo = "file",
@@ -1028,7 +1254,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
         [Description("Devuelve metadatos de un archivo o carpeta en formato estructurado (existe, tipo, tamaño en bytes, tamaño legible, permisos en octal, última modificación, propietario, grupo y, si es un enlace simbólico, destinoEnlace) sin seguir el enlace. El tipo es uno de estos valores fijos, iguales en cualquier servidor e idioma: 'archivo regular', 'directorio', 'enlace simbólico', 'fifo', 'socket', 'dispositivo de caracteres', 'dispositivo de bloques' o 'desconocido'. Úsala antes de leer archivos potencialmente masivos y en lugar de 'ls -l' para ver permisos y dueño. existe=false solo si la ruta no existe; si algún directorio de la ruta no se puede atravesar, devuelve un error. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<ResultadoMetadatos> ConsultarMetadatosAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo o carpeta a inspeccionar (absoluta o relativa a __NS_CWD).")] string ruta,
             CancellationToken cancellationToken = default)
         {
@@ -1113,25 +1339,27 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_set_cwd", Destructive = true)]
         [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes (ssh_exec y las rutas relativas de las demás herramientas) sin necesidad de encadenar 'cd dir &&'. Se mantiene aunque el shell se recree (ssh_reset_shell, shell perdido) hasta ssh_disconnect. Pasa vacío/null para volver a $HOME.")]
         public async Task<ResultadoDirectorioTrabajo> FijarDirectorioAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
-            string clave = gestor.ParsearDestino(destino).Clave;
-            SesionShell? sesionInicial = SesionDe(clave);
+            DestinoSsh resuelto = gestor.ParsearDestino(destino);
+            string clave = resuelto.Clave;
+            string claveSesion = resuelto.ClaveSesion;
+            SesionShell? sesionInicial = SesionDe(claveSesion);
             string? guardado = sesionInicial?.DirectorioTrabajo;
             if (string.IsNullOrEmpty(ruta))
             {
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
                 const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome), cancellationToken).ConfigureAwait(false);
-                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome));
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 
                 if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
-                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
                 }
 
                 // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
@@ -1166,29 +1394,29 @@ namespace NativeSsh.Herramientas
                 """);
 
             // La validación va en un subshell: falle como falle, no cambia nada.
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p), cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p));
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion));
 
             if (peticionValidacion.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionValidacion, out _).Trim();
-                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
             }
 
             string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
             if (Encoding.UTF8.GetByteCount(pwdReal) > SesionShell.MaxBytesDirectorioTrabajo)
-                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
 
             // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
-            SesionShell? sesionValidacion = SesionDe(clave);
+            SesionShell? sesionValidacion = SesionDe(claveSesion);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal), cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal));
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion));
 
             if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
-                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado)}");
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado, claveSesion: claveSesion)}");
             }
 
             // Fuente de verdad en C# (la reciben los canales exec y se reexporta si el shell se recrea), fijada solo cuando
@@ -1200,11 +1428,11 @@ namespace NativeSsh.Herramientas
 
         private const string DirectorioHome = "$HOME (~)";
 
-        // Sesión del destino ahora (null = no hay: nunca se abrió o ssh_disconnect la cerró).
-        private SesionShell? SesionDe(string clave)
+        // Sesión del destino ahora, por DestinoSsh.ClaveSesion (null = no hay: nunca se abrió o ssh_disconnect la cerró).
+        private SesionShell? SesionDe(string claveSesion)
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
-                if (sesion.Destino.Clave == clave)
+                if (sesion.Destino.ClaveSesion == claveSesion)
                     return sesion;
 
             return null;
@@ -1219,9 +1447,10 @@ namespace NativeSsh.Herramientas
         //   con certeza;
         // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
         // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
-        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
+        // 'clave' es lo que se muestra (usuario@servidor:puerto); 'claveSesion', la de la sesión si difiere (IdentityFile).
+        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null, string? claveSesion = null)
         {
-            SesionShell? sesion = SesionDe(clave);
+            SesionShell? sesion = SesionDe(claveSesion ?? clave);
             if (sesion is null)
                 return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en {DirectorioHome}.";
 
@@ -1298,7 +1527,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
         [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
-            [Description("usuario@servidor[:puerto].")] string destino,
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
             [Description("Texto exacto a reemplazar (incluyendo espacios e indentación).")] string targetContent,
             [Description("Nuevo texto que reemplazará a targetContent.")] string replacementContent,
