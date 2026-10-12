@@ -375,6 +375,42 @@ namespace NativeSsh.Test.Ssh
             _ = rapidaReloj.Elapsed.Should().BeLessThan(reloj.Elapsed / 2);
         }
 
+        // Una clave abierta se guarda: la conexión siguiente no la reabre ni vuelve a leer la passphrase.
+        [Fact]
+        public void ClaveAbierta_SeReutilizaSinVolverALeerLaPassphrase()
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", Frase);
+            string fichero = FicheroFrase(Frase, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using FabricaConexionSsh fabrica = Fabrica(fichero: fichero);
+            (IReadOnlyList<PrivateKeyFile> primera, _) = Cargar(fabrica, ruta);
+            File.Delete(fichero);
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> segunda, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = motivos.Should().BeEmpty();
+            _ = segunda.Should().ContainSingle().Which.Should().BeSameAs(primera.Single());
+        }
+
+        // Un fichero que no es una clave (y no dice ENCRYPTED) no se toma por cifrado: el motivo es el de SSH.NET.
+        [Fact]
+        public void FicheroQueNoEsUnaClave_ElMotivoNoHablaDePassphrase()
+        {
+            // Arrange
+            string ruta = Path.Combine(_directorio, "no_es_clave");
+            File.WriteAllText(ruta, "esto no es una clave privada\n");
+            using FabricaConexionSsh fabrica = Fabrica();
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> claves, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = claves.Should().BeEmpty();
+            _ = motivos.Should().ContainSingle().Which.Should().Contain($"La clave {ruta} no se pudo cargar").And.NotContain("passphrase");
+        }
+
         // Sin ninguna clave utilizable, el error de la conexión lleva el motivo de cada clave (no la passphrase).
         [Fact]
         public async Task SinClavesUtilizables_ElErrorDeConexionLlevaElMotivoDeCadaClave()
