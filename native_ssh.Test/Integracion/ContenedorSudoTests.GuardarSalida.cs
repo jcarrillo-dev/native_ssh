@@ -135,5 +135,32 @@ namespace NativeSsh.Test.Integracion
             _ = r.Estado.Should().Be(EstadoPeticionEnum.Completado, r.Aviso);
             _ = quedan.Should().Be("reciente\n");
         }
+
+        // Con una ACL por defecto en el directorio que contiene el base (aquí uno del usuario con 1777, como /tmp): el busybox
+        // de Alpine no la muestra en 'ls -ld' y el base se acepta; los chmod explícitos tras crear (700 y 600) dejan la máscara
+        // sin permisos ('mask::---': ninguna entrada con nombre da acceso) y 'other' sin permisos en el base, el directorio
+        // del shell y el archivo (la ACL por defecto anula la umask al crear el archivo: sin el chmod quedaba 'other::rw-').
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task GuardarSalida_AclPorDefectoEnElPadre_LaMascaraQuedaSinPermisos(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            string padre = $"{entorno.DirectorioUsuario}/tmp_acl";
+            _ = entorno.Servidor.ComoUsuario("mkdir -m 1777 \"$1\" && chmod 1777 \"$1\" && setfacl -d -m u:nobody:rwx \"$1\"", padre);
+            OpcionesNativeSsh opciones = entorno.Servidor.Opciones() with { PrefijoGuardado = $"{padre}/native_ssh" };
+            await using GestorSesiones gestor = entorno.Servidor.Gestor(opciones);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            string baseGuardado = $"{padre}/native_ssh-{entorno.Servidor.Usuario}";
+
+            // Act
+            ResultadoComando r = await herramientas.EjecutarAsync(entorno.Destino, "echo hola", esperarSegundos: 30, guardarSalida: true).ComoComando();
+            string acl = entorno.Root("for f in \"$1\" \"$(dirname \"$2\")\" \"$2\"; do getfacl -p \"$f\" | grep -E '^(mask|other)::' | tr '\\n' ' '; echo; done", baseGuardado, r.Archivo ?? "/nada");
+
+            // Assert
+            salida.WriteLine($"{r.Estado} '{r.Aviso}'\n{acl}");
+            _ = (r.Estado, r.Salida).Should().Be((EstadoPeticionEnum.Completado, "hola\n"));
+            _ = acl.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().Equal("mask::--- other::--- ", "mask::--- other::--- ", "mask::--- other::--- ");
+        }
     }
 }
