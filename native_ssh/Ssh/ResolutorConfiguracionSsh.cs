@@ -320,7 +320,9 @@ namespace NativeSsh.Ssh
             bool isLeido = Task.WaitAll([lectura, errores], EsperaLectura);
             if (!isLeido)
             {
-                Matar(ejecucion, isGrupoPropio);
+                // Con ssh ya terminado, su pid solo sigue reservado mientras su grupo tenga algún miembro: si ya existe
+                // otro proceso con ese pid, el grupo quedó vacío y el número es de otro, al que no se toca.
+                Matar(ejecucion, isGrupoPropio && (!isTerminado || !Directory.Exists($"/proc/{ejecucion.Id}")));
                 isLeido = Task.WaitAll([lectura, errores], EsperaLectura);
             }
 
