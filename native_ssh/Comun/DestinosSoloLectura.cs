@@ -19,14 +19,13 @@ namespace NativeSsh.Comun
     // (IPv6 entre corchetes con puerto: '[::1]:22') o '*' (todos los destinos). Sin usuario vale para cualquier usuario y sin
     // puerto para cualquier puerto. El servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_', con al menos una letra
     // o un dígito): lo que nunca podría ser el destino de una conexión ('a@b@c', 'host:22:2222', '/', '*.dominio', '.', '-')
-    // es un error. Se compara sin distinguir
-    // mayúsculas y sin el punto final de un nombre completo; localhost, 127.0.0.0/8, ::1, 0.0.0.0 y :: son la misma máquina
-    // (sin DNS). Si el texto no coincide, se comparan las direcciones de los dos (DNS o /etc/hosts, con un plazo de 3 s que se
+    // es un error. Se compara sin distinguir mayúsculas y sin el punto final de un nombre completo; localhost, 127.0.0.0/8,
+    // ::1, 0.0.0.0 y :: son la misma máquina (sin DNS). Si el texto no coincide, se comparan las direcciones de los dos (DNS o /etc/hosts, con un plazo de 3 s que se
     // cumple aunque la resolución no se pueda cancelar): así 'prod.ejemplo.com' cubre también su IP. Si un nombre que haría
     // falta comparar no se resuelve (fallo o plazo), el destino se trata como de solo lectura (falla cerrado). Solo se
     // recuerdan, 5 minutos, las resoluciones correctas de las entradas; el destino se resuelve en cada comprobación (si su
     // nombre pasa a apuntar a una entrada, la llamada siguiente ya lo ve). Ventana que queda: SSH.NET vuelve a resolver el
-    // nombre al conectar (milisegundos después de esta comprobación) y una sesión ya abierta sigue conectada a la dirección
+    // nombre al conectar (normalmente poco después de esta comprobación) y una sesión ya abierta sigue conectada a la dirección
     // de cuando se abrió, aunque el nombre apunte ahora a otra; solo quien controla el DNS del nombre puede aprovecharla
     // (para cerrarla del todo, usa en los destinos la IP o el mismo texto que en la lista). La zona de una IPv6 ('%1',
     // '%lo') no cuenta al comparar. Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso
