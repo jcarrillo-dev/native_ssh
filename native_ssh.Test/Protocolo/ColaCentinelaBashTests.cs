@@ -84,8 +84,19 @@ namespace NativeSsh.Test.Protocolo
             };
             using Process bash = Process.Start(inicio)!;
             Task<string> errores = bash.StandardError.ReadToEndAsync();
-            string salida = await bash.StandardOutput.ReadToEndAsync().WaitAsync(Limite);
-            await bash.WaitForExitAsync().WaitAsync(Limite);
+            string salida;
+            try
+            {
+                salida = await bash.StandardOutput.ReadToEndAsync().WaitAsync(Limite);
+                await bash.WaitForExitAsync().WaitAsync(Limite);
+            }
+            finally
+            {
+                // Una cola que no termina (p. ej. una mutación sin el tope de EOF) dejaría el bash girando para siempre.
+                if (!bash.HasExited)
+                    bash.Kill(entireProcessTree: true);
+            }
+
             _codigoSalidaBash = bash.ExitCode;
             _ = (await errores).Should().BeEmpty("la cola no escribe nada en stderr");
 
