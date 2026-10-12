@@ -235,6 +235,33 @@ namespace NativeSsh.Test.Comun
             _ = comprobacion.NoResuelto.Should().BeNull();
         }
 
+        // Una resolución que acaba bien pero sin ninguna dirección cuenta como no resuelta (no se sabe a qué máquina apunta): no
+        // se recuerda como un éxito vacío, que no coincidiría con nada y dejaría escribir.
+        [Fact]
+        public async Task ResolucionSinDirecciones_CuentaComoNoResuelta()
+        {
+            // Arrange
+            int consultas = 0;
+            Task<IPAddress[]> Vacio(string nombre, CancellationToken token)
+            {
+                _ = Interlocked.Increment(ref consultas);
+                return Task.FromResult(Array.Empty<IPAddress>());
+            }
+
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, Vacio).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura primera = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+
+            // Assert
+            _ = primera.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = sinRed.Should().BeNull("no se recordó nada");
+            _ = segunda.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = consultas.Should().Be(2, "se vuelve a resolver");
+        }
+
         // Un fallo pasajero del DNS no se recuerda: en cuanto el nombre se resuelve, la comparación es por sus direcciones.
         [Fact]
         public async Task FalloDeResolucion_NoSeRecuerda()
@@ -325,17 +352,19 @@ namespace NativeSsh.Test.Comun
             Task<IPAddress[]> Resolver(string nombre, CancellationToken token) =>
                 nombre.StartsWith("colgado", StringComparison.Ordinal) ? nunca.Task : ResolverFalso(nombre, token);
 
-            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Resolver).Should().BeTrue();
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5, deploy@prod.ejemplo", out DestinosSoloLectura destinos, out _, Resolver).Should().BeTrue();
             ComprobacionSoloLectura fallo = await destinos.ComprobarAsync(Destino("root@nadie.ejemplo"), CancellationToken.None);
             Task<ComprobacionSoloLectura>[] colgados = [.. Enumerable.Range(0, DestinosSoloLectura.MaxResolucionesEnCurso).Select(i => destinos.ComprobarAsync(Destino($"root@colgado{i}.ejemplo"), CancellationToken.None))];
 
             // Act
             ComprobacionSoloLectura sinCupo = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            ComprobacionSoloLectura entradaSinCupo = await destinos.ComprobarAsync(Destino("deploy@10.0.0.9"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
             ComprobacionSoloLectura[] porPlazo = await Task.WhenAll(colgados).WaitAsync(TimeSpan.FromSeconds(30));
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
 
             // Assert
             _ = sinCupo.Should().Be(new ComprobacionSoloLectura(true, "otro.ejemplo", IsCupoLleno: true));
+            _ = entradaSinCupo.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", IsCupoLleno: true));
             _ = porPlazo.Should().OnlyContain(r => r.IsSoloLectura && r.NoResuelto != null && !r.IsCupoLleno);
             _ = fallo.Should().Be(new ComprobacionSoloLectura(true, "nadie.ejemplo", IsCupoLleno: false));
         }

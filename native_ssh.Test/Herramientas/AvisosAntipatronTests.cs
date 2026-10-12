@@ -162,6 +162,9 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("perl -MDigest::SHA=sha256_hex -le 'print sha256_hex(q(x))'")]
         [InlineData("perl -Ilib t/basico.t")]
         [InlineData("perl -mstrict -e 'print 1'")]
+        // El valor pegado de -x (directorio) y de -F (patrón) puede llevar una 'i' sin ser -i.
+        [InlineData("perl -xlib instalar.sh")]
+        [InlineData("perl -Fsplit -lane 'print $F[0]' datos.csv")]
         [InlineData("tail -n 20 <(docker logs web 2>&1)")]
         [InlineData("head -n 5 <(journalctl -u nginx --no-pager)")]
         [InlineData("cat <(echo hola)")]

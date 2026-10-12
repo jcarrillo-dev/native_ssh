@@ -256,10 +256,10 @@ namespace NativeSsh.Test.Integracion
 
         // Script de ssh_find tras 'preparacion' (en el mismo bash, p. ej. un ulimit o un PATH); devuelve la respuesta o la
         // excepción de InterpretarBusquedaNombre.
-        private Func<string> BuscarTras(string montajes, string preparacion)
+        private Func<string> BuscarTras(string montajes, string preparacion, bool isCruzarMontajes = true)
         {
             string id = Guid.NewGuid().ToString("N");
-            string script = HerramientasSsh.ConstruirComandoBusquedaNombre("objetivo.txt", _raiz, "-type f ", 10, 100, isCruzarMontajes: true, id);
+            string script = HerramientasSsh.ConstruirComandoBusquedaNombre("objetivo.txt", _raiz, "-type f ", 10, 100, isCruzarMontajes, id);
             ProcessStartInfo inicio = new("unshare", ["-rmpf", "bash", "-c", $"set -e\n{montajes}\nset +e\n{preparacion}\n{script}"])
             {
                 RedirectStandardOutput = true,
@@ -270,7 +270,45 @@ namespace NativeSsh.Test.Integracion
             string salida = proceso.StandardOutput.ReadToEnd();
             _ = proceso.WaitForExit(300_000).Should().BeTrue("el script no debe colgarse");
             _ = proceso.ExitCode.Should().Be(0, errores.Result);
-            return () => HerramientasSsh.InterpretarBusquedaNombre(salida, id, "objetivo.txt", _raiz, 10, 100, isCruzarMontajes: true);
+            return () => HerramientasSsh.InterpretarBusquedaNombre(salida, id, "objetivo.txt", _raiz, 10, 100, isCruzarMontajes);
+        }
+
+        // Un punto de montaje que es un patrón de comodines ('[b]') con un hermano que casa con él ('b'): la tabla se parte
+        // sin expandir comodines (set -f), así que se poda el proc de '[b]' y no 'b'.
+        [FactUnshare]
+        public void Script_PuntoDeMontajeConComodinesYUnHermanoQueCasa_SePodaElSuyo()
+        {
+            // Arrange
+            _ = Directory.CreateDirectory(Path.Combine(_raiz, "m", "[b]"));
+            _ = Directory.CreateDirectory(Path.Combine(_raiz, "m", "b"));
+            File.WriteAllText(Path.Combine(_raiz, "m", "b", "objetivo.txt"), "x");
+
+            // Act
+            string salida = Buscar($"mount -t proc proc '{_raiz}/m/[b]'", _raiz, isCruzarMontajes: true);
+
+            // Assert
+            _ = salida.Should().Be($"m/b/objetivo.txt\nnormal/objetivo.txt\n\n[montajes_no_explorados: {_raiz}/m/[b]]");
+        }
+
+        // Sin cruzar montajes, si el stat de un montaje del lote falla, el lote se repite uno a uno: cada montaje conserva su
+        // dispositivo (sin repetirlo, los de detrás tomarían el del anterior y un bind del mismo sistema saldría como no
+        // explorado mientras otro de otro sistema no). Un stat falso falla para las rutas con 'falla'.
+        [FactUnshare]
+        public void Script_SinCruzarMontajes_UnStatQueFallaNoDescuadraElLote()
+        {
+            // Arrange
+            foreach (string directorio in new[] { "a-falla", "b", "enlazado", "falso" })
+                _ = Directory.CreateDirectory(Path.Combine(_raiz, directorio));
+            string stat = Path.Combine(_raiz, "falso", "stat");
+            File.WriteAllText(stat, "#!/bin/bash\nargs=()\nfor a in \"$@\"; do case $a in *falla*) fallo=1 ;; *) args+=(\"$a\") ;; esac; done\n/usr/bin/stat \"${args[@]}\" || exit\nexit ${fallo:-0}\n");
+            File.SetUnixFileMode(stat, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            string montajes = $"mount -t tmpfs a '{_raiz}/a-falla'\nmount -t tmpfs b '{_raiz}/b'\nmount --bind '{_raiz}/normal' '{_raiz}/enlazado'";
+
+            // Act
+            Func<string> respuesta = BuscarTras(montajes, $"PATH='{_raiz}/falso':$PATH", isCruzarMontajes: false);
+
+            // Assert
+            _ = respuesta().Should().Be($"enlazado/objetivo.txt\nnormal/objetivo.txt\n\n[montajes_no_explorados: {_raiz}/a-falla, {_raiz}/b]");
         }
 
         // Con muchos sistemas virtuales por debajo de la ruta, cada uno es una poda en la línea de órdenes de find; si superan
