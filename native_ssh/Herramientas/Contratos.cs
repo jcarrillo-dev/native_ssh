@@ -24,7 +24,9 @@ namespace NativeSsh.Herramientas
         int ConexionesAbiertas,
         int ComandosEnCola,
         string? PeticionActual,
-        int CanalesExecActivos);
+        int CanalesExecActivos,
+        IReadOnlyList<string>? Alias = null,
+        IReadOnlyList<string>? IdentityFile = null);
 
     public sealed record ResumenPeticion(
         string Id,

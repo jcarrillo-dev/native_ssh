@@ -3,7 +3,9 @@ using NativeSsh.Comun;
 
 namespace NativeSsh.Sesion
 {
-    // Punto de entrada del núcleo: una SesionShell por destino, creada bajo demanda.
+    // Punto de entrada del núcleo: una SesionShell por destino y claves (DestinoSsh.ClaveSesion), creada bajo demanda. Cada
+    // sesión recuerda los alias con los que se abrió o usó, para que ssh_disconnect y ssh_status con un alias la encuentren
+    // aunque después cambie la configuración de ssh del alias.
     public sealed class GestorSesiones(
         IFabricaConexion fabrica,
         LimitadorConexiones limitador,
@@ -17,7 +19,9 @@ namespace NativeSsh.Sesion
         public static readonly TimeSpan TimeoutMaximo = TimeSpan.FromHours(1);
 
         private readonly Lock _candado = new();
-        private readonly Dictionary<string, SesionShell> _sesiones = new(StringComparer.Ordinal);
+        private const int MaxAliasPorSesion = 16;
+
+        private readonly Dictionary<string, EntradaSesion> _sesiones = new(StringComparer.Ordinal);
         private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
         private bool _isDispuesto;
 
@@ -58,7 +62,7 @@ namespace NativeSsh.Sesion
         {
             SesionShell? sesion;
             lock (_candado)
-                _ = _sesiones.TryGetValue(peticion.Destino.Clave, out sesion);
+                sesion = _sesiones.GetValueOrDefault(peticion.Destino.ClaveSesion)?.Sesion;
 
             return sesion is not null && sesion.EnviarEntrada(peticion, texto, isEnviarEnter, isSecreto);
         }
@@ -66,41 +70,90 @@ namespace NativeSsh.Sesion
         public IReadOnlyList<SesionShell> ListarSesiones()
         {
             lock (_candado)
-                return [.. _sesiones.Values];
+            {
+                List<SesionShell> sesiones = new(_sesiones.Count);
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                    sesiones.Add(entrada.Sesion);
+                return sesiones;
+            }
         }
+
+        // Alias con los que se abrió o usó la sesión (vacío si solo se usó con el servidor real).
+        public IReadOnlyList<string> AliasDe(SesionShell sesion)
+        {
+            lock (_candado)
+                return _sesiones.TryGetValue(sesion.Destino.ClaveSesion, out EntradaSesion? entrada) && ReferenceEquals(entrada.Sesion, sesion) ? [.. entrada.Alias] : [];
+        }
+
+        // Las sesiones a las que se refiere un destino ya resuelto (ParsearDestino), para ssh_disconnect y ssh_status:
+        // - un alias (Alias != null): la de su destino y claves actuales y las que se abrieron o usaron con ese alias (aunque
+        //   su configuración haya cambiado después);
+        // - el servidor real (usuario@servidor:puerto, o un nombre que la configuración no cambia): todas las de ese
+        //   usuario@servidor:puerto, sean de las claves que sean.
+        public IReadOnlyList<SesionShell> Seleccionar(DestinoSsh destino)
+        {
+            lock (_candado)
+            {
+                List<SesionShell> sesiones = [];
+                foreach ((string clave, EntradaSesion entrada) in _sesiones)
+                    if (IsSeleccionada(destino, clave, entrada))
+                        sesiones.Add(entrada.Sesion);
+                return sesiones;
+            }
+        }
+
+        // ¿La petición es de una sesión a la que se refiere el destino (mismo criterio que Seleccionar)?
+        public static bool IsDelDestino(Peticion peticion, DestinoSsh destino) =>
+            destino.Alias is null
+                ? string.Equals(peticion.Destino.Clave, destino.Clave, StringComparison.Ordinal)
+                : string.Equals(peticion.Destino.ClaveSesion, destino.ClaveSesion, StringComparison.Ordinal) || string.Equals(peticion.Destino.Alias, destino.Alias, StringComparison.OrdinalIgnoreCase);
 
         public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
 
-        public async Task<bool> DesconectarAsync(string destinoTexto)
+        // Cierra las sesiones a las que se refiere el destino (criterio de Seleccionar) y devuelve los destinos que cerró.
+        public Task<IReadOnlyList<DestinoSsh>> DesconectarAsync(string destinoTexto) => DesconectarAsync(ParsearDestino(destinoTexto));
+
+        public async Task<IReadOnlyList<DestinoSsh>> DesconectarAsync(DestinoSsh destino)
         {
-            DestinoSsh destino = ParsearDestino(destinoTexto);
-            SesionShell? sesion;
+            List<SesionShell> cerradas = [];
             lock (_candado)
             {
-                if (_sesiones.Remove(destino.Clave, out sesion))
-                    _logger.Desconectando(destino.Clave);
+                foreach ((string clave, EntradaSesion entrada) in _sesiones)
+                    if (IsSeleccionada(destino, clave, entrada))
+                        cerradas.Add(entrada.Sesion);
+
+                foreach (SesionShell sesion in cerradas)
+                {
+                    _ = _sesiones.Remove(sesion.Destino.ClaveSesion);
+                    _logger.Desconectando(sesion.Destino.Clave);
+                }
             }
 
-            if (sesion is null)
-                return false;
+            List<DestinoSsh> destinos = new(cerradas.Count);
+            foreach (SesionShell sesion in cerradas)
+            {
+                await sesion.DisposeAsync().ConfigureAwait(false);
+                destinos.Add(sesion.Destino);
+            }
 
-            await sesion.DisposeAsync().ConfigureAwait(false);
-            return true;
+            return destinos;
         }
 
+        // Solo la sesión que usaría el próximo comando con ese destino (sus claves actuales).
         public bool ReiniciarShell(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
             lock (_candado)
-                _ = _sesiones.TryGetValue(destino.Clave, out sesion);
+                sesion = _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion;
 
             sesion?.SolicitarReset();
             return sesion is not null;
         }
 
         // Con resolutor (la configuración de ssh: alias, HostName, User, Port, IdentityFile), el destino que se devuelve, y
-        // con él la clave de la sesión, es el resuelto: un alias y su usuario@HostName:Port comparten sesión.
+        // con él la clave de la sesión, es el resuelto: un alias y su usuario@HostName:Port comparten sesión si resuelven a
+        // las mismas claves.
         public DestinoSsh ParsearDestino(string destinoTexto) =>
             !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino, out bool isUsuarioExplicito, out bool isPuertoExplicito)
                 ? throw new NativeSshException($"Destino '{destinoTexto}' no válido. Formato: usuario@servidor[:puerto], o [ipv6]:puerto.")
@@ -115,7 +168,10 @@ namespace NativeSsh.Sesion
                     return;
 
                 _isDispuesto = true;
-                sesiones = [.. _sesiones.Values];
+                sesiones = new SesionShell[_sesiones.Count];
+                int i = 0;
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                    sesiones[i++] = entrada.Sesion;
                 _sesiones.Clear();
             }
 
@@ -125,17 +181,33 @@ namespace NativeSsh.Sesion
 
         private SesionShell ObtenerOCrear(DestinoSsh destino)
         {
+            string clave = destino.ClaveSesion;
             lock (_candado)
             {
                 ObjectDisposedException.ThrowIf(_isDispuesto, this);
-                if (!_sesiones.TryGetValue(destino.Clave, out SesionShell? sesion))
+                if (!_sesiones.TryGetValue(clave, out EntradaSesion? entrada))
                 {
-                    sesion = new SesionShell(destino, fabrica, limitador, opciones, _logger);
-                    _sesiones[destino.Clave] = sesion;
+                    entrada = new EntradaSesion(new SesionShell(destino, fabrica, limitador, opciones, _logger));
+                    _sesiones[clave] = entrada;
                 }
 
-                return sesion;
+                if (destino.Alias is { } alias && entrada.Alias.Count < MaxAliasPorSesion)
+                    _ = entrada.Alias.Add(alias);
+                return entrada.Sesion;
             }
+        }
+
+        private static bool IsSeleccionada(DestinoSsh destino, string clave, EntradaSesion entrada) =>
+            destino.Alias is null
+                ? string.Equals(entrada.Sesion.Destino.Clave, destino.Clave, StringComparison.Ordinal)
+                : string.Equals(clave, destino.ClaveSesion, StringComparison.Ordinal) || entrada.Alias.Contains(destino.Alias);
+
+        private sealed class EntradaSesion(SesionShell sesion)
+        {
+            public SesionShell Sesion { get; } = sesion;
+
+            // Bajo _candado.
+            public HashSet<string> Alias { get; } = new(StringComparer.OrdinalIgnoreCase);
         }
 
         private static TimeSpan Ajustar(TimeSpan timeout) =>

@@ -112,8 +112,8 @@ namespace NativeSsh.Test.Sesion
             await gestor.Ejecutar("servidor", "a", TimeSpan.FromSeconds(10)).Finalizacion.WaitAsync(Limite);
 
             // Act
-            _ = (await gestor.DesconectarAsync("servidor")).Should().BeTrue();
-            _ = (await gestor.DesconectarAsync("servidor")).Should().BeFalse();
+            _ = (await gestor.DesconectarAsync("servidor")).Should().ContainSingle();
+            _ = (await gestor.DesconectarAsync("servidor")).Should().BeEmpty();
             _ = gestor.ListarSesiones().Should().BeEmpty();
 
             // Assert

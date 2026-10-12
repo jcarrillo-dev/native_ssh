@@ -344,7 +344,7 @@ namespace NativeSsh.Herramientas
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
             {
-                if (sesion.Destino.Clave != peticion.Destino.Clave)
+                if (sesion.Destino.ClaveSesion != peticion.Destino.ClaveSesion)
                     continue;
 
                 return !sesion.IsShellActivo
@@ -397,12 +397,14 @@ namespace NativeSsh.Herramientas
         public ResultadoEstado Estado(
             [Description("Filtrar por destino (opcional).")] string? destino = null)
         {
-            string? clave = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino).Clave;
-            bool isSinFiltro = clave is null;
+            DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
+            bool isSinFiltro = filtro is null;
             List<EstadoSesion> sesiones = [];
-            foreach (SesionShell s in gestor.ListarSesiones())
-                if (isSinFiltro || s.Destino.Clave == clave)
-                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos));
+            foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
+            {
+                IReadOnlyList<string> alias = gestor.AliasDe(s);
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades));
+            }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
             List<ResumenPeticion> peticiones = [];
@@ -411,7 +413,7 @@ namespace NativeSsh.Herramientas
                 if (peticiones.Count == MaxPeticionesEnEstado)
                     break;
 
-                if (isSinFiltro || p.Destino.Clave == clave)
+                if (isSinFiltro || GestorSesiones.IsDelDestino(p, filtro!.Value))
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
@@ -423,9 +425,28 @@ namespace NativeSsh.Herramientas
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto].")] string destino)
         {
-            string clave = gestor.ParsearDestino(destino).Clave;
-            bool isHecho = await gestor.DesconectarAsync(destino).ConfigureAwait(false);
-            return new ResultadoAccion(clave, isHecho, isHecho ? "Conexión cerrada." : "No había conexión con ese destino.");
+            DestinoSsh resuelto = gestor.ParsearDestino(destino);
+            IReadOnlyList<DestinoSsh> cerradas = await gestor.DesconectarAsync(resuelto).ConfigureAwait(false);
+            string mensaje = cerradas.Count switch
+            {
+                0 => "No había conexión con ese destino.",
+                1 => "Conexión cerrada.",
+                _ => $"Se cerraron {cerradas.Count} conexiones con {resuelto.Clave}, una por cada juego de claves: {DescribirClaves(cerradas)}."
+            };
+            return new ResultadoAccion(resuelto.Clave, cerradas.Count > 0, mensaje);
+        }
+
+        private static string DescribirClaves(IReadOnlyList<DestinoSsh> destinos)
+        {
+            StringBuilder texto = new();
+            foreach (DestinoSsh destino in destinos)
+            {
+                if (texto.Length > 0)
+                    _ = texto.Append("; ");
+                _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
+            }
+
+            return texto.ToString();
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
@@ -1117,21 +1138,23 @@ namespace NativeSsh.Herramientas
             [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
             CancellationToken cancellationToken = default)
         {
-            string clave = gestor.ParsearDestino(destino).Clave;
-            SesionShell? sesionInicial = SesionDe(clave);
+            DestinoSsh resuelto = gestor.ParsearDestino(destino);
+            string clave = resuelto.Clave;
+            string claveSesion = resuelto.ClaveSesion;
+            SesionShell? sesionInicial = SesionDe(claveSesion);
             string? guardado = sesionInicial?.DirectorioTrabajo;
             if (string.IsNullOrEmpty(ruta))
             {
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
                 const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome), cancellationToken).ConfigureAwait(false);
-                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome));
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
+                ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 
                 if (peticionReset.CodigoSalida != 0)
                 {
                     string errorReset = ReconstruirSalida(peticionReset, out _).Trim();
-                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                    throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorReset) ? $"Error al restablecer el directorio (código {peticionReset.CodigoSalida})." : errorReset)} {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
                 }
 
                 // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
@@ -1166,29 +1189,29 @@ namespace NativeSsh.Herramientas
                 """);
 
             // La validación va en un subshell: falle como falle, no cambia nada.
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p), cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p));
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion));
 
             if (peticionValidacion.CodigoSalida != 0)
             {
                 string salidaError = ReconstruirSalida(peticionValidacion, out _).Trim();
-                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(salidaError) ? $"Error al validar el directorio (código {peticionValidacion.CodigoSalida})." : salidaError)} {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
             }
 
             string pwdReal = ExtraerDirectorioMarcado(ReconstruirSalida(peticionValidacion, out _), idMarca);
             if (Encoding.UTF8.GetByteCount(pwdReal) > SesionShell.MaxBytesDirectorioTrabajo)
-                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado)}");
+                throw new NativeSshException($"La ruta del directorio de trabajo supera {SesionShell.MaxBytesDirectorioTrabajo} bytes. {ConsecuenciaCwd(clave, sesionInicial, guardado, claveSesion: claveSesion)}");
 
             // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
-            SesionShell? sesionValidacion = SesionDe(clave);
+            SesionShell? sesionValidacion = SesionDe(claveSesion);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal), cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal));
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion));
 
             if (peticionExport.CodigoSalida != 0)
             {
                 string errorExport = ReconstruirSalida(peticionExport, out _).Trim();
-                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado)}");
+                throw new NativeSshException($"{(string.IsNullOrWhiteSpace(errorExport) ? $"Error al fijar __NS_CWD (código {peticionExport.CodigoSalida})." : errorExport)} {ConsecuenciaCwd(clave, sesionValidacion, guardado, claveSesion: claveSesion)}");
             }
 
             // Fuente de verdad en C# (la reciben los canales exec y se reexporta si el shell se recrea), fijada solo cuando
@@ -1200,11 +1223,11 @@ namespace NativeSsh.Herramientas
 
         private const string DirectorioHome = "$HOME (~)";
 
-        // Sesión del destino ahora (null = no hay: nunca se abrió o ssh_disconnect la cerró).
-        private SesionShell? SesionDe(string clave)
+        // Sesión del destino ahora, por DestinoSsh.ClaveSesion (null = no hay: nunca se abrió o ssh_disconnect la cerró).
+        private SesionShell? SesionDe(string claveSesion)
         {
             foreach (SesionShell sesion in gestor.ListarSesiones())
-                if (sesion.Destino.Clave == clave)
+                if (sesion.Destino.ClaveSesion == claveSesion)
                     return sesion;
 
             return null;
@@ -1219,9 +1242,10 @@ namespace NativeSsh.Herramientas
         //   con certeza;
         // - shell perdido: el nuevo se inicializa con el directorio de C#, el anterior;
         // - sin terminar con el shell vivo (plazo, cancelación): ese shell puede haber pasado ya a 'nuevo'.
-        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null)
+        // 'clave' es lo que se muestra (usuario@servidor:puerto); 'claveSesion', la de la sesión si difiere (IdentityFile).
+        internal string ConsecuenciaCwd(string clave, SesionShell? sesionEsperada, string? guardado, Peticion? peticion = null, string? nuevo = null, string? claveSesion = null)
         {
-            SesionShell? sesion = SesionDe(clave);
+            SesionShell? sesion = SesionDe(claveSesion ?? clave);
             if (sesion is null)
                 return $"La sesión con {clave} se cerró mientras tanto (ssh_disconnect) y con ella se olvidó el directorio de trabajo: la próxima herramienta abrirá una conexión nueva en {DirectorioHome}.";
 

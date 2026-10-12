@@ -77,7 +77,8 @@ namespace NativeSsh.Ssh
             if (!opciones.IsRutasIdentidadExplicitas && !IsListaPorDefecto(leida.Identidades, servidor))
                 identidades = Expandir(leida.Identidades, servidor, real, usuario, puerto);
 
-            DestinoSsh resuelto = DestinoSsh.Resuelto(usuario, real, puerto, identidades);
+            string? alias = string.Equals(servidor, real, StringComparison.OrdinalIgnoreCase) ? null : servidor;
+            DestinoSsh resuelto = DestinoSsh.Resuelto(usuario, real, puerto, identidades, alias);
             logger.DestinoResuelto(servidor, resuelto.Clave, identidades is null ? "claves de native_ssh" : string.Join(", ", identidades));
             return resuelto;
         }

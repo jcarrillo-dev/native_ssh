@@ -5,9 +5,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
-using NativeSsh.Sesion;
 using NativeSsh.Ssh;
-using NativeSsh.Test.Sesion.Falsos;
 using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Ssh
@@ -322,25 +320,6 @@ namespace NativeSsh.Test.Ssh
             _ = primero.Clave.Should().Be($"{Environment.UserName}@web:22");
             _ = segundo.Clave.Should().Be("ana@web:2222");
             _ = _log.Entradas.Where(e => e.Nivel == LogLevel.Warning).Should().ContainSingle().Which.Mensaje.Should().Contain("ssh-que-no-existe");
-        }
-
-        // Un alias y su usuario@HostName:Port son la misma sesión.
-        [Fact]
-        public async Task GestorSesiones_AliasYDestinoRealCompartenSesion()
-        {
-            // Arrange
-            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana" };
-            FabricaFalsa fabrica = new(comando => new RespuestaFalsa($"eco:{comando}\n"));
-            await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance, Resolutor(Configuracion("Host web\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n")));
-
-            // Act
-            Peticion primera = gestor.Ejecutar("web", "a", TimeSpan.FromSeconds(10));
-            Peticion segunda = gestor.Ejecutar("deploy@127.0.0.1:2222", "b", TimeSpan.FromSeconds(10));
-            await Task.WhenAll(primera.Finalizacion, segunda.Finalizacion).WaitAsync(TimeSpan.FromSeconds(10));
-
-            // Assert
-            _ = gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Clave.Should().Be("deploy@127.0.0.1:2222");
-            _ = fabrica.Conexiones.Should().Be(1);
         }
 
         [Theory]

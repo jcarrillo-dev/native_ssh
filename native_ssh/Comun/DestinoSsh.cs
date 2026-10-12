@@ -16,18 +16,30 @@ namespace NativeSsh.Comun
         }
 
         // Claves de los IdentityFile de la configuración de ssh (ResolutorConfiguracionSsh), ya expandidas; null: las de
-        // NATIVE_SSH_IDENTIDADES (o las por defecto). No forma parte de la clave de la sesión.
+        // NATIVE_SSH_IDENTIDADES (o las por defecto). Forman parte de la clave de la sesión (ClaveSesion).
         public IReadOnlyList<string>? Identidades { get; private init; }
+
+        // El servidor tal como se escribió cuando la configuración de ssh lo cambió por otro HostName (un alias); null si
+        // el destino ya era el servidor real.
+        public string? Alias { get; private init; }
 
         public string Usuario { get; }
         public string Servidor { get; }
         public int Puerto { get; }
+
+        // usuario@servidor:puerto: lo que se muestra en mensajes, logs y ssh_status.
         public string Clave { get; }
+
+        // Clave interna de la sesión: el destino y las claves con las que se autentica, en orden (como en ssh, cada alias con
+        // las suyas). Un alias y su usuario@HostName:Port comparten sesión solo si resuelven a las mismas claves.
+        public string ClaveSesion => Identidades is null ? Clave : $"{Clave}\0{string.Join('\0', Identidades)}";
+
+        // El limitador de conexiones va por el servidor real, sean cuales sean las claves.
         public string ClaveServidor => $"{Servidor.ToLowerInvariant()}:{Puerto}";
 
         // Destino ya resuelto con la configuración de ssh (ssh -G).
-        public static DestinoSsh Resuelto(string usuario, string servidor, int puerto, IReadOnlyList<string>? identidades) =>
-            new(usuario, servidor, puerto) { Identidades = identidades };
+        public static DestinoSsh Resuelto(string usuario, string servidor, int puerto, IReadOnlyList<string>? identidades, string? alias) =>
+            new(usuario, servidor, puerto) { Identidades = identidades, Alias = alias };
 
         public static bool TryParse(ReadOnlySpan<char> entrada, string usuarioPorDefecto, out DestinoSsh destino) =>
             TryParse(entrada, usuarioPorDefecto, out destino, out _, out _);
