@@ -118,6 +118,20 @@ namespace NativeSsh.Test.Ssh
             _ = destino.Clave.Should().Be("seis@::1:2022");
         }
 
+        // [ipv6] sin puerto no es un puerto explícito: no se pasa -p 22 y vale el Port de la configuración, como en ssh.
+        [Fact]
+        public void Ipv6EntreCorchetesSinPuerto_UsaElPortDeLaConfiguracion()
+        {
+            // Arrange
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion("Host ::1\n  User seis\n  Port 2222\n"));
+
+            // Act
+            DestinoSsh destino = Resolver(resolutor, "[::1]");
+
+            // Assert
+            _ = destino.Clave.Should().Be("seis@::1:2222");
+        }
+
         // Sin IdentityFile en la configuración, ssh -G lista sus claves por defecto (~/.ssh/id_*): se reconocen y se dejan las
         // de native_ssh (las de NATIVE_SSH_DIRECTORIO_SSH), sin leer las del ~/.ssh real.
         [Fact]
@@ -266,6 +280,26 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó en 1 s");
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            await EsperasPruebaSinProceso(marca);
+        }
+
+        // El plazo por defecto es de 5 s: un Match exec colgado no retiene la llamada más que eso.
+        [Fact]
+        public async Task PlazoPorDefecto_CincoSegundos()
+        {
+            // Arrange
+            string marca = $"38.{Random.Shared.Next(100000, 999999)}";
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh { ConfiguracionSsh = Configuracion($"Match exec \"sleep {marca}\"\n  Port 9\n") }, NullLogger<ResolutorConfiguracionSsh>.Instance);
+            _ = DestinoSsh.TryParse("web", "ana", out DestinoSsh destino);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Task<DestinoSsh> resolucion = Task.Run(() => resolutor.Resolver(destino, false, false));
+            Func<Task> esperar = () => resolucion.WaitAsync(TimeSpan.FromSeconds(20));
+
+            // Assert
+            _ = (await esperar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("no terminó en 5 s");
+            _ = reloj.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(4.5)).And.BeLessThan(TimeSpan.FromSeconds(9));
             await EsperasPruebaSinProceso(marca);
         }
 
