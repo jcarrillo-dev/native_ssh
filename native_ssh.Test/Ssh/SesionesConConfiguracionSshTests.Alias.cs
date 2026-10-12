@@ -39,6 +39,7 @@ namespace NativeSsh.Test.Ssh
             _ = _gestor.BuscarPeticion(largo.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
         }
 
+        // La de deploy (la del alias con su User) sigue abierta: la respuesta la nombra con el destino que la cierra.
         [Fact]
         public async Task DesconectarUnUsuarioDelAlias_CierraSoloLaDeEseUsuarioYLaNombra()
         {
@@ -51,7 +52,8 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.Destino.Should().Be("root@127.0.0.1:2222");
-            _ = resultado.Mensaje.Should().Be("Conexión cerrada: root@127.0.0.1:2222 (IdentityFile /k/a).");
+            _ = resultado.Mensaje.Should().StartWith("Conexión cerrada: root@127.0.0.1:2222 (IdentityFile /k/a). ")
+                .And.Contain("deploy@127.0.0.1:2222, que se cierra con deploy@prod:2222");
             _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Clave.Should().Be("deploy@127.0.0.1:2222");
         }
 

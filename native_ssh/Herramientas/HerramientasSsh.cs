@@ -395,7 +395,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
         [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
         public ResultadoEstado Estado(
-            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
+            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
             DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
             bool isSinFiltro = filtro is null;
@@ -417,11 +417,12 @@ namespace NativeSsh.Herramientas
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
-            return new ResultadoEstado(sesiones, peticiones);
+            string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias)) : null;
+            return new ResultadoEstado(sesiones, peticiones, aviso);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró.")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró y, con un alias, qué otras sesiones suyas siguen abiertas y con qué destino cerrarlas.")]
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
@@ -429,13 +430,16 @@ namespace NativeSsh.Herramientas
             IReadOnlyList<DestinoSsh> cerradas = await gestor.DesconectarAsync(resuelto).ConfigureAwait(false);
             string mensaje = cerradas.Count switch
             {
-                0 => MensajeSinConexion(resuelto),
+                0 when resuelto.Alias is { } alias => $"No había conexión con '{alias}' ({resuelto.Clave}).",
+                0 => "No había conexión con ese destino.",
                 1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
                 // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
                 _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Count} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
                 _ => $"Se cerraron {cerradas.Count} conexiones: {DescribirCerradas(cerradas, isConDestino: true)}."
             };
-            return new ResultadoAccion(cerradas.Count == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Count > 0, mensaje);
+            // Las cerradas ya no están en el gestor: las pistas son de las que siguen abiertas.
+            string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto));
+            return new ResultadoAccion(cerradas.Count == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Count > 0, pistas is null ? mensaje : $"{mensaje} {pistas}");
         }
 
         private static bool IsMismoDestino(IReadOnlyList<DestinoSsh> destinos)
@@ -465,21 +469,35 @@ namespace NativeSsh.Herramientas
             return texto.ToString();
         }
 
-        // Con un alias que no cerró nada, el mensaje dice dónde puede estar la sesión que se buscaba: abierta con el alias para
-        // otro usuario o puerto, o en una sesión que llegó al tope de alias y no recuerda este.
-        private string MensajeSinConexion(DestinoSsh resuelto)
+        // Con un alias, ssh_disconnect y ssh_status dicen qué otras sesiones suyas siguen abiertas (null si ninguna): las de
+        // otro usuario o puerto, con el usuario@alias:puerto que cierra exactamente esas (usuario@servidor:puerto cerraría
+        // también las de otros alias a ese destino), y las que llegaron al tope de alias sin guardar este, que solo se
+        // alcanzan con su usuario@servidor:puerto.
+        private static string? TextoPistas(DestinoSsh resuelto, PistasAlias pistas)
         {
-            if (resuelto.Alias is not { } alias)
-                return "No había conexión con ese destino.";
+            bool hasOtros = pistas.OtrosDestinos.Count > 0;
+            bool hasEnElTope = pistas.EnElTope.Count > 0;
+            if (resuelto.Alias is not { } alias || (!hasOtros && !hasEnElTope))
+                return null;
 
-            PistasAlias pistas = gestor.BuscarPistasAlias(resuelto);
-            StringBuilder texto = new($"No había conexión con '{alias}' ({resuelto.Clave}).");
-            if (pistas.OtrosDestinos.Count > 0)
-                _ = texto.Append(" Hay sesiones abiertas con ese alias para otro usuario o puerto: ").AppendJoin(", ", pistas.OtrosDestinos)
-                    .Append("; para cerrarlas, usa ese usuario@servidor:puerto (ssh_status las muestra).");
-            if (pistas.IsTopeAlcanzado)
-                _ = texto.Append(" Alguna sesión abierta ya recuerda ").Append(GestorSesiones.MaxAliasPorSesion)
-                    .Append(" alias y no guarda más: si abriste una con este alias antes de cambiar su configuración, búscala con ssh_status y ciérrala con su usuario@servidor:puerto.");
+            StringBuilder texto = new();
+            if (hasOtros)
+            {
+                _ = texto.Append($"Siguen abiertas sesiones de '{alias}' para otro usuario o puerto (su User o Port cambió con la sesión viva, o se abrieron con otro usuario o puerto): ");
+                for (int i = 0; i < pistas.OtrosDestinos.Count; i++)
+                {
+                    DestinoSsh otro = pistas.OtrosDestinos[i];
+                    string servidor = alias.Contains(':', StringComparison.Ordinal) ? $"[{alias}]" : alias;
+                    _ = texto.Append(i == 0 ? "" : "; ").Append($"{otro.Clave}, que se cierra con {otro.Usuario}@{servidor}:{otro.Puerto}");
+                }
+
+                _ = texto.Append(" (ssh_status con ese destino las muestra).");
+            }
+
+            if (hasEnElTope)
+                _ = texto.Append(hasOtros ? " " : "").Append($"Sesiones que ya recuerdan {GestorSesiones.MaxAliasPorSesion} alias y no guardaron '{alias}': ")
+                    .AppendJoin(", ", pistas.EnElTope)
+                    .Append("; si buscas una de ellas (abierta con este alias antes de cambiar su configuración), ciérrala con su usuario@servidor:puerto, que cierra también las de otros alias a ese destino (ssh_status las muestra).");
             return texto.ToString();
         }
 
