@@ -26,6 +26,12 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("sed -n '1p;$p' config.ini", "'sed -n'")]
         [InlineData("less README.md", "'less'")]
         [InlineData("more notas.txt", "'more'")]
+        [InlineData("sudo -u www-data cat /var/www/.env", "'cat'")]
+        [InlineData("sudo -g adm tail -n 5 /var/log/syslog", "'tail'")]
+        [InlineData("cat /etc/hosts # | grep localhost", "'cat'")]
+        [InlineData("cat /proc/cpuinfo", "'cat'")]
+        [InlineData("cat /sys/class/net/eth0/address", "'cat'")]
+        [InlineData("tail -n 5 /proc/meminfo", "'tail'")]
         public void Lectura_AvisaDeSshReadFile(string comando, string programa)
         {
             // Act
@@ -67,6 +73,8 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("perl -pi -e 's/a/b/' app.conf", "perl -i")]
         [InlineData("perl -i -pe 's/a/b/' app.conf", "perl -i")]
         [InlineData("perl -i.bak -pe 's/a/b/' app.conf", "perl -i")]
+        [InlineData("perl -Mstrict -pi -e 's/a/b/' app.conf", "perl -i")]
+        [InlineData("perl -lpi -e 's/a/b/' app.conf", "perl -i")]
         public void EdicionEnElSitio_AvisaDeSshReplaceFileContent(string comando, string orden) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().StartWith($"Sugerencia de seguridad: Has editado un archivo en el sitio con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_replace_file_content'");
 
@@ -143,6 +151,24 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("echo \"tail -n 5 x\"")]
         [InlineData("sudo -u postgres psql -c 'select 1'")]
         [InlineData("perl -ne 'print if /-i/' app.log")]
+        [InlineData("tail -100f /var/log/nginx/access.log")]
+        [InlineData("tail -5F app.log")]
+        [InlineData("timeout 10 tail -100f /var/log/syslog")]
+        [InlineData("sudo tail -200f /var/log/auth.log")]
+        [InlineData("tail -n 20 -f app.log")]
+        [InlineData("perl -Mstrict -e 'print 1'")]
+        [InlineData("perl -Mstrict -Mwarnings -le 'print for 1..3'")]
+        [InlineData("perl -MList::Util=sum -le 'print sum(1,2,3)'")]
+        [InlineData("perl -MDigest::SHA=sha256_hex -le 'print sha256_hex(q(x))'")]
+        [InlineData("perl -Ilib t/basico.t")]
+        [InlineData("perl -mstrict -e 'print 1'")]
+        [InlineData("tail -n 20 <(docker logs web 2>&1)")]
+        [InlineData("head -n 5 <(journalctl -u nginx --no-pager)")]
+        [InlineData("cat <(echo hola)")]
+        [InlineData("sed -n 5p <(dmesg)")]
+        [InlineData("echo hola | tee >(wc -c)")]
+        [InlineData("uptime # ; cat /etc/passwd")]
+        [InlineData("uptime # && sed -i s/a/b/ f")]
         public void FalsoPositivo_NoAvisa(string comando) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
 

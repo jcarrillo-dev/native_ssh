@@ -79,7 +79,7 @@ namespace NativeSsh.Herramientas
                 "head" or "tail" => isSalidaAlLlm && IsLecturaHeadTail(orden) ? AvisoLecturaArchivo(programa) : null,
                 "less" or "more" or "most" => orden.Operandos.Count > 0 ? AvisoLecturaArchivo(programa) : null,
                 "sed" => AvisoSed(orden, isSalidaAlLlm),
-                "perl" => IsEdicionEnSitio(orden.Argumentos, 'e', 'E') ? AvisoEdicionEnSitio("perl -i") : null,
+                "perl" => IsEdicionEnSitio(orden.Argumentos, PerlOpcionesConValor) ? AvisoEdicionEnSitio("perl -i") : null,
                 "tee" => IsEscrituraTee(orden, productor) ? AvisoEscrituraArchivo("tee") : null,
                 _ => null
             };
@@ -96,7 +96,8 @@ namespace NativeSsh.Herramientas
             return isSalidaAlLlm && hasArchivo ? AvisoLecturaArchivo("cat") : null;
         }
 
-        // head/tail con algún archivo y sin seguirlo (-f, -F, --follow, --retry): -n y -c llevan un valor ('-n 20', '-n20').
+        // head/tail con algún archivo y sin seguirlo (-f, -F, también tras el número en la forma antigua '-100f', --follow,
+        // --retry): -n y -c llevan un valor ('-n 20', '-n20').
         private static bool IsLecturaHeadTail(OrdenSimple orden)
         {
             bool hasArchivo = false;
@@ -104,7 +105,7 @@ namespace NativeSsh.Herramientas
             {
                 string argumento = orden.Argumentos[i];
                 bool isOpcionCorta = argumento.Length > 1 && argumento[0] == '-' && argumento[1] != '-';
-                if (argumento.StartsWith("--follow", StringComparison.Ordinal) || argumento == "--retry" || (isOpcionCorta && argumento.AsSpan(1).IndexOfAny('f', 'F') >= 0 && !char.IsDigit(argumento[1])))
+                if (argumento.StartsWith("--follow", StringComparison.Ordinal) || argumento == "--retry" || (isOpcionCorta && argumento.AsSpan(1).IndexOfAny('f', 'F') >= 0))
                     return false;
 
                 if (argumento is "-n" or "-c" or "--lines" or "--bytes")
@@ -157,6 +158,10 @@ namespace NativeSsh.Herramientas
             bool isSoloImpresionPorLineas = scripts.Count > 0 && scripts.TrueForAll(s => Array.TrueForAll(s.Split(';', StringSplitOptions.RemoveEmptyEntries), p => RegexImpresionPorLineas().IsMatch(p)));
             return isSilencioso && isSoloImpresionPorLineas && archivos.Count > 0 ? AvisoLecturaArchivo("sed -n") : null;
         }
+
+        // Opciones de perl con el valor pegado detrás: el código (-e, -E), un módulo (-M, -m: '-Mstrict' no es -i), un
+        // directorio (-I, -x) o el patrón de -F.
+        private static readonly char[] PerlOpcionesConValor = ['e', 'E', 'M', 'm', 'I', 'x', 'F'];
 
         // Opción -i en un grupo de opciones cortas (-i, -pi, -i.bak, -Ei): al llegar a una de 'conValor' (su valor va
         // detrás, p. ej. el código de perl -e) o a un carácter que no es una letra (el sufijo de -i.bak) se deja de mirar.
@@ -302,9 +307,10 @@ namespace NativeSsh.Herramientas
                 if ((c is '$' or '<' or '>' && siguiente == '(') || c == '`')
                 {
                     // Sustitución de órdenes: forma parte de la palabra, sin analizar su contenido.
-                    // <(…) y >(…) (sustitución de procesos) también: su contenido no son órdenes de este comando.
+                    // <(…) y >(…) (sustitución de procesos) también: su contenido no son órdenes de este comando, y la
+                    // palabra es la salida o la entrada de otra orden, no un archivo (ConstruirOrden la descarta).
                     i = SaltarSustitucion(comando, i);
-                    _ = actual.Append('$');
+                    _ = actual.Append(c is '<' or '>' ? MarcaSustitucionProcesos : "$");
                     hasPalabra = true;
                     continue;
                 }
@@ -494,7 +500,12 @@ namespace NativeSsh.Herramientas
             return i;
         }
 
-        // Prefijos que ejecutan otra orden (con sus opciones): la orden es la palabra que sigue.
+        // Lo que queda de una sustitución de procesos (<(…) o >(…)) en la palabra: un nombre de /dev/fd que da o recibe la
+        // salida de otra orden, no un archivo que lea o escriba una herramienta.
+        private const string MarcaSustitucionProcesos = "<()";
+
+        // Prefijos que ejecutan otra orden (con sus opciones): la orden es la palabra que sigue. Las sustituciones de procesos
+        // no cuentan como argumentos (cat <(…) no lee un archivo; tee >(…) no lo escribe).
         private static OrdenSimple ConstruirOrden(List<Palabra> palabras, string separadorPrevio, string separadorSiguiente)
         {
             OrdenSimple orden = new() { SeparadorPrevio = separadorPrevio, SeparadorSiguiente = separadorSiguiente };
@@ -543,6 +554,9 @@ namespace NativeSsh.Herramientas
                     isEnPrefijo = false;
                     continue;
                 }
+
+                if (valor == MarcaSustitucionProcesos)
+                    continue;
 
                 orden.Argumentos.Add(valor);
                 if (valor is "--help" or "--version")
