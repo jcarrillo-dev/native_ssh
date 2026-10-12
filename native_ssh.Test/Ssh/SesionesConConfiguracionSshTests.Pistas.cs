@@ -163,8 +163,26 @@ namespace NativeSsh.Test.Ssh
             _ = resultado.Mensaje.Should().NotContain($"{TopeAlias} alias");
         }
 
+        // Un alias que la sesión llena no guardó pero que resuelve a su destino y claves la alcanza: ssh_status la muestra y
+        // no avisa del tope (la sesión no se ha perdido).
+        [Fact]
+        public async Task AliasOlvidadoQueAunResuelveALaSesion_EstadoLaMuestraSinAvisoDelTope()
+        {
+            // Arrange
+            int cantidad = TopeAlias + 1;
+            EscribirAlias(cantidad);
+            await Ejecutar([.. Enumerable.Range(1, cantidad).Select(i => $"a{i:000}")]);
+
+            // Act
+            ResultadoEstado estado = Herramientas.Estado($"a{cantidad:000}");
+
+            // Assert
+            _ = estado.Sesiones.Should().ContainSingle();
+            _ = estado.Aviso.Should().BeNull();
+        }
+
         // Pasadas también las 64 anotaciones de alias olvidados, el aviso del tope vale para cualquier alias con el mismo
-        // usuario y puerto que la sesión llena.
+        // usuario y puerto que la sesión llena (no para uno con otro usuario).
         [Fact]
         public async Task AnotacionesDeAliasOlvidadosDesbordadas_ElAvisoDelTopeSigueSaliendo()
         {
@@ -173,13 +191,16 @@ namespace NativeSsh.Test.Ssh
             EscribirAlias(cantidad);
             await Ejecutar([.. Enumerable.Range(1, cantidad).Select(i => $"a{i:000}")]);
             EscribirAlias(cantidad, isUltimoCambiado: true);
+            File.AppendAllText(_configuracion, "Host otro\n  HostName 127.0.0.3\n  User nadie\n  Port 2222\n");
 
             // Act
             ResultadoAccion resultado = await Herramientas.DesconectarAsync($"a{cantidad:000}");
+            ResultadoAccion deOtroUsuario = await Herramientas.DesconectarAsync("otro");
 
             // Assert
             _ = resultado.IsHecho.Should().BeFalse();
             _ = resultado.Mensaje.Should().Contain($"{TopeAlias} alias").And.Contain("deploy@127.0.0.1:2222");
+            _ = deOtroUsuario.Mensaje.Should().NotContain($"{TopeAlias} alias");
         }
 
         // Un alias IPv6 ('Host ::1'): la pista lo pone entre corchetes, y seguirla cierra la sesión vieja.
