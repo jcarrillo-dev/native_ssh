@@ -2075,6 +2075,24 @@ namespace NativeSsh.Herramientas
             ? Unir(peticion.Aviso, SesionShell.DescribirTecleadoDescartado(peticion.LineasTecleadoDescartadas, peticion.IdComandoQueNoLeyo))
             : peticion.Aviso;
 
+        // Los avisos de las peticiones anteriores del shell enlazadas (Peticion.AnteriorConTecleadoDescartado) que ninguna
+        // respuesta ha dado aún, del más antiguo al más reciente. El de una herramienta no cita su id (Peticion.IsHerramienta).
+        private static string? AvisosTecleadoDeAnteriores(Peticion? anterior)
+        {
+            if (anterior is null)
+                return null;
+
+            string? antiguos = AvisosTecleadoDeAnteriores(anterior.AnteriorConTecleadoDescartado);
+            if (!anterior.TryTomarAvisoTecleado())
+                return antiguos;
+
+            string quien = anterior.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : $"el comando anterior a {(anterior.IsHerramienta ? "ella" : "él")}";
+            string lineas = SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas);
+            return Unir(antiguos, anterior.IsHerramienta
+                ? $"Una herramienta de archivo o ssh_set_cwd anterior de este shell avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse al llegar ella (ninguna se ejecutó como orden)."
+                : $"El final del comando {anterior.IdTexto} de este shell, que aún no se ha leído, avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+        }
+
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
         {
             // Se lee el estado antes que la salida: si ya era final, la salida está completa.
@@ -2083,11 +2101,10 @@ namespace NativeSsh.Herramientas
             PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal());
 
             // El aviso de las líneas tecleadas descartadas sale una sola vez: en el final de este comando o, si nadie lo ha leído
-            // aún (p. ej. se lanzó con esperarSegundos=0 y después otro ssh_exec), en la primera respuesta del comando siguiente
-            // del mismo shell (Peticion.TryTomarAvisoTecleado).
+            // aún (p. ej. se lanzó con esperarSegundos=0 y después otro ssh_exec), en la primera respuesta de un comando
+            // posterior del mismo shell, aunque en medio haya herramientas de archivo o ssh_set_cwd (Peticion.TryTomarAvisoTecleado).
             string? avisoFinal = estado.IsFinal() ? AvisoConTecleado(peticion) : peticion.Aviso;
-            if (peticion.AnteriorConTecleadoDescartado is { } anterior && anterior.TryTomarAvisoTecleado())
-                avisoFinal = Unir(avisoFinal, $"El final del comando {anterior.IdTexto} de este shell, que aún no se ha leído, avisa de que {(anterior.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : "el comando anterior a él")} no leyó {SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas)} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+            avisoFinal = Unir(avisoFinal, AvisosTecleadoDeAnteriores(peticion.AnteriorConTecleadoDescartado));
 
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
             if (avisoAntipatron is not null)
@@ -2343,7 +2360,7 @@ namespace NativeSsh.Herramientas
         private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true);
             try
             {
                 await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
@@ -2375,7 +2392,7 @@ namespace NativeSsh.Herramientas
         private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true);
             bool isSinTerminar = false;
             bool isCancelada = false;
             try

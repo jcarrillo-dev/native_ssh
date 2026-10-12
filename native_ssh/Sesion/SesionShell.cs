@@ -135,8 +135,10 @@ namespace NativeSsh.Sesion
         // puede llegar durante el comando siguiente, que lo descarta. Bajo _candadoProceso.
         private Guid? _idRecuperacionReenviada;
 
-        // Último comando terminado con líneas tecleadas descartadas (solo el bucle): el siguiente lo enlaza para dar el aviso si
-        // ninguna respuesta lo ha dado aún (Peticion.AnteriorConTecleadoDescartado).
+        // Última petición terminada con líneas tecleadas descartadas (solo el bucle): las siguientes la enlazan para dar el aviso
+        // si ninguna respuesta lo ha dado aún (Peticion.AnteriorConTecleadoDescartado). Se queda hasta que una respuesta lo da
+        // (o la sustituye otra que trae su propio aviso y la enlaza a su vez): las respuestas de las herramientas de archivo y
+        // de ssh_set_cwd no dan avisos, así que enlazarla solo con la petición siguiente lo perdía si esa era una de ellas.
         private Peticion? _ultimaConTecleadoDescartado;
 
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
@@ -664,8 +666,9 @@ namespace NativeSsh.Sesion
 
                     _peticionActual = peticion;
                     peticion.FijarAvisoEnCurso(() => DescribirEscrituraBloqueada(peticion));
+                    if (_ultimaConTecleadoDescartado is { IsAvisoTecleadoTomado: true })
+                        _ultimaConTecleadoDescartado = null;
                     peticion.FijarAnteriorConTecleadoDescartado(_ultimaConTecleadoDescartado);
-                    _ultimaConTecleadoDescartado = null;
                     try
                     {
                         await EjecutarAsync(peticion).ConfigureAwait(false);
@@ -763,9 +766,10 @@ namespace NativeSsh.Sesion
 
             peticion.MarcarComandoEnviado();
             _ = Interlocked.Increment(ref _comandosEjecutados);
-            // El comando anterior de este canal: el que no leyó lo que la cola anterior descarte al llegar este envío.
+            // El comando anterior de este canal: el que no leyó lo que la cola anterior descarte al llegar este envío. El id de
+            // una herramienta no se cita (Peticion.IsHerramienta).
             string? idAnterior = canal.UltimoComando;
-            canal.UltimoComando = peticion.IdTexto;
+            canal.UltimoComando = peticion.IsHerramienta ? null : peticion.IdTexto;
             int codigo;
             try
             {

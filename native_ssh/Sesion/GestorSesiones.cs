@@ -20,14 +20,15 @@ namespace NativeSsh.Sesion
         private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
         private bool _isDispuesto;
 
-        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout)
+        // isHerramienta: la petición de una herramienta de archivo o de ssh_set_cwd (Peticion.IsHerramienta).
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, bool isHerramienta = false)
         {
             if (string.IsNullOrWhiteSpace(comando))
                 throw new NativeSshException("El comando está vacío.");
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj);
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj) { IsHerramienta = isHerramienta };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;

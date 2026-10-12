@@ -143,6 +143,142 @@ namespace NativeSsh.Test.Integracion
             _ = otro.Salida.Should().Be("otro\n");
         }
 
+        // Ids de 32 hexadecimales que cita un aviso.
+        private static List<string> IdsCitados(string? aviso)
+        {
+            List<string> ids = [];
+            string texto = aviso ?? string.Empty;
+            int inicio = 0;
+            for (int i = 0; i <= texto.Length; i++)
+            {
+                if (i < texto.Length && char.IsAsciiHexDigitLower(texto[i]))
+                    continue;
+                if (i - inicio >= 32)
+                    ids.Add(texto[inicio..i]);
+                inicio = i + 1;
+            }
+
+            return ids;
+        }
+
+        // (V06) El comando que trae el aviso se lanza con esperarSegundos=0 y nadie lee su final; antes del ssh_exec siguiente
+        // va una herramienta de archivo o ssh_set_cwd por el shell, cuya respuesta no da avisos: el aviso llega igualmente, una
+        // vez, en la respuesta del ssh_exec siguiente (antes se perdía: la sesión lo enlazaba solo con la petición siguiente).
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task AvisoConHerramientaEnMedio_LlegaAlSshExecSiguiente(bool isSetCwd)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando trae = await h.EjecutarAsync(destino, "sleep 0.5", esperarSegundos: 0);
+            await Task.Delay(1500);
+
+            // Act
+            if (isSetCwd)
+                _ = await h.FijarDirectorioAsync(destino, _testigos);
+            else
+                _ = await h.EscribirArchivoAsync(destino, Path.Combine(_testigos, "medio.txt"), "hola\n");
+            ResultadoComando d = await h.EjecutarAsync(destino, "echo D", esperarSegundos: 15);
+            ResultadoComando e = await h.EjecutarAsync(destino, "echo E", esperarSegundos: 15);
+            ResultadoComando finalTrae = await h.LeerSalidaAsync(trae.Id);
+
+            // Assert
+            salida.WriteLine($"D '{d.Aviso}'; E '{e.Aviso}'; final '{finalTrae.Aviso}'");
+            _ = d.Aviso.Should().Contain($"El final del comando {trae.Id} de este shell, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
+            _ = new[] { e.Aviso, finalTrae.Aviso }.Should().AllSatisfy(a => (a ?? string.Empty).Should().NotContain("no leyó"));
+        }
+
+        // La petición que trae el aviso es la de una herramienta de archivo (su envío llegó tras lo que el comando no leyó) y
+        // su respuesta no da avisos: el ssh_exec siguiente lo da sin citar el id de esa petición, que el LLM no ha visto.
+        [Fact]
+        public async Task AvisoTraidoPorUnaEscritura_NoCitaSuId()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+
+            // Act
+            _ = await h.EscribirArchivoAsync(destino, Path.Combine(_testigos, "trae.txt"), "hola\n");
+            ResultadoComando b = await h.EjecutarAsync(destino, "echo B", esperarSegundos: 15);
+            ResultadoComando c = await h.EjecutarAsync(destino, "echo C", esperarSegundos: 15);
+
+            // Assert
+            salida.WriteLine($"B '{b.Aviso}'; C '{c.Aviso}'");
+            _ = b.Aviso.Should().Contain($"el comando {lento.Id} no leyó 2 líneas");
+            _ = IdsCitados(b.Aviso).Should().OnlyContain(id => id == lento.Id);
+            _ = (c.Aviso ?? string.Empty).Should().NotContain("no leyó");
+        }
+
+        // Dos avisos sin entregar a la vez: el comando que trae el primero no se lee, lo que se le teclea tampoco lo lee, y la
+        // escritura que llega después trae el segundo. El ssh_exec siguiente da los dos (antes, el segundo tapaba al primero).
+        [Fact]
+        public async Task DosAvisosSinEntregar_LlegaCadaUnoUnaVez()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando trae = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            await Task.Delay(500);
+            _ = await h.EnviarEntradaAsync(trae.Id, "tres", esperarSegundos: 0);
+            await Task.Delay(2000);
+
+            // Act
+            _ = await h.EscribirArchivoAsync(destino, Path.Combine(_testigos, "dos.txt"), "hola\n");
+            ResultadoComando d = await h.EjecutarAsync(destino, "echo D", esperarSegundos: 15);
+            ResultadoComando e = await h.EjecutarAsync(destino, "echo E", esperarSegundos: 15);
+            ResultadoComando finalTrae = await h.LeerSalidaAsync(trae.Id);
+
+            // Assert
+            salida.WriteLine($"D '{d.Aviso}'; E '{e.Aviso}'; final '{finalTrae.Aviso}'");
+            _ = d.Aviso.Should().Contain($"el comando {lento.Id} no leyó 2 líneas").And.Contain($"el comando {trae.Id} no leyó 1 línea");
+            _ = IdsCitados(d.Aviso).Should().OnlyContain(id => id == lento.Id || id == trae.Id);
+            _ = new[] { e.Aviso, finalTrae.Aviso }.Should().AllSatisfy(a => (a ?? string.Empty).Should().NotContain("no leyó"));
+        }
+
+        // (M07) La herramienta de archivo cuya petición trae el aviso no termina: su error lo da (con el id de la petición,
+        // que el mismo error cita para ssh_output). Una función '[' del usuario deja colgada la validación de ssh_set_cwd.
+        [Fact]
+        public async Task HerramientaQueNoTermina_SuErrorDaElAviso()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            _ = await h.EjecutarAsync(destino, "[() { sleep 30; }", esperarSegundos: 15);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            HerramientasSsh corta = new(_gestor!, _sshd.Sshd.Opciones()) { TimeoutForzado = TimeSpan.FromSeconds(2) };
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, _testigos))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f [; echo siguiente", esperarSegundos: 15);
+
+            // Assert
+            salida.WriteLine($"error '{error.Message}'; siguiente '{siguiente.Aviso}'");
+            _ = error.Message.Should().Contain(AvisoDe(lento.Id, "2 líneas"), "lo dice el error de la herramienta").And.Contain("no se completó");
+            _ = (siguiente.Aviso ?? string.Empty).Should().NotContain("no leyó");
+        }
+
         // Una línea a medias (enter=false) se junta con el centinela del envío siguiente: no se ejecuta y cuenta como una.
         [Theory]
         [InlineData("", "1 línea")]

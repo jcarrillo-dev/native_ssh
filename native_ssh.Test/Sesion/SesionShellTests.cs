@@ -1464,6 +1464,29 @@ namespace NativeSsh.Test.Sesion
             _ = Texto(siguiente).Should().Be("eco:siguiente\n");
         }
 
+        // Lo que la cola anterior descartó al llegar el envío de un comando que no llegó entero (997) se fija en él: su
+        // respuesta da el aviso (antes se perdía).
+        [Fact]
+        public async Task ComandoQueNoLlegaEntero_ConservaLasLineasDescartadasAntesDeEl()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion pregunta = Nueva("pregunta");
+            sesion.Encolar(pregunta);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(pregunta).Contains("¿Nombre?"));
+            _ = sesion.EnviarEntrada(pregunta, "ana\nuno\ndos", isEnviarEnter: true).Should().BeTrue();
+            await pregunta.Finalizacion.WaitAsync(Limite);
+            fabrica.Ultima!.CanalActual!.ComerSiguienteLineaDelBase64();
+
+            // Act
+            Peticion incompleto = await EjecutarAsync(sesion, "incompleto");
+
+            // Assert
+            _ = incompleto.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = (incompleto.LineasTecleadoDescartadas, incompleto.IdComandoQueNoLeyo).Should().Be((2, pregunta.IdTexto));
+        }
+
         [Theory]
         [InlineData(1)]
         [InlineData(2)]

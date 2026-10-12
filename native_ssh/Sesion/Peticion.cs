@@ -39,6 +39,10 @@ namespace NativeSsh.Sesion
         }
 
         public Guid Id { get; }
+
+        // La de una herramienta de archivo o de ssh_set_cwd por el shell: su id solo lo ve el LLM si la herramienta falla, así
+        // que los avisos de otras respuestas no lo citan (HerramientasSsh.Resultado, SesionShell.EjecutarAsync).
+        public bool IsHerramienta { get; init; }
         public string IdTexto { get; }
         public DestinoSsh Destino { get; }
         public string Comando { get; }
@@ -72,8 +76,9 @@ namespace NativeSsh.Sesion
         // Id del comando anterior del mismo shell (el que no leyó esas líneas), si se conoce.
         public string? IdComandoQueNoLeyo => _idComandoQueNoLeyo;
 
-        // El comando anterior del mismo shell, si descartó líneas tecleadas: si ninguna respuesta ha dado aún ese aviso (su
-        // final no se ha leído), lo da la de este (HerramientasSsh.Resultado).
+        // La última petición del mismo shell que trajo líneas tecleadas descartadas y cuyo aviso no había dado aún ninguna
+        // respuesta cuando empezó esta (su final no se ha leído, o es la de una herramienta, cuya respuesta no da avisos): si
+        // sigue sin darlo, lo da la de esta (HerramientasSsh.Resultado), junto con el de las anteriores enlazadas igual.
         public Peticion? AnteriorConTecleadoDescartado => _anteriorConTecleadoDescartado;
 
         public Task Finalizacion => _finalizacion.Task;
@@ -126,6 +131,8 @@ namespace NativeSsh.Sesion
 
         // true una sola vez, y solo si hay líneas descartadas: quien lo recibe da el aviso (el final de esta petición o la
         // respuesta del comando siguiente, lo que llegue antes); nadie más lo repite.
+        public bool IsAvisoTecleadoTomado => Volatile.Read(ref _isAvisoTecleadoTomado) == 1;
+
         public bool TryTomarAvisoTecleado() => LineasTecleadoDescartadas > 0 && Interlocked.Exchange(ref _isAvisoTecleadoTomado, 1) == 0;
 
         public void FijarLineasTecleadoDescartadas(int lineas, string? idComandoQueNoLeyo)
