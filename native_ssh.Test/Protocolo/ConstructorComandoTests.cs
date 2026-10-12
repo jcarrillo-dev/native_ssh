@@ -17,8 +17,16 @@ namespace NativeSsh.Test.Protocolo
 
         private static string LineaCentinela => $"#{Centinela:N}\n";
 
-        // Principio de toda cola: el marcador (con el recuento de la cola anterior) y después la espera del centinela.
-        private static string MarcadorDeLaCola => $"printf '%s_%s_%d%s__\\n' '__NSX' '{Id:N}' \"$__ns_rc\" \"${{__ns_n:+_$__ns_n}}\"; __ns_n=; ";
+        // Delante del centinela, en los envíos que pueden llegar tras algo tecleado (comando y recuperación).
+        private static string PrefijoCentinela => "\n" + LineaCentinela;
+
+        // El marcador de fin (con el recuento de la cola anterior).
+        private static string Marcador => $"printf '%s_%s_%d%s__\\n' '__NSX' '{Id:N}' \"$__ns_rc\" \"${{__ns_n:+_$__ns_n}}\"; ";
+
+        // Principio de toda cola: el marcador y después la espera del centinela.
+        private static string MarcadorDeLaCola => $"{Marcador}__ns_n=; ";
+
+        private const string FinDeLaCola = "; __ns_n=${__ns_c#0}; unset __ns_d __ns_x __ns_c __ns_e __ns_f __ns_g __ns_s __ns_v";
 
         private static string Componer(Action<ArrayBufferWriter<byte>> accion)
         {
@@ -72,9 +80,13 @@ namespace NativeSsh.Test.Protocolo
             _ = lineas.Should().AllSatisfy(linea => (Encoding.UTF8.GetByteCount(linea) <= 4095).Should().BeTrue());
             int lineasBase64 = lineas.Count(l => l.StartsWith("__ns_b", StringComparison.Ordinal));
             _ = lineasBase64.Should().Be((bytes + ConstructorComando.BytesPorLinea - 1) / ConstructorComando.BytesPorLinea);
+            int base64 = lineas.Where(l => l.StartsWith("__ns_b", StringComparison.Ordinal)).Sum(l => l.Length - l.IndexOf('\'', StringComparison.Ordinal) - 2);
+            _ = lineas[^2].Should().Contain($"command [ \"${{#__ns_b}}\" = '{base64}' ]", "ejecuta el comando solo si llegaron todas las líneas del base64");
             _ = DecodificarComando(texto).Should().Be(comando);
         }
 
+        // El envío de un comando: salto y centinela, el comando en base64 y una última línea que lo ejecuta y termina con la
+        // cola.
         [Fact]
         public void Comando_Estructura()
         {
@@ -82,13 +94,16 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirComando("ls", Id, Centinela, w));
 
             // Act & Assert
-            _ = texto.Should().StartWith($"{LineaCentinela}__ns_b='");
-            _ = texto.Should().Contain($"__ns_rc=$?; unset __ns_b; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
-            _ = texto.Should().NotContain($"__NSX_{Id:N}_");
+            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_b='");
+            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '4' ] && {{ eval \"$(printf '%s' \"$__ns_b\" | base64 -d)\"; __ns_rc=$?; }}; unset __ns_b; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Should().EndWith(FinDeLaCola + "\n");
+            _ = texto.Should().NotContain($"__NSX_{Id:N}_").And.NotContain("trap");
+            _ = MarcadorFin.CodigoEnvioIncompleto.Should().BeInRange(256, 999).And.NotBe(MarcadorFin.CodigoShellAnidado);
         }
 
         // Todo envío salvo la inicialización (la lee el shell de login, que puede no ser bash) empieza por la línea centinela
-        // del canal: es lo que termina la espera de la cola anterior (ConstructorComando.EscribirCola). La sincronización lleva
+        // del canal: es lo que termina la espera de la cola anterior (ConstructorComando.EscribirCola). Los de comando y
+        // recuperación, que pueden llegar tras una línea a medias tecleada, llevan un salto delante. La sincronización lleva
         // dos (la de la copia de la inicialización que bash pueda tener en su búfer).
         [Fact]
         public void TodoEnvioSalvoLaInicializacion_EmpiezaPorLaLineaCentinela()
@@ -102,7 +117,8 @@ namespace NativeSsh.Test.Protocolo
             string inicializacion = Componer(w => ConstructorComando.EscribirInicializacion(Id, w));
 
             // Assert
-            _ = new[] { comando, reenvio, captura, recuperacion }.Should().AllSatisfy(t => t.Should().StartWith(LineaCentinela).And.NotStartWith(LineaCentinela + LineaCentinela));
+            _ = new[] { comando, recuperacion }.Should().AllSatisfy(t => t.Should().StartWith(PrefijoCentinela).And.NotStartWith(PrefijoCentinela + LineaCentinela));
+            _ = new[] { reenvio, captura }.Should().AllSatisfy(t => t.Should().StartWith(LineaCentinela).And.NotStartWith(LineaCentinela + LineaCentinela));
             _ = sincronizacion.Should().StartWith(LineaCentinela + LineaCentinela + "__ns_rc=0; ");
             _ = inicializacion.Should().StartWith("exec bash --noediting --norc --noprofile\nPS1=;");
             _ = reenvio.Should().Be(LineaCentinela + Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w)));
@@ -129,10 +145,11 @@ namespace NativeSsh.Test.Protocolo
             foreach (string texto in textos)
             {
                 string cola = Cola(texto);
+                bool isRecuperacion = ReferenceEquals(texto, textos[^1]);
                 _ = cola.Should().StartWith(MarcadorDeLaCola);
                 _ = cola.Should().Contain("command read -r __ns_d").And.Contain($"'#{Centinela:N}'");
-                _ = cola.Split($"{Centinela:N}").Should().HaveCount(2, "el centinela aparece una sola vez en la cola");
-                _ = cola.Should().EndWith("; unset __ns_d __ns_x __ns_c __ns_e __ns_f\n");
+                _ = cola.Split($"{Centinela:N}").Should().HaveCount(isRecuperacion ? 3 : 2, "el centinela aparece una sola vez en la cola (y al final de la línea de recuperación)");
+                _ = cola.Should().EndWith(isRecuperacion ? $"{FinDeLaCola} #{Centinela:N}\n" : $"{FinDeLaCola}\n");
                 _ = cola.Count(c => c == '\n').Should().Be(1, "la cola es una sola línea");
                 _ = cola.Should().NotContain("!", "con la expansión del historial activa, '!' rompería la línea");
             }
@@ -149,7 +166,7 @@ namespace NativeSsh.Test.Protocolo
             string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w));
 
             // Assert
-            _ = linea.Should().EndWith($"{MarcadorDeLaCola[..^"__ns_n=; ".Length]}command read -r __ns_d; unset __ns_d\n");
+            _ = linea.Should().EndWith($"{Marcador}command read -r __ns_d; unset __ns_d\n");
             _ = linea.Should().NotContain("__NS_CWD");
             _ = ((2 * Encoding.UTF8.GetByteCount(linea)) + LineaCentinela.Length).Should().BeLessThan(600, "deja margen de sobra hasta los 1024 bytes");
         }
@@ -171,7 +188,8 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirRecuperacion(Id, Centinela, w));
 
             // Act & Assert
-            _ = texto.Should().StartWith($"{LineaCentinela}__ns_rc=130; unset __ns_b __ns_d; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_rc=130; unset __ns_b __ns_d; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Should().EndWith($"{FinDeLaCola} #{Centinela:N}\n", "termina en el centinela: una cola que la lea fuera de sitio la reconoce y no la cuenta");
             _ = texto.Should().NotContain("\u0003");
         }
 
@@ -186,7 +204,7 @@ namespace NativeSsh.Test.Protocolo
             _ = texto.Should().StartWith("exec bash --noediting --norc --noprofile\nPS1=;");
             _ = texto.Should().EndWith(linea);
             _ = linea.Should().StartWith("PS1=");
-            _ = linea.Should().Contain("stty -echo -onlcr");
+            _ = linea.Should().Contain("stty -echo -onlcr -ixon");
             _ = linea.Should().Contain("set +o history +m");
             _ = linea.Should().Contain($"'{Id:N}'");
             _ = linea.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();

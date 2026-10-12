@@ -390,12 +390,18 @@ namespace NativeSsh.Test.Integracion
             _ = siguiente.Aviso.Should().BeNull();
         }
 
-        // Un proceso en segundo plano que lee del terminal se come el centinela: la cola sigue esperándolo y se come el comando
-        // siguiente, que agota su plazo (Ctrl+C aborta la espera). No se queda atascado (el comando de después funciona) y no
-        // se da por descartada ninguna línea: lo que leyó la cola era el comando del LLM. Antes, una línea descartada de
-        // verdad, para que un recuento viejo no se cuele en el aviso del comando interrumpido.
-        [Fact]
-        public async Task HijoQueLeeDelTerminal_NoAtascaElShellNiDaPorDescartadoElComando()
+        // Un proceso en segundo plano que lee del terminal. Si lee una línea, se come la vacía que precede al centinela
+        // (ConstructorComando.EscribirPrefijoCentinela) y el comando siguiente se ejecuta. Si lee dos, compite con el shell
+        // por las líneas del envío siguiente: según quién lea antes, se come el centinela (la cola sigue esperándolo, se come
+        // el comando y este agota su plazo: Ctrl+C aborta la espera) o una línea del comando (que entonces no se ejecuta:
+        // MarcadorFin.CodigoEnvioIncompleto). En ningún caso se ejecuta el comando a medias ni se da por completado sin
+        // ejecutarse, el shell no se queda atascado (el comando de después funciona) y no se da por descartada ninguna línea:
+        // lo que leyó la cola era el comando del LLM. Antes, una línea descartada de verdad, para que un recuento viejo no se
+        // cuele en el aviso del comando interrumpido.
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task HijoQueLeeDelTerminal_NoAtascaElShellNiDaPorDescartadoElComando(int lineas)
         {
             // Arrange
             HerramientasSsh h = Herramientas();
@@ -404,20 +410,34 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
             await Task.Delay(300);
             _ = await h.EnviarEntradaAsync(lento.Id, "descartada", esperarSegundos: 3);
-            ResultadoComando hijo = await h.EjecutarAsync(destino, "(read -r x; echo \"hijo:${#x}\") </dev/tty & sleep 0.3", esperarSegundos: 10);
+            string lectura = lineas == 1 ? "read -r x" : "read -r x; read -r x";
+            ResultadoComando hijo = await h.EjecutarAsync(destino, $"({lectura}; echo \"hijo:${{#x}}\") </dev/tty & sleep 0.3", esperarSegundos: 10);
 
             // Act
-            ResultadoComando comido = await h.EjecutarAsync(destino, "echo comido", esperarSegundos: 15, timeoutSegundos: 3);
-            ResultadoComando despues = await h.EjecutarAsync(destino, "echo despues", esperarSegundos: 10);
+            List<(ResultadoComando Resultado, string Testigo)> comandos = [];
+            for (int i = 0; i < 3; i++)
+            {
+                string propio = Testigo();
+                comandos.Add((await h.EjecutarAsync(destino, $"touch {propio}; echo comando{i}", esperarSegundos: 15, timeoutSegundos: 3), propio));
+            }
+
+            await Task.Delay(300);
 
             // Assert
-            salida.WriteLine($"hijo '{hijo.Aviso}'; comido {comido.Estado} '{comido.Salida}' aviso '{comido.Aviso}'; después {despues.Estado} '{despues.Salida}' aviso '{despues.Aviso}'");
             _ = hijo.Aviso.Should().Contain(AvisoDe(lento.Id, "1 línea"));
-            _ = comido.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
-            _ = comido.Aviso.Should().NotContain("no leyó");
-            _ = despues.Estado.Should().Be(EstadoPeticionEnum.Completado);
-            _ = despues.Salida.Should().Be("despues\n");
-            _ = despues.Aviso.Should().BeNull();
+            foreach ((ResultadoComando resultado, string propio) in comandos)
+            {
+                salida.WriteLine($"{resultado.Estado} '{resultado.Salida}' aviso '{resultado.Aviso}'");
+                _ = (resultado.Estado == EstadoPeticionEnum.Completado).Should().Be(File.Exists(propio), "se da por completado solo si se ejecutó, y entero");
+                _ = resultado.Estado.Should().BeOneOf(EstadoPeticionEnum.Completado, EstadoPeticionEnum.TiempoAgotado, EstadoPeticionEnum.Error);
+                if (resultado.Estado == EstadoPeticionEnum.Error)
+                    _ = resultado.Aviso.Should().Be(SesionShell.MensajeEnvioIncompleto);
+                _ = (resultado.Aviso ?? string.Empty).Should().NotContain("no leyó");
+            }
+
+            _ = (comandos[^1].Resultado.Estado, comandos[^1].Resultado.Salida).Should().Be((EstadoPeticionEnum.Completado, "comando2\n"));
+            if (lineas == 1)
+                _ = (comandos[0].Resultado.Estado, comandos[0].Resultado.Salida.Contains("comando0\n", StringComparison.Ordinal)).Should().Be((EstadoPeticionEnum.Completado, true));
         }
 
         // secreto=true con un fin de línea en medio ('\n', '\r' o Ctrl+D): se rechaza sin enviar nada (ni la primera línea) y

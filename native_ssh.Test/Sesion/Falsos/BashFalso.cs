@@ -392,6 +392,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private bool _isLecturaUnica;
         private readonly Queue<string> _pendientesTerminal = new();
         private int _contadasEnEspera;
+        private bool _isVaciaPendiente;
         private int _recuentoMarcador;
         private int _lineasDescartadas;
 
@@ -743,10 +744,18 @@ namespace NativeSsh.Test.Sesion.Falsos
             {
                 _ = _base64.Append(linea, 9, linea.Length - 10);
             }
-            else if (linea.StartsWith("eval ", StringComparison.Ordinal))
+            else if (linea.StartsWith("__ns_rc=997;", StringComparison.Ordinal))
             {
-                string comando = Encoding.UTF8.GetString(Convert.FromBase64String(_base64.ToString()));
-                Ejecutar(comando, ExtraerId(linea), linea);
+                // Solo ejecuta el comando si llegaron todas las líneas del base64 (su longitud va en la línea).
+                const string Longitud = "\"${#__ns_b}\" = '";
+                int inicio = linea.IndexOf(Longitud, StringComparison.Ordinal) + Longitud.Length;
+                int esperada = int.Parse(linea.AsSpan(inicio, linea.IndexOf('\'', inicio) - inicio), System.Globalization.CultureInfo.InvariantCulture);
+                string base64 = _base64.ToString();
+                _ = _base64.Clear();
+                if (base64.Length != esperada)
+                    EmitirConMarcador("", ExtraerId(linea), CodigoCola(linea, MarcadorFin.CodigoEnvioIncompleto));
+                else
+                    Ejecutar(Encoding.UTF8.GetString(Convert.FromBase64String(base64)), ExtraerId(linea), linea);
             }
             else if (linea.StartsWith("__ns_rc=130", StringComparison.Ordinal))
             {
@@ -815,13 +824,16 @@ namespace NativeSsh.Test.Sesion.Falsos
         {
             _recuentoMarcador = 0;
             _contadasEnEspera = 0;
+            _isVaciaPendiente = false;
             _isReadPendiente = true;
             while (_isReadPendiente && _pendientesTerminal.TryDequeue(out string? pendiente))
                 LeerEnEspera(pendiente);
         }
 
-        // Una línea leída por la cola que espera el centinela: si termina en él, la espera acaba (lo que lleve delante, una
-        // línea a medias, cuenta como una); si no, se descarta y se cuenta.
+        // Una línea leída por la cola que espera el centinela: si termina en él, la espera acaba sin contarla (es el centinela o
+        // una línea del protocolo que llegó tras un centinela comido); si no, se descarta y se cuenta, salvo una línea vacía,
+        // que se cuenta solo si llega otra línea que no es el centinela (la vacía justo antes de él la deja el salto que lo
+        // precede).
         private void LeerEnEspera(string linea)
         {
             // La cola de la línea de inicialización consume una sola línea, sea cual sea.
@@ -833,12 +845,20 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             if (_centinela is { } centinela && linea.EndsWith(centinela, StringComparison.Ordinal))
             {
-                int delante = linea.Length > centinela.Length ? 1 : 0;
-                _ = Interlocked.Add(ref _lineasDescartadas, delante);
-                _recuentoMarcador = _contadasEnEspera + delante;
+                _recuentoMarcador = _contadasEnEspera;
                 _isReadPendiente = false;
                 return;
             }
+
+            if (_isVaciaPendiente)
+            {
+                _contadasEnEspera++;
+                _ = Interlocked.Increment(ref _lineasDescartadas);
+            }
+
+            _isVaciaPendiente = linea.Length == 0;
+            if (_isVaciaPendiente)
+                return;
 
             _contadasEnEspera++;
             _ = Interlocked.Increment(ref _lineasDescartadas);

@@ -19,6 +19,10 @@ namespace NativeSsh.Protocolo
         // de los códigos de salida (0-255), así que ningún comando puede devolverlo.
         public const int CodigoShellAnidado = 999;
 
+        // Código del marcador cuando el comando no llegó entero al shell y no se ejecutó (ConstructorComando.EscribirComando):
+        // otro proceso que leía del terminal se comió parte del envío. Fuera del rango de los códigos de salida.
+        public const int CodigoEnvioIncompleto = 997;
+
         public static ReadOnlySpan<byte> Cabecera => "__NSX_"u8;
 
         public static void EscribirId(Guid id, IBufferWriter<byte> escritor)

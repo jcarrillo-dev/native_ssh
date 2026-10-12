@@ -20,6 +20,8 @@ namespace NativeSsh.Test.Protocolo
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cola_{Guid.NewGuid():N}")).FullName;
         private readonly ArrayBufferWriter<byte> _entrada = new();
         private readonly List<Guid> _ids = [];
+        private int _codigoSalidaBash;
+        private readonly List<int> _codigos = [];
 
         public void Dispose() => Directory.Delete(_directorio, recursive: true);
 
@@ -36,6 +38,39 @@ namespace NativeSsh.Test.Protocolo
 
         private void Teclear(string texto) => _entrada.Write(Encoding.UTF8.GetBytes(texto));
 
+        // Un envío de comando al que otro lector se le come la línea 'perdida' (0 = el salto, 1 = el centinela, 2 = la primera
+        // del base64...); devuelve su posición en los marcadores.
+        private int ComandoSinLinea(string comando, int perdida)
+        {
+            Guid id = Guid.NewGuid();
+            ArrayBufferWriter<byte> envio = new();
+            ConstructorComando.EscribirComando(comando, id, _centinela, envio);
+            List<string> lineas = [.. Encoding.UTF8.GetString(envio.WrittenSpan).Split('\n')];
+            lineas.RemoveAt(perdida);
+            _entrada.Write(Encoding.UTF8.GetBytes(string.Join('\n', lineas)));
+            _ids.Add(id);
+            return _ids.Count - 1;
+        }
+
+        // Una línea de recuperación (tras Ctrl+C), como la escribe SesionShell; devuelve su posición en los marcadores.
+        // isComidas: las dos primeras líneas (el salto y el centinela) se las come otro lector y no llegan; entonces su
+        // marcador no sale (la cola que esperaba la consume sin ejecutarla) y no se añade.
+        private int Recuperacion(Guid id, bool isComidas = false)
+        {
+            ArrayBufferWriter<byte> linea = new();
+            ConstructorComando.EscribirRecuperacion(id, _centinela, linea);
+            ReadOnlySpan<byte> texto = linea.WrittenSpan;
+            if (isComidas)
+            {
+                _entrada.Write(texto[(2 + ConstructorComando.LongitudLineaCentinela)..]);
+                return -1;
+            }
+
+            _entrada.Write(texto);
+            _ids.Add(id);
+            return _ids.Count - 1;
+        }
+
         // Ejecuta todo con 'bash -s' y devuelve, por envío, el recuento de su marcador (null si no lo llevaba) y la salida.
         private async Task<(int? Recuento, string Salida)[]> EjecutarAsync()
         {
@@ -51,8 +86,10 @@ namespace NativeSsh.Test.Protocolo
             Task<string> errores = bash.StandardError.ReadToEndAsync();
             string salida = await bash.StandardOutput.ReadToEndAsync().WaitAsync(Limite);
             await bash.WaitForExitAsync().WaitAsync(Limite);
+            _codigoSalidaBash = bash.ExitCode;
             _ = (await errores).Should().BeEmpty("la cola no escribe nada en stderr");
 
+            _codigos.Clear();
             (int?, string)[] resultado = new (int?, string)[_ids.Count];
             int desde = 0;
             for (int i = 0; i < _ids.Count; i++)
@@ -62,6 +99,7 @@ namespace NativeSsh.Test.Protocolo
                 _ = posicion.Should().BeGreaterThanOrEqualTo(0, $"el envío {i} da su marcador; salida: {salida}");
                 int fin = salida.IndexOf("__\n", posicion + cabecera.Length, StringComparison.Ordinal);
                 string[] partes = salida[(posicion + cabecera.Length)..fin].Split('_');
+                _codigos.Add(int.Parse(partes[0], System.Globalization.CultureInfo.InvariantCulture));
                 resultado[i] = (partes.Length > 1 ? int.Parse(partes[1], System.Globalization.CultureInfo.InvariantCulture) : null, salida[desde..posicion]);
                 desde = fin + 3;
             }
@@ -181,7 +219,79 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[1].Recuento.Should().Be(1);
         }
 
-        // Sin centinela (la entrada se acaba: un terminal colgado da EOF sin fin) la espera termina tras MaxEofSeguidos.
+        // La línea vacía que deja el salto delante del centinela (si no había una línea a medias) no se cuenta; las vacías
+        // tecleadas, sí: el recuento es exacto.
+        [Theory]
+        [InlineData("", 0)]
+        [InlineData("\n", 1)]
+        [InlineData("\n\n", 2)]
+        [InlineData("uno\n\n", 2)]
+        [InlineData("\nuno\n", 2)]
+        [InlineData("uno", 1)]
+        [InlineData("uno\ndos", 2)]
+        public async Task LineaVaciaDelSalto_NoSeCuenta(string tecleado, int esperado)
+        {
+            // Arrange
+            _ = Comando("true");
+            Teclear(tecleado);
+            _ = Comando("echo B");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = marcadores[1].Recuento.Should().Be(esperado == 0 ? null : esperado);
+            _ = marcadores[1].Salida.Should().Be("B\n");
+        }
+
+        // La línea de recuperación termina en el centinela: si otro lector (un programa que atrapa Ctrl+C y lee dos líneas) se
+        // come el salto y el centinela que la preceden, la cola que esperaba la lee en su lugar, termina sin contarla como
+        // tecleada y sin ejecutarla, y la ejecuta el reenvío. Antes se contaba como 1 línea tecleada con ssh_input.
+        [Fact]
+        public async Task RecuperacionLeidaFueraDeSitio_NoCuentaNiSeEjecuta()
+        {
+            // Arrange
+            _ = Comando("true");
+            Guid recuperacion = Guid.NewGuid();
+            _ = Recuperacion(recuperacion, isComidas: true);
+            _ = Recuperacion(recuperacion);
+            _ = Comando("echo B");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = marcadores.Should().AllSatisfy(m => m.Recuento.Should().BeNull());
+            _ = marcadores[2].Salida.Should().Be("B\n");
+        }
+
+        // Si otro lector se come una línea del base64 del comando (la primera, o la única), lo que queda no se ejecuta: el
+        // marcador lleva MarcadorFin.CodigoEnvioIncompleto y el shell sigue con el comando siguiente. Antes se ejecutaba el
+        // final del comando (o nada, con código 0).
+        [Theory]
+        [InlineData(1)]
+        [InlineData(2)]
+        public async Task EnvioSinUnaLineaDelBase64_NoSeEjecutaYDaElCodigo(int trozos)
+        {
+            // Arrange
+            string testigo = Testigo("incompleto");
+            string relleno = trozos == 1 ? string.Empty : $"; : '{new string('x', ConstructorComando.BytesPorLinea)}'";
+            _ = Comando("true");
+            _ = ComandoSinLinea($"touch {testigo}; echo NO{relleno}; touch {testigo}", perdida: 2);
+            _ = Comando("echo B");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = File.Exists(testigo).Should().BeFalse();
+            _ = _codigos.Should().Equal(0, MarcadorFin.CodigoEnvioIncompleto, 0);
+            _ = marcadores[1].Salida.Should().BeEmpty();
+            _ = marcadores[2].Salida.Should().Be("B\n");
+        }
+
+        // Sin centinela (la entrada se acaba: un terminal colgado da EOF sin fin) el shell termina tras MaxEofSeguidos EOF
+        // seguidos, con CodigoSalidaTopeEof: nunca vuelve a leer órdenes.
         [Fact]
         public async Task SinCentinela_LaEsperaTerminaEnElEof()
         {
@@ -196,6 +306,7 @@ namespace NativeSsh.Test.Protocolo
             // Assert
             _ = marcadores[0].Salida.Should().Be("A\n");
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
+            _ = _codigoSalidaBash.Should().Be(ConstructorComando.CodigoSalidaTopeEof);
         }
     }
 }

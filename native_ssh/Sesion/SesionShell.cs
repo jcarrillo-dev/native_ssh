@@ -804,8 +804,18 @@ namespace NativeSsh.Sesion
                 return;
             }
 
+            // El comando no llegó entero al shell (ConstructorComando.EscribirComando): no se ejecutó nada. El shell sigue, pero
+            // el proceso que se comió parte del envío puede seguir leyendo del terminal.
+            if (codigo == MarcadorFin.CodigoEnvioIncompleto)
+            {
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, Unir(Unir(avisoShell, MensajeEnvioIncompleto), FijarTecleadoDescartado(peticion, idAnterior)));
+                return;
+            }
+
             _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, Unir(avisoShell, FijarTecleadoDescartado(peticion, idAnterior)));
         }
+
+        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: no llegó entero al shell porque otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte de su envío, y el shell no ejecuta un comando a medias. Ese proceso puede seguir comiéndose los siguientes: termínalo (kill) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
         // que se envió) se fijan en la petición antes de su estado final; devuelve su aviso. Solo el bucle.
