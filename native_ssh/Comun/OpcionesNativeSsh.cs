@@ -15,6 +15,10 @@ namespace NativeSsh.Comun
         public TimeSpan TimeoutInicializacionShell { get; init; } = TimeSpan.FromSeconds(15);
         public TimeSpan EsperaTrasCtrlC { get; init; } = TimeSpan.FromSeconds(3);
         public int MaxConexionesPorVentana { get; init; } = 4;
+
+        // guardarSalida (SalidaGuardada): el directorio base en el servidor es este prefijo + '-<usuario>'. Fijo en producción
+        // (no hay variable de entorno); las pruebas lo cambian para no compartir el /tmp/native_ssh-<usuario> de la máquina.
+        public string PrefijoGuardado { get; init; } = "/tmp/native_ssh";
         public TimeSpan VentanaConexiones { get; init; } = TimeSpan.FromSeconds(30);
 
         /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD.

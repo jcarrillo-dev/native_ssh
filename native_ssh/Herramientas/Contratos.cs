@@ -16,14 +16,19 @@ namespace NativeSsh.Herramientas
         bool HasSalidaDescartada,
         double SegundosEjecucion,
         double? SegundosSinSalida,
-        string? Aviso)
+        string? Aviso,
+        string? Archivo = null,
+        long? Lineas = null,
+        long? Bytes = null)
     {
-        public ControlComando Control() => new(Id, Destino, Estado, CodigoSalida, DesdeByte, SiguienteByte, HasMasSalida, HasSalidaDescartada, SegundosEjecucion, SegundosSinSalida, Aviso);
+        public ControlComando Control() => new(Id, Destino, Estado, CodigoSalida, DesdeByte, SiguienteByte, HasMasSalida, HasSalidaDescartada, SegundosEjecucion, SegundosSinSalida, Archivo, Lineas, Bytes, Aviso);
     }
 
     // Bloque 1 (control) de la respuesta de ssh_exec, ssh_output, ssh_input y ssh_cancel: JSON compacto en una sola línea, que
     // va primero para que sea la primera línea del archivo cuando el cliente vuelca la respuesta a disco. La salida va en el
     // bloque 2, sin escapar: dentro del JSON el modelo veía '\n', '\"' y '\\', y las tablas anchas llegaban en una línea.
+    // Archivo, Lineas y Bytes: solo con ssh_exec y guardarSalida=true (la salida está en ese archivo del servidor; el bloque 2
+    // lleva sus primeras líneas); null (no se escriben) en el resto o mientras no se conocen.
     public sealed record ControlComando(
         string Id,
         string Destino,
@@ -35,6 +40,9 @@ namespace NativeSsh.Herramientas
         bool HasSalidaDescartada,
         double SegundosEjecucion,
         double? SegundosSinSalida,
+        string? Archivo,
+        long? Lineas,
+        long? Bytes,
         string? Aviso);
 
     public sealed record EstadoSesion(

@@ -30,7 +30,7 @@ namespace NativeSsh.Test.Utilidades
                     throw new InvalidOperationException("El bloque de control lleva la salida.");
 
             ControlComando c = JsonSerializer.Deserialize(control.Text, TipoControl) ?? throw new InvalidOperationException("Bloque de control vacío.");
-            return new ResultadoComando(c.Id, c.Destino, c.Estado, c.CodigoSalida, salida.Text, c.DesdeByte, c.SiguienteByte, c.HasMasSalida, c.HasSalidaDescartada, c.SegundosEjecucion, c.SegundosSinSalida, c.Aviso);
+            return new ResultadoComando(c.Id, c.Destino, c.Estado, c.CodigoSalida, salida.Text, c.DesdeByte, c.SiguienteByte, c.HasMasSalida, c.HasSalidaDescartada, c.SegundosEjecucion, c.SegundosSinSalida, c.Aviso, c.Archivo, c.Lineas, c.Bytes);
         }
     }
 }

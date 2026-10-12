@@ -1,5 +1,6 @@
 using System.Text;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 
 namespace NativeSsh.Sesion
 {
@@ -21,14 +22,15 @@ namespace NativeSsh.Sesion
         private bool _isDispuesto;
 
         // isHerramienta: la petición de una herramienta de archivo o de ssh_set_cwd (Peticion.IsHerramienta).
-        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, bool isHerramienta = false)
+        // isGuardarSalida: ssh_exec con guardarSalida=true (Peticion.MarcaGuardado, SalidaGuardada).
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, bool isHerramienta = false, bool isGuardarSalida = false)
         {
             if (string.IsNullOrWhiteSpace(comando))
                 throw new NativeSshException("El comando está vacío.");
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj) { IsHerramienta = isHerramienta };
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj) { IsHerramienta = isHerramienta, MarcaGuardado = isGuardarSalida ? IdentidadShell.NuevoTestigo() : null };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;

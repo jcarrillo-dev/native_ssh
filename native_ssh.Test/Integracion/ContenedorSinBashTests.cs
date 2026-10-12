@@ -137,6 +137,34 @@ namespace NativeSsh.Test.Integracion
             _ = (despues - antes).Should().Be(new RegistroSshd(Conexiones: 1, Shells: 6, Exec: 0));
         }
 
+        // guardarSalida (C12) sin bash: el shell no se abre, así que el comando no se ejecuta, no se crea nada en /tmp y el
+        // error es el de siempre (falta bash); ssh_disconnect no intenta ninguna limpieza (ningún comando llegó a un shell) y
+        // vuelve en segundos, sin canales exec.
+        [FactContenedor]
+        public async Task SinBash_GuardarSalida_ErrorDeSiempreSinCrearNadaNiLimpiar()
+        {
+            // Arrange
+            ServidorContenedor servidor = Preparar();
+            await using GestorSesiones gestor = servidor.Gestor();
+            HerramientasSsh herramientas = servidor.Herramientas(gestor);
+            RegistroSshd antes = await LeerRegistroAsync(servidor);
+
+            // Act
+            Llamada<ResultadoComando> guardado = await MedirAsync(() => herramientas.EjecutarAsync(Destino, "echo hola", guardarSalida: true).ComoComando());
+            Llamada<ResultadoAccion> desconexion = await MedirAsync(() => herramientas.DesconectarAsync(Destino));
+            RegistroSshd despues = await LeerRegistroAsync(servidor);
+            string enTmp = servidor.Root("ls -d /tmp/native_ssh-* 2>/dev/null; true");
+
+            // Assert
+            _ = guardado.Duracion.Should().BeLessThan(PlazoLlamada);
+            _ = guardado.Resultado!.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = MensajeSinBash().IsMatch(guardado.Resultado.Aviso ?? string.Empty).Should().BeTrue(guardado.Resultado.Aviso);
+            _ = guardado.Resultado.Archivo.Should().BeNull();
+            _ = desconexion.Duracion.Should().BeLessThan(PlazoLlamada);
+            _ = enTmp.Should().BeEmpty();
+            _ = (despues - antes).Should().Be(new RegistroSshd(Conexiones: 1, Shells: 1, Exec: 0));
+        }
+
         // Las herramientas de lectura van por canales exec y su script se ejecuta con 'bash -c': sin bash, el ash de login
         // responde 127 («bash: not found»). Ninguna funciona; todas vuelven en segundos, con un canal exec cada una sobre una
         // sola conexión y sin abrir el shell.

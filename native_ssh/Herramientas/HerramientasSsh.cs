@@ -10,6 +10,7 @@ using System.Text.Json.Serialization.Metadata;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Herramientas
@@ -279,18 +280,21 @@ namespace NativeSsh.Herramientas
         private const string AvisoCdEncadenado = "Sugerencia de rendimiento: Has encadenado 'cd <ruta> &&' en ssh_exec. Utiliza 'ssh_set_cwd(destino, ruta)' para fijar el directorio de trabajo persistente de forma automática y operar con rutas relativas limpias.";
 
         [McpServerTool(Name = "ssh_exec", Destructive = true, OpenWorld = true)]
-        [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd. La respuesta trae dos bloques: primero el control (JSON en una línea: id, estado, codigoSalida, siguienteByte, hasMasSalida, aviso) y después la salida del comando tal cual.")]
+        [Description("Ejecuta comandos bash de sistema, compilación, despliegue o gestión de servicios y procesos (systemctl, pm2, git, docker, tests, curl). Admite tuberías para filtrar salidas de procesos (ej. 'pm2 list | grep online'). NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos (usa ssh_find), para explorar estructura de directorios (usa ssh_list_dir), para leer archivos (usa ssh_read_file) ni para editar (usa ssh_replace_file_content / ssh_write_file). Para fijar el directorio de trabajo continuo usa ssh_set_cwd. Si la salida puede ser grande (consultas SQL, logs, volcados, listados largos) usa SIEMPRE guardarSalida=true y después ssh_read_file o ssh_search sobre el archivo. La respuesta trae dos bloques: primero el control (JSON en una línea: id, estado, codigoSalida, siguienteByte, hasMasSalida, aviso; con guardarSalida, también archivo, lineas y bytes) y después la salida del comando tal cual (con guardarSalida, solo sus 5 primeras líneas).")]
         public async Task<CallToolResult> EjecutarAsync(
             [Description("usuario@servidor[:puerto]. Sin usuario se usa el usuario local.")] string destino,
             [Description("Comando bash. Admite varias líneas, heredocs y comillas.")] string comando,
             [Description("Tiempo máximo de ejecución; al agotarse se envía Ctrl+C. Entre 1 y 3600.")] int timeoutSegundos = 300,
             [Description("Cuánto esperar el resultado antes de responder. Entre 0 y 120.")] int esperarSegundos = 20,
+            [Description(DescripcionGuardarSalida)] bool guardarSalida = false,
             CancellationToken cancellationToken = default)
         {
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos));
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos), isGuardarSalida: guardarSalida);
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return DosBloques(Resultado(peticion, 0));
         }
+
+        private const string DescripcionGuardarSalida = "Pon true SIEMPRE que la salida pueda ser grande (consultas SQL, logs, volcados, listados largos): la salida completa (stdout y stderr, sin el límite de 1 MiB) se guarda en un archivo del servidor (/tmp/native_ssh-<usuario>/…, solo legible por ese usuario) y la respuesta trae solo el control (estado, codigoSalida, archivo, lineas, bytes) y las 5 primeras líneas. Después lee el archivo por tramos con ssh_read_file o busca en él con ssh_search; NUNCA lo vuelques entero con cat. NO lo uses con comandos interactivos: lo que el comando pregunte por su salida va al archivo y no lo verás (la contraseña de sudo sí se ve: va por el terminal). Los archivos se borran con ssh_reset_shell, ssh_disconnect o al cerrarse la sesión; como mucho 100 archivos o 256 MiB por shell (por encima, el comando no se ejecuta y la respuesta lo dice).";
 
         [McpServerTool(Name = "ssh_output", ReadOnly = true, Idempotent = true)]
         [Description("Lee la salida de un comando a partir de 'desdeByte' (usa el 'siguienteByte' de la respuesta anterior). Si sigue en ejecución, espera hasta 'esperarSegundos' a que termine. Responde con los mismos dos bloques que ssh_exec: el control (JSON) y la salida tal cual.")]
@@ -2160,7 +2164,7 @@ namespace NativeSsh.Herramientas
             if (avisoAntipatron is not null)
                 avisoFinal = Unir(avisoFinal, avisoAntipatron);
 
-            return new ResultadoComando(
+            ResultadoComando resultado = new(
                 peticion.IdTexto,
                 peticion.Destino.Clave,
                 estado,
@@ -2173,6 +2177,52 @@ namespace NativeSsh.Herramientas
                 Math.Round(peticion.TiempoEjecucion.TotalSeconds, 1),
                 tiempoSinSalida is { } sinSalida ? Math.Round(sinSalida.TotalSeconds, 1) : null,
                 avisoFinal);
+            return peticion.MarcaGuardado is { } marca ? ConSalidaGuardada(resultado, peticion, marca, estado) : resultado;
+        }
+
+        // ssh_exec con guardarSalida (SalidaGuardada): el control lleva el archivo, sus líneas y sus bytes, y el bloque de salida
+        // sus primeras líneas en lugar de la salida. Lo que el comando escribió directamente en el terminal (no está en el
+        // archivo: la petición de contraseña de sudo, un programa que escribe en /dev/tty) va detrás, separado. La vista previa
+        // no se da si se envió un secreto con ssh_input: viene del archivo, que no pasa por el enmascarado.
+        private static ResultadoComando ConSalidaGuardada(ResultadoComando resultado, Peticion peticion, Guid marca, EstadoPeticionEnum estado)
+        {
+            InformeGuardado informe = SalidaGuardada.Leer(SalidaGuardada.LeerTerminal(peticion.Salida), marca);
+            string terminal = SalidaGuardada.QuitarMarcas(resultado.Salida, marca);
+            string? aviso;
+            string vista = string.Empty;
+            if (informe.Error is not null)
+                aviso = null;
+            else if (informe.IsTerminado)
+            {
+                bool isSecreto = peticion.Salida.HasSecretos;
+                vista = isSecreto ? string.Empty : SalidaGuardada.TextoVistaPrevia(informe);
+                string cuenta = informe.Lineas is { } lineas && informe.Bytes is { } bytes
+                    ? $"{lineas} líneas, {bytes} bytes; aquí solo {(isSecreto ? "el control" : $"sus {Math.Min(lineas, SalidaGuardada.LineasVistaPrevia)} primeras líneas")}"
+                    : "no se pudieron contar sus líneas ni sus bytes: el comando lo movió o lo borró";
+                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo); NO la vuelques entera con cat. Se borra con ssh_reset_shell o ssh_disconnect.";
+                if (isSecreto)
+                    aviso += " Sin vista previa: se envió un secreto con ssh_input y el archivo no pasa por el enmascarado (tiene lo que imprimió el programa).";
+            }
+            else if (!estado.IsFinal())
+                aviso = informe.Archivo is { } archivo
+                    ? $"Sigue en ejecución y su salida se está guardando en {archivo}: cuando termine, ssh_output (con este id) da sus líneas, sus bytes y sus primeras líneas. Mientras tanto, el bloque de salida solo lleva lo que el comando escribe directamente en el terminal (p. ej. la petición de contraseña de sudo)."
+                    : "Su salida irá a un archivo del servidor (guardarSalida), pero el comando aún no ha empezado: ssh_output (con este id) dará la ruta.";
+            else
+                aviso = informe.Archivo is { } archivo
+                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file."
+                    : null;
+
+            string salida = terminal.Length == 0 ? vista
+                : vista.Length == 0 ? terminal
+                : $"{vista}{(vista.EndsWith('\n') ? "" : "\n")}--- escrito directamente en el terminal (no está en el archivo) ---\n{terminal}";
+            return resultado with
+            {
+                Salida = salida,
+                Aviso = Unir(resultado.Aviso, aviso),
+                Archivo = informe.Archivo,
+                Lineas = informe.Lineas,
+                Bytes = informe.Bytes
+            };
         }
 
         private static string? Unir(string? primero, string? segundo) =>

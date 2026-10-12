@@ -78,5 +78,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 63, Level = LogLevel.Warning, Message = "Una línea del shell de {Destino} la ejecutó otro shell (uno interactivo anidado que dejó el comando: sudo -i, su -, ssh a otra máquina, bash -i): se cierra el canal del shell para que los comandos siguientes no se ejecuten dentro.")]
         public static partial void ShellAnidadoDetectado(this ILogger logger, string destino);
+
+        [LoggerMessage(EventId = 64, Level = LogLevel.Warning, Message = "No se pudieron borrar en {Destino} los archivos de salida guardados (guardarSalida) de {Shells} shell(s); quedan en /tmp/native_ssh-<usuario> hasta el barrido de 24 h.")]
+        public static partial void LimpiezaGuardadosFallida(this ILogger logger, Exception ex, string destino, int shells);
     }
 }

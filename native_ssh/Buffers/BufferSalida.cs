@@ -41,6 +41,7 @@ namespace NativeSsh.Buffers
         private long _finAbsoluto;
         private bool _isLiberado;
         private List<byte[]>? _secretos;
+        private volatile bool _hasSecretos;
         private int _maxBytesSecreto;
         private int _retenidos;
         private bool _isCerrado;
@@ -67,6 +68,10 @@ namespace NativeSsh.Buffers
 
         private long FinVisible => _finAbsoluto - _retenidos;
 
+        // true si alguna vez se registró un secreto (no vuelve a false al liberar): lo que no pasa por este búfer y puede
+        // contenerlo (la vista previa de guardarSalida, leída del archivo) no se muestra.
+        public bool HasSecretos => _hasSecretos;
+
         // Desde ahora, toda aparición de 'secreto' en lo que se escriba se enmascara (ver la cabecera).
         public void RegistrarSecreto(ReadOnlySpan<byte> secreto)
         {
@@ -79,6 +84,7 @@ namespace NativeSsh.Buffers
                     return;
 
                 (_secretos ??= []).Add(secreto.ToArray());
+                _hasSecretos = true;
                 int capacidad = Math.Max(secreto.Length - 1, MinBytesColaOriginal);
                 if (_colaOriginal is null || capacidad > _colaOriginal.Length)
                     AmpliarColaOriginal(capacidad);

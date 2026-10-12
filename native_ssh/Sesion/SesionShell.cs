@@ -145,6 +145,17 @@ namespace NativeSsh.Sesion
         // Los avisos pendientes que la compactación soltó por el tope (AvisosTecleadoOmitidos): los resume la primera respuesta.
         private readonly AvisosTecleadoOmitidos _avisosTecleadoOmitidos = new();
 
+        // Shells de esta sesión a los que se envió algún comando con guardarSalida y cuyo directorio
+        // (/tmp/native_ssh-<usuario>/<IdGuardado>) no se ha borrado aún: se borran por un canal exec con ssh_reset_shell, al
+        // abrirse un shell nuevo (tras una caída del shell o de la conexión: los de los shells anteriores, si siguen ahí) y al
+        // cerrar la sesión (ssh_disconnect o fin del proceso). Lo que quede (el proceso murió sin limpiar) lo barre el
+        // envoltorio pasadas 24 h sin cambios (SalidaGuardada).
+        private readonly Lock _candadoGuardados = new();
+        private readonly List<Guid> _shellsConGuardado = [];
+
+        // Plazo de la limpieza en el servidor; el local es algo mayor (MargenLimiteLocalExec) y acota también ssh_disconnect.
+        private static readonly TimeSpan PlazoLimpiezaGuardados = TimeSpan.FromSeconds(2);
+
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
         private int _shellsAbandonados;
 
@@ -439,6 +450,8 @@ namespace NativeSsh.Sesion
         {
             _isResetSolicitado = true;
             _ = (_peticionActual?.SolicitarCancelacion());
+            // El shell nuevo usará otro directorio: los de los anteriores se borran ya (los archivos de guardarSalida).
+            _ = BorrarGuardadosAsync(TomarShellsConGuardado());
         }
 
         public async ValueTask DisposeAsync()
@@ -472,6 +485,7 @@ namespace NativeSsh.Sesion
 
             CerrarCanalActual();
             DescartarAperturaShell();
+            await BorrarGuardadosAlCerrarAsync().ConfigureAwait(false);
             await LiberarConexionAsync().ConfigureAwait(false);
         }
 
@@ -822,7 +836,88 @@ namespace NativeSsh.Sesion
             }
 
             FijarTecleadoDescartado(peticion, idAnterior);
+
+            // guardarSalida: si el archivo no se pudo preparar, el envoltorio no ejecutó el comando y dejó el motivo.
+            if (peticion.MarcaGuardado is { } marca && SalidaGuardada.Leer(SalidaGuardada.LeerTerminal(peticion.Salida), marca).Error is { } errorGuardado)
+            {
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, Unir(avisoShell, errorGuardado));
+                return;
+            }
+
             _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
+        }
+
+        // Solo el bucle (al enviar el comando).
+        private void AnotarShellConGuardado(ShellAbierto canal)
+        {
+            if (canal.IsGuardadoAnotado)
+                return;
+
+            canal.IsGuardadoAnotado = true;
+            lock (_candadoGuardados)
+                _shellsConGuardado.Add(canal.IdGuardado);
+        }
+
+        // Saca de la lista los shells anotados, salvo 'vigente', y los devuelve.
+        private Guid[] TomarShellsConGuardado(Guid? vigente = null)
+        {
+            lock (_candadoGuardados)
+            {
+                List<Guid> tomados = [];
+                foreach (Guid id in _shellsConGuardado)
+                    if (id != vigente)
+                        tomados.Add(id);
+                foreach (Guid id in tomados)
+                    _ = _shellsConGuardado.Remove(id);
+                return [.. tomados];
+            }
+        }
+
+        // Borra los directorios de esos shells por un canal exec (sin tocar el shell). Sin conexión no reconecta solo para esto:
+        // los devuelve a la lista y se borrarán al abrir el shell siguiente. Nunca lanza: un fallo se anota en el log y lo que
+        // quede lo barre el envoltorio a las 24 h.
+        private async Task BorrarGuardadosAsync(Guid[] shells)
+        {
+            if (shells.Length == 0)
+                return;
+
+            if (IsCerrando || _conexion is not { IsConectada: true })
+            {
+                lock (_candadoGuardados)
+                    _shellsConGuardado.AddRange(shells);
+                return;
+            }
+
+            try
+            {
+                _ = await EjecutarExecAsync(SalidaGuardada.ScriptLimpieza(shells, _opciones.PrefijoGuardado), PlazoLimpiezaGuardados, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
+            }
+        }
+
+        // Al cerrar la sesión, con el shell ya cerrado y antes de liberar la conexión: por la conexión que haya (si sigue viva),
+        // sin el cupo de las lecturas ni el estado de cierre, acotado para no alargar ssh_disconnect con un servidor que no
+        // responde.
+        private async Task BorrarGuardadosAlCerrarAsync()
+        {
+            Guid[] shells = TomarShellsConGuardado();
+            IConexionSsh? conexion = _conexion;
+            if (shells.Length == 0 || conexion is not { IsConectada: true })
+                return;
+
+            string comando = ConstructorComandoExec.Construir(SalidaGuardada.ScriptLimpieza(shells, _opciones.PrefijoGuardado), null, PlazoLimpiezaGuardados, _pathLogin);
+            using CancellationTokenSource limite = new(PlazoLimpiezaGuardados + MargenLimiteLocalExec);
+            try
+            {
+                _ = await conexion.EjecutarExecAsync(comando, MaxBytesCapturaPath, static () => { }, limite.Token).WaitAsync(limite.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
+            }
         }
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
@@ -877,7 +972,14 @@ namespace NativeSsh.Sesion
                     _esperaMarcador = espera;
                 }
 
-                Componer(canal, EscrituraEnum.Comando, peticion.Id, peticion.Comando);
+                string comando = peticion.Comando;
+                if (peticion.MarcaGuardado is { } marca)
+                {
+                    comando = SalidaGuardada.Envolver(comando, marca, canal.IdGuardado, peticion.IdTexto, _opciones.PrefijoGuardado);
+                    AnotarShellConGuardado(canal);
+                }
+
+                Componer(canal, EscrituraEnum.Comando, peticion.Id, comando);
                 peticion.MarcarEnvioIniciado();
                 return TryEnviarBajoCandado(canal);
             }
@@ -1273,6 +1375,9 @@ namespace NativeSsh.Sesion
                 throw new NativeSshException(DescribirCierreEnLaInicializacion(TerminarInicializacion(canal)));
 
             _ = TerminarInicializacion(canal);
+
+            // Los directorios de guardarSalida de los shells anteriores (caída del shell o de la conexión), si siguen ahí.
+            _ = BorrarGuardadosAsync(TomarShellsConGuardado(canal.IdGuardado));
 
             bool isRecreado = _isShellInicializadoAlgunaVez;
             _isShellInicializadoAlgunaVez = true;
@@ -1769,6 +1874,12 @@ namespace NativeSsh.Sesion
 
             // Id del último comando enviado a este canal (solo el bucle).
             public string? UltimoComando { get; set; }
+
+            // Nombre del directorio de este shell para guardarSalida (SalidaGuardada): aleatorio y propio de cada canal. El
+            // bucle anota el canal la primera vez que le envía un comando con guardarSalida (AnotarShellConGuardado).
+            public Guid IdGuardado { get; } = IdentidadShell.NuevoTestigo();
+
+            public bool IsGuardadoAnotado { get; set; }
 
             public Lock CandadoEscritura { get; } = new();
             public ArrayBufferWriter<byte> Escritor { get; } = new(4096);
