@@ -311,6 +311,41 @@ namespace NativeSsh.Test.Integracion
             _ = (siguiente.Aviso ?? string.Empty).Should().NotContain("no leyó");
         }
 
+        // Dos avisos sin dar y la herramienta que trae el más reciente no termina: su error da el suyo sin recorrer los
+        // anteriores, y el más antiguo (el que trae un comando cuyo final nadie leyó) sigue pendiente detrás de ella. El ssh_exec
+        // siguiente lo da: la cadena se compacta por detrás de la cabeza ya avisada (antes, con la cabeza avisada se soltaba
+        // la cadena entera y ese aviso se perdía).
+        [Fact]
+        public async Task AvisoPendienteDetrasDeUnaHerramientaQueNoTermina_LlegaAlSiguiente()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            _ = await h.EjecutarAsync(destino, "[() { sleep 30; }", esperarSegundos: 15);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando trae = await h.EjecutarAsync(destino, "sleep 1.5", esperarSegundos: 0);
+            await Task.Delay(500);
+            _ = await h.EnviarEntradaAsync(trae.Id, "tres", esperarSegundos: 0);
+            await Task.Delay(2000);
+            HerramientasSsh corta = new(_gestor!, _sshd.Sshd.Opciones()) { TimeoutForzado = TimeSpan.FromSeconds(2) };
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, _testigos))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f [; echo siguiente", esperarSegundos: 15);
+            ResultadoComando otro = await h.EjecutarAsync(destino, "echo otro", esperarSegundos: 15);
+
+            // Assert
+            salida.WriteLine($"error '{error.Message}'; siguiente '{siguiente.Aviso}'; otro '{otro.Aviso}'");
+            _ = error.Message.Should().Contain(AvisoDe(trae.Id, "1 línea"), "lo dice el error de la herramienta");
+            _ = siguiente.Aviso.Should().Contain($"El final del comando {trae.Id}, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
+            _ = (otro.Aviso ?? string.Empty).Should().NotContain("no leyó");
+        }
+
         // Una línea a medias (enter=false) se junta con el centinela del envío siguiente: no se ejecuta y cuenta como una.
         [Theory]
         [InlineData("", "1 línea")]
