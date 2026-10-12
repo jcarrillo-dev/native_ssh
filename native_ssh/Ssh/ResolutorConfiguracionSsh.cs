@@ -32,7 +32,9 @@ namespace NativeSsh.Ssh
     //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice.
     // - En Linux, ssh se lanza con 'setsid' (si existe) en su propio grupo de procesos: un 'Match exec' que deja algo en
     //   segundo plano con la salida de ssh abierta no retiene la lectura (ssh ya terminó con toda su salida: se mata el
-    //   grupo y el destino se resuelve), ni queda huérfano al vencer el plazo.
+    //   grupo y el destino se resuelve), ni queda huérfano al vencer el plazo. Si lo que deja escribe en la salida de ssh
+    //   después de que ssh termine, lo escrito se lee como de ssh; un hostname, user o port repetido (ssh escribe cada uno
+    //   una vez) no se toma por bueno: el destino da un error. Una línea añadida de otra opción (identityfile) no se detecta.
     // - Sin el programa ssh: el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
     // - ssh hereda el entorno sin las variables secretas (VariablesSecretas: NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE,
     //   NATIVE_SSH_TOKEN_HTTP; un Match exec las vería), y ${VAR} en un IdentityFile las trata como no definidas.
@@ -47,7 +49,8 @@ namespace NativeSsh.Ssh
         private IReadOnlyList<string>? _identidadesPorDefecto;
         private volatile bool _isSinPrograma;
 
-        private sealed record ConfiguracionLeida(string? Servidor, string? Usuario, string? Puerto, List<string> Identidades, string? Salto);
+        // Repetida: una opción de valor único (hostname, user, port) que salió más de una vez (ssh -G las escribe una sola vez).
+        private sealed record ConfiguracionLeida(string? Servidor, string? Usuario, string? Puerto, List<string> Identidades, string? Salto, string? Repetida);
 
         public DestinoSsh Resolver(DestinoSsh destino, bool isUsuarioExplicito, bool isPuertoExplicito)
         {
@@ -70,6 +73,8 @@ namespace NativeSsh.Ssh
                 return destino;
 
             ConfiguracionLeida leida = Leer(salida);
+            if (leida.Repetida is not null)
+                throw new NativeSshException($"'ssh -G' escribió '{leida.Repetida}' más de una vez al leer la configuración de ssh de '{servidor}' (ssh escribe cada opción una sola vez: ¿un Match exec que deja en segundo plano algo que escribe en su salida?): no se ha conectado. Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
             if (leida.Salto is not null)
                 throw new NativeSshException($"La configuración de ssh de '{servidor}' usa {leida.Salto}, que native_ssh no admite: no se conecta directamente para no saltarse el salto que pide. Usa una entrada de la configuración sin ProxyJump ni ProxyCommand, o el destino real si se llega a él sin salto.");
 
@@ -106,6 +111,7 @@ namespace NativeSsh.Ssh
             string? usuario = null;
             string? puerto = null;
             string? salto = null;
+            string? repetida = null;
             List<string> identidades = [];
             foreach (string linea in salida.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
@@ -118,12 +124,15 @@ namespace NativeSsh.Ssh
                 switch (linea[..espacio])
                 {
                     case "hostname":
+                        repetida ??= servidor is null ? null : "hostname";
                         servidor = valor;
                         break;
                     case "user":
+                        repetida ??= usuario is null ? null : "user";
                         usuario = valor;
                         break;
                     case "port":
+                        repetida ??= puerto is null ? null : "port";
                         puerto = valor;
                         break;
                     case "identityfile":
@@ -140,7 +149,7 @@ namespace NativeSsh.Ssh
                 }
             }
 
-            return new ConfiguracionLeida(servidor, usuario, puerto, identidades, salto);
+            return new ConfiguracionLeida(servidor, usuario, puerto, identidades, salto, repetida);
         }
 
         // Las claves por defecto de ssh (las que lista sin ningún IdentityFile), leídas una vez con 'ssh -G -F none'.
