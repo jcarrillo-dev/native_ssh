@@ -36,7 +36,8 @@ namespace NativeSsh.Herramientas
         string Comando,
         double SegundosEjecucion);
 
-    // Aviso: con un alias, las sesiones de ese alias para otro usuario o puerto y cómo cerrarlas (null si no hay).
+    // Aviso: con un alias, sus sesiones para otro usuario o puerto y las de sesiones llenas que no lo guardaron, con qué
+    // destino cerrarlas y qué más cerraría cada uno (null si no hay).
     public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, string? Aviso = null);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
