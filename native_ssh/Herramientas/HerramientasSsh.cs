@@ -966,7 +966,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, o si find no termina bien (p. ej. no llega a ejecutarse), devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -1011,6 +1011,7 @@ namespace NativeSsh.Herramientas
         private const string PrefijoMarcaMontaje = "__NS_MONTAJE_";
         private const string PrefijoMarcaTotalMontajes = "__NS_TOTAL_MONTAJES_";
         private const string PrefijoMarcaSinTabla = "__NS_SIN_TABLA_";
+        private const string PrefijoMarcaFindFallo = "__NS_FIND_FALLO_";
         private const int MaxMontajesNoExplorados = 20;
 
         // explorar_montajes CRUZAR PROFUNDIDAD: con el directorio actual en la raíz de la búsqueda (ya resuelta en 'raiz', sin
@@ -1172,10 +1173,19 @@ namespace NativeSsh.Herramientas
                 {{DefinicionMontajes}}
                 explorar_montajes {{(isCruzarMontajes ? 1 : 0)}} {{profundidad}}
                 [ "${#poda[@]}" = 0 ] || poda+=(\( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) -o)
-                find -L . {{xdev}}-maxdepth {{profundidad}} -mindepth 1 "${poda[@]}" \
+                # Los nombres van a la salida (fd 7); el stderr de find y su código, a 'error_find' (solo los últimos 1 000
+                # bytes: con miles de avisos no crece).
+                exec 7>&1
+                error_find=$( { { find -L . {{xdev}}-maxdepth {{profundidad}} -mindepth 1 "${poda[@]}" \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
                   \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
+                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>&8 | sort -z | {{LimitarNombres(limite + 1)}} >&7
+                  printf '\n%s' "${PIPESTATUS[0]}" >&8; } 8>&1 | tail -c 1000; } )
+                exec 7>&-
+                codigo_find=${error_find##*$'\n'}
+                # Código 1 son avisos (un directorio sin permiso, un bucle de enlaces): find recorrió el resto y la lista vale.
+                # Con 2 o más (no se pudo ejecutar, p. ej. E2BIG con miles de podas; error fatal; señal) la lista no es fiable.
+                [ "$codigo_find" -le 1 ] 2>/dev/null || printf '{{PrefijoMarcaFindFallo}}{{idMarca}}__%s %s\0' "$codigo_find" "${error_find%$'\n'*}"
                 escribir_no_explorados '{{PrefijoMarcaMontaje}}{{idMarca}}__' '{{PrefijoMarcaTotalMontajes}}{{idMarca}}__'
                 [ -z "$sin_tabla" ] || printf '{{PrefijoMarcaSinTabla}}{{idMarca}}__\0'
                 )
@@ -1188,6 +1198,7 @@ namespace NativeSsh.Herramientas
             string marcaMontaje = $"{PrefijoMarcaMontaje}{idMarca}__";
             string marcaTotal = $"{PrefijoMarcaTotalMontajes}{idMarca}__";
             string marcaSinTabla = $"{PrefijoMarcaSinTabla}{idMarca}__";
+            string marcaFindFallo = $"{PrefijoMarcaFindFallo}{idMarca}__";
             List<string> nombres = [];
             List<string> montajes = [];
             int totalMontajes = 0;
@@ -1199,6 +1210,8 @@ namespace NativeSsh.Herramientas
                     totalMontajes = total;
                 else if (nombre == marcaSinTabla)
                     isSinTabla = true;
+                else if (nombre.StartsWith(marcaFindFallo, StringComparison.Ordinal))
+                    throw new NativeSshException(MensajeFindFallido(nombre[marcaFindFallo.Length..]));
                 else
                     nombres.Add(nombre);
 
@@ -1210,6 +1223,16 @@ namespace NativeSsh.Herramientas
                 : nombres.Count > limite
                     ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]{pie}"
                     : listado + pie;
+        }
+
+        // 'codigoYError': el código de find, un espacio y el final de su stderr.
+        private static string MensajeFindFallido(string codigoYError)
+        {
+            int espacio = codigoYError.IndexOf(' ', StringComparison.Ordinal);
+            string codigo = espacio < 0 ? codigoYError : codigoYError[..espacio];
+            string error = espacio < 0 ? string.Empty : codigoYError[(espacio + 1)..].Trim();
+            string detalle = error.Length == 0 ? "sin mensaje" : error;
+            return $"Error en búsqueda por nombre: find no terminó bien (código {codigo}) y su lista no es fiable, así que no se devuelve ninguna: {detalle}. Si dice que la lista de argumentos es demasiado larga, hay miles de sistemas de ficheros virtuales montados por debajo de la ruta (cada uno se poda en la línea de órdenes de find): repite ssh_find con una ruta más concreta.";
         }
 
         // '[montajes_no_explorados: …]' con los montajes ordenados, sin repetidos (un punto puede estar montado varias veces) ni

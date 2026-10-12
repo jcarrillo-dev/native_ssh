@@ -254,6 +254,76 @@ namespace NativeSsh.Test.Integracion
             _ = salida.Should().Be("\"[montajes_no_explorados: secretos]\"\nobjetivo.txt");
         }
 
+        // Script de ssh_find tras 'preparacion' (en el mismo bash, p. ej. un ulimit o un PATH); devuelve la respuesta o la
+        // excepción de InterpretarBusquedaNombre.
+        private Func<string> BuscarTras(string montajes, string preparacion)
+        {
+            string id = Guid.NewGuid().ToString("N");
+            string script = HerramientasSsh.ConstruirComandoBusquedaNombre("objetivo.txt", _raiz, "-type f ", 10, 100, isCruzarMontajes: true, id);
+            ProcessStartInfo inicio = new("unshare", ["-rmpf", "bash", "-c", $"set -e\n{montajes}\nset +e\n{preparacion}\n{script}"])
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using Process proceso = Process.Start(inicio)!;
+            Task<string> errores = proceso.StandardError.ReadToEndAsync();
+            string salida = proceso.StandardOutput.ReadToEnd();
+            _ = proceso.WaitForExit(300_000).Should().BeTrue("el script no debe colgarse");
+            _ = proceso.ExitCode.Should().Be(0, errores.Result);
+            return () => HerramientasSsh.InterpretarBusquedaNombre(salida, id, "objetivo.txt", _raiz, 10, 100, isCruzarMontajes: true);
+        }
+
+        // Con muchos sistemas virtuales por debajo de la ruta, cada uno es una poda en la línea de órdenes de find; si superan
+        // ARG_MAX, find no llega a ejecutarse (E2BIG, código 126). Antes su error se tiraba a /dev/null y la respuesta era «No
+        // se encontraron», falsa: el objetivo está en 'normal/'. Con la pila en 256 KiB, ARG_MAX baja a 128 KiB y bastan 2 500
+        // montajes (en un servidor con la pila por defecto, unos 30 000).
+        [FactUnshare]
+        public void Script_FindQueNoLlegaAEjecutarse_DaUnErrorVeraz()
+        {
+            // Arrange
+            _ = Directory.CreateDirectory(Path.Combine(_raiz, "m"));
+            string montajes = $"for i in $(seq 1 2500); do d='{_raiz}/m/volumen-con-un-nombre-largo-de-kubelet-'$i; mkdir \"$d\"; mount -t proc x \"$d\"; done";
+
+            // Act
+            Func<string> respuesta = BuscarTras(montajes, "ulimit -s 256");
+
+            // Assert
+            _ = respuesta.Should().Throw<NativeSsh.Comun.NativeSshException>().Which.Message.Should().StartWith("Error en búsqueda por nombre: find no terminó bien (código 126)").And.Contain("find").And.NotContain("No se encontraron");
+        }
+
+        // Si find termina con un error grave (código 2 o más: no se pudo ejecutar, error fatal o señal), la respuesta es un
+        // error con lo que find escribió en stderr, no la lista (incompleta o vacía).
+        [FactUnshare]
+        public void Script_FindQueFalla_DaUnErrorConSuMensaje()
+        {
+            // Arrange
+            string falso = Path.Combine(_raiz, "falso");
+            _ = Directory.CreateDirectory(falso);
+            File.WriteAllText(Path.Combine(falso, "find"), "#!/bin/sh\nprintf 'find: fallo simulado\\n' >&2\nexit 2\n");
+            File.SetUnixFileMode(Path.Combine(falso, "find"), UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+            // Act
+            Func<string> respuesta = BuscarTras(string.Empty, $"PATH='{falso}':$PATH");
+
+            // Assert
+            _ = respuesta.Should().Throw<NativeSsh.Comun.NativeSshException>().Which.Message.Should().StartWith("Error en búsqueda por nombre: find no terminó bien (código 2)").And.Contain("find: fallo simulado");
+        }
+
+        // Código 1 (avisos: un bucle de enlaces, un directorio sin permiso) no es un fallo: find recorrió el resto y la
+        // respuesta es la lista, igual que antes.
+        [FactUnshare]
+        public void Script_FindConAvisos_DevuelveLaLista()
+        {
+            // Arrange
+            _ = File.CreateSymbolicLink(Path.Combine(_raiz, "normal", "bucle"), "..");
+
+            // Act
+            Func<string> respuesta = BuscarTras(string.Empty, string.Empty);
+
+            // Assert
+            _ = respuesta().Should().Be("normal/objetivo.txt");
+        }
+
         // Sin /proc/self/mountinfo (un directorio vacío encima de /proc), con la raíz como ruta: /proc, /sys y /dev se podan
         // por su ruta y, sin cruzar montajes, la línea avisa de que no se pudo leer la tabla de montajes.
         [FactUnshare]
