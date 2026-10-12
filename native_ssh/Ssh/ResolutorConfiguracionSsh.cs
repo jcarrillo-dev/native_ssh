@@ -30,6 +30,9 @@ namespace NativeSsh.Ssh
     //   (relativa al directorio de trabajo de native_ssh, que no es el del usuario) es un error del destino, como en ssh.
     // - Plazo (TimeoutConfiguracionSsh, 5 s): un 'Match exec' o una búsqueda DNS de CanonicalizeHostname que se cuelga no
     //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice.
+    // - En Linux, ssh se lanza con 'setsid' (si existe) en su propio grupo de procesos: un 'Match exec' que deja algo en
+    //   segundo plano con la salida de ssh abierta no retiene la lectura (ssh ya terminó con toda su salida: se mata el
+    //   grupo y el destino se resuelve), ni queda huérfano al vencer el plazo.
     // - Sin el programa ssh: el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
     // - ssh hereda el entorno sin las variables secretas (VariablesSecretas: NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE,
     //   NATIVE_SSH_TOKEN_HTTP; un Match exec las vería), y ${VAR} en un IdentityFile las trata como no definidas.
@@ -37,7 +40,8 @@ namespace NativeSsh.Ssh
     {
         private const int ErrorNoExiste = 2; // ENOENT
         private const int MaxCaracteresError = 400;
-        private static readonly TimeSpan EsperaLectura = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan EsperaLectura = TimeSpan.FromMilliseconds(500);
+        private static readonly Lazy<string?> ProgramaSetsid = new(() => OperatingSystem.IsLinux() ? BuscarPrograma("setsid") : null);
 
         private readonly Lock _candado = new();
         private IReadOnlyList<string>? _identidadesPorDefecto;
@@ -266,7 +270,19 @@ namespace NativeSsh.Ssh
         private bool TryEjecutar(List<string> argumentos, string servidor, [NotNullWhen(true)] out string? salida)
         {
             salida = null;
-            ProcessStartInfo inicio = new(opciones.BinarioSsh, argumentos)
+            // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid.
+            string? programa = OperatingSystem.IsWindows() ? opciones.BinarioSsh : BuscarPrograma(opciones.BinarioSsh);
+            if (programa is null)
+            {
+                MarcarSinPrograma();
+                return false;
+            }
+
+            string? setsid = ProgramaSetsid.Value;
+            bool isGrupoPropio = setsid is not null;
+            if (isGrupoPropio)
+                argumentos.Insert(0, programa);
+            ProcessStartInfo inicio = new(setsid ?? programa, argumentos)
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
@@ -282,9 +298,7 @@ namespace NativeSsh.Ssh
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == ErrorNoExiste)
             {
-                if (!_isSinPrograma)
-                    logger.SshNoEncontrado(opciones.BinarioSsh);
-                _isSinPrograma = true;
+                MarcarSinPrograma();
                 return false;
             }
             catch (Win32Exception ex)
@@ -298,16 +312,21 @@ namespace NativeSsh.Ssh
             Task<string> errores = ejecucion.StandardError.ReadToEndAsync();
             bool isTerminado = ejecucion.WaitForExit(opciones.TimeoutConfiguracionSsh);
             if (!isTerminado)
-                Matar(ejecucion);
+                Matar(ejecucion, isGrupoPropio);
 
-            // Un proceso que lanzó ssh (Match exec) puede seguir con la salida abierta: la espera de la lectura tiene plazo.
+            // Un proceso que lanzó ssh (Match exec) puede seguir con la salida abierta: la espera de la lectura tiene plazo, y
+            // al vencer se mata su grupo, que cierra la salida (lo que ssh escribió antes de terminar ya está en ella).
             bool isLeido = Task.WaitAll([lectura, errores], EsperaLectura);
-            if (!isTerminado || !isLeido)
+            if (!isLeido)
             {
-                if (isTerminado)
-                    Matar(ejecucion);
-                throw new NativeSshException($"'ssh -G' no terminó en {opciones.TimeoutConfiguracionSsh.TotalSeconds:0.#} s al leer la configuración de ssh de '{servidor}' (¿un Match exec o una búsqueda DNS de CanonicalizeHostname que no responde?): no se ha conectado. Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
+                Matar(ejecucion, isGrupoPropio);
+                isLeido = Task.WaitAll([lectura, errores], EsperaLectura);
             }
+
+            if (!isTerminado)
+                throw new NativeSshException($"'ssh -G' no terminó en {opciones.TimeoutConfiguracionSsh.TotalSeconds:0.#} s al leer la configuración de ssh de '{servidor}' (¿un Match exec o una búsqueda DNS de CanonicalizeHostname que no responde?): no se ha conectado. Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
+            if (!isLeido)
+                throw new NativeSshException($"'ssh -G' terminó al leer la configuración de ssh de '{servidor}', pero algo que lanzó (¿un Match exec que deja un proceso en segundo plano?) mantiene abierta su salida y no se pudo leer entera: no se ha conectado. Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
 
             if (ejecucion.ExitCode != 0)
             {
@@ -319,8 +338,49 @@ namespace NativeSsh.Ssh
             return true;
         }
 
-        private static void Matar(Process proceso)
+        private void MarcarSinPrograma()
         {
+            if (!_isSinPrograma)
+                logger.SshNoEncontrado(opciones.BinarioSsh);
+            _isSinPrograma = true;
+        }
+
+        // Como execvp: una ruta con '/' se usa tal cual; si no, el primer fichero ejecutable con ese nombre en PATH.
+        private static string? BuscarPrograma(string programa)
+        {
+            if (programa.Contains('/'))
+                return IsEjecutable(programa) ? programa : null;
+
+            foreach (string directorio in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string ruta = Path.Combine(directorio, programa);
+                if (IsEjecutable(ruta))
+                    return ruta;
+            }
+
+            return null;
+        }
+
+        private static bool IsEjecutable(string ruta)
+        {
+            const UnixFileMode Ejecucion = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+            try
+            {
+                return File.Exists(ruta) && (OperatingSystem.IsWindows() || (File.GetUnixFileMode(ruta) & Ejecucion) != 0);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        // isGrupoPropio: ssh se lanzó con setsid y es el líder de su grupo (su pid es el del grupo): se mata el grupo entero,
+        // también lo que ya quedó huérfano al terminar ssh. Después, el árbol (lo que siga colgando de ssh si salió del grupo).
+        private static void Matar(Process proceso, bool isGrupoPropio)
+        {
+            if (isGrupoPropio && OperatingSystem.IsLinux())
+                _ = InteropLinux.MatarGrupo(proceso.Id);
+
             try
             {
                 proceso.Kill(entireProcessTree: true);

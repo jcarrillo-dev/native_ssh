@@ -283,6 +283,26 @@ namespace NativeSsh.Test.Ssh
             await EsperasPruebaSinProceso(marca);
         }
 
+        // Un Match exec que deja un proceso en segundo plano con la salida de ssh abierta: ssh termina al momento con toda su
+        // salida, así que el destino se resuelve (sin decir que ssh no terminó), y lo que dejó en segundo plano muere (ssh va
+        // en su propio grupo de procesos). La espera tiene tope para que una lectura sin plazo falle en vez de colgarse.
+        [Fact]
+        public async Task MatchExecQueDejaUnProcesoEnSegundoPlano_SeResuelveYNoQuedanHuerfanos()
+        {
+            // Arrange
+            string marca = $"39.{Random.Shared.Next(100000, 999999)}";
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(sleep {marca} &) ; true\"\n  Port 9\n"));
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            DestinoSsh destino = await Task.Run(() => Resolver(resolutor, "fondo")).WaitAsync(TimeSpan.FromSeconds(20));
+
+            // Assert
+            _ = destino.Puerto.Should().Be(9);
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
+            await EsperasPruebaSinProceso(marca);
+        }
+
         // El plazo por defecto es de 5 s: un Match exec colgado no retiene la llamada más que eso.
         [Fact]
         public async Task PlazoPorDefecto_CincoSegundos()
