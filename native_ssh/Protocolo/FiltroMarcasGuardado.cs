@@ -39,7 +39,7 @@ namespace NativeSsh.Protocolo
         public BufferSalida Salida { get; }
 
         // Se llama una vez, bajo el candado de proceso de la sesión, al llegar la marca A (el archivo ya está creado): la sesión
-        // lo cuenta en su shell (SesionShell.ArchivosGuardados).
+        // lo cuenta en su shell (SesionShell.ContarArchivoGuardado).
         public Action? AlCrearArchivo { get; set; }
 
         public InformeGuardado Informe

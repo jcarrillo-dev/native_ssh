@@ -89,9 +89,8 @@ namespace NativeSsh.Sesion
             if (sesion is null)
                 return null;
 
-            int archivos = sesion.ArchivosGuardados;
             await sesion.DisposeAsync().ConfigureAwait(false);
-            return new LimpiezaGuardados(archivos, sesion.ArchivosGuardadosSinBorrarAlCerrar);
+            return new LimpiezaGuardados(sesion.ArchivosGuardadosAlCerrar, sesion.ArchivosGuardadosSinBorrarAlCerrar);
         }
 
         public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
@@ -104,12 +103,7 @@ namespace NativeSsh.Sesion
             lock (_candado)
                 _ = _sesiones.TryGetValue(destino.Clave, out sesion);
 
-            if (sesion is null)
-                return null;
-
-            int archivos = sesion.ArchivosGuardados;
-            sesion.SolicitarReset();
-            return new LimpiezaGuardados(archivos, 0);
+            return sesion is null ? null : new LimpiezaGuardados(sesion.SolicitarResetConLimpieza(), 0);
         }
 
         public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)

@@ -452,13 +452,17 @@ namespace NativeSsh.Sesion
                 ? $"El shell de {Destino.Clave} lleva {segundos:0} s intentando enviar datos que el servidor no acepta (no lee de la conexión, la red no responde o el canal tiene agotada su ventana): mientras tanto ssh_cancel no puede interrumpir el comando (si lo atascado es una entrada de ssh_input, lo da por cancelado sin interrumpir el proceso y abandona ese shell) y ssh_input no envía nada. ssh_disconnect cierra la conexión y lo libera (el comando termina como cancelado y la siguiente operación abrirá una conexión nueva)."
                 : null;
 
-        public void SolicitarReset()
+        public void SolicitarReset() => _ = SolicitarResetConLimpieza();
+
+        // Devuelve los archivos de guardarSalida cuyo borrado lanza: los de todos los shells de la sesión (el actual y los
+        // anteriores), que se borran ya; el shell nuevo usará otro directorio.
+        public int SolicitarResetConLimpieza()
         {
             _isResetSolicitado = true;
             _ = (_peticionActual?.SolicitarCancelacion());
-            // Los archivos de guardarSalida de todos los shells de la sesión (el actual y los anteriores) se borran ya; el shell
-            // nuevo usará otro directorio.
-            _ = BorrarGuardadosAsync(TomarShellsConGuardado());
+            KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
+            _ = BorrarGuardadosAsync(shells);
+            return Sumar(shells);
         }
 
         public async ValueTask DisposeAsync()
@@ -925,16 +929,6 @@ namespace NativeSsh.Sesion
                 _ = _shellsConGuardado.TryAdd(canal.IdGuardado, 0);
         }
 
-        // Los archivos de guardarSalida creados en los shells anotados de esta sesión (los que aún no se han borrado).
-        public int ArchivosGuardados
-        {
-            get
-            {
-                lock (_candadoGuardados)
-                    return Sumar([.. _shellsConGuardado]);
-            }
-        }
-
         // Saca de la lista todos los shells anotados y los devuelve con sus archivos.
         private KeyValuePair<Guid, int>[] TomarShellsConGuardado()
         {
@@ -1003,6 +997,7 @@ namespace NativeSsh.Sesion
         private async Task BorrarGuardadosAlCerrarAsync()
         {
             KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
+            ArchivosGuardadosAlCerrar = Sumar(shells);
             if (shells.Length == 0)
                 return;
 
@@ -1028,7 +1023,10 @@ namespace NativeSsh.Sesion
             }
         }
 
-        // Tras cerrar la sesión: los archivos de guardarSalida que no se pudieron borrar (sin conexión o la limpieza falló).
+        // Tras cerrar la sesión: los archivos de guardarSalida que había al cerrarla (los que se intentaron borrar) y los que no
+        // se pudieron borrar (sin conexión o la limpieza falló).
+        public int ArchivosGuardadosAlCerrar { get; private set; }
+
         public int ArchivosGuardadosSinBorrarAlCerrar { get; private set; }
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
