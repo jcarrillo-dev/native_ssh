@@ -139,6 +139,7 @@ namespace NativeSsh.Sesion
         // si ninguna respuesta lo ha dado aún (Peticion.AnteriorConTecleadoDescartado). Se queda hasta que una respuesta lo da
         // (o la sustituye otra que trae su propio aviso y la enlaza a su vez): las respuestas de las herramientas de archivo y
         // de ssh_set_cwd no dan avisos, así que enlazarla solo con la petición siguiente lo perdía si esa era una de ellas.
+        // Antes de cada enlace, la cadena se compacta (Peticion.CompactarAvisosTecleadoPendientes): solo las pendientes.
         private Peticion? _ultimaConTecleadoDescartado;
 
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
@@ -666,8 +667,7 @@ namespace NativeSsh.Sesion
 
                     _peticionActual = peticion;
                     peticion.FijarAvisoEnCurso(() => DescribirEscrituraBloqueada(peticion));
-                    if (_ultimaConTecleadoDescartado is { IsAvisoTecleadoTomado: true })
-                        _ultimaConTecleadoDescartado = null;
+                    _ultimaConTecleadoDescartado = Peticion.CompactarAvisosTecleadoPendientes(_ultimaConTecleadoDescartado);
                     peticion.FijarAnteriorConTecleadoDescartado(_ultimaConTecleadoDescartado);
                     try
                     {

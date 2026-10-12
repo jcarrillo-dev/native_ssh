@@ -2077,20 +2077,33 @@ namespace NativeSsh.Herramientas
 
         // Los avisos de las peticiones anteriores del shell enlazadas (Peticion.AnteriorConTecleadoDescartado) que ninguna
         // respuesta ha dado aún, del más antiguo al más reciente. El de una herramienta no cita su id (Peticion.IsHerramienta).
-        private static string? AvisosTecleadoDeAnteriores(Peticion? anterior)
+        // Recorrido iterativo y con tope (Peticion.MaxAvisosTecleadoEnlazados): de una cadena más larga solo se dan los avisos
+        // de las más recientes (antes era recursivo y una cadena de decenas de miles desbordaba la pila del servidor).
+        internal static string? AvisosTecleadoDeAnteriores(Peticion? anterior)
         {
             if (anterior is null)
                 return null;
 
-            string? antiguos = AvisosTecleadoDeAnteriores(anterior.AnteriorConTecleadoDescartado);
-            if (!anterior.TryTomarAvisoTecleado())
-                return antiguos;
+            Peticion[] enlazadas = new Peticion[Peticion.MaxAvisosTecleadoEnlazados];
+            int cuantas = 0;
+            for (Peticion? actual = anterior; actual is not null && cuantas < enlazadas.Length; actual = actual.AnteriorConTecleadoDescartado)
+                enlazadas[cuantas++] = actual;
 
-            string quien = anterior.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : $"el comando anterior a {(anterior.IsHerramienta ? "ella" : "él")}";
-            string lineas = SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas);
-            return Unir(antiguos, anterior.IsHerramienta
-                ? $"Una herramienta de archivo o ssh_set_cwd anterior de este shell avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse al llegar ella (ninguna se ejecutó como orden)."
-                : $"El final del comando {anterior.IdTexto} de este shell, que aún no se ha leído, avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+            string? avisos = null;
+            for (int i = cuantas - 1; i >= 0; i--)
+            {
+                Peticion enlazada = enlazadas[i];
+                if (!enlazada.TryTomarAvisoTecleado())
+                    continue;
+
+                string quien = enlazada.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : $"el comando anterior a {(enlazada.IsHerramienta ? "ella" : "él")}";
+                string lineas = SesionShell.DescribirLineas(enlazada.LineasTecleadoDescartadas);
+                avisos = Unir(avisos, enlazada.IsHerramienta
+                    ? $"Una herramienta de archivo o ssh_set_cwd anterior de este shell avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse al llegar ella (ninguna se ejecutó como orden)."
+                    : $"El final del comando {enlazada.IdTexto} de este shell, que aún no se ha leído, avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+            }
+
+            return avisos;
         }
 
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
@@ -2103,8 +2116,12 @@ namespace NativeSsh.Herramientas
             // El aviso de las líneas tecleadas descartadas sale una sola vez: en el final de este comando o, si nadie lo ha leído
             // aún (p. ej. se lanzó con esperarSegundos=0 y después otro ssh_exec), en la primera respuesta de un comando
             // posterior del mismo shell, aunque en medio haya herramientas de archivo o ssh_set_cwd (Peticion.TryTomarAvisoTecleado).
+            // Dados los avisos de las enlazadas, el enlace se suelta: no se retienen ni se vuelven a recorrer.
             string? avisoFinal = estado.IsFinal() ? AvisoConTecleado(peticion) : peticion.Aviso;
-            avisoFinal = Unir(avisoFinal, AvisosTecleadoDeAnteriores(peticion.AnteriorConTecleadoDescartado));
+            Peticion? anterior = peticion.AnteriorConTecleadoDescartado;
+            avisoFinal = Unir(avisoFinal, AvisosTecleadoDeAnteriores(anterior));
+            if (anterior is not null)
+                peticion.SoltarAnteriorConTecleadoDescartado(anterior);
 
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
             if (avisoAntipatron is not null)

@@ -141,8 +141,54 @@ namespace NativeSsh.Sesion
             Volatile.Write(ref _lineasTecleadoDescartadas, lineas);
         }
 
-        // Antes de enviar el comando (lo lee quien construye las respuestas, en otro hilo, después).
+        // Lo fija el bucle de la sesión antes de enviar el comando, y lo rehace al compactar la cadena
+        // (CompactarAvisosTecleadoPendientes); lo lee quien construye las respuestas, en otro hilo.
         public void FijarAnteriorConTecleadoDescartado(Peticion? anterior) => _anteriorConTecleadoDescartado = anterior;
+
+        // Lo llama la respuesta que ya recorrió la cadena (HerramientasSsh.Resultado): suelta el enlace solo si sigue siendo el
+        // que recorrió, para no pisar el que el bucle fije después.
+        public void SoltarAnteriorConTecleadoDescartado(Peticion recorrida) => _ = Interlocked.CompareExchange(ref _anteriorConTecleadoDescartado, null, recorrida);
+
+        // true si trajo líneas tecleadas descartadas y ninguna respuesta ha dado aún su aviso.
+        public bool IsAvisoTecleadoPendiente => LineasTecleadoDescartadas > 0 && !IsAvisoTecleadoTomado;
+
+        // Tope de peticiones con el aviso pendiente que se enlazan (CompactarAvisosTecleadoPendientes) y que recorre una
+        // respuesta (HerramientasSsh.AvisosTecleadoDeAnteriores). Cada respuesta de ssh_exec, ssh_input y ssh_output da los
+        // avisos de las enlazadas, así que con un uso normal quedan una o dos; si se pasara, los avisos más antiguos se pierden
+        // (antes la cadena crecía sin límite y su recorrido recursivo desbordaba la pila del servidor).
+        public const int MaxAvisosTecleadoEnlazados = 16;
+
+        // Solo el bucle de la sesión, antes de enlazar la petición siguiente a 'ultima'. Deja la cadena que empieza en 'ultima'
+        // solo con las peticiones cuyo aviso sigue pendiente, en el mismo orden y como mucho MaxAvisosTecleadoEnlazados, y
+        // devuelve su cabeza (null si no queda ninguna): las ya avisadas no se retienen ni se recorren otra vez. Una dada puede
+        // tener detrás una pendiente (el error de una herramienta da el aviso suyo sin recorrer los anteriores), por eso no basta
+        // con mirar la cabeza. Entre dos llamadas solo se añade una cabeza, así que el recorrido es corto; el tope de visitas es
+        // defensa. Quien recorre a la vez la cadena ve el enlace viejo o el nuevo: los dos llevan a las mismas pendientes.
+        internal static Peticion? CompactarAvisosTecleadoPendientes(Peticion? ultima)
+        {
+            Peticion? cabeza = null;
+            Peticion? previa = null;
+            int enlazadas = 0;
+            int visitadas = 0;
+            for (Peticion? actual = ultima; actual is not null && enlazadas < MaxAvisosTecleadoEnlazados && visitadas < 4 * MaxAvisosTecleadoEnlazados; visitadas++)
+            {
+                Peticion? siguiente = actual.AnteriorConTecleadoDescartado;
+                if (actual.IsAvisoTecleadoPendiente)
+                {
+                    if (previa is null)
+                        cabeza = actual;
+                    else
+                        previa.FijarAnteriorConTecleadoDescartado(actual);
+                    previa = actual;
+                    enlazadas++;
+                }
+
+                actual = siguiente;
+            }
+
+            previa?.FijarAnteriorConTecleadoDescartado(null);
+            return cabeza;
+        }
 
         public bool TryFinalizar(EstadoPeticionEnum estado, int codigo, string? aviso)
         {

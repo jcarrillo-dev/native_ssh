@@ -325,6 +325,75 @@ namespace NativeSsh.Test.Herramientas
             _ = respuesta.Salida.Should().Be("recibido:ana\n");
         }
 
+        // Ciclos de «ssh_exec con esperarSegundos=0 + ssh_input con una línea de más, sin leer el final», con el comando
+        // siguiente siempre encolado: cada petición trae lo que la anterior no leyó y la sesión la enlaza a la anterior, cuyo
+        // aviso aún no ha dado nadie. Una vez dado, el enlace no se conserva: la cadena no crece con los ciclos (antes crecía 1
+        // por ciclo, retenía todas las peticiones y cada respuesta la recorría entera, de forma recursiva, hasta desbordar la
+        // pila del servidor).
+        [Fact]
+        public async Task CiclosConAvisoSinLeerElFinal_LaCadenaDeAvisosNoCrece()
+        {
+            // Arrange
+            const int Ciclos = 200;
+            (_, GestorSesiones gestor, HerramientasSsh herramientas) = CrearConSalidaPequena();
+            await using GestorSesiones gestorLiberable = gestor;
+            _ = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10);
+            ResultadoComando actual = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+            int avisos = 0;
+            Peticion? ultima = null;
+
+            // Act
+            for (int k = 0; k < Ciclos; k++)
+            {
+                ResultadoComando siguiente = await herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0);
+                Peticion peticion = gestor.BuscarPeticion(actual.Id);
+                await EsperasPrueba.EsperarHastaAsync(() => peticion.IsComandoEnviado && peticion.Salida.Longitud > 0);
+                ResultadoComando entrada = await herramientas.EnviarEntradaAsync(actual.Id, "ana\nuno", esperarSegundos: 0);
+                avisos += entrada.Aviso?.Contains("no leyó", StringComparison.Ordinal) == true ? 1 : 0;
+                await peticion.Finalizacion.WaitAsync(TimeSpan.FromSeconds(10));
+                ultima = gestor.BuscarPeticion(siguiente.Id);
+                actual = siguiente;
+            }
+
+            int largo = 0;
+            for (Peticion? p = ultima?.AnteriorConTecleadoDescartado; p is not null; p = p.AnteriorConTecleadoDescartado)
+                largo++;
+            _ = await herramientas.EnviarEntradaAsync(actual.Id, "ana", esperarSegundos: 5);
+            ResultadoComando final = await herramientas.EjecutarAsync("servidor", "hola", esperarSegundos: 10);
+
+            // Assert
+            _ = largo.Should().BeLessThanOrEqualTo(2);
+            _ = avisos.Should().BeGreaterThan(Ciclos / 2, "las respuestas de ssh_input siguen dando el aviso de la petición anterior");
+            _ = final.Estado.Should().Be(EstadoPeticionEnum.Completado);
+        }
+
+        // Una cadena de avisos sin dar mucho más larga que el tope: el recorrido es iterativo (no desborda la pila) y da como
+        // mucho Peticion.MaxAvisosTecleadoEnlazados avisos, los de las más recientes.
+        [Fact]
+        public void AvisosTecleadoDeAnteriores_CadenaMuyLarga_NoDesbordaYSeQuedaEnElTope()
+        {
+            // Arrange
+            _ = DestinoSsh.TryParse("ana@servidor", "ana", out DestinoSsh destino);
+            Peticion? anterior = null;
+            for (int k = 0; k < 100_000; k++)
+            {
+                Peticion peticion = new(destino, "x", TimeSpan.FromSeconds(1), 16, TimeProvider.System);
+                peticion.FijarLineasTecleadoDescartadas(1, $"c{k}");
+                peticion.FijarAnteriorConTecleadoDescartado(anterior);
+                anterior = peticion;
+            }
+
+            // Act
+            string? avisos = HerramientasSsh.AvisosTecleadoDeAnteriores(anterior);
+
+            // Assert
+            string texto = avisos ?? string.Empty;
+            int apariciones = texto.Split("no leyó").Length - 1;
+            _ = apariciones.Should().Be(Peticion.MaxAvisosTecleadoEnlazados);
+            _ = texto.Should().Contain("el comando c99999 no leyó").And.NotContain($"el comando c{99_999 - Peticion.MaxAvisosTecleadoEnlazados} no leyó");
+            _ = texto.IndexOf($"el comando c{100_000 - Peticion.MaxAvisosTecleadoEnlazados} ", StringComparison.Ordinal).Should().BeLessThan(texto.IndexOf("el comando c99999 ", StringComparison.Ordinal), "del más antiguo al más reciente");
+        }
+
         // Sin grep de GNU el recorrido con find sale con 0 aunque no encuentre nada: una salida vacía es «sin coincidencias»
         // (nunca un resultado en blanco ni un error).
         [Fact]

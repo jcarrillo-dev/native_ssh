@@ -147,6 +147,62 @@ namespace NativeSsh.Test.Sesion
             _ = peticion.TiempoSinSalida.Should().BeNull();
         }
 
+        // Antes de enlazar la petición siguiente, la cadena de avisos de lo tecleado descartado se queda solo con las que
+        // aún tienen el aviso sin dar, en orden: la cabeza ya dada (p. ej. por el error de una herramienta, que da el suyo sin
+        // recorrer los anteriores) no se enlaza, pero el aviso pendiente de detrás tampoco se pierde.
+        [Fact]
+        public void CompactarAvisosTecleadoPendientes_QuitaLosDadosYConservaLosPendientes()
+        {
+            // Arrange
+            Peticion sinDar = Nueva();
+            sinDar.FijarLineasTecleadoDescartadas(2, "a");
+            Peticion dada = Nueva();
+            dada.FijarLineasTecleadoDescartadas(1, "b");
+            dada.FijarAnteriorConTecleadoDescartado(sinDar);
+            Peticion otraSinDar = Nueva();
+            otraSinDar.FijarLineasTecleadoDescartadas(3, "c");
+            otraSinDar.FijarAnteriorConTecleadoDescartado(dada);
+            Peticion cabezaDada = Nueva();
+            cabezaDada.FijarLineasTecleadoDescartadas(1, "d");
+            cabezaDada.FijarAnteriorConTecleadoDescartado(otraSinDar);
+            _ = dada.TryTomarAvisoTecleado();
+            _ = cabezaDada.TryTomarAvisoTecleado();
+
+            // Act
+            Peticion? cabeza = Peticion.CompactarAvisosTecleadoPendientes(cabezaDada);
+
+            // Assert
+            _ = cabeza.Should().BeSameAs(otraSinDar);
+            _ = otraSinDar.AnteriorConTecleadoDescartado.Should().BeSameAs(sinDar);
+            _ = sinDar.AnteriorConTecleadoDescartado.Should().BeNull();
+            _ = Peticion.CompactarAvisosTecleadoPendientes(Nueva()).Should().BeNull("sin líneas descartadas no hay aviso que dar");
+        }
+
+        // Con más avisos pendientes que el tope, se quedan los MaxAvisosTecleadoEnlazados más recientes.
+        [Fact]
+        public void CompactarAvisosTecleadoPendientes_SeQuedaEnElTope()
+        {
+            // Arrange
+            Peticion? ultima = null;
+            for (int k = 0; k < 3 * Peticion.MaxAvisosTecleadoEnlazados; k++)
+            {
+                Peticion peticion = Nueva();
+                peticion.FijarLineasTecleadoDescartadas(1, null);
+                peticion.FijarAnteriorConTecleadoDescartado(ultima);
+                ultima = peticion;
+            }
+
+            // Act
+            Peticion? cabeza = Peticion.CompactarAvisosTecleadoPendientes(ultima);
+
+            // Assert
+            int largo = 0;
+            for (Peticion? p = cabeza; p is not null; p = p.AnteriorConTecleadoDescartado)
+                largo++;
+            _ = cabeza.Should().BeSameAs(ultima);
+            _ = largo.Should().Be(Peticion.MaxAvisosTecleadoEnlazados);
+        }
+
         // Al terminar, la salida se cierra: lo retenido por si era el principio de un secreto (ssh_input con secreto=true) ya
         // no se completará, se enmascara y se puede leer (BufferSalida.Cerrar); sin cerrarla quedaría oculto para siempre.
         [Theory]
