@@ -21,6 +21,7 @@ namespace NativeSsh.Test.Protocolo
         private readonly Process _bash;
         private readonly StringBuilder _errores = new();
         private readonly Guid _testigo = IdentidadShell.NuevoTestigo();
+        private readonly Guid _centinela = IdentidadShell.NuevoTestigo();
 
         public ComprobacionIdentidadBashTests()
         {
@@ -74,9 +75,8 @@ namespace NativeSsh.Test.Protocolo
             await _bash.StandardInput.BaseStream.FlushAsync();
         }
 
-        private Task EscribirAsync(string texto) => EscribirAsync(w => w.Write(Encoding.UTF8.GetBytes(texto)));
-
-        // Lee hasta el marcador de 'id' y devuelve lo anterior y su código; después satisface el 'read' de la cola.
+        // Lee hasta el marcador de 'id' y devuelve lo anterior y su código (sin el recuento opcional). La cola espera después el
+        // centinela, que es la primera línea del envío siguiente.
         private async Task<(string Salida, int Codigo)> LeerHastaMarcadorAsync(Guid id)
         {
             string cabecera = $"__NSX_{id:N}_";
@@ -94,8 +94,7 @@ namespace NativeSsh.Test.Protocolo
                 }
 
                 _ = salida.Append(linea.AsSpan(0, posicion));
-                string codigo = linea[(posicion + cabecera.Length)..^2];
-                await EscribirAsync("\n");
+                string codigo = linea[(posicion + cabecera.Length)..^2].Split('_')[0];
                 return (salida.ToString(), int.Parse(codigo, CultureInfo.InvariantCulture));
             }
         }
@@ -104,7 +103,7 @@ namespace NativeSsh.Test.Protocolo
         private async Task<IdentidadShell> CapturarAsync()
         {
             Guid id = Guid.NewGuid();
-            await EscribirAsync(w => ConstructorComando.EscribirCapturaPath(id, _testigo, w));
+            await EscribirAsync(w => ConstructorComando.EscribirCapturaPath(id, _testigo, _centinela, w));
             (string salida, int codigo) = await LeerHastaMarcadorAsync(id);
             _ = codigo.Should().Be(0);
             _ = IdentidadShell.TryLeer(Encoding.UTF8.GetBytes(salida), id, _testigo, out IdentidadShell identidad).Should().BeTrue(salida);
@@ -117,14 +116,14 @@ namespace NativeSsh.Test.Protocolo
         private async Task<(string Salida, int Codigo)> EjecutarAsync(string comando, IdentidadShell? identidad)
         {
             Guid id = Guid.NewGuid();
-            await EscribirAsync(w => ConstructorComando.EscribirComando(comando, id, w, identidad));
+            await EscribirAsync(w => ConstructorComando.EscribirComando(comando, id, _centinela, w, identidad));
             return await LeerHastaMarcadorAsync(id);
         }
 
         private async Task<(string Salida, int Codigo)> RecuperarAsync(IdentidadShell identidad)
         {
             Guid id = Guid.NewGuid();
-            await EscribirAsync(w => ConstructorComando.EscribirRecuperacion(id, w, identidad));
+            await EscribirAsync(w => ConstructorComando.EscribirRecuperacion(id, _centinela, w, identidad));
             return await LeerHastaMarcadorAsync(id);
         }
 
@@ -189,7 +188,7 @@ namespace NativeSsh.Test.Protocolo
             Guid id = Guid.NewGuid();
 
             // Act
-            await EscribirAsync(w => ConstructorComando.EscribirCapturaPath(id, _testigo, w));
+            await EscribirAsync(w => ConstructorComando.EscribirCapturaPath(id, _testigo, _centinela, w));
             (string salida, _) = await LeerHastaMarcadorAsync(id);
 
             // Assert
@@ -212,7 +211,7 @@ namespace NativeSsh.Test.Protocolo
             (_, int codigoTrasCambios) = await EjecutarAsync("true", real);
             // La cola de la línea del exec no llega a ejecutarse (el proceso ya es otro programa): como tras el plazo de
             // ssh_exec, la siguiente línea es la de recuperación, y la ejecuta el bash nuevo.
-            await EscribirAsync(w => ConstructorComando.EscribirComando("exec bash --norc --noprofile", Guid.NewGuid(), w, real));
+            await EscribirAsync(w => ConstructorComando.EscribirComando("exec bash --norc --noprofile", Guid.NewGuid(), _centinela, w, real));
             await Task.Delay(300);
             (_, int codigoExec) = await RecuperarAsync(real);
 

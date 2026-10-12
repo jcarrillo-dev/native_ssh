@@ -1497,6 +1497,7 @@ namespace NativeSsh.Test.Sesion
             _ = isEnviada.Should().BeTrue();
             _ = pregunta.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = Texto(pregunta).Should().Be("¿Nombre? recibido:ana\n");
+            _ = pregunta.Aviso.Should().BeNull("el reenvío empieza por el centinela: la cola de la primera recuperación no lo cuenta como tecleado");
             _ = fabrica.Ultima.ShellsAbiertos.Should().Be(1);
         }
 

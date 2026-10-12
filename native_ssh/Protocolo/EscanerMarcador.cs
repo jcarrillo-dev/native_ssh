@@ -31,12 +31,16 @@ namespace NativeSsh.Protocolo
 
         public bool IsActivo { get; private set; }
 
-        // Las del último marcador esperado que se encontró (0 si no llevaba recuento): ver MarcadorFin.
+        // Las del marcador esperado que se acaba de encontrar más las de los marcadores ignorados que llegaron antes que él
+        // desde Reiniciar (0 si ninguno llevaba recuento): ver MarcadorFin. Las de un ignorado son también de antes del envío
+        // esperado (p. ej. el marcador del comando interrumpido, que llega tras el Ctrl+C con el recuento de antes de ese
+        // comando, y la línea de recuperación ya no lo tiene).
         public int LineasDescartadas { get; private set; }
 
         // idIgnorado: marcador que se descarta sin emitirlo (el del comando original durante una interrupción).
         public void Reiniciar(Guid id, Guid? idIgnorado = null)
         {
+            LineasDescartadas = 0;
             _ = id.TryFormat(_idEsperado, out _, "N");
             _hasIdIgnorado = idIgnorado.HasValue;
             if (idIgnorado is { } ignorado)
@@ -100,12 +104,13 @@ namespace NativeSsh.Protocolo
                     _isSaltarSaltoLinea = inicio + longitud == ventana.Length;
                     IsActivo = false;
                     codigo = codigoLeido;
-                    LineasDescartadas = descartadas;
+                    LineasDescartadas = Math.Min(LineasDescartadas + descartadas, MarcadorFin.MaxLineasDescartadas);
                     return true;
                 }
 
                 if (_hasIdIgnorado && id.SequenceEqual(_idIgnorado))
                 {
+                    LineasDescartadas = Math.Min(LineasDescartadas + descartadas, MarcadorFin.MaxLineasDescartadas);
                     Emitir(salida, ventana[emitido..inicio]);
                     emitido = inicio + longitud;
                     if (emitido == ventana.Length)

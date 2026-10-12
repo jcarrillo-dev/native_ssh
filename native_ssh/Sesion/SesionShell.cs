@@ -135,12 +135,8 @@ namespace NativeSsh.Sesion
         // puede llegar durante el comando siguiente, que lo descarta. Bajo _candadoProceso.
         private Guid? _idRecuperacionReenviada;
 
-        // Líneas tecleadas descartadas que trae el último marcador encontrado (EscanerMarcador.LineasDescartadas). Bajo
-        // _candadoProceso: la bomba lo fija antes de completar la espera y el bucle lo lee después.
-        private int _lineasDescartadasMarcador;
-
-        // Último comando terminado que descartó líneas tecleadas (solo el bucle): el siguiente lo enlaza para repetir el
-        // aviso (Peticion.AnteriorConTecleadoDescartado).
+        // Último comando terminado cuyo final avisó de líneas tecleadas descartadas (solo el bucle): el siguiente lo enlaza
+        // para repetir el aviso si nadie ha leído aquel final (Peticion.AnteriorConTecleadoDescartado).
         private Peticion? _ultimaConTecleadoDescartado;
 
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
@@ -767,6 +763,9 @@ namespace NativeSsh.Sesion
 
             peticion.MarcarComandoEnviado();
             _ = Interlocked.Increment(ref _comandosEjecutados);
+            // El comando anterior de este canal: el que no leyó lo que la cola anterior descarte al llegar este envío.
+            string? idAnterior = canal.UltimoComando;
+            canal.UltimoComando = peticion.IdTexto;
             int codigo;
             try
             {
@@ -779,7 +778,10 @@ namespace NativeSsh.Sesion
                     (string detalle, string? avisoInterrupcion) = await InterrumpirAsync(canal, peticion).ConfigureAwait(false);
                     if (IsCerrando)
                         throw new OperationCanceledException(token);
-                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(avisoShell, avisoInterrupcion));
+                    // Lo descartado antes de este comando llega en su marcador (ignorado durante la interrupción si llegó
+                    // tarde) o, si no llegó a imprimirse, en el de la recuperación (EscanerMarcador.LineasDescartadas).
+                    string? avisoTecleado = FijarTecleadoDescartado(peticion, idAnterior);
+                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(Unir(avisoShell, avisoInterrupcion), avisoTecleado));
                     return;
                 }
 
@@ -802,20 +804,27 @@ namespace NativeSsh.Sesion
                 return;
             }
 
-            int descartadas;
-            lock (_candadoProceso)
-                descartadas = _lineasDescartadasMarcador;
-            peticion.FijarLineasTecleadoDescartadas(descartadas);
-            if (descartadas > 0)
-                _ultimaConTecleadoDescartado = peticion;
-            _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, Unir(avisoShell, DescribirTecleadoDescartado(descartadas)));
+            _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, Unir(avisoShell, FijarTecleadoDescartado(peticion, idAnterior)));
         }
 
-        // Lo tecleado con ssh_input que el comando no leyó: la cola lo descarta sin ejecutarlo (ConstructorComando). Sin su
-        // contenido: puede ser un secreto.
-        internal static string? DescribirTecleadoDescartado(int lineas) => lineas <= 0
+        // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
+        // que se envió) se fijan en la petición antes de su estado final; devuelve su aviso. Solo el bucle.
+        private string? FijarTecleadoDescartado(Peticion peticion, string? idAnterior)
+        {
+            int descartadas;
+            lock (_candadoProceso)
+                descartadas = _escaner.LineasDescartadas;
+            peticion.FijarLineasTecleadoDescartadas(descartadas, idAnterior);
+            if (descartadas > 0)
+                _ultimaConTecleadoDescartado = peticion;
+            return DescribirTecleadoDescartado(descartadas, idAnterior);
+        }
+
+        // Lo tecleado con ssh_input que ningún comando leyó: la cola que esperaba el envío de este comando lo descartó sin
+        // ejecutarlo (ConstructorComando.EscribirCola). Sin su contenido: puede ser un secreto.
+        internal static string? DescribirTecleadoDescartado(int lineas, string? idAnterior) => lineas <= 0
             ? null
-            : $"El comando no leyó {DescribirLineas(lineas)} de entrada tecleada con ssh_input (enviada cuando ya no la leía, o de más): al terminar se descartaron sin ejecutarse. Envía la entrada solo cuando el comando la pida (mira su salida con ssh_output) y una línea por respuesta.";
+            : $"El comando anterior de este shell{(idAnterior is null ? "" : $" ({idAnterior})")} no leyó {DescribirLineas(lineas)} de entrada tecleada con ssh_input (enviada cuando ya no la leía, o de más): se descartaron sin ejecutarse al llegar este comando (ninguna se ejecutó como orden). Envía la entrada solo cuando el comando la pida (mira su salida con ssh_output) y una línea por llamada.";
 
         internal static string DescribirLineas(int lineas) => lineas >= MarcadorFin.MaxLineasDescartadas
             ? $"{lineas} o más líneas"
@@ -1472,7 +1481,6 @@ namespace NativeSsh.Sesion
                 completada = _esperaMarcador;
                 _esperaMarcador = null;
                 _salidaActual = null;
-                _lineasDescartadasMarcador = _escaner.LineasDescartadas;
             }
 
             _ = (completada?.TrySetResult(codigo));
@@ -1650,25 +1658,25 @@ namespace NativeSsh.Sesion
             switch (tipo)
             {
                 case EscrituraEnum.Inicializacion:
-                    ConstructorComando.EscribirInicializacion(id, escritor, _directorioTrabajo);
+                    ConstructorComando.EscribirInicializacion(id, canal.Centinela, escritor, _directorioTrabajo);
                     break;
                 case EscrituraEnum.ReenvioInicializacion:
-                    ConstructorComando.EscribirLineaInicializacion(id, escritor, _directorioTrabajo);
+                    ConstructorComando.EscribirReenvioInicializacion(id, canal.Centinela, escritor, _directorioTrabajo);
                     break;
                 case EscrituraEnum.Sincronizacion:
-                    ConstructorComando.EscribirSincronizacion(id, escritor);
+                    ConstructorComando.EscribirSincronizacion(id, canal.Centinela, escritor);
                     break;
                 case EscrituraEnum.CapturaPath:
-                    ConstructorComando.EscribirCapturaPath(id, canal.Testigo, escritor);
+                    ConstructorComando.EscribirCapturaPath(id, canal.Testigo, canal.Centinela, escritor);
                     break;
                 case EscrituraEnum.Comando:
-                    ConstructorComando.EscribirComando(comando, id, escritor, canal.Identidad);
+                    ConstructorComando.EscribirComando(comando, id, canal.Centinela, escritor, canal.Identidad);
                     break;
                 case EscrituraEnum.CtrlC:
                     ConstructorComando.EscribirCtrlC(escritor);
                     break;
                 case EscrituraEnum.Recuperacion:
-                    ConstructorComando.EscribirRecuperacion(id, escritor, canal.Identidad);
+                    ConstructorComando.EscribirRecuperacion(id, canal.Centinela, escritor, canal.Identidad);
                     break;
                 default:
                     throw new ArgumentOutOfRangeException(nameof(tipo), tipo, null);
@@ -1723,6 +1731,13 @@ namespace NativeSsh.Sesion
             // La del bash del canal, capturada al inicializarlo (CapturarIdentidadYPathAsync); null hasta entonces. Solo la
             // escribe y la lee el bucle.
             public IdentidadShell? Identidad { get; set; }
+
+            // Centinela aleatorio de este canal: la primera línea de cada envío y lo que espera cada cola
+            // (ConstructorComando.EscribirCola). Nuevo en cada canal, como el testigo.
+            public Guid Centinela { get; } = IdentidadShell.NuevoTestigo();
+
+            // Id del último comando enviado a este canal (solo el bucle).
+            public string? UltimoComando { get; set; }
 
             public Lock CandadoEscritura { get; } = new();
             public ArrayBufferWriter<byte> Escritor { get; } = new(4096);

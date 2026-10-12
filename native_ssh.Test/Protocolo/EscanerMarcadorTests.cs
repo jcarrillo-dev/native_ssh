@@ -186,21 +186,40 @@ namespace NativeSsh.Test.Protocolo
             _ = Texto(segunda).Should().Be("resto");
         }
 
-        // El marcador ignorado (reenvío de una recuperación) se traga aunque lleve recuento, y no pisa el del bueno.
+        // El marcador ignorado (el del comando interrumpido, o el reenvío de una recuperación) se traga, y su recuento se suma
+        // al del bueno: también son líneas descartadas antes del envío esperado (ConstructorComando.EscribirCola).
         [Fact]
-        public void IdIgnoradoConDescartadas_SeTragaYNoPisaElRecuento()
+        public void IdIgnoradoConDescartadas_SeTragaYSumaSuRecuentoAlDelBueno()
         {
             // Arrange
             EscanerMarcador escaner = Nuevo(Otro, Id);
             BufferSalida salida = NuevaSalida();
 
             // Act
-            (bool IsCompleto, int Codigo) resultado = Alimentar(escaner, salida, $"a__NSX_{Id:N}_0_5__\nb" + Marcador(Otro, 0));
+            (bool IsCompleto, int Codigo) resultado = Alimentar(escaner, salida, $"a__NSX_{Id:N}_0_5__\nb__NSX_{Otro:N}_130_2__\n");
 
             // Assert
-            _ = resultado.Should().Be((true, 0));
-            _ = escaner.LineasDescartadas.Should().Be(0);
+            _ = resultado.Should().Be((true, 130));
+            _ = escaner.LineasDescartadas.Should().Be(7);
             _ = Texto(salida).Should().Be("ab");
+        }
+
+        // Reiniciar empieza el recuento de cero; la suma no pasa del tope.
+        [Fact]
+        public void Reiniciar_EmpiezaDeCeroYLaSumaNoPasaDelTope()
+        {
+            // Arrange
+            EscanerMarcador escaner = Nuevo(Otro, Id);
+
+            // Act
+            _ = Alimentar(escaner, NuevaSalida(), $"__NSX_{Id:N}_0_{MarcadorFin.MaxLineasDescartadas}__\n__NSX_{Otro:N}_130_4__\n");
+            int sumado = escaner.LineasDescartadas;
+            escaner.Reiniciar(Id);
+            int reiniciado = escaner.LineasDescartadas;
+
+            // Assert
+            _ = sumado.Should().Be(MarcadorFin.MaxLineasDescartadas);
+            _ = reiniciado.Should().Be(0);
         }
 
         [Fact]

@@ -24,6 +24,7 @@ namespace NativeSsh.Benchmarks
         private const int BloquesSalidaDesbordada = (CapacidadSalida / TamanoBloque) + 16;
 
         private static readonly Guid Id = Guid.Parse("0123456789abcdef0123456789abcdef");
+        private static readonly Guid Centinela = Guid.Parse("fedcba9876543210fedcba9876543210");
 
         private readonly EscanerMarcador _escaner = new(TamanoBloque);
         private readonly ArrayBufferWriter<byte> _escritor = new(64 * 1024);
@@ -70,7 +71,7 @@ namespace NativeSsh.Benchmarks
         public int Constructor_Comando()
         {
             _escritor.ResetWrittenCount();
-            ConstructorComando.EscribirComando(_comando, Id, _escritor);
+            ConstructorComando.EscribirComando(_comando, Id, Centinela, _escritor);
             return _escritor.WrittenCount;
         }
 

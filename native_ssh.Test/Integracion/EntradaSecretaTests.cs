@@ -127,11 +127,11 @@ namespace NativeSsh.Test.Integracion
                 : respuestas.Should().Contain(canario, "sin secreto, el eco del terminal lo devuelve: la prueba detecta la fuga");
         }
 
-        // Tecleado por adelantado (CB1): el comando no lee la entrada, así que la línea la consume el 'read' de la cola del
-        // protocolo (ConstructorComando.EscribirCola) al terminar. No debe quedar en ninguna variable del shell (antes quedaba
-        // en __ns_d hasta el comando siguiente, y 'declare -p' o 'set' lo devolvían tal cual), ni en el historial, ni en $_,
-        // ni salir en la respuesta del comando siguiente. Con la línea entera la descarta la cola antes del marcador; a medias
-        // (enter=false) la consume el 'read' final con el salto del envío siguiente: tampoco queda.
+        // Tecleado por adelantado (CB1): el comando no lee la entrada, así que la línea la lee y la descarta la cola del
+        // protocolo mientras espera el centinela del envío siguiente (ConstructorComando.EscribirCola). No debe quedar en
+        // ninguna variable del shell (antes quedaba en __ns_d hasta el comando siguiente, y 'declare -p' o 'set' lo devolvían
+        // tal cual), ni en el historial, ni en $_, ni salir en la respuesta del comando siguiente; ni entera ni a medias
+        // (enter=false: se junta con el centinela).
         [Theory]
         [InlineData(false, true)]
         [InlineData(true, true)]

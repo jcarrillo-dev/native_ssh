@@ -2,9 +2,10 @@ using System.Buffers;
 
 namespace NativeSsh.Protocolo
 {
-    // Marcador de fin: "__NSX_" + id (32 hex minúsculas) + "_" + código (1-3 dígitos) + "__". El de un comando
-    // (ConstructorComando.EscribirComando) lleva además, entre el código y el "__" final, "_" + las líneas tecleadas que el
-    // comando no leyó y la cola descartó (1-6 dígitos, como mucho MaxLineasDescartadas), solo si hubo alguna.
+    // Marcador de fin: "__NSX_" + id (32 hex minúsculas) + "_" + código (1-3 dígitos) + "__". Puede llevar además, entre el
+    // código y el "__" final, "_" + las líneas tecleadas que la cola ANTERIOR descartó mientras esperaba el centinela que
+    // abre este envío (1-6 dígitos, como mucho MaxLineasDescartadas), solo si hubo alguna (ConstructorComando.EscribirCola):
+    // líneas que llegaron antes que este envío y que ningún comando leyó.
     public static class MarcadorFin
     {
         public const int LongitudCabecera = 6;

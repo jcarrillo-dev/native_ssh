@@ -303,7 +303,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_input", Destructive = true)]
-        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y una línea por llamada: lo que el comando no lea (líneas de más, o texto enviado antes de que lo pida o cuando ya no lee) se DESCARTA al terminar el comando, sin ejecutarse, y la respuesta avisa de cuántas líneas. NUNCA envíes varias líneas a un comando que está terminando: si la entrada llega justo cuando termina (unos milisegundos; con una red lenta, del orden de su latencia), el shell puede ejecutar como órdenes las líneas de más.")]
+        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y UNA línea por llamada. Lo que el comando no lea (líneas de más, Ctrl+D, o texto enviado antes de que lo pida o cuando ya no lee) NUNCA se ejecuta como orden: se DESCARTA entero y la respuesta del SIGUIENTE ssh_exec de este shell dice exactamente cuántas líneas se descartaron. Esa entrada se pierde: si el comando la necesitaba, vuelve a lanzarlo y envíala cuando la pida.")]
         public async Task<ResultadoComando> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
             [Description("Texto a enviar.")] string texto,
@@ -313,9 +313,9 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
-            // Un secreto de varias líneas: si el comando lee solo la primera, las demás se descartan al terminar
-            // (ConstructorComando), pero en la ventana residual bash podría ejecutarlas y devolverlas sin enmascarar en un
-            // error ('orden no encontrada'), fuera de esta petición. Se rechaza antes de registrarlo y de enviar nada.
+            // Un secreto de varias líneas: lo que el comando no lea se descarta sin ejecutarse (ConstructorComando.EscribirCola),
+            // pero un programa que lee línea a línea podría tomar la segunda como otra respuesta y mostrarla o registrarla
+            // fuera del enmascarado. Se rechaza antes de registrarlo y de enviar nada.
             if (secreto && IsVariasLineas(texto, enter))
                 throw new NativeSshException(MensajeSecretoDeVariasLineas);
 
@@ -2056,10 +2056,10 @@ namespace NativeSsh.Herramientas
             if (estado.IsFinal())
                 peticion.MarcarResultadoFinalEntregado();
 
-            // Si nadie ha visto aún el final del comando anterior del mismo shell, que descartó líneas tecleadas (p. ej. una
-            // contraseña con ssh_input y esperarSegundos=0, y después otro ssh_exec), su aviso va también aquí.
+            // Si nadie ha visto aún el final del comando anterior del mismo shell, que avisaba de líneas tecleadas descartadas
+            // (p. ej. ese comando se lanzó con esperarSegundos=0 y después otro ssh_exec), su aviso va también aquí, una vez.
             if (peticion.AnteriorConTecleadoDescartado is { IsResultadoFinalEntregado: false } anterior)
-                avisoFinal = Unir(avisoFinal, $"El comando anterior de este shell ({anterior.IdTexto}) no leyó {SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas)} de entrada tecleada con ssh_input: al terminar se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+                avisoFinal = Unir(avisoFinal, $"El final del comando {anterior.IdTexto} de este shell, que aún no se ha leído, avisa de que {(anterior.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : "el comando anterior a él")} no leyó {SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas)} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
 
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
             if (avisoAntipatron is not null)

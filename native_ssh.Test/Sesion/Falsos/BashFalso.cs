@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 using NativeSsh.Test.Utilidades;
 
@@ -384,6 +385,16 @@ namespace NativeSsh.Test.Sesion.Falsos
         private string _testigo = "";
         private int _lineasEnShellAjeno;
 
+        // Centinela del canal ('#' y 32 hexadecimales), tomado de la primera cola que lo lleva; las líneas que llegan mientras
+        // un comando que no lee está en curso (lo que el terminal guarda), las que cuenta la cola que espera el centinela y
+        // el recuento que imprimirá el marcador siguiente (__ns_n).
+        private string? _centinela;
+        private bool _isLecturaUnica;
+        private readonly Queue<string> _pendientesTerminal = new();
+        private int _contadasEnEspera;
+        private int _recuentoMarcador;
+        private int _lineasDescartadas;
+
         public CanalFalso(Func<string, RespuestaFalsa> guion, int tamanoTrozo, ConcurrentQueue<string> comandos, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default)
         {
             _guion = guion;
@@ -416,6 +427,9 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         // Líneas cuya comprobación de identidad no coincidió con el shell que las ejecutó.
         public int LineasEnShellAjeno => Volatile.Read(ref _lineasEnShellAjeno);
+
+        // Líneas que las colas leyeron y descartaron mientras esperaban el centinela (sin ejecutarlas).
+        public int LineasDescartadas => Volatile.Read(ref _lineasDescartadas);
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
@@ -608,6 +622,16 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         private void CtrlC()
         {
+            // El núcleo vacía la entrada pendiente del terminal al convertir Ctrl+C en SIGINT (sin 'stty noflsh').
+            _pendientesTerminal.Clear();
+            if (_enCurso is null && _isReadPendiente)
+            {
+                // Ctrl+C aborta la línea de la cola que esperaba el centinela: __ns_n se queda vacío.
+                _isReadPendiente = false;
+                _recuentoMarcador = 0;
+                return;
+            }
+
             if (_enCurso is null || _enCurso.Comportamiento == ComportamientoFalsoEnum.IgnoraCtrlC)
                 return;
 
@@ -644,15 +668,20 @@ namespace NativeSsh.Test.Sesion.Falsos
                     EmitirConMarcador($"recibido:{linea}\n", _idEnCurso!, 0);
                     _idEnCurso = null;
                 }
+                else
+                {
+                    // Un comando que no lee: la línea se queda en el terminal hasta que alguien la lea.
+                    _pendientesTerminal.Enqueue(linea);
+                }
 
                 Drenar();
                 return;
             }
 
-            // Cada marcador va seguido de 'read -r __ns_d': la siguiente línea es un dato, no un comando.
+            // Cada marcador va seguido de la espera del centinela: las líneas hasta él son datos, no órdenes.
             if (_isReadPendiente)
             {
-                _isReadPendiente = false;
+                LeerEnEspera(linea);
                 Drenar();
                 return;
             }
@@ -663,6 +692,8 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         private void EjecutarLinea(string linea)
         {
+            // Una línea que empieza por '#' (el centinela sin ninguna cola esperándolo) es un comentario: no hace nada.
+            AnotarCentinela(linea);
             if (RespuestaSinBash is { } respuesta && linea.StartsWith("exec bash", StringComparison.Ordinal))
             {
                 // El eco del terminal (aún sin 'stty -echo') y la respuesta del shell de login, que sale.
@@ -673,7 +704,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             {
                 Inicializaciones.Enqueue(linea);
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);
-                EmitirConMarcador("", ExtraerId(linea), 0);
+                EmitirConMarcador("", ExtraerId(linea), 0, isLecturaUnica: true);
             }
             else if (linea.Contains("\"$PATH\" | base64", StringComparison.Ordinal))
             {
@@ -720,9 +751,10 @@ namespace NativeSsh.Test.Sesion.Falsos
                     EmitirConMarcador("", ExtraerId(linea), codigo);
                 else
                 {
-                    // bash ya espera en su 'read'; lo que llega tarde es la salida del marcador.
-                    _isReadPendiente = true;
-                    string marcador = $"__NSX_{ExtraerId(linea)}_{codigo}__\n";
+                    // bash ya espera el centinela; lo que llega tarde es la salida del marcador.
+                    string marcador = $"__NSX_{ExtraerId(linea)}_{codigo}{(_recuentoMarcador > 0 ? $"_{_recuentoMarcador}" : "")}__\n";
+                    _isLecturaUnica = false;
+                    IniciarEspera();
                     _ = Task.Delay(RetrasoMarcadorRecuperacion).ContinueWith(_ =>
                     {
                         lock (_candado)
@@ -766,10 +798,54 @@ namespace NativeSsh.Test.Sesion.Falsos
             }
         }
 
-        private void EmitirConMarcador(string salida, string id, int codigo)
+        private void EmitirConMarcador(string salida, string id, int codigo, bool isLecturaUnica = false)
         {
+            string recuento = _recuentoMarcador > 0 ? $"_{_recuentoMarcador}" : "";
+            _isLecturaUnica = isLecturaUnica;
+            IniciarEspera();
+            Emitir($"{salida}__NSX_{id}_{codigo}{recuento}__\n");
+        }
+
+        // Tras el marcador: __ns_n= y la cola espera el centinela, leyendo primero lo que el terminal ya tenía.
+        private void IniciarEspera()
+        {
+            _recuentoMarcador = 0;
+            _contadasEnEspera = 0;
             _isReadPendiente = true;
-            Emitir($"{salida}__NSX_{id}_{codigo}__\n");
+            while (_isReadPendiente && _pendientesTerminal.TryDequeue(out string? pendiente))
+                LeerEnEspera(pendiente);
+        }
+
+        // Una línea leída por la cola que espera el centinela: si termina en él, la espera acaba (lo que lleve delante, una
+        // línea a medias, cuenta como una); si no, se descarta y se cuenta.
+        private void LeerEnEspera(string linea)
+        {
+            // La cola de la línea de inicialización consume una sola línea, sea cual sea.
+            if (_isLecturaUnica)
+            {
+                _isReadPendiente = false;
+                return;
+            }
+
+            if (_centinela is { } centinela && linea.EndsWith(centinela, StringComparison.Ordinal))
+            {
+                int delante = linea.Length > centinela.Length ? 1 : 0;
+                _ = Interlocked.Add(ref _lineasDescartadas, delante);
+                _recuentoMarcador = _contadasEnEspera + delante;
+                _isReadPendiente = false;
+                return;
+            }
+
+            _contadasEnEspera++;
+            _ = Interlocked.Increment(ref _lineasDescartadas);
+        }
+
+        // La cola lleva el centinela del canal en "${__ns_d%'#<32 hex>'}".
+        private void AnotarCentinela(string linea)
+        {
+            int inicio = linea.IndexOf("__ns_d%'#", StringComparison.Ordinal);
+            if (inicio >= 0 && _centinela is null)
+                _centinela = linea.Substring(inicio + 8, ConstructorComando.LongitudLineaCentinela);
         }
 
         private void Emitir(string texto)
