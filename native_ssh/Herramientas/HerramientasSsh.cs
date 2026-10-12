@@ -303,21 +303,25 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_input", Destructive = true)]
-        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y UNA línea por llamada. Lo que el comando no lea (líneas de más, Ctrl+D, o texto enviado antes de que lo pida o cuando ya no lee) NUNCA se ejecuta como orden: se DESCARTA entero y la respuesta del SIGUIENTE ssh_exec de este shell dice exactamente cuántas líneas se descartaron. Esa entrada se pierde: si el comando la necesitaba, vuelve a lanzarlo y envíala cuando la pida.")]
+        [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y UNA línea por llamada. Lo que el comando no lea (líneas de más, Ctrl+D, o texto enviado antes de que lo pida o cuando ya no lee) NUNCA se ejecuta como orden: se DESCARTA entero y la respuesta del SIGUIENTE ssh_exec de este shell dice exactamente cuántas líneas se descartaron. Esa entrada se pierde: si el comando la necesitaba, vuelve a lanzarlo y envíala cuando la pida. NUNCA envíes Ctrl+C ('\\u0003'), Ctrl+\\ ('\\u001c') ni Ctrl+Z ('\\u001a'): se rechazan sin enviar nada; para interrumpir el comando usa SIEMPRE ssh_cancel.")]
         public async Task<ResultadoComando> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
-            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea, sin '\\n', '\\r' ni Ctrl+D ('\\u0004') en medio: si no, se rechaza sin enviar nada.")] bool secreto = false,
+            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. un programa que lo reescribe o lo recodifica) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea de caracteres imprimibles, SIN NINGÚN carácter de control (ni '\\n' o '\\r' en medio, ni tabulador, Escape, Ctrl+C, Ctrl+D...): si no, se rechaza sin enviar nada.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
-            // Un secreto de varias líneas: lo que el comando no lea se descarta sin ejecutarse (ConstructorComando.EscribirCola),
-            // pero un programa que lee línea a línea podría tomar la segunda como otra respuesta y mostrarla o registrarla
-            // fuera del enmascarado. Se rechaza antes de registrarlo y de enviar nada.
-            if (secreto && IsVariasLineas(texto, enter))
-                throw new NativeSshException(MensajeSecretoDeVariasLineas);
+            // Un secreto con caracteres de control: lo que el comando no lea se descarta sin ejecutarse
+            // (ConstructorComando.EscribirCola), pero un programa que lee línea a línea podría tomar una segunda línea como otra
+            // respuesta y mostrarla o registrarla fuera del enmascarado, y un control que el terminal interpreta (Ctrl+C, Ctrl+U,
+            // Ctrl+V...) cambia lo que llega, que ya no es el texto registrado. Se rechaza antes de registrarlo y de enviar nada.
+            if (secreto && IsSecretoNoAdmitido(texto, enter))
+                throw new NativeSshException(MensajeSecretoNoAdmitido);
+
+            if (DescribirEntradaNoAdmitida(texto, enter) is { } rechazo)
+                throw new NativeSshException(rechazo);
 
             // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
             // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
@@ -346,19 +350,40 @@ namespace NativeSsh.Herramientas
             return secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado;
         }
 
-        internal const string MensajeSecretoDeVariasLineas = "No se envió la entrada: con secreto=true el texto debe ser una sola línea, sin saltos de línea ('\\n' o '\\r') ni Ctrl+D ('\\u0004') en medio (el salto final lo añade enter=true). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida.";
+        internal const string MensajeSecretoNoAdmitido = "No se envió la entrada: con secreto=true el texto debe ser UNA sola línea de caracteres imprimibles, sin ningún carácter de control (0x00-0x1F y 0x7F: saltos de línea '\\n' o '\\r' en medio, tabulador, Escape, Ctrl+C, Ctrl+D, Ctrl+U, Ctrl+V...). El salto final lo añade enter=true (con enter=false se admite un '\\n' o un '\\r' al final). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida, y los caracteres de control sin secreto=true.";
 
-        // Más de una línea: algún fin de línea del terminal en modo canónico que no sea el último carácter: '\n', '\r' (el
-        // terminal lo convierte en '\n') o Ctrl+D ('\u0004', VEOF: entrega lo escrito sin salto, o un EOF al principio de una
-        // línea). Con enter=true el salto lo añade la herramienta, así que cualquiera del texto es otra línea; con enter=false
-        // se admite uno al final ("\r\n" son dos líneas). NUL no termina línea (medido en Linux: VEOL sin definir) y VEOL/VEOL2
-        // solo cuentan si un comando los define con stty: no se miran.
-        internal static bool IsVariasLineas(ReadOnlySpan<char> texto, bool isEnter)
+        // Con secreto=true, cualquier control C0 o DEL (CV6): saltos de línea, Ctrl+D (VEOF), Ctrl+C, Ctrl+U, Ctrl+V, NUL...
+        // Con enter=false se admite un '\n' o un '\r' al final (el salto que no añade la herramienta).
+        internal static bool IsSecretoNoAdmitido(ReadOnlySpan<char> texto, bool isEnter)
         {
-            if (!isEnter && !texto.IsEmpty && texto[^1] is '\n' or '\r' or '\u0004')
+            if (!isEnter && !texto.IsEmpty && texto[^1] is '\n' or '\r')
                 texto = texto[..^1];
-            return texto.IndexOfAny('\n', '\r', '\u0004') >= 0;
+            return texto.IndexOfAnyInRange('\u0000', '\u001f') >= 0 || texto.Contains('\u007f');
         }
+
+        internal const string MensajeSenalDelTerminal = "No se envió la entrada: lleva Ctrl+C ('\\u0003'), Ctrl+\\ ('\\u001c') o Ctrl+Z ('\\u001a'), y ssh_input NUNCA los envía: el terminal los convierte en señales y vacía lo pendiente, lo que puede abortar la línea con que el shell de ssh_exec espera el final del comando o borrar el comando antes de que el shell lo lea, y entonces lo que se enviara después se ejecutaría como orden (Ctrl+Z, además, dejaría el proceso detenido: no hay control de trabajos). Para interrumpir el comando usa ssh_cancel.";
+
+        internal const string MensajeLnextFinal = "No se envió la entrada: termina en Ctrl+V ('\\u0016', VLNEXT) con enter=false, y el terminal tomaría como un carácter literal lo siguiente que le llegue, también el Ctrl+C con que ssh_cancel interrumpe el comando. Pon el Ctrl+V junto al carácter que debe acompañar, en la misma llamada.";
+
+        // Lo que ssh_input no envía nunca, aunque no sea un secreto (null si se admite; el mensaje nunca lleva el texto):
+        // - Ctrl+C (VINTR), Ctrl+\ (VQUIT) y Ctrl+Z (VSUSP), en cualquier sitio. Medido (tramo 1-quinquies del C): el comando
+        //   va dentro de un 'eval' en la misma línea que su cola, y Ctrl+C aborta la línea entera, cola incluida, así que lo
+        //   tecleado después lo ejecutaba bash como orden (y un secreto detrás salía sin enmascarar en el error de bash). Una
+        //   trampa 'trap : INT' mantiene viva la línea, pero entonces ni Ctrl+C ni ssh_cancel paran un bucle del propio bash; un
+        //   manejador que imprime el marcador y se manda SIGINT a sí mismo ('kill -INT $$') no aborta lo que hay dentro del
+        //   'eval' (bash pierde la señal recibida durante una trampa) y ssh_cancel dejaba de parar los bucles. Además, los tres
+        //   vacían la entrada pendiente del terminal: enviados justo después de ssh_exec, antes de que bash lea el envío
+        //   entero, lo borran y lo tecleado después se ejecuta como orden (medido con Ctrl+C). Con Ctrl+Z, sin control de
+        //   trabajos, el proceso queda además detenido. Ctrl+\ por sí solo no aborta la línea (bash ignora SIGQUIT; medido),
+        //   pero comparte la carrera del vaciado. La interrupción la hace ssh_cancel (Ctrl+C y una línea de recuperación
+        //   aparte, SesionShell.InterrumpirAsync). Coste: ssh_input no puede interrumpir un intérprete interactivo (python,
+        //   psql) sin terminar el comando.
+        // - Ctrl+V (VLNEXT) como último carácter enviado (enter=false): el terminal tomaría literal lo siguiente que llegue, y
+        //   si es el Ctrl+C de ssh_cancel, no lo convertiría en señal.
+        internal static string? DescribirEntradaNoAdmitida(ReadOnlySpan<char> texto, bool isEnter) =>
+            texto.IndexOfAny('\u0003', '\u001c', '\u001a') >= 0 ? MensajeSenalDelTerminal
+            : !isEnter && !texto.IsEmpty && texto[^1] == '\u0016' ? MensajeLnextFinal
+            : null;
 
         internal const string AvisoEntradaSecreta = "Entrada enviada como secreto: no se ha escrito en los logs y sus apariciones en la salida (p. ej. el eco del terminal) se sustituyen por asteriscos.";
 

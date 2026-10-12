@@ -445,7 +445,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             NativeSshException error = (await enviar.Should().ThrowAsync<NativeSshException>()).Which;
-            _ = error.Message.Should().Be(HerramientasSsh.MensajeSecretoDeVariasLineas).And.NotContain(canario);
+            _ = error.Message.Should().Be(HerramientasSsh.MensajeSecretoNoAdmitido).And.NotContain(canario);
             _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 8);
             ResultadoComando siguiente = await h.EjecutarAsync(destino, "echo siguiente", esperarSegundos: 10);
             await Task.Delay(300);
