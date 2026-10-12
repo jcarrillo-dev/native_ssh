@@ -13,8 +13,10 @@ namespace NativeSsh.Ssh
     // NATIVE_SSH_IDENTIDADES. Una clave cifrada se abre con la passphrase de NATIVE_SSH_PASSPHRASE o del fichero de
     // NATIVE_SSH_PASSPHRASE_FICHERO (con las mismas comprobaciones que el del token HTTP: FicheroSecreto), nunca con algo que
     // venga del LLM. La passphrase solo se lee cuando hace falta (una clave sin cifrar no la necesita), no se guarda y no
-    // aparece en ningún mensaje ni log. Cada clave abierta se guarda por su ruta y se reutiliza; la que no se pudo abrir se
-    // reintenta en la siguiente conexión (arreglar la passphrase no exige reiniciar native_ssh).
+    // aparece en ningún mensaje ni log. Cada clave abierta se guarda por su ruta y se reutiliza. La que no se pudo abrir se
+    // reintenta cuando cambia su fichero o el de la passphrase (fecha, tamaño o permisos): arreglarla no exige reiniciar
+    // native_ssh, y mientras nada cambie su motivo se repite sin volver a abrirla (bcrypt cuesta casi un segundo) ni a
+    // avisar en el log. Las claves se abren fuera del candado: una lenta no retiene las conexiones a otros destinos.
     public sealed class FabricaConexionSsh(OpcionesNativeSsh opciones, VerificadorHostConocido verificador, ILogger<FabricaConexionSsh> logger) : IFabricaConexion, IDisposable
     {
         public const string VariablePassphrase = VariablesSecretas.Passphrase;
@@ -24,6 +26,12 @@ namespace NativeSsh.Ssh
 
         private readonly Lock _candado = new();
         private readonly Dictionary<string, PrivateKeyFile> _claves = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, FalloClave> _fallos = new(StringComparer.Ordinal);
+
+        // Lo que identifica una versión de un fichero sin leerlo: si cambia, se vuelve a intentar.
+        private readonly record struct FirmaFichero(DateTime Modificacion, long Longitud, int Permisos);
+
+        private sealed record FalloClave(FirmaFichero Clave, FirmaFichero? Passphrase, string Motivo);
 
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
@@ -79,6 +87,7 @@ namespace NativeSsh.Ssh
                 foreach (PrivateKeyFile clave in _claves.Values)
                     clave.Dispose();
                 _claves.Clear();
+                _fallos.Clear();
             }
         }
 
@@ -97,10 +106,11 @@ namespace NativeSsh.Ssh
         // defecto; una que existe y no se pudo abrir deja su motivo (una frase con la ruta) en motivos y un aviso en el log.
         internal IReadOnlyList<PrivateKeyFile> CargarClaves(IReadOnlyList<string> rutas, List<string> motivos)
         {
-            lock (_candado)
+            List<PrivateKeyFile> claves = new(rutas.Count);
+            foreach (string ruta in rutas)
             {
-                List<PrivateKeyFile> claves = new(rutas.Count);
-                foreach (string ruta in rutas)
+                FalloClave? fallo;
+                lock (_candado)
                 {
                     if (_claves.TryGetValue(ruta, out PrivateKeyFile? guardada))
                     {
@@ -108,21 +118,63 @@ namespace NativeSsh.Ssh
                         continue;
                     }
 
-                    if (!File.Exists(ruta))
-                        continue;
-
-                    if (TryAbrirClave(ruta, out PrivateKeyFile? clave, out string? motivo))
-                    {
-                        _claves[ruta] = clave;
-                        claves.Add(clave);
-                        continue;
-                    }
-
-                    logger.ClaveNoCargada(ruta, motivo);
-                    motivos.Add($"La clave {ruta} no se pudo cargar: {motivo}");
+                    _ = _fallos.TryGetValue(ruta, out fallo);
                 }
 
-                return claves;
+                if (!File.Exists(ruta))
+                    continue;
+
+                // Firmas tomadas antes de abrir: si el fichero cambia mientras tanto, la siguiente conexión lo reintenta.
+                FirmaFichero firmaClave = Firmar(ruta);
+                FirmaFichero? firmaPassphrase = opciones.FicheroPassphrase is { Length: > 0 } fichero ? Firmar(fichero) : null;
+                if (fallo is not null && fallo.Clave == firmaClave && fallo.Passphrase == firmaPassphrase)
+                {
+                    motivos.Add(fallo.Motivo);
+                    continue;
+                }
+
+                if (TryAbrirClave(ruta, out PrivateKeyFile? clave, out string? motivo))
+                {
+                    claves.Add(Guardar(ruta, clave));
+                    continue;
+                }
+
+                string frase = $"La clave {ruta} no se pudo cargar: {motivo}";
+                lock (_candado)
+                    _fallos[ruta] = new FalloClave(firmaClave, firmaPassphrase, frase);
+                logger.ClaveNoCargada(ruta, motivo);
+                motivos.Add(frase);
+            }
+
+            return claves;
+        }
+
+        // Otra conexión pudo abrir la misma clave a la vez: se queda la primera guardada.
+        private PrivateKeyFile Guardar(string ruta, PrivateKeyFile clave)
+        {
+            lock (_candado)
+            {
+                _ = _fallos.Remove(ruta);
+                if (_claves.TryAdd(ruta, clave))
+                    return clave;
+
+                clave.Dispose();
+                return _claves[ruta];
+            }
+        }
+
+        // Fecha de modificación, tamaño y permisos; si no se puede leer, una firma vacía (el fallo se repite hasta que se
+        // pueda y cambie).
+        private static FirmaFichero Firmar(string ruta)
+        {
+            try
+            {
+                FileInfo info = new(ruta);
+                return info.Exists ? new FirmaFichero(info.LastWriteTimeUtc, info.Length, OperatingSystem.IsWindows() ? 0 : (int)info.UnixFileMode) : default;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return default;
             }
         }
 

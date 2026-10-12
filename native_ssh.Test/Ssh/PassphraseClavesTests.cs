@@ -273,6 +273,9 @@ namespace NativeSsh.Test.Ssh
             using FabricaConexionSsh fabrica = Fabrica(fichero: fichero);
             (IReadOnlyList<PrivateKeyFile> antes, _) = Cargar(fabrica, ruta);
             File.WriteAllText(fichero, Frase);
+            // Mismo tamaño y escrito al momento: sin marcas de tiempo finas, la fecha podría no cambiar (una persona que
+            // edita el fichero sí la cambia).
+            File.SetLastWriteTimeUtc(fichero, DateTime.UtcNow.AddMinutes(1));
 
             // Act
             (IReadOnlyList<PrivateKeyFile> despues, List<string> motivos) = Cargar(fabrica, ruta);
@@ -281,6 +284,95 @@ namespace NativeSsh.Test.Ssh
             _ = antes.Should().BeEmpty();
             _ = motivos.Should().BeEmpty();
             _ = despues.Should().ContainSingle().Which.Should().NotBeNull();
+        }
+
+        private int AvisosDeClave() => _log.Entradas.Count(e => e.Nivel == LogLevel.Warning && e.Mensaje.StartsWith("No se pudo cargar la clave", StringComparison.Ordinal));
+
+        // Una clave que no se pudo abrir no se reintenta (abrirla cuesta: bcrypt) mientras no cambien ni ella ni el fichero de
+        // la passphrase: el motivo se repite en cada conexión y el aviso del log sale una sola vez.
+        [Fact]
+        public void ClaveQueNoAbre_SinCambios_NoSeReintentaYAvisaUnaVez()
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", Frase);
+            using FabricaConexionSsh fabrica = Fabrica(fichero: FicheroFrase(FraseIncorrecta, UnixFileMode.UserRead | UnixFileMode.UserWrite));
+            (_, List<string> primero) = Cargar(fabrica, ruta);
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> claves, List<string> segundo) = Cargar(fabrica, ruta);
+            (_, List<string> tercero) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = claves.Should().BeEmpty();
+            _ = primero.Should().ContainSingle().Which.Should().Contain("no la abre");
+            _ = segundo.Should().Equal(primero);
+            _ = tercero.Should().Equal(primero);
+            _ = AvisosDeClave().Should().Be(1);
+        }
+
+        // Cambiar los permisos del fichero de la passphrase (chmod, sin tocar el contenido) también cuenta como un cambio.
+        [Fact]
+        public void ClaveQueNoAbre_CambianLosPermisosDelFicheroDeLaPassphrase_SeReintenta()
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", Frase);
+            string fichero = FicheroFrase(FraseIncorrecta, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using FabricaConexionSsh fabrica = Fabrica(fichero: fichero);
+            _ = Cargar(fabrica, ruta);
+            File.SetUnixFileMode(fichero, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+            // Act
+            (_, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = motivos.Should().ContainSingle().Which.Should().Contain("tiene permisos 0644");
+            _ = AvisosDeClave().Should().Be(2);
+        }
+
+        // Si cambia la clave (otro fichero en la misma ruta), se reintenta.
+        [Fact]
+        public void ClaveQueNoAbre_CambiaLaClave_SeReintenta()
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", FraseIncorrecta);
+            using FabricaConexionSsh fabrica = Fabrica(frase: Frase);
+            (IReadOnlyList<PrivateKeyFile> antes, _) = Cargar(fabrica, ruta);
+            File.Move(Clave("ed25519", "OpenSSH", Frase), ruta, overwrite: true);
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> despues, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = antes.Should().BeEmpty();
+            _ = motivos.Should().BeEmpty();
+            _ = despues.Should().ContainSingle();
+        }
+
+        // Abrir una clave cifrada (lento: bcrypt) no retiene la carga de otras claves en otras conexiones.
+        [Fact]
+        public async Task AbrirUnaClaveLenta_NoRetieneLaCargaDeOtras()
+        {
+            // Arrange
+            string lenta = Path.Combine(_directorio, "lenta");
+            _ = BashLocal.Ejecutar($"ssh-keygen -q -t ed25519 -a 128 -N '{Frase}' -f '{lenta}' -C lenta");
+            string rapida = Clave("ed25519", "OpenSSH", "");
+            using FabricaConexionSsh fabrica = Fabrica(frase: Frase);
+            System.Diagnostics.Stopwatch reloj = System.Diagnostics.Stopwatch.StartNew();
+            Task<IReadOnlyList<PrivateKeyFile>> cargaLenta = Task.Run(() => Cargar(fabrica, lenta).Claves);
+            await Task.Delay(200);
+
+            // Act
+            System.Diagnostics.Stopwatch rapidaReloj = System.Diagnostics.Stopwatch.StartNew();
+            IReadOnlyList<PrivateKeyFile> rapidas = await Task.Run(() => Cargar(fabrica, rapida).Claves);
+            rapidaReloj.Stop();
+            IReadOnlyList<PrivateKeyFile> lentas = await cargaLenta.WaitAsync(TimeSpan.FromSeconds(60));
+            reloj.Stop();
+
+            // Assert
+            _ = rapidas.Should().ContainSingle();
+            _ = lentas.Should().ContainSingle();
+            _ = reloj.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(1), "la clave lenta debe tardar para que la prueba mida algo");
+            _ = rapidaReloj.Elapsed.Should().BeLessThan(reloj.Elapsed / 2);
         }
 
         // Sin ninguna clave utilizable, el error de la conexión lleva el motivo de cada clave (no la passphrase).
