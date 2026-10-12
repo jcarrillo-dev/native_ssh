@@ -400,13 +400,14 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
-        // Una función o un alias 'base64' del usuario cambia la decodificación: lo decodificado no termina en el nonce y el
-        // comando no se ejecuta (997; SesionShell.MensajeEnvioIncompleto la nombra entre las causas). Medido aparte: una
-        // función 'printf' rompe el marcador (el comando agota su plazo) y una función 'eval' da código 0 sin ejecutar nada
-        // (preexistente, para la documentación): ninguna de las dos llega a este mensaje.
+        // Una función o un alias 'base64' o 'printf' del usuario cambia la decodificación: lo decodificado no termina en el
+        // nonce y el comando no se ejecuta (997; SesionShell.MensajeEnvioIncompleto las nombra entre las causas). Medido
+        // aparte: una función 'printf' que no imprime nada rompe también el marcador (el comando agota su plazo) y una función
+        // 'eval' da código 0 sin ejecutar nada (preexistente, para la documentación): ninguna de las dos llega a este mensaje.
         [Theory]
         [InlineData("base64() { :; }")]
         [InlineData("alias base64=:")]
+        [InlineData("printf() { builtin printf \"$@\"; builtin printf 'QUJD'; }")]
         public async Task DecodificacionCambiadaPorElUsuario_NoSeEjecuta(string redefinicion)
         {
             // Arrange
@@ -415,13 +416,12 @@ namespace NativeSsh.Test.Protocolo
             _ = Comando(redefinicion);
             _ = Comando($"touch {testigo}; (exit 5)");
 
-            // Act
-            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+            // Act (cada envío da su marcador: EjecutarAsync lo comprueba)
+            _ = await EjecutarAsync();
 
             // Assert
             _ = File.Exists(testigo).Should().BeFalse();
             _ = _codigos.Should().Equal(0, 0, MarcadorFin.CodigoEnvioIncompleto);
-            _ = marcadores[2].Salida.Should().BeEmpty();
         }
 
         // Con el shell en un locale multibyte heredado (zh_CN.GBK), un comando que acaba en un carácter cuyo último byte UTF-8

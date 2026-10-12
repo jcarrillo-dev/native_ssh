@@ -823,9 +823,10 @@ namespace NativeSsh.Sesion
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
         // mensaje no afirma una causa: enumera las medidas. Un lector del terminal que se come parte del envío; 'set -x' con
-        // BASH_XTRACEFD en la salida estándar, que mete la traza en la decodificación; una función o un alias 'base64'. Medido
-        // también: una función 'printf' rompe el marcador (agota el plazo) y una función 'eval' no llega aquí.
-        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: el texto que recibió el shell no coincidió con el enviado y el shell no ejecuta un comando distinto del pedido. Causas posibles: otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte del envío; un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar; o hay una función o un alias 'base64' que cambia la decodificación. Mientras siga así, los comandos siguientes tampoco se ejecutarán: termina ese proceso (kill), deshaz el cambio (set +x, unset -f base64, unalias base64) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
+        // BASH_XTRACEFD en la salida estándar, que mete la traza en la decodificación; una función o un alias 'base64' o
+        // 'printf' que cambia lo decodificado. Medido también: una función 'printf' que no imprime nada rompe además el marcador
+        // (agota el plazo) y una función 'eval' no llega aquí (da código 0 sin ejecutar nada).
+        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: el texto que recibió el shell no coincidió con el enviado y el shell no ejecuta un comando distinto del pedido. Causas posibles: otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte del envío; un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar; o hay una función o un alias 'base64' o 'printf' que cambia la decodificación. Mientras siga así, los comandos siguientes tampoco se ejecutarán: termina ese proceso (kill), deshaz el cambio (set +x, unset -f o unalias de base64 o printf) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
         // que se envió) se fijan en la petición antes de su estado final. Su aviso no va en el aviso del estado final: lo añade

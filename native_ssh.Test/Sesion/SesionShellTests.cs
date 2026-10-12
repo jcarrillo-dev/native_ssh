@@ -1475,7 +1475,7 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = mensaje.Should().StartWith("El comando NO se ejecutó").And.NotContain("no llegó entero");
             _ = mensaje.Should().Contain("no coincidió con el enviado");
-            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.Contain("'base64'").And.Contain("ssh_reset_shell");
+            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.Contain("'base64' o 'printf'").And.Contain("ssh_reset_shell");
         }
 
         // Lo que la cola anterior descartó al llegar el envío de un comando que no llegó entero (997) se fija en él: su
