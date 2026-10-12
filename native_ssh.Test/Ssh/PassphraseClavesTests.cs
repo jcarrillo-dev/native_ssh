@@ -192,6 +192,45 @@ namespace NativeSsh.Test.Ssh
             _ = motivos.Should().ContainSingle().Which.Should().Contain($"No existe el fichero de la passphrase de las claves ({fichero}, de NATIVE_SSH_PASSPHRASE_FICHERO)");
         }
 
+        // Un fichero vacío (o solo con el salto final) no es una passphrase incorrecta: el motivo dice que está vacío.
+        [Theory]
+        [InlineData("")]
+        [InlineData("\n")]
+        public void FicheroDeLaPassphraseVacio_ElMotivoDiceQueEstaVacio(string contenido)
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", Frase);
+            string fichero = FicheroFrase(contenido, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using FabricaConexionSsh fabrica = Fabrica(fichero: fichero);
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> claves, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = claves.Should().BeEmpty();
+            _ = motivos.Should().ContainSingle().Which.Should().Contain($"El fichero de la passphrase de las claves ({fichero}) está vacío").And.NotContain("incorrecta");
+        }
+
+        // Varias líneas: el motivo lo dice (no «incorrecta») y no muestra ninguna.
+        [Theory]
+        [InlineData("\n")]
+        [InlineData("\r\n")]
+        public void FicheroDeLaPassphraseConVariasLineas_ElMotivoLoDice(string salto)
+        {
+            // Arrange
+            string ruta = Clave("ed25519", "OpenSSH", Frase);
+            string fichero = FicheroFrase($"{Frase}{salto}{FraseIncorrecta}{salto}", UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            using FabricaConexionSsh fabrica = Fabrica(fichero: fichero);
+
+            // Act
+            (IReadOnlyList<PrivateKeyFile> claves, List<string> motivos) = Cargar(fabrica, ruta);
+
+            // Assert
+            _ = claves.Should().BeEmpty();
+            _ = motivos.Should().ContainSingle().Which.Should().Contain($"El fichero de la passphrase de las claves ({fichero}) tiene varias líneas").And.NotContain("incorrecta");
+            SinRastroDeLaFrase(motivos);
+        }
+
         [Fact]
         public void VariableYFicheroALaVez_SeRechazan()
         {

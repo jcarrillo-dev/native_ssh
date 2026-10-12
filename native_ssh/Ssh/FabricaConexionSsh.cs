@@ -212,11 +212,18 @@ namespace NativeSsh.Ssh
 
             string? leida = null;
             string? errorFichero = $"{VariableFicheroPassphrase} solo se admite en Linux: en este sistema usa {VariablePassphrase}.";
-            if (!OperatingSystem.IsWindows())
-                _ = FicheroSecreto.TryLeer(opciones.FicheroPassphrase!, OperatingSystem.IsLinux() ? InteropLinux.UsuarioEfectivo() : 0, DescripcionPassphrase, out leida, out errorFichero);
-            if (leida is null)
+            // El bool, no 'leida': un fichero vacío deja leida = "" y el error que lo dice.
+            bool isLeida = !OperatingSystem.IsWindows() && FicheroSecreto.TryLeer(opciones.FicheroPassphrase!, OperatingSystem.IsLinux() ? InteropLinux.UsuarioEfectivo() : 0, DescripcionPassphrase, out leida, out errorFichero);
+            if (!isLeida || leida is null)
             {
                 error = $"no se pudo leer: {errorFichero}";
+                return false;
+            }
+
+            // Ya sin los saltos finales: un salto en medio son varias líneas, no una passphrase (ssh-keygen la pide en una).
+            if (leida.AsSpan().ContainsAny('\n', '\r'))
+            {
+                error = $"no se pudo leer: El fichero {DescripcionPassphrase.Del} ({opciones.FicheroPassphrase}) tiene varias líneas: debe contener solo la passphrase, en una línea.";
                 return false;
             }
 
