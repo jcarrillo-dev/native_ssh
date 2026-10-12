@@ -219,12 +219,13 @@ namespace NativeSsh.Ssh
                     int cierre = identidad.IndexOf('}', i + 2);
                     string? nombre = cierre < 0 ? null : identidad[(i + 2)..cierre];
                     // Las variables secretas de native_ssh cuentan como no definidas: ssh no las tiene y su valor no debe salir.
-                    bool isSecreta = nombre is not null && VariablesSecretas.IsSecreta(nombre);
-                    string? valor = nombre is { Length: > 0 } && !isSecreta ? Environment.GetEnvironmentVariable(nombre) : null;
+                    bool hasNombre = nombre is { Length: > 0 };
+                    bool isSecreta = hasNombre && VariablesSecretas.IsSecreta(nombre!);
+                    string? valor = hasNombre && !isSecreta ? Environment.GetEnvironmentVariable(nombre!) : null;
                     if (valor is null)
                     {
                         string aclaracion = isSecreta ? " para la configuración de ssh (es un secreto de native_ssh: ssh tampoco la recibe)" : "";
-                        motivo = nombre is { Length: > 0 } ? $"usa la variable de entorno ${{{nombre}}}, que no está definida{aclaracion}" : "tiene un '${' sin cerrar";
+                        motivo = hasNombre ? $"usa la variable de entorno ${{{nombre}}}, que no está definida{aclaracion}" : "tiene un '${' sin cerrar";
                         return false;
                     }
 
