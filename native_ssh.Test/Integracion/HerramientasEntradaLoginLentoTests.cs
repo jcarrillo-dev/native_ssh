@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -11,24 +13,33 @@ namespace NativeSsh.Test.Integracion
     // ejecución, pero el comando aún no se ha enviado al shell y la sesión rechaza la entrada. El error dice esa causa (el
     // shell se está abriendo; reintentar cuando ssh_status lo muestre activo) y no una lista cerrada de causas que no la
     // incluye; con el shell abierto, la misma entrada llega (auditoría del A-septies, sondas Y01 e Y02).
+    // Con guardarSalida, el archivo va a un prefijo propio dentro de un directorio temporal de la prueba (no al
+    // /tmp/native_ssh-<usuario> de la máquina), que se borra al terminar (IAsyncLifetime: xUnit 2 no llama a
+    // IAsyncDisposable en las clases de prueba).
     [Collection(ColeccionSshdLoginLento.Nombre)]
     [Trait("Categoria", "Integracion")]
-    public sealed class HerramientasEntradaLoginLentoTests(SshdLocalLoginLento fixture) : IAsyncDisposable
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "Se liberan en IAsyncLifetime.DisposeAsync.")]
+    public sealed class HerramientasEntradaLoginLentoTests(SshdLocalLoginLento fixture) : IAsyncLifetime
     {
         private const string ComandoLectura = "read x; echo \"leido:$x\"";
 
         private readonly SshdLocal _sshd = fixture.Sshd;
+        private readonly string _raiz = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_loginlento_{Guid.NewGuid():N}")).FullName;
         private GestorSesiones? _gestor;
 
-        public async ValueTask DisposeAsync()
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public async Task DisposeAsync()
         {
             if (_gestor is not null)
                 await _gestor.DisposeAsync();
+            _ = Process.Start("chmod", ["-R", "u+rwx", _raiz])?.WaitForExit(5000);
+            Directory.Delete(_raiz, recursive: true);
         }
 
         private HerramientasSsh Herramientas()
         {
-            OpcionesNativeSsh opciones = _sshd.Opciones();
+            OpcionesNativeSsh opciones = _sshd.Opciones() with { PrefijoGuardado = Path.Combine(_raiz, "native_ssh") };
             _gestor = new GestorSesiones(
                 _sshd.Fabrica(opciones),
                 new LimitadorConexiones(opciones, TimeProvider.System),
