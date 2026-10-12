@@ -178,6 +178,35 @@ namespace NativeSsh.Test.Protocolo
             _ = Errores.Should().BeEmpty();
         }
 
+        // Con la comprobación de identidad (como en la sesión): si otro lector se come el salto que termina la última línea
+        // del base64, bash junta la línea que fija __ns_rc al valor de __ns_b; la comprobación no debe dar al marcador el
+        // código del comando anterior ni dejarlo vacío (printf daría 0): da MarcadorFin.CodigoEnvioIncompleto.
+        [Fact]
+        public async Task Cola_ConLaLineaDelCodigoComida_NoDaElCodigoAnterior()
+        {
+            // Arrange
+            IdentidadShell real = await CapturarAsync();
+            (_, int anterior) = await EjecutarAsync("(exit 7)", real);
+            Guid id = Guid.NewGuid();
+            ArrayBufferWriter<byte> envio = new();
+            ConstructorComando.EscribirComando($"echo NO; : '{new string('x', ConstructorComando.BytesPorLinea)}'", id, _centinela, envio, real);
+            List<string> lineas = [.. Encoding.UTF8.GetString(envio.WrittenSpan).Split('\n')];
+            int ultimaBase64 = lineas.FindLastIndex(l => l.StartsWith("__ns_b", StringComparison.Ordinal));
+            lineas[ultimaBase64] += lineas[ultimaBase64 + 1];
+            lineas.RemoveAt(ultimaBase64 + 1);
+
+            // Act
+            await EscribirAsync(w => w.Write(Encoding.UTF8.GetBytes(string.Join('\n', lineas))));
+            (string salida, int codigo) = await LeerHastaMarcadorAsync(id);
+            (string siguiente, int codigoSiguiente) = await EjecutarAsync("echo B", real);
+
+            // Assert
+            _ = anterior.Should().Be(7);
+            _ = salida.Should().NotContain("NO");
+            _ = codigo.Should().Be(MarcadorFin.CodigoEnvioIncompleto);
+            _ = (siguiente, codigoSiguiente).Should().Be(("B\n", 0));
+        }
+
         // Fallo cerrado: si el bash no puede guardar el testigo del canal (ya hay una variable de solo lectura con ese nombre),
         // la captura no da la identidad y la inicialización falla.
         [Fact]
