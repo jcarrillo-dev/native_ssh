@@ -280,6 +280,31 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.Exists(Base).Should().BeTrue();
         }
 
+        // Interrumpido por su plazo (Ctrl+C): no hay marca final; el aviso da la ruta de lo escrito hasta entonces, que sigue
+        // ahí (el shell sobrevive), sin recuento; con ssh_cancel, lo mismo y además que ssh_reset_shell o ssh_disconnect lo
+        // habrían borrado.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Interrumpido_AvisaConLaRutaYLoEscritoSigue(bool isCancelado)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, "echo antes; sleep 30", esperarSegundos: isCancelado ? 2 : 30, timeoutSegundos: isCancelado ? 60 : 2);
+            if (isCancelado)
+                r = await h.CancelarAsync(r.Id).ComoComando();
+
+            // Assert
+            salida.WriteLine($"{r.Estado} '{r.Aviso}'");
+            _ = r.Estado.Should().Be(isCancelado ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
+            _ = r.Lineas.Should().BeNull();
+            _ = r.Aviso.Should().Contain($"está en {r.Archivo}").And.Contain("sin recuento");
+            _ = (r.Aviso ?? string.Empty).Contains("ssh_reset_shell o ssh_disconnect", StringComparison.Ordinal).Should().Be(isCancelado);
+            _ = (await File.ReadAllTextAsync(r.Archivo!)).Should().Be("antes\n");
+        }
+
         // Shell perdido a mitad del comando: el aviso da la ruta y dice que hay que leerla antes del siguiente ssh_exec, que la
         // borra al abrir el shell nuevo.
         [Fact]

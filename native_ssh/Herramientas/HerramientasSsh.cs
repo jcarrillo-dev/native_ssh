@@ -2211,6 +2211,8 @@ namespace NativeSsh.Herramientas
                 aviso = informe.Archivo is not { } archivo ? null
                     : estado == EstadoPeticionEnum.ShellPerdido
                     ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa. Léelo con ssh_read_file ANTES del siguiente ssh_exec de este destino: ese abre un shell nuevo y borra el directorio del shell perdido."
+                    : estado == EstadoPeticionEnum.Cancelado
+                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa (si lo canceló ssh_reset_shell o ssh_disconnect, ya se borró con su directorio); léelo con ssh_read_file."
                     : $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file.";
 
             string salida = terminal.Length == 0 ? vista
