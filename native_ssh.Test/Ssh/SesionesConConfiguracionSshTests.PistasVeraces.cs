@@ -61,7 +61,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         // El User de la configuración lleva caracteres que un destino escrito no admite: la pista no sugiere un destino que se
-        // rechazaría; dice que no hay ninguno y cuándo la cierra el propio alias.
+        // rechazaría; dice que no se cierra con ellos, por qué, y cuándo la cierra el propio alias.
         [Theory]
         [InlineData("ana@corp")]
         [InlineData("ana+x")]
@@ -77,9 +77,9 @@ namespace NativeSsh.Test.Ssh
             ResultadoEstado estado = Herramientas.Estado("prod");
 
             // Assert
-            _ = pista.Mensaje.Should().NotContain(SinPistaExacta).And.Contain($"{usuario}@127.0.0.1:2222: no hay destino con que cerrarla")
+            _ = pista.Mensaje.Should().NotContain(SinPistaExacta).And.Contain($"{usuario}@127.0.0.1:2222: no se cierra con {usuario}@prod:2222 ni con {usuario}@127.0.0.1:2222 ({usuario}@prod:2222 se rechaza: ")
                 .And.Contain($"ssh_disconnect con 'prod' la cierra cuando su configuración vuelva a ese usuario y puerto");
-            _ = estado.Aviso.Should().Contain("no hay destino con que cerrarla");
+            _ = estado.Aviso.Should().Contain($"no se cierra con {usuario}@prod:2222 ni con");
             _ = _gestor.ListarSesiones().Should().ContainSingle();
         }
 
@@ -152,7 +152,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         // Una sesión llena olvidó el alias y su servidor real pasa a ser un Host de la configuración (127.0.0.1 → 127.0.0.9):
-        // deploy@127.0.0.1:2222 ya no la alcanza. La pista no lo sugiere como si la cerrara: dice que no hay destino.
+        // deploy@127.0.0.1:2222 ya no la alcanza. La pista no lo sugiere como si la cerrara: dice que no la alcanza.
         [Fact]
         public async Task SesionEnElTopeCuyoServidorRealAhoraEsUnAlias_LaPistaDiceQueNoLaAlcanza()
         {
@@ -168,7 +168,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = pista.Mensaje.Should().NotContain(SinPistaExacta)
-                .And.Contain("deploy@127.0.0.1:2222: no hay destino con que cerrarla (deploy@127.0.0.1:2222 no la alcanza)");
+                .And.Contain("deploy@127.0.0.1:2222: no se cierra con deploy@127.0.0.1:2222 (deploy@127.0.0.1:2222 no la alcanza)");
             _ = _gestor.ListarSesiones().Should().ContainSingle();
         }
     }

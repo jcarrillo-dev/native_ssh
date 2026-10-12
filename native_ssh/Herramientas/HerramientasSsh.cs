@@ -472,7 +472,7 @@ namespace NativeSsh.Herramientas
         // Con un alias, ssh_disconnect y ssh_status dicen qué otras sesiones suyas siguen abiertas (null si ninguna): las de
         // otro usuario o puerto y las que llegaron al tope de alias sin guardar este. Para cada grupo, el destino que las
         // cierra solas si lo hay; si no, lo que cerraría además cada destino posible (GestorSesiones.BuscarPistasAlias lo
-        // calcula con el criterio de ssh_disconnect), o que ninguno se admite. Nunca sugiere un destino que se rechazaría.
+        // calcula con el criterio de ssh_disconnect), o que ninguno las cierra y por qué. Nunca sugiere un destino que se rechazaría.
         private static string? TextoPistas(DestinoSsh resuelto, IReadOnlyList<PistaAlias> pistas, GestorSesiones gestor)
         {
             if (resuelto.Alias is not { } alias || pistas.Count == 0)
@@ -514,7 +514,7 @@ namespace NativeSsh.Herramientas
         }
 
         // «viejas, que se cierra con X» si un candidato las cierra solas; si no, qué más cerraría cada uno que las alcanza, o
-        // que no hay destino admitido (con el motivo y, si se da, cuándo las cierra el alias).
+        // que ninguno las cierra (con el motivo y, si se da, cuándo las cierra el alias).
         private static void AnadirPista(StringBuilder texto, PistaAlias pista, GestorSesiones gestor, string? cierreConElAlias)
         {
             DescribirViejas(texto, pista.Viejas);
@@ -530,7 +530,11 @@ namespace NativeSsh.Herramientas
 
             if (!hasAlcanzan)
             {
-                _ = texto.Append(": no hay destino con que cerrarla (");
+                // Solo de los candidatos se sabe: «no hay destino» sería falso si otro alias que la sesión recuerda la alcanza.
+                _ = texto.Append(": no se cierra con ");
+                for (int i = 0; i < pista.Candidatos.Count; i++)
+                    _ = texto.Append(i == 0 ? "" : " ni con ").Append(pista.Candidatos[i].Texto);
+                _ = texto.Append(" (");
                 for (int i = 0; i < pista.Candidatos.Count; i++)
                 {
                     CandidatoCierre candidato = pista.Candidatos[i];
