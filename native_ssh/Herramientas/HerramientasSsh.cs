@@ -3,7 +3,6 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Text.Unicode;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
@@ -280,6 +279,7 @@ namespace NativeSsh.Herramientas
             [Description("Cuánto esperar el resultado antes de responder. Entre 0 y 120.")] int esperarSegundos = 20,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_exec", cancellationToken).ConfigureAwait(false);
             Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos));
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, 0);
@@ -309,6 +309,7 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            await ExigirEscrituraPermitidaAsync(peticion.Destino, "ssh_input", cancellationToken).ConfigureAwait(false);
             // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
             // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
             if (secreto)
@@ -393,17 +394,19 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
-        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
+        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino (usa las de lectura); sin isSoloLectura, no se puede saber sin resolver un nombre y cada una de esas herramientas lo comprueba en cada llamada.")]
         public ResultadoEstado Estado(
             [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto, con qué destino cerrarlas y qué más cerraría ese destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
             DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
             bool isSinFiltro = filtro is null;
+            DestinosSoloLectura soloLectura = opciones.SoloLectura;
+            bool hasSoloLectura = !soloLectura.IsVacio;
             List<EstadoSesion> sesiones = [];
             foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
             {
                 IReadOnlyList<string> alias = gestor.AliasDe(s);
-                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades));
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino) : null));
             }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
@@ -418,7 +421,7 @@ namespace NativeSsh.Herramientas
             }
 
             string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias), gestor) : null;
-            return new ResultadoEstado(sesiones, peticiones, aviso);
+            return new ResultadoEstado(sesiones, peticiones, aviso, hasSoloLectura ? soloLectura.Entradas : null);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
@@ -769,6 +772,7 @@ namespace NativeSsh.Herramientas
             [Description("Ejecutar la escritura con sudo (por defecto false).")] bool sudo = false,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_write_file", cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
@@ -1073,15 +1077,16 @@ namespace NativeSsh.Herramientas
 
         // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
         // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL), los separadores de línea y de párrafo de Unicode
-        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles;
-        // entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se
-        // puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
+        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles o
+        // por '[' (así ningún nombre imita las líneas '[Límite alcanzado: …]' y '[montajes_no_explorados: …]' que añade
+        // native_ssh); entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\),
+        // que se puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
         // una barra invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
         private static void EscaparNombre(StringBuilder listado, string nombre)
         {
             ReadOnlySpan<char> caracteres = nombre;
             bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f') || caracteres.ContainsAnyInRange('\u2028', '\u2029');
-            if (!hasControl && !nombre.StartsWith('"'))
+            if (!hasControl && !nombre.StartsWith('"') && !nombre.StartsWith('['))
             {
                 _ = listado.Append(nombre);
                 return;
@@ -1130,7 +1135,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -1187,7 +1192,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, o si find no termina bien (p. ej. no llega a ejecutarse), devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -1195,6 +1200,7 @@ namespace NativeSsh.Herramientas
             [Description("Tipo de elemento a buscar: 'file' (archivos), 'dir' o 'directory' (directorios) o 'all' (ambos), sin distinguir mayúsculas. Por defecto (o vacío), 'file'. Otro valor, también con blancos alrededor, da error.")] string tipo = "file",
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
+            [Description("true (por defecto): entra también en los demás sistemas de ficheros montados por debajo de la ruta (nunca en los virtuales del kernel). false: no sale del sistema de ficheros de la ruta, como 'find -xdev'; úsalo para ir montaje por montaje con la línea '[montajes_no_explorados: …]'.")] bool cruzarMontajes = true,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(patron))
@@ -1205,8 +1211,6 @@ namespace NativeSsh.Herramientas
             int profundidad = Math.Clamp(profundidadMax, 1, 20);
             int limite = Math.Clamp(maxResultados, 1, 200);
             string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
-            string rutaEscapada = Escapar(rutaEfectiva);
-            string patronEscapado = Escapar(patron);
             // Sin tipo, 'file'; sin distinguir mayúsculas y con 'directory' como sinónimo de 'dir' (lo dice la descripción); un
             // tipo desconocido es un error, no una búsqueda de archivos.
             string filtroTipo = (string.IsNullOrEmpty(tipo) ? "file" : tipo.ToLowerInvariant()) switch
@@ -1217,7 +1221,168 @@ namespace NativeSsh.Herramientas
                 _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
-            string comando = PlantillaBash.Crear($$"""
+            string idMarca = Guid.NewGuid().ToString("N");
+            string comando = ConstruirComandoBusquedaNombre(patron, rutaEfectiva, filtroTipo, profundidad, limite, cruzarMontajes, idMarca);
+            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
+            return lectura.Codigo != 0
+                ? throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"))
+                : InterpretarBusquedaNombre(lectura.Salida, idMarca, patron, rutaEfectiva, profundidad, limite, cruzarMontajes);
+        }
+
+        // Tipos de los sistemas de ficheros virtuales del kernel que ssh_find nunca recorre por debajo de la ruta (C13): con
+        // 'find -L', /proc/<pid>/cwd y /proc/<pid>/task/<tid>/cwd llevan al directorio de trabajo de cada proceso y el árbol
+        // se recorría una vez por proceso (find solo salta los enlaces a un antecesor). autofs, además, montaría lo que vigila.
+        private const string TiposVirtuales = "proc sysfs devtmpfs devpts cgroup cgroup2 debugfs tracefs securityfs pstore bpf mqueue hugetlbfs configfs fusectl binfmt_misc autofs efivarfs selinuxfs nsfs rpc_pipefs";
+
+        private const string PrefijoMarcaMontaje = "__NS_MONTAJE_";
+        private const string PrefijoMarcaTotalMontajes = "__NS_TOTAL_MONTAJES_";
+        private const string PrefijoMarcaSinTabla = "__NS_SIN_TABLA_";
+        private const string PrefijoMarcaFindFallo = "__NS_FIND_FALLO_";
+        private const int MaxMontajesNoExplorados = 20;
+
+        // explorar_montajes CRUZAR PROFUNDIDAD: con el directorio actual en la raíz de la búsqueda (ya resuelta en 'raiz', sin
+        // enlaces), lee /proc/self/mountinfo y, para cada punto de montaje estrictamente por debajo de 'raiz' y a menos de
+        // PROFUNDIDAD niveles (más abajo find no entra de todos modos), deja en 'poda' los argumentos de find que podan los
+        // virtuales (por su ruta relativa, con los comodines de -path escapados) y en 'no_explorados' los que no se
+        // recorrerán: los virtuales y, con CRUZAR=0, los demás directorios montados cuyo dispositivo (stat, como compara
+        // 'find -xdev') no es el de la raíz (un bind del mismo sistema de ficheros sí se recorre). Un montaje que contiene a
+        // la raíz no está por debajo: ruta='/proc' no se poda. En mountinfo el punto de montaje va con el espacio, el
+        // tabulador, el salto de línea y la barra invertida en octal (\040, \011, \012, \134), que printf %b de bash
+        // decodifica (no hay otras secuencias con '\': la barra invertida misma va como \134). El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
+        // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null): se mira
+        // con -d cada montaje dentro de la profundidad que se recorre (find lo consultaría igual al recorrer su padre); el
+        // dispositivo (stat %d, por lotes en comparar_dispositivos) solo con CRUZAR=0 y para los no virtuales. /dev/fd, si
+        // es un enlace (a /proc/self/fd), se poda siempre por su ruta: no es un montaje y no sale en la línea.
+        // Sin /proc/self/mountinfo (busybox sin /proc, chroot): se podan /proc, /sys y /dev por su ruta y 'sin_tabla' lo
+        // anota (con CRUZAR=0 no se puede saber qué otros montajes quedan fuera).
+        // La tabla se lee de una vez con cat y se parte en líneas sin 'read': con 'read' directamente sobre
+        // /proc/self/mountinfo, cada lectura vuelve a generar la tabla desde el principio (read lee poco y retrocede), con
+        // coste cuadrático (medido: 5 000 montajes, más de 20 s solo en leerla). Sin <(…) ni tuberías hacia el bucle: la
+        // sustitución de procesos necesita /dev/fd y un bucle al final de una tubería no deja sus variables. En la tabla
+        // ninguna línea está vacía ni lleva saltos o espacios dentro de un campo (van en octal), así que se parte por saltos
+        // de línea y por espacios (con set -f, sin expandir comodines). En 'no_explorados' cada punto va como en la tabla
+        // (con el octal) para ordenarlo y quitar repetidos y anidados (escribir_no_explorados).
+        private static readonly string DefinicionMontajes = $$"""
+            montaje() {
+              local punto=$1 tipo=$2 crudo=$3 rel nivel
+              case $raiz in
+                /) [ "$punto" = / ] && return 0; rel=.$punto ;;
+                *) case $punto in
+                     "$raiz"/*) rel=.${punto#"$raiz"} ;;
+                     *) return 0 ;;
+                   esac ;;
+              esac
+              nivel=${rel//[!\/]/}
+              [ "${#nivel}" -lt "$profundidad_montajes" ] || return 0
+              [ -d "$punto" ] || return 0
+              case " {{TiposVirtuales}} " in
+                *" $tipo "*)
+                  podar "$rel"
+                  no_explorados+=("$crudo")
+                  return 0 ;;
+              esac
+              [ "$cruzar_montajes" = 1 ] && return 0
+              candidatos+=("$punto")
+              candidatos_crudo+=("$crudo")
+            }
+            # Con CRUZAR=0, el dispositivo de cada directorio montado no virtual, con un stat por cada 500 (uno por montaje
+            # eran miles de procesos con miles de montajes); si alguno del lote falla, ese lote se repite uno a uno. Un
+            # montaje cuyo dispositivo no se puede leer cuenta como no explorado.
+            comparar_dispositivos() {
+              local i j n lote dispositivos IFS=$' \n'
+              for ((i = 0; i < ${#candidatos[@]}; i += 500)); do
+                lote=("${candidatos[@]:i:500}")
+                n=${#lote[@]}
+                dispositivos=($(stat -L -c %d -- "${lote[@]}" 2>/dev/null))
+                if [ "${#dispositivos[@]}" != "$n" ]; then
+                  dispositivos=()
+                  for ((j = 0; j < n; j++)); do
+                    dispositivos+=("$(stat -L -c %d -- "${lote[j]}" 2>/dev/null)")
+                  done
+                fi
+                for ((j = 0; j < n; j++)); do
+                  [ -n "${dispositivos[j]}" ] && [ "${dispositivos[j]}" = "$dispositivo_raiz" ] && continue
+                  no_explorados+=("${candidatos_crudo[i + j]}")
+                done
+              done
+            }
+            podar() {
+              local glob
+              glob=${1//\\/\\\\}; glob=${glob//\*/\\*}; glob=${glob//\?/\\?}; glob=${glob//\[/\\[}
+              poda+=(-o -path "$glob")
+            }
+            explorar_montajes() {
+              local punto crudo tipo linea lineas campos tabla IFS
+              cruzar_montajes=$1 profundidad_montajes=$2
+              poda=() no_explorados=() candidatos=() candidatos_crudo=() sin_tabla=
+              dispositivo_raiz=$(stat -L -c %d . 2>/dev/null)
+              if [ -r /proc/self/mountinfo ]; then
+                tabla=$(cat /proc/self/mountinfo)
+                set -f
+                IFS=$'\n'
+                lineas=($tabla)
+                IFS=' '
+                for linea in "${lineas[@]}"; do
+                  tipo=${linea#* - }
+                  tipo=${tipo%% *}
+                  campos=($linea)
+                  crudo=${campos[4]}
+                  printf -v punto '%b' "$crudo"
+                  montaje "$punto" "$tipo" "$crudo"
+                done
+                set +f
+              else
+                sin_tabla=1
+                for punto in /proc /sys /dev; do
+                  [ -d "$punto" ] && montaje "$punto" proc "$punto"
+                done
+              fi
+              comparar_dispositivos
+              # /dev/fd lleva a /proc/self/fd, donde el descriptor de un directorio abierto por find vuelve a un directorio
+              # ya recorrido (el find de busybox no detecta ese bucle): con /dev sin podar (un tmpfs, como en los
+              # contenedores), se poda el enlace.
+              case $raiz in
+                /) [ -L /dev/fd ] && podar ./dev/fd ;;
+                /dev) [ -L /dev/fd ] && podar ./fd ;;
+              esac
+              [ "${#poda[@]}" = 0 ] || poda[0]='('
+              [ "${#poda[@]}" = 0 ] || poda+=(')')
+            }
+            # escribir_no_explorados MARCA MARCA_TOTAL: los montajes no recorridos, sin repetidos ni los que están dentro de
+            # otro de la lista (tampoco se recorren), cada uno con MARCA delante y como mucho {{MaxMontajesNoExplorados}}, y después
+            # MARCA_TOTAL con cuántos hay: la salida no crece con el número de montajes. Se ordenan con '/' cambiada por un
+            # espacio (en la tabla el espacio va en octal), así cada montaje queda justo delante de los que tiene dentro y basta
+            # compararlo con el último que se conservó.
+            escribir_no_explorados() {
+              [ "${#no_explorados[@]}" = 0 ] && return 0
+              printf '%s\n' "${no_explorados[@]}" | tr / ' ' | LC_ALL=C sort | tr ' ' / | {
+                local crudo punto ultimo= total=0
+                while IFS= read -r crudo; do
+                  if [ -n "$ultimo" ]; then
+                    case $crudo in "$ultimo"|"$ultimo"/*) continue ;; esac
+                  fi
+                  ultimo=$crudo
+                  total=$((total + 1))
+                  [ "$total" -le {{MaxMontajesNoExplorados}} ] || continue
+                  printf -v punto '%b' "$crudo"
+                  printf '%s%s\0' "$1" "$punto"
+                done
+                printf '%s%s\0' "$2" "$total"
+              }
+            }
+            """.ReplaceLineEndings("\n");
+
+        // Script de ssh_find. Tras resolver la raíz (pwd -P) y los montajes (explorar_montajes), find recorre '.' con la poda
+        // de los virtuales delante ('\( -path ./proc -o … \)', «imprimir pero podar» como los directorios pesados) y, con
+        // cruzarMontajes=false, -xdev. Los montajes no recorridos salen detrás de los nombres, cada uno como un nombre más
+        // con la marca '__NS_MONTAJE_<id>__' (id aleatorio por petición: ningún archivo la puede imitar; solo los 20 primeros)
+        // seguidos de '__NS_TOTAL_MONTAJES_<id>__<n>', y '__NS_SIN_TABLA_<id>__' si no se pudo leer la tabla de montajes.
+        internal static string ConstruirComandoBusquedaNombre(string patron, string rutaEfectiva, string filtroTipo, int profundidad, int limite, bool isCruzarMontajes, string idMarca)
+        {
+            string rutaEscapada = Escapar(rutaEfectiva);
+            string patronEscapado = Escapar(patron);
+            string xdev = isCruzarMontajes ? string.Empty : "-xdev ";
+            return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
                 if [ ! -e {{rutaEscapada}} ]; then
@@ -1229,26 +1394,113 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso para recorrer la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                cd -- {{rutaEscapada}} && \
-                find -L . -maxdepth {{profundidad}} -mindepth 1 \
+                cd -- {{rutaEscapada}} || exit 1
+                {{SustitucionLiteral("raiz", "pwd -P")}}
+                {{DefinicionMontajes}}
+                explorar_montajes {{(isCruzarMontajes ? 1 : 0)}} {{profundidad}}
+                [ "${#poda[@]}" = 0 ] || poda+=(\( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) -o)
+                # Los nombres van a la salida (fd 7); el stderr de find y su código, a 'error_find' (solo los últimos 1 000
+                # bytes: con miles de avisos no crece).
+                exec 7>&1
+                error_find=$( { { find -L . {{xdev}}-maxdepth {{profundidad}} -mindepth 1 "${poda[@]}" \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
                   \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
+                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>&8 | sort -z | {{LimitarNombres(limite + 1)}} >&7
+                  printf '\n%s' "${PIPESTATUS[0]}" >&8; } 8>&1 | tail -c 1000; } )
+                exec 7>&-
+                codigo_find=${error_find##*$'\n'}
+                # Código 1 son avisos (un directorio sin permiso, un bucle de enlaces): find recorrió el resto y la lista vale.
+                # Con 2 o más (no se pudo ejecutar, p. ej. E2BIG con miles de podas; error fatal; señal) la lista no es fiable.
+                [ "$codigo_find" -le 1 ] 2>/dev/null || printf '{{PrefijoMarcaFindFallo}}{{idMarca}}__%s %s\0' "$codigo_find" "${error_find%$'\n'*}"
+                escribir_no_explorados '{{PrefijoMarcaMontaje}}{{idMarca}}__' '{{PrefijoMarcaTotalMontajes}}{{idMarca}}__'
+                [ -z "$sin_tabla" ] || printf '{{PrefijoMarcaSinTabla}}{{idMarca}}__\0'
                 )
                 """);
+        }
 
-            SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
-            if (lectura.Codigo != 0)
-                throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"));
+        // Respuesta de ssh_find: los nombres encontrados (con su límite) y, al final, la línea de los montajes no recorridos.
+        internal static string InterpretarBusquedaNombre(string salida, string idMarca, string patron, string rutaEfectiva, int profundidad, int limite, bool isCruzarMontajes)
+        {
+            string marcaMontaje = $"{PrefijoMarcaMontaje}{idMarca}__";
+            string marcaTotal = $"{PrefijoMarcaTotalMontajes}{idMarca}__";
+            string marcaSinTabla = $"{PrefijoMarcaSinTabla}{idMarca}__";
+            string marcaFindFallo = $"{PrefijoMarcaFindFallo}{idMarca}__";
+            List<string> nombres = [];
+            List<string> montajes = [];
+            int totalMontajes = 0;
+            bool isSinTabla = false;
+            foreach (string nombre in SepararNombres(salida))
+                if (nombre.StartsWith(marcaMontaje, StringComparison.Ordinal))
+                    montajes.Add(nombre[marcaMontaje.Length..]);
+                else if (nombre.StartsWith(marcaTotal, StringComparison.Ordinal) && int.TryParse(nombre.AsSpan(marcaTotal.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int total))
+                    totalMontajes = total;
+                else if (nombre == marcaSinTabla)
+                    isSinTabla = true;
+                else if (nombre.StartsWith(marcaFindFallo, StringComparison.Ordinal))
+                    throw new NativeSshException(MensajeFindFallido(nombre[marcaFindFallo.Length..]));
+                else
+                    nombres.Add(nombre);
 
-            string[] nombres = SepararNombres(lectura.Salida);
-            if (nombres.Length == 0)
-                return $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.";
+            string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes, totalMontajes);
+            string pie = lineaMontajes.Length == 0 ? string.Empty : "\n\n" + lineaMontajes;
+            string listado = UnirNombres([.. nombres], limite);
+            return nombres.Count == 0
+                ? $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.{pie}"
+                : nombres.Count > limite
+                    ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]{pie}"
+                    : listado + pie;
+        }
 
-            string listado = UnirNombres(nombres, limite);
-            return nombres.Length > limite
-                ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]"
-                : listado;
+        // 'codigoYError': el código de find, un espacio y el final de su stderr.
+        private static string MensajeFindFallido(string codigoYError)
+        {
+            int espacio = codigoYError.IndexOf(' ', StringComparison.Ordinal);
+            string codigo = espacio < 0 ? codigoYError : codigoYError[..espacio];
+            string error = espacio < 0 ? string.Empty : codigoYError[(espacio + 1)..].Trim();
+            string detalle = error.Length == 0 ? "sin mensaje" : error;
+            return $"Error en búsqueda por nombre: find no terminó bien (código {codigo}) y su lista no es fiable, así que no se devuelve ninguna: {detalle}. Si dice que la lista de argumentos es demasiado larga, hay miles de sistemas de ficheros virtuales montados por debajo de la ruta (cada uno se poda en la línea de órdenes de find): repite ssh_find con una ruta más concreta.";
+        }
+
+        // '[montajes_no_explorados: …]' con los montajes ordenados, sin repetidos (un punto puede estar montado varias veces) ni
+        // los que están dentro de otro de la lista (no se recorren igualmente), con tope. Vacía si no hay ninguno y la tabla de
+        // montajes se pudo leer. Cada ruta va como un nombre de los listados (EscaparNombre). 'totalMontajes' es cuántos contó
+        // el script (que solo manda los primeros): el «(+N más)» sale de él si es mayor que los recibidos.
+        internal static string LineaMontajesNoExplorados(List<string> montajes, bool isSinTablaSinCruzar, int totalMontajes = 0)
+        {
+            montajes.Sort(StringComparer.Ordinal);
+            List<string> superiores = [];
+            foreach (string montaje in montajes)
+            {
+                bool isDentroDeOtro = false;
+                foreach (string superior in superiores)
+                    if (montaje == superior || superior == "/" || montaje.StartsWith(superior + "/", StringComparison.Ordinal))
+                    {
+                        isDentroDeOtro = true;
+                        break;
+                    }
+
+                if (!isDentroDeOtro)
+                    superiores.Add(montaje);
+            }
+
+            if (superiores.Count == 0 && !isSinTablaSinCruzar)
+                return string.Empty;
+
+            StringBuilder linea = new("[montajes_no_explorados: ");
+            int mostrados = Math.Min(superiores.Count, MaxMontajesNoExplorados);
+            for (int i = 0; i < mostrados; i++)
+            {
+                if (i > 0)
+                    _ = linea.Append(", ");
+                EscaparNombre(linea, superiores[i]);
+            }
+
+            int restantes = Math.Max(superiores.Count, totalMontajes) - mostrados;
+            if (restantes > 0)
+                _ = linea.Append(CultureInfo.InvariantCulture, $" (+{restantes} más)");
+            if (isSinTablaSinCruzar)
+                _ = linea.Append(superiores.Count == 0 ? string.Empty : "; ").Append("no se pudo leer /proc/self/mountinfo: puede haber otros sistemas de ficheros montados por debajo de la ruta que no se recorrieron");
+            return linea.Append(']').ToString();
         }
 
         [McpServerTool(Name = "ssh_stat", ReadOnly = true, Idempotent = true)]
@@ -1525,23 +1777,46 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_replace_file_content", Destructive = true)]
-        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent'. Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Devuelve ruta, bytes (tamaño final del archivo), reemplazos, isAtomica y mensaje.")]
+        [Description("Edita quirúrgicamente un bloque de texto exacto dentro de un archivo remoto sin reescribir todo el archivo a mano. Busca 'targetContent' en todo el archivo o, si se indican lineaInicio y lineaFin, estrictamente dentro de ese rango de líneas, y lo sustituye por 'replacementContent' (obligatorio: para borrar el texto pásalo vacío, \"\"; si falta, no se escribe nada). Exige una coincidencia única salvo allowMultiple=true. Los saltos de línea '\\r\\n' y '\\n' de targetContent y replacementContent se adaptan a los del archivo (CRLF o LF); cualquier otro carácter, incluidos FF, NEL, LS, PS y un '\\r' suelto, se busca y se escribe tal cual. Solo edita texto UTF-8 válido (conserva el BOM y los saltos de línea CRLF/LF) de hasta ≈755 KiB con la configuración por defecto: rechaza sin escribir nada los archivos binarios, con otra codificación o más grandes. La escritura tiene las mismas garantías que ssh_write_file con overwrite=true: si la ruta es un enlace simbólico edita su destino y conserva el enlace; temporal en el mismo directorio con todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, copiados y comprobados) renombrado encima (atómico); si no puede copiar o comprobar todos los atributos, hay enlaces duros o el directorio no tiene permiso de escritura, sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux, y devuelve y comprueba lo que el núcleo quita al escribir: las capacidades, security.capability, solo con sudo=true, y, salvo si escribe root, los bits setuid y setgid; lo que no se pueda devolver o comprobar lo dice la respuesta; con copia de seguridad previa que restaura si la escritura falla o se interrumpe y que solo se borra cuando el archivo ha quedado escrito por completo o restaurado; si además es de solo lectura, sin sudo falla sin tocarlo) y lo indica en la respuesta. Si la lectura o la escritura no terminan (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Si el destino no es un archivo regular (FIFO, socket o dispositivo), falla sin leerlo ni tocarlo. Justo antes de escribir comprueba que el archivo sigue siendo el que leyó (sha256sum o, si no lo hay, cksum): si otro proceso lo cambió o lo borró entretanto, no escribe y devuelve un error (vuelve a intentarlo). Para varias ediciones del mismo archivo usa SIEMPRE 'ediciones' en una sola llamada (en lugar de targetContent y replacementContent, que no se combinan con ella): se aplican en orden, cada una buscada en todo el archivo tras aplicar las anteriores (sin lineaInicio ni lineaFin), y todas o ninguna: si una no se encuentra o aparece varias veces sin su allowMultiple=true, no se escribe nada y el error dice cuál; la escritura es una sola, con las mismas garantías. Devuelve ruta, bytes (tamaño final del archivo), reemplazos (el total), isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> ReemplazarContenidoArchivoAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
-            [Description("Texto exacto a reemplazar (incluyendo espacios e indentación).")] string targetContent,
-            [Description("Nuevo texto que reemplazará a targetContent.")] string replacementContent,
+            [Description("Texto exacto a reemplazar (incluyendo espacios e indentación). Obligatorio salvo con 'ediciones'.")] string? targetContent = null,
+            [Description("Nuevo texto que reemplazará a targetContent. Obligatorio salvo con 'ediciones' (para borrar targetContent, pásalo vacío: \"\"); si falta, no se escribe nada.")] string? replacementContent = null,
             [Description("Línea inicial (1-indexed) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaFin es obligatoria.")] int? lineaInicio = null,
             [Description("Línea final (1-indexed, inclusive) del rango donde buscar targetContent. Opcional: sin lineaInicio ni lineaFin se busca en todo el archivo; si se indica, lineaInicio es obligatoria.")] int? lineaFin = null,
             [Description("Si es true, permite reemplazar si targetContent aparece múltiples veces en el archivo o el rango (reemplaza todas). Por defecto false (falla si hay ambigüedad).")] bool allowMultiple = false,
             [Description("Leer y escribir con sudo (por defecto false).")] bool sudo = false,
+            [Description("Varias ediciones del mismo archivo en una llamada, en orden y todas o ninguna: lista de {targetContent, replacementContent, allowMultiple (opcional, por defecto false)}; replacementContent es obligatorio en cada una (\"\" para borrar su targetContent). Cada una se busca en todo el archivo tras aplicar las anteriores. No se combina con targetContent, replacementContent, lineaInicio, lineaFin ni allowMultiple.")] EdicionTexto[]? ediciones = null,
             CancellationToken cancellationToken = default)
         {
+            await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_replace_file_content", cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
-            if (string.IsNullOrEmpty(targetContent))
+            bool hasEdiciones = ediciones is { Length: > 0 };
+            if (hasEdiciones && (targetContent is not null || replacementContent is not null || lineaInicio is not null || lineaFin is not null || allowMultiple))
+                throw new NativeSshException("Usa 'ediciones' o targetContent/replacementContent (con lineaInicio, lineaFin y allowMultiple), no los dos a la vez: con 'ediciones', cada edición lleva su targetContent, su replacementContent y su allowMultiple. No se ha enviado nada.");
+
+            if (!hasEdiciones && string.IsNullOrEmpty(targetContent))
                 throw new NativeSshException("El texto a reemplazar (targetContent) no puede estar vacío.");
+
+            // Sin replacementContent no se toma "" (borraría targetContent en silencio): para borrar hay que pedirlo.
+            if (!hasEdiciones && replacementContent is null)
+                throw new NativeSshException("Falta replacementContent: es obligatorio (para borrar targetContent, pásalo vacío: \"\"). No se ha enviado nada.");
+
+            for (int i = 0; hasEdiciones && i < ediciones!.Length; i++)
+            {
+                EdicionTexto? edicion = ediciones[i];
+                if (string.IsNullOrEmpty(edicion?.TargetContent))
+                    throw new NativeSshException($"Edición {i + 1} de {ediciones.Length}: su targetContent no puede estar vacío. No se ha enviado nada.");
+
+                if (edicion.ReplacementContent is null)
+                    throw new NativeSshException($"Edición {i + 1} de {ediciones.Length}: falta su replacementContent; es obligatorio (para borrar su targetContent, pásalo vacío: \"\"). No se ha enviado nada.");
+
+                ExigirUtf16Valido(edicion.TargetContent, $"El targetContent de la edición {i + 1}");
+                ExigirUtf16Valido(edicion.ReplacementContent, $"El replacementContent de la edición {i + 1}");
+            }
 
             bool hasInicio = lineaInicio is not null;
             bool hasFin = lineaFin is not null;
@@ -1556,7 +1831,7 @@ namespace NativeSsh.Herramientas
                 throw new NativeSshException($"La línea final ({lineaFin}) no puede ser menor que la línea inicial ({lineaInicio}).");
 
             ExigirValorLiteral(ruta, "La ruta");
-            ExigirUtf16Valido(targetContent, "targetContent");
+            ExigirUtf16Valido(targetContent ?? string.Empty, "targetContent");
             ExigirUtf16Valido(replacementContent ?? string.Empty, "replacementContent");
             string rutaEscapada = Escapar(ruta);
             long maxBytesEditable = CalcularMaxBytesArchivoEditable(opciones.MaxBytesSalidaPorPeticion);
@@ -1616,8 +1891,29 @@ namespace NativeSsh.Herramientas
             string textoOriginal = DecodificarArchivoUtf8(bytesLeidos, ruta);
 
             string separador = textoOriginal.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+            (string textoModificado, int ocurrencias) = hasEdiciones
+                ? AplicarEdiciones(textoOriginal, ediciones!, separador, ruta)
+                : AplicarReemplazo(textoOriginal, targetContent!, replacementContent!, separador, lineaInicio, lineaFin, allowMultiple, ruta);
+            byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
+            string payloadBase64 = Convert.ToBase64String(bytesModificados);
+
+            string idEscritura = Guid.NewGuid().ToString("N");
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
+
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
+            string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
+            return peticionEscritura.CodigoSalida != 0
+                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({cuantas}{ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
+        }
+
+        // Una sola edición (targetContent), en todo el archivo o en el rango de líneas: el texto nuevo y las apariciones
+        // reemplazadas.
+        private static (string Texto, int Ocurrencias) AplicarReemplazo(string textoOriginal, string targetContent, string replacementContent, string separador, int? lineaInicio, int? lineaFin, bool allowMultiple, string ruta)
+        {
+            bool isConRango = lineaInicio is not null;
             string targetNormalizado = AdaptarSaltos(targetContent, separador);
-            string replacementNormalizado = AdaptarSaltos(replacementContent ?? string.Empty, separador);
+            string replacementNormalizado = AdaptarSaltos(replacementContent, separador);
 
             string[] lineas = textoOriginal.Split(separador);
             bool hasSaltoFinal = textoOriginal.EndsWith(separador, StringComparison.Ordinal);
@@ -1644,14 +1940,7 @@ namespace NativeSsh.Herramientas
                 textoDespues = textoDespues[separador.Length..];
             }
 
-            int ocurrencias = 0;
-            int pos = 0;
-            while ((pos = textoRango.IndexOf(targetNormalizado, pos, StringComparison.Ordinal)) != -1)
-            {
-                ocurrencias++;
-                pos += targetNormalizado.Length;
-            }
-
+            int ocurrencias = ContarApariciones(textoRango, targetNormalizado);
             if (ocurrencias == 0)
                 throw new NativeSshException(isConRango
                     ? $"No se encontró 'targetContent' en {ambito} de '{ruta}'. Revisa la indentación y el rango exacto."
@@ -1664,17 +1953,50 @@ namespace NativeSsh.Herramientas
                 ? textoRango.Replace(targetNormalizado, replacementNormalizado, StringComparison.Ordinal)
                 : string.Concat(textoRango.AsSpan(0, textoRango.IndexOf(targetNormalizado, StringComparison.Ordinal)), replacementNormalizado, textoRango.AsSpan(textoRango.IndexOf(targetNormalizado, StringComparison.Ordinal) + targetNormalizado.Length));
 
-            string textoModificado = textoAntes + textoRangoModificado + textoDespues;
-            byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
-            string payloadBase64 = Convert.ToBase64String(bytesModificados);
+            return (textoAntes + textoRangoModificado + textoDespues, ocurrencias);
+        }
 
-            string idEscritura = Guid.NewGuid().ToString("N");
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
+        // Varias ediciones (CI5): en orden, cada una en todo el texto que dejaron las anteriores; si una no se encuentra o es
+        // ambigua sin su allowMultiple, error sin escribir nada (todas o ninguna). El total de apariciones reemplazadas.
+        private static (string Texto, int Ocurrencias) AplicarEdiciones(string textoOriginal, EdicionTexto[] ediciones, string separador, string ruta)
+        {
+            const string NadaEscrito = "No se ha modificado el archivo: con 'ediciones' se aplican todas o ninguna.";
+            string texto = textoOriginal;
+            int total = 0;
+            for (int i = 0; i < ediciones.Length; i++)
+            {
+                EdicionTexto edicion = ediciones[i];
+                string target = AdaptarSaltos(edicion.TargetContent, separador);
+                string reemplazo = AdaptarSaltos(edicion.ReplacementContent!, separador);
+                int ocurrencias = ContarApariciones(texto, target);
+                string cual = $"Edición {i + 1} de {ediciones.Length}";
+                if (ocurrencias == 0)
+                    throw new NativeSshException($"{cual}: no se encontró su 'targetContent' en '{ruta}' (se busca en todo el archivo, tras aplicar las ediciones anteriores). Revisa la indentación y los saltos de línea exactos. {NadaEscrito}");
 
-            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
-            return peticionEscritura.CodigoSalida != 0
-                ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
-                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
+                if (ocurrencias > 1 && !edicion.AllowMultiple)
+                    throw new NativeSshException($"{cual}: se encontraron {ocurrencias} apariciones de su 'targetContent' en todo el archivo. Pon allowMultiple=true en esa edición o amplía su targetContent con contexto. {NadaEscrito}");
+
+                int posicion = texto.IndexOf(target, StringComparison.Ordinal);
+                texto = edicion.AllowMultiple
+                    ? texto.Replace(target, reemplazo, StringComparison.Ordinal)
+                    : string.Concat(texto.AsSpan(0, posicion), reemplazo, texto.AsSpan(posicion + target.Length));
+                total += ocurrencias;
+            }
+
+            return (texto, total);
+        }
+
+        private static int ContarApariciones(string texto, string buscado)
+        {
+            int ocurrencias = 0;
+            int pos = 0;
+            while ((pos = texto.IndexOf(buscado, pos, StringComparison.Ordinal)) != -1)
+            {
+                ocurrencias++;
+                pos += buscado.Length;
+            }
+
+            return ocurrencias;
         }
 
         // Solo los saltos '\r\n' y '\n' del texto se adaptan al separador del archivo: FF, NEL, LS, PS y un '\r' suelto son
@@ -2272,225 +2594,6 @@ namespace NativeSsh.Herramientas
                 Math.Round(peticion.TiempoEjecucion.TotalSeconds, 1),
                 tiempoSinSalida is { } sinSalida ? Math.Round(sinSalida.TotalSeconds, 1) : null,
                 avisoFinal);
-        }
-
-        [GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", RegexOptions.CultureInvariant)]
-        private static partial Regex RegexFlagsRecursivosGrep();
-
-        private static string? DetectarAvisoAntipatron(string comando)
-        {
-            if (string.IsNullOrWhiteSpace(comando))
-                return null;
-
-            AnalizarComando(comando, out bool hasCd, out bool hasFind, out bool hasGrep);
-
-            if (!hasCd && !hasFind && !hasGrep)
-                return null;
-
-            List<string> avisos = [];
-            if (hasGrep)
-                avisos.Add(AvisoGrepDisco);
-            if (hasFind)
-                avisos.Add(AvisoFindDisco);
-            if (hasCd)
-                avisos.Add(AvisoCdEncadenado);
-
-            return string.Join(" ", avisos);
-        }
-
-        private static void AnalizarComando(string comando, out bool hasCd, out bool hasFind, out bool hasGrep)
-        {
-            hasCd = false;
-            hasFind = false;
-            hasGrep = false;
-
-            ReadOnlySpan<char> span = comando.AsSpan();
-            int longitud = span.Length;
-            int inicioSegmento = 0;
-            string separadorPrevio = string.Empty;
-
-            char comilla = '\0';
-            int i = 0;
-
-            while (i < longitud)
-            {
-                char c = span[i];
-
-                if (comilla != '\0')
-                {
-                    if (c == '\\' && i + 1 < longitud)
-                    {
-                        i += 2;
-                        continue;
-                    }
-                    if (c == comilla)
-                        comilla = '\0';
-                    i++;
-                    continue;
-                }
-
-                if (c is '\'' or '"')
-                {
-                    comilla = c;
-                    i++;
-                    continue;
-                }
-
-                string? separadorDetectado = null;
-                int avance = 0;
-
-                if (c == '&' && i + 1 < longitud && span[i + 1] == '&')
-                {
-                    separadorDetectado = "&&";
-                    avance = 2;
-                }
-                else if (c == '|' && i + 1 < longitud && span[i + 1] == '|')
-                {
-                    separadorDetectado = "||";
-                    avance = 2;
-                }
-                else if (c == '|' && i + 1 < longitud && span[i + 1] == '&')
-                {
-                    separadorDetectado = "|&";
-                    avance = 2;
-                }
-                else if (c == '|')
-                {
-                    separadorDetectado = "|";
-                    avance = 1;
-                }
-                else if (c == ';')
-                {
-                    separadorDetectado = ";";
-                    avance = 1;
-                }
-                else if (c == '\n')
-                {
-                    separadorDetectado = "\n";
-                    avance = 1;
-                }
-                else if (c == '\r')
-                {
-                    separadorDetectado = "\n";
-                    avance = (i + 1 < longitud && span[i + 1] == '\n') ? 2 : 1;
-                }
-
-                if (separadorDetectado is not null)
-                {
-                    string segmento = span[inicioSegmento..i].ToString();
-                    ProcesarSegmento(segmento, separadorPrevio, separadorDetectado, ref hasCd, ref hasFind, ref hasGrep);
-                    separadorPrevio = separadorDetectado;
-                    i += avance;
-                    inicioSegmento = i;
-                }
-                else
-                {
-                    i++;
-                }
-            }
-
-            if (inicioSegmento < longitud)
-            {
-                string ultimoSegmento = span[inicioSegmento..longitud].ToString();
-                ProcesarSegmento(ultimoSegmento, separadorPrevio, string.Empty, ref hasCd, ref hasFind, ref hasGrep);
-            }
-        }
-
-        private static void ProcesarSegmento(
-            string segmento,
-            string separadorPrevio,
-            string separadorSiguiente,
-            ref bool hasCd,
-            ref bool hasFind,
-            ref bool hasGrep)
-        {
-            string segLimpio = segmento.Trim();
-            if (string.IsNullOrEmpty(segLimpio))
-                return;
-
-            if (!hasCd && separadorSiguiente == "&&" && EsComandoCd(segLimpio))
-                hasCd = true;
-
-            if (!hasFind && separadorPrevio != "|" && separadorPrevio != "|&" && EsComandoFind(segLimpio))
-                hasFind = true;
-
-            if (!hasGrep && EsComandoGrep(segLimpio))
-            {
-                bool isRgrep = EsComandoRgrep(segLimpio);
-                bool hasFlagsRecursivos = isRgrep || RegexFlagsRecursivosGrep().IsMatch(segLimpio);
-                if (hasFlagsRecursivos || (separadorPrevio != "|" && separadorPrevio != "|&"))
-                    hasGrep = true;
-            }
-        }
-
-        private static bool EsComandoRgrep(string texto)
-        {
-            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
-            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
-                span = span[4..].TrimStart(" \t");
-
-            if (span.StartsWith("rgrep", StringComparison.Ordinal))
-            {
-                if (span.Length == 5)
-                    return true;
-                char c = span[5];
-                return char.IsWhiteSpace(c);
-            }
-            return false;
-        }
-
-        private static bool EsComandoCd(string texto)
-        {
-            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
-            if (span.StartsWith("cd", StringComparison.Ordinal))
-            {
-                if (span.Length == 2)
-                    return true;
-                char c = span[2];
-                return char.IsWhiteSpace(c) || c is '/' or '.' or '~' or '$';
-            }
-            return false;
-        }
-
-        private static bool EsComandoFind(string texto)
-        {
-            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
-            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
-                span = span[4..].TrimStart(" \t");
-
-            if (span.StartsWith("find", StringComparison.Ordinal))
-            {
-                if (span.Length == 4)
-                    return true;
-                char c = span[4];
-                return char.IsWhiteSpace(c);
-            }
-            return false;
-        }
-
-        private static bool EsComandoGrep(string texto)
-        {
-            ReadOnlySpan<char> span = texto.AsSpan().TrimStart(" \t(");
-            if (span.StartsWith("sudo", StringComparison.Ordinal) && span.Length > 4 && char.IsWhiteSpace(span[4]))
-                span = span[4..].TrimStart(" \t");
-
-            if (span.StartsWith("grep", StringComparison.Ordinal))
-            {
-                if (span.Length == 4)
-                    return true;
-                char c = span[4];
-                return char.IsWhiteSpace(c);
-            }
-
-            if (span.StartsWith("egrep", StringComparison.Ordinal) || span.StartsWith("fgrep", StringComparison.Ordinal) || span.StartsWith("rgrep", StringComparison.Ordinal))
-            {
-                if (span.Length == 5)
-                    return true;
-                char c = span[5];
-                return char.IsWhiteSpace(c);
-            }
-
-            return false;
         }
 
         private static int? Codigo(Peticion peticion) => peticion.IsFinalizada ? peticion.CodigoSalida : null;

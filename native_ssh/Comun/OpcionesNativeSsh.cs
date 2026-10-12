@@ -29,13 +29,20 @@ namespace NativeSsh.Comun
         public int MaxConexionesPorVentana { get; init; } = 4;
         public TimeSpan VentanaConexiones { get; init; } = TimeSpan.FromSeconds(30);
 
+        // Destinos en modo solo lectura (DestinosSoloLectura, NATIVE_SSH_SOLO_LECTURA).
+        public DestinosSoloLectura SoloLectura { get; init; } = DestinosSoloLectura.Ninguno;
+
         /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD,
         /// NATIVE_SSH_PASSPHRASE y NATIVE_SSH_PASSPHRASE_FICHERO (la passphrase de las claves cifradas: FabricaConexionSsh),
-        /// NATIVE_SSH_CONFIG_SSH (ruta o 'none'). Sin NATIVE_SSH_CONFIG_SSH: con NATIVE_SSH_DIRECTORIO_SSH, el fichero 'config'
-        /// de ese directorio si existe al arrancar (si no, ninguno: nunca el ~/.ssh/config real cuando se ha pedido otro
-        /// directorio); sin ninguna de las dos, la configuración de ssh por defecto.
+        /// NATIVE_SSH_CONFIG_SSH (ruta o 'none') y NATIVE_SSH_SOLO_LECTURA (si no se entiende, native_ssh no arranca). Sin
+        /// NATIVE_SSH_CONFIG_SSH: con NATIVE_SSH_DIRECTORIO_SSH, el fichero 'config' de ese directorio si existe al arrancar
+        /// (si no, ninguno: nunca el ~/.ssh/config real cuando se ha pedido otro directorio); sin ninguna de las dos, la
+        /// configuración de ssh por defecto.
         public static OpcionesNativeSsh DesdeEntorno()
         {
+            if (!DestinosSoloLectura.TryParsear(Environment.GetEnvironmentVariable(DestinosSoloLectura.Variable), out DestinosSoloLectura soloLectura, out string? errorSoloLectura))
+                throw new InvalidOperationException(errorSoloLectura);
+
             OpcionesNativeSsh porDefecto = new();
             string? directorioEntorno = Environment.GetEnvironmentVariable("NATIVE_SSH_DIRECTORIO_SSH") is { Length: > 0 } d ? d : null;
             string directorio = directorioEntorno ?? porDefecto.DirectorioSsh;
@@ -53,7 +60,8 @@ namespace NativeSsh.Comun
                 ConfiguracionSsh = ElegirConfiguracionSsh(Environment.GetEnvironmentVariable("NATIVE_SSH_CONFIG_SSH"), directorioEntorno),
                 Contrasena = Environment.GetEnvironmentVariable(VariablesSecretas.Contrasena),
                 Passphrase = Environment.GetEnvironmentVariable(VariablesSecretas.Passphrase),
-                FicheroPassphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE_FICHERO")
+                FicheroPassphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE_FICHERO"),
+                SoloLectura = soloLectura
             };
         }
 
