@@ -67,6 +67,33 @@ namespace NativeSsh.Test.Comun
         public async Task Comparacion_PorUsuarioPuertoYServidor(string configuracion, string destino, bool isSoloLectura) =>
             _ = (await EsSoloLecturaAsync(configuracion, destino)).Should().Be(isSoloLectura);
 
+        // Un literal IPv6 con zona ('%1', '%lo') es la misma dirección para conectar: la zona no cuenta al comparar (ni para
+        // el loopback), tampoco en ssh_status. Antes IPAddress.Equals/IsLoopback comparaban también el ScopeId y el destino
+        // con zona se tomaba por otro distinto, escribible.
+        [Theory]
+        [InlineData("localhost", "root@[::1%1]:22")]
+        [InlineData("::1", "root@[::1%1]:22")]
+        [InlineData("[::1]:22", "root@[::1%1]:22")]
+        [InlineData("2001:db8::5", "root@[2001:db8::5%1]:22")]
+        [InlineData("2001:db8::5", "root@2001:db8::5%1")]
+        [InlineData("localhost", "root@[::1%lo]:22")]
+        [InlineData("::1", "root@::1%lo")]
+        [InlineData("fe80::1%2", "root@[fe80::1]:22")]
+        [InlineData("fe80::1", "root@[fe80::1%eth0]:22")]
+        public async Task Ipv6ConZona_SigueSiendoSoloLectura(string configuracion, string destino)
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino(destino));
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, null), $"{destino} es la misma dirección que '{configuracion}'");
+            _ = sinRed.Should().BeTrue("ssh_status no debe decir que es escribible ni que no se sabe");
+        }
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]

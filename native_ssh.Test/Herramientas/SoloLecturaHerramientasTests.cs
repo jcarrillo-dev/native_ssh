@@ -139,6 +139,32 @@ namespace NativeSsh.Test.Herramientas
             _ = json.Should().Contain("\"soloLectura\":[\"prod\"]").And.Contain("\"isSoloLectura\":true");
         }
 
+        // Destino IPv6 con zona ('%1', '%lo') de una entrada de loopback: se rechaza sin conectar y ssh_status lo marca.
+        [Theory]
+        [InlineData("localhost", "[::1%1]")]
+        [InlineData("::1", "ana@[::1%lo]:22")]
+        [InlineData("[::1]:22", "::1%1")]
+        public async Task Ipv6ConZona_SeRechazaYEstadoLoMarca(string configuracion, string destino)
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura soloLectura, out _, ResolverFalso).Should().BeTrue();
+            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", SoloLectura = soloLectura };
+            FabricaFalsa fabrica = new(Guion);
+            await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(destino, "a.txt", "x", overwrite: true)).Should().ThrowAsync<NativeSshException>()).Which;
+            int conexionesTrasRechazo = fabrica.Conexiones;
+            _ = await herramientas.LeerArchivoAsync(destino, "a.txt");
+            ResultadoEstado estado = herramientas.Estado();
+
+            // Assert
+            _ = error.Message.Should().StartWith("Rechazado: ").And.Contain("está en modo solo lectura");
+            _ = conexionesTrasRechazo.Should().Be(0);
+            _ = estado.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue();
+        }
+
         [Fact]
         public void Mensaje_DiceQueHacerYQueNoSePuedeCambiar() =>
             _ = Rechazo("ssh_exec").Should().Be("Rechazado: ana@prod:22 está en modo solo lectura (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. Para ese destino están desactivadas ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content: usa ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd. No reintentes ni busques otra vía para modificar el servidor: este modo solo lo puede quitar quien configura native_ssh.");

@@ -254,10 +254,13 @@ namespace NativeSsh.Comun
         private static bool IsDireccionLoopback(IPAddress direccion) =>
             IPAddress.IsLoopback(direccion) || direccion.Equals(IPAddress.Any) || direccion.Equals(IPAddress.IPv6Any);
 
-        // IPv4 mapeada a IPv6 como IPv4 y cualquier dirección de loopback como 127.0.0.1, para comparar conjuntos.
+        // Sin zona (IPv6 '%1', '%lo': IPAddress.Equals e IsLoopback comparan también el ScopeId, y la zona no cambia de qué
+        // dirección se trata; ScopeId solo existe en IPv6), IPv4 mapeada a IPv6 como IPv4 y cualquier dirección de loopback como 127.0.0.1, para comparar
+        // conjuntos. La zona se quita antes de mirar el loopback.
         private static IPAddress Unificar(IPAddress direccion)
         {
-            IPAddress unificada = direccion.IsIPv4MappedToIPv6 ? direccion.MapToIPv4() : direccion;
+            IPAddress sinZona = direccion.AddressFamily == AddressFamily.InterNetworkV6 && direccion.ScopeId != 0 ? new IPAddress(direccion.GetAddressBytes()) : direccion;
+            IPAddress unificada = sinZona.IsIPv4MappedToIPv6 ? sinZona.MapToIPv4() : sinZona;
             return IsDireccionLoopback(unificada) ? IPAddress.Loopback : unificada;
         }
 
