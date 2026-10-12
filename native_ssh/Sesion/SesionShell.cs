@@ -821,7 +821,9 @@ namespace NativeSsh.Sesion
             _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
         }
 
-        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: no llegó entero al shell porque otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte de su envío, y el shell no ejecuta un comando a medias. Ese proceso puede seguir comiéndose los siguientes: termínalo (kill) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
+        // La otra causa medida: 'set -x' con BASH_XTRACEFD en la salida estándar mete la traza en la decodificación del
+        // comando (ConstructorComando.EscribirComando) y lo decodificado ya no termina en el nonce.
+        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: no llegó entero al shell y el shell no ejecuta un comando a medias. Lo normal es que otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comiera parte de su envío; también pasa si un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar. Mientras siga así, los comandos siguientes tampoco se ejecutarán: termina ese proceso (kill) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
         // que se envió) se fijan en la petición antes de su estado final. Su aviso no va en el aviso del estado final: lo añade
