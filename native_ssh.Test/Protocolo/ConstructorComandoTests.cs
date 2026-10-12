@@ -99,13 +99,13 @@ namespace NativeSsh.Test.Protocolo
             string sincronizacion = Componer(w => ConstructorComando.EscribirSincronizacion(Id, Centinela, w));
             string captura = Componer(w => ConstructorComando.EscribirCapturaPath(Id, Testigo, Centinela, w));
             string recuperacion = Componer(w => ConstructorComando.EscribirRecuperacion(Id, Centinela, w));
-            string inicializacion = Componer(w => ConstructorComando.EscribirInicializacion(Id, Centinela, w));
+            string inicializacion = Componer(w => ConstructorComando.EscribirInicializacion(Id, w));
 
             // Assert
             _ = new[] { comando, reenvio, captura, recuperacion }.Should().AllSatisfy(t => t.Should().StartWith(LineaCentinela).And.NotStartWith(LineaCentinela + LineaCentinela));
             _ = sincronizacion.Should().StartWith(LineaCentinela + LineaCentinela + "__ns_rc=0; ");
             _ = inicializacion.Should().StartWith("exec bash --noediting --norc --noprofile\nPS1=;");
-            _ = reenvio.Should().Be(LineaCentinela + Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, Centinela, w)));
+            _ = reenvio.Should().Be(LineaCentinela + Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w)));
             _ = ConstructorComando.LongitudLineaCentinela.Should().Be(LineaCentinela.Length - 1);
         }
 
@@ -138,19 +138,20 @@ namespace NativeSsh.Test.Protocolo
             }
         }
 
-        // La línea de inicialización consume una sola línea tras el marcador (siempre es una línea centinela) y es corta: con un
-        // login lento con readline, sus dos copias y el centinela del reenvío deben caber en una lectura del búfer de entrada de
-        // bash (unos 1024 bytes, medido con bash 5.3).
+        // La línea de inicialización consume una sola línea tras el marcador (siempre es una línea centinela) y es corta y de
+        // longitud fija (sin el directorio de trabajo, que va en la captura): con un login lento con readline, sus dos copias y
+        // el centinela del reenvío deben caber en una lectura del búfer de entrada de bash (unos 1024 bytes, medido con bash
+        // 5.3).
         [Fact]
         public void LineaDeInicializacion_ConsumeUnaSolaLineaYEsCorta()
         {
             // Act
-            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, Centinela, w));
+            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w));
 
             // Assert
             _ = linea.Should().EndWith($"{MarcadorDeLaCola[..^"__ns_n=; ".Length]}command read -r __ns_d; unset __ns_d\n");
-            _ = linea.Should().NotContain($"{Centinela:N}");
-            _ = ((2 * Encoding.UTF8.GetByteCount(linea)) + LineaCentinela.Length).Should().BeLessThan(1024);
+            _ = linea.Should().NotContain("__NS_CWD");
+            _ = ((2 * Encoding.UTF8.GetByteCount(linea)) + LineaCentinela.Length).Should().BeLessThan(600, "deja margen de sobra hasta los 1024 bytes");
         }
 
         [Fact]
@@ -178,30 +179,31 @@ namespace NativeSsh.Test.Protocolo
         public void Inicializacion_Estructura()
         {
             // Arrange
-            string texto = Componer(w => ConstructorComando.EscribirInicializacion(Id, Centinela, w));
-            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, Centinela, w));
+            string texto = Componer(w => ConstructorComando.EscribirInicializacion(Id, w));
+            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, w));
 
             // Act & Assert
             _ = texto.Should().StartWith("exec bash --noediting --norc --noprofile\nPS1=;");
             _ = texto.Should().EndWith(linea);
             _ = linea.Should().StartWith("PS1=");
             _ = linea.Should().Contain("stty -echo -onlcr");
-            _ = linea.Should().Contain("stty -echo -onlcr; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null;");
             _ = linea.Should().Contain("set +o history +m");
             _ = linea.Should().Contain($"'{Id:N}'");
             _ = linea.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();
         }
 
+        // El resto de la preparación va en la captura: variables, mesg (o su equivalente sin mesg) y el directorio de trabajo
+        // reexportado en base64 antes del cd.
         [Fact]
-        public void Inicializacion_ConDirectorio_ReexportaNsCwdEnBase64AntesDelCd()
+        public void CapturaPath_PreparaElShellYReexportaNsCwdEnBase64AntesDelCd()
         {
             // Act
-            string linea = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, Centinela, w, "/srv/it's"));
+            string captura = Componer(w => ConstructorComando.EscribirCapturaPath(Id, Testigo, Centinela, w, "/srv/it's"));
 
             // Assert
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("/srv/it's"));
-            _ = linea.Should().Contain($"export __NS_CWD=\"$(printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
-            _ = linea.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().ContainSingle();
+            _ = captura.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; export __NS_CWD=\"$(printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; eval ");
+            _ = captura.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(2, "el centinela y una sola línea");
         }
 
         [Fact]
@@ -212,7 +214,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Assert: el centinela termina la espera de la cola anterior; los marcadores no aparecen en el texto. El testigo se
             // guarda en un array de solo lectura y la cabecera de la identidad solo sale entera si quedó guardado.
-            _ = texto.Should().StartWith($"{LineaCentinela}__ns_rc=0; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; {MarcadorDeLaCola}");
+            _ = texto.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '{Id:N}'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; {MarcadorDeLaCola}");
             _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}").And.NotContain($"__NSI_{Id:N}");
         }
 
@@ -243,12 +245,12 @@ namespace NativeSsh.Test.Protocolo
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, Centinela, w));
-            string inicializacion = Componer(w => ConstructorComando.EscribirLineaInicializacion(Id, Centinela, w));
+            string captura = Componer(w => ConstructorComando.EscribirCapturaPath(Id, Testigo, Centinela, w));
             string interrupcion = Componer(w => ConstructorComando.EscribirRecuperacion(Id, Centinela, w));
 
             // Assert
             _ = comando.Should().Contain(clausulaEsperada);
-            _ = inicializacion.Should().Contain(clausulaEsperada);
+            _ = captura.Should().Contain(clausulaEsperada);
             _ = interrupcion.Should().Contain(clausulaEsperada);
         }
     }

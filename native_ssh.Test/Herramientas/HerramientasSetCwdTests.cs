@@ -142,7 +142,7 @@ namespace NativeSsh.Test.Herramientas
                 .And.NotContain("puede haber pasado");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Anterior));
-            _ = _fabrica.Ultima!.CanalActual!.Inicializaciones.Should().ContainSingle().Which.Should().Contain(base64);
+            _ = _fabrica.Ultima!.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain(base64);
         }
 
         // Volver a $HOME con el shell perdido a mitad: el directorio sigue siendo el anterior.

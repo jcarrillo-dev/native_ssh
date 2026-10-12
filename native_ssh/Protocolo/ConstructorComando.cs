@@ -49,37 +49,34 @@ namespace NativeSsh.Protocolo
 
         // Sin centinela delante: la primera línea la lee el shell de login, que puede no ser bash (en zsh o csh interactivos
         // '#' no empieza un comentario), y antes no hay ninguna cola esperándolo.
-        public static void EscribirInicializacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
+        public static void EscribirInicializacion(Guid id, IBufferWriter<byte> escritor)
         {
             escritor.Write("exec bash --noediting --norc --noprofile\n"u8);
-            EscribirLineaInicializacion(id, centinela, escritor, directorioTrabajo);
+            EscribirLineaInicializacion(id, escritor);
         }
 
         // El reenvío de la línea de inicialización (SesionShell.AbrirShellAsync) sí lleva el centinela delante: si la primera
         // llegó a ejecutarse, su cola consume esa línea; si no, bash la toma como un comentario.
-        public static void EscribirReenvioInicializacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
+        public static void EscribirReenvioInicializacion(Guid id, Guid centinela, IBufferWriter<byte> escritor)
         {
             EscribirLineaCentinela(centinela, escritor);
-            EscribirLineaInicializacion(id, centinela, escritor, directorioTrabajo);
+            EscribirLineaInicializacion(id, escritor);
         }
 
-        // directorioTrabajo (fuente de verdad en C#) se reexporta como __NS_CWD; viaja en base64 para que ninguna ruta
-        // rompa la línea. La llamada lo acota a SesionShell.MaxBytesDirectorioTrabajo.
-        public static void EscribirLineaInicializacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
+        // Lo mínimo para que el protocolo funcione (sin prompt, sin historial, sin eco), el marcador y una cola que consume una
+        // sola línea, sin esperar el centinela: la siguiente que llega siempre es una línea centinela (la del reenvío, la
+        // primera de la sincronización o la de la captura), y mientras se inicializa ssh_input se rechaza, así que no hay nada
+        // tecleado que descartar. Debe ser corta y de longitud fija: con un login lento con readline (bash -l), el bash nuevo
+        // recibe de una vez esta línea, el centinela del reenvío y su copia (SesionShell.SincronizarAsync) y los lee con una
+        // sola lectura de su búfer de entrada; medido con bash 5.3 en un terminal, si pasan de unos 1024 bytes la lectura
+        // corta la copia y, si el corte cae dentro de unas comillas, bash se come las líneas siguientes y la inicialización se
+        // cuelga. Por eso el resto de la preparación (variables, mesg, __NS_CWD y el cd) va en la línea de captura, que nunca
+        // llega junto con otras (EscribirCapturaPath); con el directorio de trabajo aquí, una ruta larga bastaba para colgarla.
+        public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor)
         {
-            // 'mesg n': otro usuario local del servidor no puede escribir en el terminal (write, wall) y falsificar líneas de la
-            // salida, como los anuncios de las escrituras. Sin mesg (Debian slim) se quita a mano la escritura del grupo, que
-            // es lo que hace mesg; sin terminal o sin permiso, nada, en silencio. Repetirlo (reenvío de la línea) no cambia nada.
-            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; stty -echo -onlcr; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null; __ns_rc=0; "u8);
-            if (!string.IsNullOrEmpty(directorioTrabajo))
-            {
-                escritor.Write("export __NS_CWD=\"$(printf '%s' '"u8);
-                EscribirBase64(directorioTrabajo, escritor);
-                escritor.Write("' | base64 -d)\"; "u8);
-            }
-
-            escritor.Write("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
-            EscribirCola(id, centinela, escritor, isEsperarCentinela: false);
+            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; stty -echo -onlcr; __ns_rc=0; printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
+            MarcadorFin.EscribirId(id, escritor);
+            escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; command read -r __ns_d; unset __ns_d\n"u8);
         }
 
         // "#<32 hexadecimales>\n". Para bash, un comentario: si no lo espera ninguna cola (tras un Ctrl+C que abortó la suya,
@@ -127,10 +124,24 @@ namespace NativeSsh.Protocolo
         // asignar de nuevo una variable de solo lectura daría error). La asignación va dentro de un eval: si falla (ya hay
         // una variable de solo lectura con ese nombre), bash abandona el resto de la orden, que así es solo el eval, y la
         // línea sigue y da su marcador sin la identidad. El centinela del principio termina la espera de la cola anterior.
-        public static void EscribirCapturaPath(Guid id, Guid testigo, Guid centinela, IBufferWriter<byte> escritor)
+        // Antes, el resto de la preparación del shell (que no cabe en la línea de inicialización, EscribirLineaInicializacion):
+        // variables para que nada pagine ni use el terminal; 'mesg n', para que otro usuario local del servidor no pueda
+        // escribir en el terminal (write, wall) y falsificar líneas de la salida, como los anuncios de las escrituras (sin mesg,
+        // como en Debian slim, se quita a mano la escritura del grupo, que es lo que hace mesg; sin terminal o sin permiso,
+        // nada, en silencio); y directorioTrabajo (fuente de verdad en C#), que se reexporta como __NS_CWD en base64 para que
+        // ninguna ruta rompa la línea (la llamada lo acota a SesionShell.MaxBytesDirectorioTrabajo), con su cd.
+        public static void EscribirCapturaPath(Guid id, Guid testigo, Guid centinela, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
         {
             EscribirLineaCentinela(centinela, escritor);
-            escritor.Write("__ns_rc=0; eval \"declare -r -a "u8);
+            escritor.Write("__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null; "u8);
+            if (!string.IsNullOrEmpty(directorioTrabajo))
+            {
+                escritor.Write("export __NS_CWD=\"$(printf '%s' '"u8);
+                EscribirBase64(directorioTrabajo, escritor);
+                escritor.Write("' | base64 -d)\"; "u8);
+            }
+
+            escritor.Write("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; eval \"declare -r -a "u8);
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("=('"u8);
             EscribirTestigo(testigo, escritor);
@@ -204,18 +215,12 @@ namespace NativeSsh.Protocolo
         // 'set -x' la traza del bucle va a /dev/null con su stderr. Válida con 'set -u', 'set -e', 'set -f', 'set -a', un IFS
         // raro y las opciones de patrones (nocasematch, extglob, nullglob, failglob).
         // Todos los envíos salvo la inicialización empiezan por el centinela, y todas las colas lo esperan salvo la de la
-        // línea de inicialización (isEsperarCentinela=false), que consume una sola línea: la siguiente que llega siempre es
-        // una línea centinela (la del reenvío, la primera de la sincronización o la de la captura), y mientras se inicializa
-        // ssh_input se rechaza, así que no hay nada tecleado que descartar. Esa línea debe ser corta: con un login lento con
-        // readline (bash -l), el bash nuevo lee de una vez la inicialización, el centinela del reenvío y su copia
-        // (SesionShell.SincronizarAsync) con una sola lectura de su búfer de entrada; medido con bash 5.3 en un terminal, si
-        // las dos copias y el centinela pasan de unos 1024 bytes, la lectura corta la segunda copia y la inicialización se
-        // cuelga (con la espera del centinela en esta línea ocupaban unos 1250).
+        // línea de inicialización, que consume una sola línea (EscribirLineaInicializacion explica por qué).
         // Solo construcciones POSIX: si la cola la ejecuta otro shell (uno anidado que dejó el comando, p. ej. el ash de busybox
         // de root tras 'sudo -i' en Alpine, o dash), el marcador sale con MarcadorFin.CodigoShellAnidado y ese shell también
         // descarta lo tecleado hasta el centinela, en vez de ejecutarlo, mientras el canal se cierra (medido con dash 0.5 y el
         // ash de busybox en un terminal: mismos recuentos que bash, Ctrl+D incluido).
-        private static void EscribirCola(Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null, bool isEsperarCentinela = true)
+        private static void EscribirCola(Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             if (identidad is { } esperada)
             {
@@ -229,12 +234,6 @@ namespace NativeSsh.Protocolo
 
             escritor.Write("printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            if (!isEsperarCentinela)
-            {
-                escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; command read -r __ns_d; unset __ns_d\n"u8);
-                return;
-            }
-
             // 1000 = MaxEofSeguidos; 999999 = MarcadorFin.MaxLineasDescartadas.
             escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; __ns_n=; __ns_c=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { { TMOUT= IFS= command read -r __ns_d && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ]; }; do __ns_x=${__ns_d%'#"u8);
             EscribirTestigo(centinela, escritor);

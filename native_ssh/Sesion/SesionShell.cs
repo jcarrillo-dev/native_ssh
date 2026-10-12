@@ -53,7 +53,7 @@ namespace NativeSsh.Sesion
         // y de SSH.NET. Los que pasen del cupo esperan su turno dentro de su timeout.
         public const int MaxCanalesExecSimultaneos = 4;
 
-        // __NS_CWD viaja en base64 en la línea de inicialización del TTY (máximo 4095 bytes por línea).
+        // __NS_CWD viaja en base64 en la línea de captura del TTY (ConstructorComando.EscribirCapturaPath; máximo 4095 bytes por línea).
         public const int MaxBytesDirectorioTrabajo = 1024;
 
         // Cola de la salida del shell durante la inicialización (ShellAbierto.AnotarInicializacion).
@@ -1658,16 +1658,16 @@ namespace NativeSsh.Sesion
             switch (tipo)
             {
                 case EscrituraEnum.Inicializacion:
-                    ConstructorComando.EscribirInicializacion(id, canal.Centinela, escritor, _directorioTrabajo);
+                    ConstructorComando.EscribirInicializacion(id, escritor);
                     break;
                 case EscrituraEnum.ReenvioInicializacion:
-                    ConstructorComando.EscribirReenvioInicializacion(id, canal.Centinela, escritor, _directorioTrabajo);
+                    ConstructorComando.EscribirReenvioInicializacion(id, canal.Centinela, escritor);
                     break;
                 case EscrituraEnum.Sincronizacion:
                     ConstructorComando.EscribirSincronizacion(id, canal.Centinela, escritor);
                     break;
                 case EscrituraEnum.CapturaPath:
-                    ConstructorComando.EscribirCapturaPath(id, canal.Testigo, canal.Centinela, escritor);
+                    ConstructorComando.EscribirCapturaPath(id, canal.Testigo, canal.Centinela, escritor, _directorioTrabajo);
                     break;
                 case EscrituraEnum.Comando:
                     ConstructorComando.EscribirComando(comando, id, canal.Centinela, escritor, canal.Identidad);

@@ -431,6 +431,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Líneas que las colas leyeron y descartaron mientras esperaban el centinela (sin ejecutarlas).
         public int LineasDescartadas => Volatile.Read(ref _lineasDescartadas);
         public ConcurrentQueue<string> Inicializaciones { get; } = new();
+
+        // Líneas de captura que ejecutó el shell (llevan el resto de la preparación y el directorio de trabajo).
+        public ConcurrentQueue<string> Capturas { get; } = new();
         public int Sincronizaciones => Volatile.Read(ref _sincronizaciones);
 
         public bool IsCerrado => _salida.IsAddingCompleted;
@@ -710,6 +713,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             {
                 // Lo que bash imprime para la línea: el base64 entre los marcadores de la captura, o a secas si la línea
                 // no los pide (formato anterior).
+                Capturas.Enqueue(linea);
                 string id = ExtraerId(linea);
                 string base64 = Convert.ToBase64String(BytesPathLogin ?? Encoding.UTF8.GetBytes(PathLogin));
                 string captura = linea.Contains("'__NSP'", StringComparison.Ordinal) ? $"__NSP_{id}_\n{base64}\n__NSQ_{id}_\n" : $"{base64}\n";

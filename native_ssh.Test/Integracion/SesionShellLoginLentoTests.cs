@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Linq;
 using System.Text;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -48,6 +49,38 @@ namespace NativeSsh.Test.Integracion
             _ = Texto(segunda).Should().Be("dos:valor\n");
             _ = fallida.CodigoSalida.Should().Be(1);
             _ = Texto(fallida).Should().Be("tres\n");
+        }
+
+        // Con el directorio de trabajo fijado (largo, como el que deja ssh_set_cwd), la inicialización con el login lento y su
+        // reenvío sigue funcionando: el bash nuevo lee de una vez las dos copias de la línea de inicialización y el centinela
+        // con una sola lectura de su búfer (unos 1024 bytes), así que esa línea no lleva el directorio (va en la captura).
+        [Theory]
+        [InlineData(40)]
+        [InlineData(400)]
+        public async Task ConDirectorioDeTrabajoLargo_ElPrimerComandoSeEjecutaEnEl(int longitud)
+        {
+            // Arrange
+            // Tramos de como mucho 200 caracteres (NAME_MAX es 255).
+            string[] tramos = [.. Enumerable.Range(0, (longitud + 199) / 200).Select(i => new string((char)('d' + i), Math.Min(200, longitud - (i * 200))))];
+            string directorio = Directory.CreateDirectory(Path.Combine([Path.GetTempPath(), $"ns_lento_{Guid.NewGuid():N}", .. tramos])).FullName;
+            try
+            {
+                await using SesionShell sesion = _sshd.Sesion();
+                sesion.DirectorioTrabajo = directorio;
+
+                // Act
+                Peticion primera = await EjecutarAsync(sesion, "pwd");
+                Peticion segunda = await EjecutarAsync(sesion, "echo dos");
+
+                // Assert
+                _ = primera.Estado.Should().Be(EstadoPeticionEnum.Completado, primera.Aviso);
+                _ = Texto(primera).Should().Be($"{directorio}\n");
+                _ = Texto(segunda).Should().Be("dos\n");
+            }
+            finally
+            {
+                Directory.Delete(Path.Combine(Path.GetTempPath(), directorio[Path.GetTempPath().Length..].Split('/')[0]), recursive: true);
+            }
         }
     }
 }
