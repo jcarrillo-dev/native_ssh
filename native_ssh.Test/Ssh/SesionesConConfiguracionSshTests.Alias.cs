@@ -91,6 +91,41 @@ namespace NativeSsh.Test.Ssh
             _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Clave.Should().Be("deploy@127.0.0.1:2222");
         }
 
+        // El orden de los IdentityFile cuenta (ssh los prueba en orden): a,b y b,a son sesiones distintas.
+        [Fact]
+        public async Task MismasClavesEnOtroOrden_SonOtraSesion()
+        {
+            // Arrange
+            File.WriteAllText(_configuracion,
+                "Host ab\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n  IdentityFile /k/a\n  IdentityFile /k/b\n" +
+                "Host ba\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n  IdentityFile /k/b\n  IdentityFile /k/a\n");
+
+            // Act
+            await Ejecutar("ab", "ba");
+
+            // Assert
+            _ = _fabrica.Conexiones.Should().Be(2);
+            _ = _gestor.ListarSesiones().Select(s => string.Join(",", s.Destino.Identidades!)).Should().BeEquivalentTo(["/k/a,/k/b", "/k/b,/k/a"]);
+        }
+
+        // ssh_status con un alias cuya configuración cambió con la sesión viva muestra también la sesión y las peticiones de
+        // antes del cambio.
+        [Fact]
+        public async Task EstadoDeUnAliasCuyaConfiguracionCambio_MuestraLasPeticionesDeAntes()
+        {
+            // Arrange
+            EscribirProd();
+            await Ejecutar("prod");
+            EscribirProd(servidor: "localhost");
+
+            // Act
+            ResultadoEstado estado = Herramientas.Estado("prod");
+
+            // Assert
+            _ = estado.Sesiones.Should().ContainSingle().Which.Destino.Should().Be("deploy@127.0.0.1:2222");
+            _ = estado.Peticiones.Should().ContainSingle().Which.Destino.Should().Be("deploy@127.0.0.1:2222");
+        }
+
         // Dos sesiones del mismo alias con las mismas claves (antes y después de cambiar su HostName): el mensaje nombra las
         // dos y no dice «una por cada juego de claves».
         [Fact]
