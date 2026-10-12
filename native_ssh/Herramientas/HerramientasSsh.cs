@@ -2077,8 +2077,9 @@ namespace NativeSsh.Herramientas
 
         // Los avisos de las peticiones anteriores del shell enlazadas (Peticion.AnteriorConTecleadoDescartado) que ninguna
         // respuesta ha dado aún, del más antiguo al más reciente. El de una herramienta no cita su id (Peticion.IsHerramienta).
-        // Recorrido iterativo y con tope (Peticion.MaxAvisosTecleadoEnlazados): de una cadena más larga solo se dan los avisos
-        // de las más recientes (antes era recursivo y una cadena de decenas de miles desbordaba la pila del servidor).
+        // No dicen «de este shell»: la petición enlazada puede ser de un shell anterior (ssh_reset_shell). Recorrido iterativo
+        // y con tope (Peticion.MaxAvisosTecleadoEnlazados): de una cadena más larga solo se dan los avisos de las más
+        // recientes (antes era recursivo y una cadena de decenas de miles desbordaba la pila del servidor).
         internal static string? AvisosTecleadoDeAnteriores(Peticion? anterior)
         {
             if (anterior is null)
@@ -2099,8 +2100,8 @@ namespace NativeSsh.Herramientas
                 string quien = enlazada.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : $"el comando anterior a {(enlazada.IsHerramienta ? "ella" : "él")}";
                 string lineas = SesionShell.DescribirLineas(enlazada.LineasTecleadoDescartadas);
                 avisos = Unir(avisos, enlazada.IsHerramienta
-                    ? $"Una herramienta de archivo o ssh_set_cwd anterior de este shell avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse al llegar ella (ninguna se ejecutó como orden)."
-                    : $"El final del comando {enlazada.IdTexto} de este shell, que aún no se ha leído, avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
+                    ? $"Una herramienta de archivo o ssh_set_cwd anterior avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse al llegar ella (ninguna se ejecutó como orden)."
+                    : $"El final del comando {enlazada.IdTexto}, que aún no se ha leído, avisa de que {quien} no leyó {lineas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
             }
 
             return avisos;

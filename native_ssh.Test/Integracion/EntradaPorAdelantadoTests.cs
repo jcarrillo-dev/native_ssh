@@ -138,7 +138,7 @@ namespace NativeSsh.Test.Integracion
             _ = leido?.Aviso.Should().Contain(AvisoDe(lento.Id, "2 líneas"));
             _ = isFinalLeido
                 ? otro.Aviso.Should().BeNull("el final que avisaba ya se leyó")
-                : otro.Aviso.Should().Contain($"El final del comando {siguiente.Id} de este shell, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
+                : otro.Aviso.Should().Contain($"El final del comando {siguiente.Id}, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
             _ = tercero.Aviso.Should().BeNull("el aviso no se repite más de una vez");
             _ = otro.Salida.Should().Be("otro\n");
         }
@@ -191,14 +191,43 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             salida.WriteLine($"D '{d.Aviso}'; E '{e.Aviso}'; final '{finalTrae.Aviso}'");
-            _ = d.Aviso.Should().Contain($"El final del comando {trae.Id} de este shell, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
+            _ = d.Aviso.Should().Contain($"El final del comando {trae.Id}, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
             _ = new[] { e.Aviso, finalTrae.Aviso }.Should().AllSatisfy(a => (a ?? string.Empty).Should().NotContain("no leyó"));
         }
 
-        // La petición que trae el aviso es la de una herramienta de archivo (su envío llegó tras lo que el comando no leyó) y
-        // su respuesta no da avisos: el ssh_exec siguiente lo da sin citar el id de esa petición, que el LLM no ha visto.
+        // El aviso pendiente de un comando del shell anterior llega tras ssh_reset_shell, pero no dice que sea «de este
+        // shell»: el comando que lo trae era del shell que se cerró.
         [Fact]
-        public async Task AvisoTraidoPorUnaEscritura_NoCitaSuId()
+        public async Task AvisoPendienteTrasResetShell_NoDiceQueEsDeEsteShell()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0);
+            await Task.Delay(300);
+            _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0);
+            _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
+            ResultadoComando trae = await h.EjecutarAsync(destino, "sleep 0.5", esperarSegundos: 0);
+            await Task.Delay(1500);
+
+            // Act
+            _ = h.ReiniciarShell(destino);
+            ResultadoComando d = await h.EjecutarAsync(destino, "echo D", esperarSegundos: 15);
+
+            // Assert
+            salida.WriteLine($"D '{d.Aviso}'");
+            _ = d.Aviso.Should().Contain($"El final del comando {trae.Id}, que aún no se ha leído, avisa de que el comando {lento.Id} no leyó 2 líneas");
+            _ = d.Aviso.Should().NotContain("de este shell");
+        }
+
+        // La petición que trae el aviso es la de una herramienta de archivo o de ssh_set_cwd (su envío llegó tras lo que el
+        // comando no leyó) y su respuesta no da avisos: el ssh_exec siguiente lo da sin citar el id de esa petición, que el LLM
+        // no ha visto. ssh_set_cwd va por otro camino que la escritura (HerramientasSsh.EjecutarHerramientaAsync).
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task AvisoTraidoPorUnaHerramienta_NoCitaSuId(bool isSetCwd)
         {
             // Arrange
             HerramientasSsh h = Herramientas();
@@ -210,13 +239,16 @@ namespace NativeSsh.Test.Integracion
             _ = await h.LeerSalidaAsync(lento.Id, esperarSegundos: 15);
 
             // Act
-            _ = await h.EscribirArchivoAsync(destino, Path.Combine(_testigos, "trae.txt"), "hola\n");
+            if (isSetCwd)
+                _ = await h.FijarDirectorioAsync(destino, _testigos);
+            else
+                _ = await h.EscribirArchivoAsync(destino, Path.Combine(_testigos, "trae.txt"), "hola\n");
             ResultadoComando b = await h.EjecutarAsync(destino, "echo B", esperarSegundos: 15);
             ResultadoComando c = await h.EjecutarAsync(destino, "echo C", esperarSegundos: 15);
 
             // Assert
             salida.WriteLine($"B '{b.Aviso}'; C '{c.Aviso}'");
-            _ = b.Aviso.Should().Contain($"el comando {lento.Id} no leyó 2 líneas");
+            _ = b.Aviso.Should().Contain($"Una herramienta de archivo o ssh_set_cwd anterior avisa de que el comando {lento.Id} no leyó 2 líneas");
             _ = IdsCitados(b.Aviso).Should().OnlyContain(id => id == lento.Id);
             _ = (c.Aviso ?? string.Empty).Should().NotContain("no leyó");
         }

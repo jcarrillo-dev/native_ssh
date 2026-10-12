@@ -400,6 +400,30 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
+        // Una función o un alias 'base64' del usuario cambia la decodificación: lo decodificado no termina en el nonce y el
+        // comando no se ejecuta (997; SesionShell.MensajeEnvioIncompleto la nombra entre las causas). Medido aparte: una
+        // función 'printf' rompe el marcador (el comando agota su plazo) y una función 'eval' da código 0 sin ejecutar nada
+        // (preexistente, para la documentación): ninguna de las dos llega a este mensaje.
+        [Theory]
+        [InlineData("base64() { :; }")]
+        [InlineData("alias base64=:")]
+        public async Task DecodificacionCambiadaPorElUsuario_NoSeEjecuta(string redefinicion)
+        {
+            // Arrange
+            string testigo = Testigo("cambiada");
+            _ = Comando("shopt -s expand_aliases");
+            _ = Comando(redefinicion);
+            _ = Comando($"touch {testigo}; (exit 5)");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = File.Exists(testigo).Should().BeFalse();
+            _ = _codigos.Should().Equal(0, 0, MarcadorFin.CodigoEnvioIncompleto);
+            _ = marcadores[2].Salida.Should().BeEmpty();
+        }
+
         // Con el shell en un locale multibyte heredado (zh_CN.GBK), un comando que acaba en un carácter cuyo último byte UTF-8
         // es byte inicial en GBK ('€' = E2 82 AC) se juntaba con el primer carácter del nonce si era a–f (bytes de cola en
         // GBK), '${__ns_b%<nonce>}' no lo quitaba y el comando no se ejecutaba (997, «no llegó entero»). El salto de línea
