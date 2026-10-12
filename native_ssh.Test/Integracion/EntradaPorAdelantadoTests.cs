@@ -107,8 +107,9 @@ namespace NativeSsh.Test.Integracion
             _ = siguiente.Aviso.Should().Contain(AvisoDe(lento.Id, "2 líneas"));
         }
 
-        // El aviso sale exactamente una vez: si nadie ha leído el final del comando que lo trae (lanzado con esperarSegundos=0),
-        // lo repite la respuesta siguiente del shell y ninguna más; si ya se leyó, no se repite.
+        // El aviso sale exactamente una vez entre todas las respuestas: si nadie ha leído el final del comando que lo trae
+        // (lanzado con esperarSegundos=0), lo da la respuesta siguiente del shell, y ni las demás ni ese final lo repiten; si
+        // ya se leyó, no se repite.
         [Theory]
         [InlineData(false)]
         [InlineData(true)]
@@ -133,7 +134,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             salida.WriteLine($"previo '{previo.Aviso}'; otro '{otro.Aviso}'; tercero '{tercero.Aviso}'; final siguiente '{finalSiguiente.Aviso}'");
             _ = previo.Aviso.Should().BeNull();
-            _ = finalSiguiente.Aviso.Should().Contain(AvisoDe(lento.Id, "2 líneas"));
+            _ = finalSiguiente.Aviso.Should().BeNull("el aviso ya salió en otra respuesta");
             _ = leido?.Aviso.Should().Contain(AvisoDe(lento.Id, "2 líneas"));
             _ = isFinalLeido
                 ? otro.Aviso.Should().BeNull("el final que avisaba ya se leyó")

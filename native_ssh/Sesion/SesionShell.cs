@@ -135,8 +135,8 @@ namespace NativeSsh.Sesion
         // puede llegar durante el comando siguiente, que lo descarta. Bajo _candadoProceso.
         private Guid? _idRecuperacionReenviada;
 
-        // Último comando terminado cuyo final avisó de líneas tecleadas descartadas (solo el bucle): el siguiente lo enlaza
-        // para repetir el aviso si nadie ha leído aquel final (Peticion.AnteriorConTecleadoDescartado).
+        // Último comando terminado con líneas tecleadas descartadas (solo el bucle): el siguiente lo enlaza para dar el aviso si
+        // ninguna respuesta lo ha dado aún (Peticion.AnteriorConTecleadoDescartado).
         private Peticion? _ultimaConTecleadoDescartado;
 
         // Canales del shell abandonados (AbandonarCanal) que aún no se han cerrado.
@@ -780,8 +780,8 @@ namespace NativeSsh.Sesion
                         throw new OperationCanceledException(token);
                     // Lo descartado antes de este comando llega en su marcador (ignorado durante la interrupción si llegó
                     // tarde) o, si no llegó a imprimirse, en el de la recuperación (EscanerMarcador.LineasDescartadas).
-                    string? avisoTecleado = FijarTecleadoDescartado(peticion, idAnterior);
-                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(Unir(avisoShell, avisoInterrupcion), avisoTecleado));
+                    FijarTecleadoDescartado(peticion, idAnterior);
+                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, detalle, Unir(avisoShell, avisoInterrupcion));
                     return;
                 }
 
@@ -808,18 +808,22 @@ namespace NativeSsh.Sesion
             // el proceso que se comió parte del envío puede seguir leyendo del terminal.
             if (codigo == MarcadorFin.CodigoEnvioIncompleto)
             {
-                _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, Unir(Unir(avisoShell, MensajeEnvioIncompleto), FijarTecleadoDescartado(peticion, idAnterior)));
+                FijarTecleadoDescartado(peticion, idAnterior);
+                _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, Unir(avisoShell, MensajeEnvioIncompleto));
                 return;
             }
 
-            _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, Unir(avisoShell, FijarTecleadoDescartado(peticion, idAnterior)));
+            FijarTecleadoDescartado(peticion, idAnterior);
+            _ = peticion.TryFinalizar(EstadoPeticionEnum.Completado, codigo, avisoShell);
         }
 
         internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: no llegó entero al shell porque otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte de su envío, y el shell no ejecuta un comando a medias. Ese proceso puede seguir comiéndose los siguientes: termínalo (kill) o abre un shell nuevo con ssh_reset_shell, y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
-        // que se envió) se fijan en la petición antes de su estado final; devuelve su aviso. Solo el bucle.
-        private string? FijarTecleadoDescartado(Peticion peticion, string? idAnterior)
+        // que se envió) se fijan en la petición antes de su estado final. Su aviso no va en el aviso del estado final: lo añade
+        // una sola vez la primera respuesta que lo da, la de este comando o la del siguiente (Peticion.TryTomarAvisoTecleado,
+        // HerramientasSsh.Resultado). Solo el bucle.
+        private void FijarTecleadoDescartado(Peticion peticion, string? idAnterior)
         {
             int descartadas;
             lock (_candadoProceso)
@@ -827,7 +831,6 @@ namespace NativeSsh.Sesion
             peticion.FijarLineasTecleadoDescartadas(descartadas, idAnterior);
             if (descartadas > 0)
                 _ultimaConTecleadoDescartado = peticion;
-            return DescribirTecleadoDescartado(descartadas, idAnterior);
         }
 
         // Lo tecleado con ssh_input que ningún comando leyó: la cola que esperaba el envío de este comando lo descartó sin

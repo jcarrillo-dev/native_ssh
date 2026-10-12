@@ -2070,6 +2070,11 @@ namespace NativeSsh.Herramientas
         }
 
 
+        // El aviso del estado final con el de las líneas tecleadas descartadas, si ninguna respuesta lo ha dado aún.
+        private static string? AvisoConTecleado(Peticion peticion) => peticion.TryTomarAvisoTecleado()
+            ? Unir(peticion.Aviso, SesionShell.DescribirTecleadoDescartado(peticion.LineasTecleadoDescartadas, peticion.IdComandoQueNoLeyo))
+            : peticion.Aviso;
+
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
         {
             // Se lee el estado antes que la salida: si ya era final, la salida está completa.
@@ -2077,13 +2082,11 @@ namespace NativeSsh.Herramientas
             TimeSpan? tiempoSinSalida = peticion.TiempoSinSalida;
             PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal());
 
-            string? avisoFinal = peticion.Aviso;
-            if (estado.IsFinal())
-                peticion.MarcarResultadoFinalEntregado();
-
-            // Si nadie ha visto aún el final del comando anterior del mismo shell, que avisaba de líneas tecleadas descartadas
-            // (p. ej. ese comando se lanzó con esperarSegundos=0 y después otro ssh_exec), su aviso va también aquí, una vez.
-            if (peticion.AnteriorConTecleadoDescartado is { IsResultadoFinalEntregado: false } anterior)
+            // El aviso de las líneas tecleadas descartadas sale una sola vez: en el final de este comando o, si nadie lo ha leído
+            // aún (p. ej. se lanzó con esperarSegundos=0 y después otro ssh_exec), en la primera respuesta del comando siguiente
+            // del mismo shell (Peticion.TryTomarAvisoTecleado).
+            string? avisoFinal = estado.IsFinal() ? AvisoConTecleado(peticion) : peticion.Aviso;
+            if (peticion.AnteriorConTecleadoDescartado is { } anterior && anterior.TryTomarAvisoTecleado())
                 avisoFinal = Unir(avisoFinal, $"El final del comando {anterior.IdTexto} de este shell, que aún no se ha leído, avisa de que {(anterior.IdComandoQueNoLeyo is { } idQueNoLeyo ? $"el comando {idQueNoLeyo}" : "el comando anterior a él")} no leyó {SesionShell.DescribirLineas(anterior.LineasTecleadoDescartadas)} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden).");
 
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
@@ -2409,7 +2412,7 @@ namespace NativeSsh.Herramientas
             // empezado, va al camino incierto aunque falte la señal: pudo quedarse a medias, tanto si la petición terminó en
             // ShellPerdido (falló la escritura) como en Cancelado (el cierre de la sesión, ssh_disconnect, la cortó;
             // SesionShell.BucleComandosAsync).
-            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, peticion.Aviso, isEjecutada: !IsInterrumpidaSinEnviar(peticion));
+            string mensaje = informe.MensajeInterrupcion(ruta, estado, peticion.IdTexto, AvisoConTecleado(peticion), isEjecutada: !IsInterrumpidaSinEnviar(peticion));
             throw isCancelada ? new OperationCanceledException(mensaje, cancellationToken) : new NativeSshException(mensaje);
         }
 
@@ -2486,7 +2489,7 @@ namespace NativeSsh.Herramientas
 
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(AvisoConTecleado(peticion) is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

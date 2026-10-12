@@ -18,7 +18,7 @@ namespace NativeSsh.Sesion
         private volatile bool _isCancelacionSolicitada;
         private volatile bool _isComandoEnviado;
         private volatile bool _isEnvioIniciado;
-        private volatile bool _isResultadoFinalEntregado;
+        private int _isAvisoTecleadoTomado;
         private int _lineasTecleadoDescartadas;
         private volatile string? _idComandoQueNoLeyo;
         private volatile Peticion? _anteriorConTecleadoDescartado;
@@ -72,12 +72,9 @@ namespace NativeSsh.Sesion
         // Id del comando anterior del mismo shell (el que no leyó esas líneas), si se conoce.
         public string? IdComandoQueNoLeyo => _idComandoQueNoLeyo;
 
-        // El comando anterior del mismo shell, si su final avisó de líneas tecleadas descartadas: ese aviso se repite en la
-        // respuesta de este mientras nadie haya devuelto el resultado final de aquel (HerramientasSsh.Resultado).
+        // El comando anterior del mismo shell, si descartó líneas tecleadas: si ninguna respuesta ha dado aún ese aviso (su
+        // final no se ha leído), lo da la de este (HerramientasSsh.Resultado).
         public Peticion? AnteriorConTecleadoDescartado => _anteriorConTecleadoDescartado;
-
-        // Alguna respuesta de herramienta devolvió ya el estado final de esta petición (con su aviso).
-        public bool IsResultadoFinalEntregado => _isResultadoFinalEntregado;
 
         public Task Finalizacion => _finalizacion.Task;
         public CancellationToken TokenInterrupcion => _interrupcion.Token;
@@ -127,7 +124,9 @@ namespace NativeSsh.Sesion
 
         public void MarcarEnvioIniciado() => _isEnvioIniciado = true;
 
-        public void MarcarResultadoFinalEntregado() => _isResultadoFinalEntregado = true;
+        // true una sola vez, y solo si hay líneas descartadas: quien lo recibe da el aviso (el final de esta petición o la
+        // respuesta del comando siguiente, lo que llegue antes); nadie más lo repite.
+        public bool TryTomarAvisoTecleado() => LineasTecleadoDescartadas > 0 && Interlocked.Exchange(ref _isAvisoTecleadoTomado, 1) == 0;
 
         public void FijarLineasTecleadoDescartadas(int lineas, string? idComandoQueNoLeyo)
         {
