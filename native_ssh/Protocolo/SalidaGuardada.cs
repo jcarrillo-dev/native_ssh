@@ -155,13 +155,18 @@ namespace NativeSsh.Protocolo
                 """.ReplaceLineEndings("\n");
         }
 
-        // Todo lo que el comando dejó en el terminal (sin secuencias ANSI), hasta el tope del búfer.
+        // Lo que conserva el búfer de lo que el comando dejó en el terminal (sin secuencias ANSI): lo último, como mucho lo que
+        // puede retener (su capacidad más un segmento). Longitud cuenta desde el principio, también lo ya descartado, y la marca
+        // final está al final.
         public static string LeerTerminal(BufferSalida salida)
         {
-            byte[] datos = new byte[Math.Max(0, (int)Math.Min(salida.Longitud, int.MaxValue))];
-            LecturaSalida lectura = salida.Leer(0, datos);
-            int longitud = ConversorTexto.LimpiarAnsi(datos.AsSpan(0, lectura.Copiados));
-            return ConversorTexto.ATexto(datos.AsSpan(0, longitud));
+            long fin = salida.Longitud;
+            byte[] datos = new byte[(int)Math.Min(fin, (long)salida.CapacidadMaxima + BufferSalida.TamanoSegmento)];
+            LecturaSalida lectura = salida.Leer(fin - datos.Length, datos);
+            Span<byte> leidos = datos.AsSpan(0, lectura.Copiados);
+            leidos = leidos[ConversorTexto.ContarContinuacionesIniciales(leidos)..];
+            int longitud = ConversorTexto.LimpiarAnsi(leidos);
+            return ConversorTexto.ATexto(leidos[..longitud]);
         }
 
         // Las marcas de la petición con este nonce: la última de cada tipo.

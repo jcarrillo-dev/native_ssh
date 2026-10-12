@@ -35,7 +35,6 @@ namespace NativeSsh.Buffers
 
         private readonly Lock _candado = new();
         private readonly List<byte[]> _segmentos = [];
-        private readonly int _capacidadMaxima;
         private readonly TimeProvider _reloj;
         private long _inicioAbsoluto;
         private long _finAbsoluto;
@@ -51,10 +50,13 @@ namespace NativeSsh.Buffers
         public BufferSalida(int capacidadMaxima, TimeProvider reloj)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(capacidadMaxima, 1);
-            _capacidadMaxima = capacidadMaxima;
+            CapacidadMaxima = capacidadMaxima;
             _reloj = reloj;
             UltimaEscritura = reloj.GetTimestamp();
         }
+
+        // Lo que se conserva como mucho: lo anterior se descarta (Longitud sigue contando desde el principio).
+        public int CapacidadMaxima { get; }
 
         // Lo que se puede leer: sin lo retenido por si es el principio de un secreto.
         public long Longitud
@@ -166,7 +168,7 @@ namespace NativeSsh.Buffers
                 if (_secretos is not null)
                     EnmascararSecretos(nuevos, inicioNuevos, finVisibleAnterior);
 
-                while (_finAbsoluto - _inicioAbsoluto - TamanoSegmento >= _capacidadMaxima)
+                while (_finAbsoluto - _inicioAbsoluto - TamanoSegmento >= CapacidadMaxima)
                 {
                     // Como al liberar: con secretos, a cero (pudo tener uno antes de enmascararlo, o lo retenido).
                     ArrayPool<byte>.Shared.Return(_segmentos[0], clearArray: _secretos is not null);

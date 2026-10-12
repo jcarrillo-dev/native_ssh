@@ -2208,9 +2208,10 @@ namespace NativeSsh.Herramientas
                     ? $"Sigue en ejecución y su salida se está guardando en {archivo}: cuando termine, ssh_output (con este id) da sus líneas, sus bytes y sus primeras líneas. Mientras tanto, el bloque de salida solo lleva lo que el comando escribe directamente en el terminal (p. ej. la petición de contraseña de sudo)."
                     : "Su salida irá a un archivo del servidor (guardarSalida), pero el comando aún no ha empezado: ssh_output (con este id) dará la ruta.";
             else
-                aviso = informe.Archivo is { } archivo
-                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file."
-                    : null;
+                aviso = informe.Archivo is not { } archivo ? null
+                    : estado == EstadoPeticionEnum.ShellPerdido
+                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa. Léelo con ssh_read_file ANTES del siguiente ssh_exec de este destino: ese abre un shell nuevo y borra el directorio del shell perdido."
+                    : $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file.";
 
             string salida = terminal.Length == 0 ? vista
                 : vista.Length == 0 ? terminal

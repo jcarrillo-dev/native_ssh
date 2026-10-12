@@ -874,8 +874,8 @@ namespace NativeSsh.Sesion
         }
 
         // Borra los directorios de esos shells por un canal exec (sin tocar el shell). Sin conexión no reconecta solo para esto:
-        // los devuelve a la lista y se borrarán al abrir el shell siguiente. Nunca lanza: un fallo se anota en el log y lo que
-        // quede lo barre el envoltorio a las 24 h.
+        // los devuelve a la lista y se borrarán al abrir el shell siguiente; si falla, también vuelven a la lista. Nunca lanza:
+        // un fallo se anota en el log y lo que nunca se llegue a borrar lo barre el envoltorio a las 24 h.
         private async Task BorrarGuardadosAsync(Guid[] shells)
         {
             if (shells.Length == 0)
@@ -894,7 +894,11 @@ namespace NativeSsh.Sesion
             }
             catch (Exception ex)
             {
+                // P. ej. el servidor rechazó el canal (MaxSessions) o la sesión se está cerrando: se reintenta en la ocasión
+                // siguiente (shell nuevo, ssh_reset_shell, cierre).
                 _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
+                lock (_candadoGuardados)
+                    _shellsConGuardado.AddRange(shells);
             }
         }
 

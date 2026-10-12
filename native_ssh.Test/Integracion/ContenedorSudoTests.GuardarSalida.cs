@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
+using NativeSsh.Sesion;
 using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
@@ -76,6 +77,37 @@ namespace NativeSsh.Test.Integracion
             {
                 _ = entorno.Root("rm -rf -- \"$1\"", baseGuardado);
             }
+        }
+
+        // El directorio que contiene el base (en producción /tmp) sin el bit sticky y escribible por otros: cualquiera podría
+        // renombrar el base y poner otro entre la comprobación y el uso, así que no se escribe nada; con el sticky, sí.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task GuardarSalida_PadreSinSticky_ErrorSinEscribir(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            string padre = $"{entorno.DirectorioRoot}/tmp_comun";
+            _ = entorno.Root("mkdir -m 0777 \"$1\" && chmod 0777 \"$1\"", padre);
+            OpcionesNativeSsh opciones = entorno.Servidor.Opciones() with { PrefijoGuardado = $"{padre}/native_ssh" };
+            await using GestorSesiones gestor = entorno.Servidor.Gestor(opciones);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            string testigo = $"{entorno.DirectorioUsuario}/ejecutado";
+
+            // Act
+            ResultadoComando sinSticky = await herramientas.EjecutarAsync(entorno.Destino, $"touch {testigo}", esperarSegundos: 30, guardarSalida: true).ComoComando();
+            string dentro = entorno.Root("ls -A \"$1\"; [ -e \"$2\" ] && echo ejecutado || true", padre, testigo);
+            _ = entorno.Root("chmod 1777 \"$1\"", padre);
+            ResultadoComando conSticky = await herramientas.EjecutarAsync(entorno.Destino, "echo hola", esperarSegundos: 30, guardarSalida: true).ComoComando();
+
+            // Assert
+            salida.WriteLine($"{sinSticky.Estado} '{sinSticky.Aviso}'");
+            _ = sinSticky.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = sinSticky.Aviso.Should().StartWith("El comando NO se ejecutó").And.Contain("bit sticky").And.Contain(padre);
+            _ = dentro.Should().BeEmpty();
+            _ = (conSticky.Estado, conSticky.Salida).Should().Be((EstadoPeticionEnum.Completado, "hola\n"));
+            _ = conSticky.Archivo.Should().StartWith($"{padre}/native_ssh-{entorno.Servidor.Usuario}/");
         }
 
         // Barrido con 'find -mmin' (también el de busybox): un resto sin cambios en 24 h se borra al crear el directorio de un

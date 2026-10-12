@@ -280,6 +280,27 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.Exists(Base).Should().BeTrue();
         }
 
+        // Shell perdido a mitad del comando: el aviso da la ruta y dice que hay que leerla antes del siguiente ssh_exec, que la
+        // borra al abrir el shell nuevo.
+        [Fact]
+        public async Task ShellPerdido_AvisaDeQueElSiguienteLaBorra()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, "echo parcial; kill -9 $$");
+            bool isAntes = File.Exists(r.Archivo!);
+            _ = await h.EjecutarAsync(Destino, "true", esperarSegundos: 30).ComoComando();
+
+            // Assert
+            salida.WriteLine(r.Aviso);
+            _ = r.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
+            _ = r.Aviso.Should().Contain(r.Archivo).And.Contain("ANTES del siguiente ssh_exec");
+            _ = isAntes.Should().BeTrue();
+            await EsperasPrueba.EsperarHastaAsync(() => !File.Exists(r.Archivo!), TimeSpan.FromSeconds(15));
+        }
+
         // Tras ssh_reset_shell el siguiente guardarSalida usa otro directorio (el del shell nuevo).
         [Fact]
         public async Task TrasReset_OtroDirectorio()
@@ -413,6 +434,25 @@ namespace NativeSsh.Test.Integracion
             _ = r.Estado.Should().Be(EstadoPeticionEnum.Error);
             _ = r.Aviso.Should().Contain("ssh_reset_shell").And.Contain(directorio);
             _ = File.Exists(testigo).Should().BeFalse();
+        }
+
+        // Mucho escrito directamente en el terminal (más que el búfer de 1 MiB): la respuesta sigue funcionando, se lee la marca
+        // final (la ruta y el recuento) y lo que se lee del búfer se queda en su capacidad.
+        [Fact]
+        public async Task MuchoEnElTerminal_LaRespuestaSigueYLaMarcaFinalSeLee()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, "head -c 3145728 /dev/zero | tr '\\0' 't' > /dev/tty; echo al_archivo");
+            ResultadoComando otra = await h.LeerSalidaAsync(r.Id).ComoComando();
+
+            // Assert
+            _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 0, 1L, 11L));
+            _ = r.Archivo.Should().EndWith($"/{r.Id}.out");
+            _ = r.Salida.Should().StartWith("al_archivo\n--- escrito directamente en el terminal");
+            _ = otra.Lineas.Should().Be(1);
         }
 
         // Un secreto enviado con ssh_input no sale en la vista previa (viene del archivo, sin enmascarar).
