@@ -120,6 +120,37 @@ namespace NativeSsh.Test.Herramientas
         public void MensajeNoComprobado_DiceQueNoSeResolvioYQueSeRechazaPorSeguridad() =>
             _ = HerramientasSsh.MensajeSoloLecturaNoComprobado("ana@prod:22", "ssh_exec", "prod").Should().Be("Rechazado: ana@prod:22: no se pudo comprobar si es de solo lectura (no se resolvió prod); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).");
 
+        // Con el cupo de resoluciones lleno, ssh_exec se rechaza sin conectar con el mensaje del cupo, no con «no se resolvió».
+        [Fact]
+        public async Task Escritura_ConElCupoDeResolucionesLleno_LoDice()
+        {
+            // Arrange
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Resolver(string nombre, CancellationToken token) =>
+                nombre.StartsWith("colgado", StringComparison.Ordinal) ? nunca.Task : ResolverFalso(nombre, token);
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura soloLectura, out _, Resolver).Should().BeTrue();
+            OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", SoloLectura = soloLectura };
+            FabricaFalsa fabrica = new(Guion);
+            await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh herramientas = new(gestor, opciones);
+            Task<ComprobacionSoloLectura>[] colgados = [.. Enumerable.Range(0, DestinosSoloLectura.MaxResolucionesEnCurso).Select(i => soloLectura.ComprobarAsync(gestor.ParsearDestino($"colgado{i}"), CancellationToken.None))];
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EjecutarAsync("pruebas", "echo hola")).Should().ThrowAsync<NativeSshException>()).Which;
+            nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
+            _ = await Task.WhenAll(colgados);
+
+            // Assert
+            _ = error.Message.Should().Be(HerramientasSsh.MensajeSoloLecturaNoComprobado("ana@pruebas:22", "ssh_exec", "pruebas", isCupoLleno: true));
+            _ = fabrica.Conexiones.Should().Be(0);
+        }
+
+        // Sin cupo para resolver, el mensaje no culpa al DNS: dice que no se llegó a resolver y que se vuelva a intentar.
+        [Fact]
+        public void MensajeCupoLleno_DiceQueNoSeLlegoAResolverYQueSeVuelvaAIntentar() =>
+            _ = HerramientasSsh.MensajeSoloLecturaNoComprobado("ana@prod:22", "ssh_exec", "prod", isCupoLleno: true).Should().Be("Rechazado: ana@prod:22: no se pudo comprobar si es de solo lectura (no se llegó a resolver prod: demasiadas resoluciones a la vez); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada.");
+
         // ssh_status dice qué destinos están configurados en solo lectura y marca cada sesión.
         [Fact]
         public async Task Estado_MarcaLosDestinosDeSoloLectura()

@@ -7,7 +7,8 @@ namespace NativeSsh.Comun
 {
     // Resultado de comparar un destino con NATIVE_SSH_SOLO_LECTURA. NoResuelto: el nombre (de una entrada o del destino) que no
     // se pudo resolver; entonces IsSoloLectura es true aunque no conste que sea la misma máquina (ante la duda, se deniega).
-    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto);
+    // IsCupoLleno: no se llegó a intentar resolverlo (demasiadas resoluciones en curso), no es que el DNS fallara.
+    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false);
 
     // Destinos en modo solo lectura (CI6): configuración local de native_ssh (variable NATIVE_SSH_SOLO_LECTURA), que ninguna
     // herramienta puede cambiar. Para ellos se rechazan ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content antes de
@@ -58,6 +59,8 @@ namespace NativeSsh.Comun
 
         // Las entradas tal como se configuraron (ssh_status las muestra).
         public IReadOnlyList<string> Entradas { get; }
+
+        private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno);
 
         private readonly record struct Entrada(string Texto, string? Usuario, string Servidor, int? Puerto)
         {
@@ -185,20 +188,25 @@ namespace NativeSsh.Comun
             if (porResolver.Count == 0)
                 return new ComprobacionSoloLectura(false, null);
 
-            Task<HashSet<IPAddress>?> delDestino = ResolverAsync(servidor, isDestino: true, cancellationToken);
-            List<Task<HashSet<IPAddress>?>> deLasEntradas = porResolver.ConvertAll(e => ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
-            HashSet<IPAddress>? direcciones = await delDestino.ConfigureAwait(false);
-            HashSet<IPAddress>?[] resueltas = await Task.WhenAll(deLasEntradas).ConfigureAwait(false);
+            Task<Resolucion> delDestino = ResolverAsync(servidor, isDestino: true, cancellationToken);
+            List<Task<Resolucion>> deLasEntradas = porResolver.ConvertAll(e => ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
+            Resolucion destinoResuelto = await delDestino.ConfigureAwait(false);
+            Resolucion[] resueltas = await Task.WhenAll(deLasEntradas).ConfigureAwait(false);
+            HashSet<IPAddress>? direcciones = destinoResuelto.Direcciones;
             string? noResuelto = direcciones is null ? servidor : null;
+            bool isCupoLleno = destinoResuelto.IsCupoLleno;
             for (int i = 0; i < resueltas.Length; i++)
             {
-                if (resueltas[i] is not { } deLaEntrada)
-                    noResuelto ??= porResolver[i].Servidor;
+                if (resueltas[i].Direcciones is not { } deLaEntrada)
+                {
+                    if (noResuelto is null)
+                        (noResuelto, isCupoLleno) = (porResolver[i].Servidor, resueltas[i].IsCupoLleno);
+                }
                 else if (direcciones is not null && deLaEntrada.Overlaps(direcciones))
                     return new ComprobacionSoloLectura(true, null);
             }
 
-            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto);
+            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno);
         }
 
         // Para ssh_status, sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o direcciones ya resueltas);
@@ -285,13 +293,13 @@ namespace NativeSsh.Comun
             return direcciones is not null;
         }
 
-        // Direcciones de un nombre (o la propia IP), o null si no se pudo resolver: fallo, plazo de 3 s vencido (se deja de
-        // esperar aunque la resolución siga) o demasiadas resoluciones en curso. Si ya hay una en curso para ese nombre, se
+        // Direcciones de un nombre (o la propia IP), o sin ellas si no se pudo resolver: fallo, plazo de 3 s vencido (se deja
+        // de esperar aunque la resolución siga) o demasiadas resoluciones en curso (IsCupoLleno). Si ya hay una en curso para ese nombre, se
         // espera esa misma (también si la pidió otra llamada: está en curso, así que es igual de reciente).
-        private async Task<HashSet<IPAddress>?> ResolverAsync(string servidor, bool isDestino, CancellationToken cancellationToken)
+        private async Task<Resolucion> ResolverAsync(string servidor, bool isDestino, CancellationToken cancellationToken)
         {
             if (TryDireccionesSinRed(servidor, isDestino, out HashSet<IPAddress>? conocidas))
-                return conocidas;
+                return new Resolucion(conocidas, IsCupoLleno: false);
 
             Task<HashSet<IPAddress>?>? resolucion;
             lock (_candadoEnCurso)
@@ -299,7 +307,7 @@ namespace NativeSsh.Comun
                 if (!_enCurso.TryGetValue(servidor, out resolucion))
                 {
                     if (_enCurso.Count >= MaxResolucionesEnCurso)
-                        return null;
+                        return new Resolucion(null, IsCupoLleno: true);
 
                     // En el grupo de hilos (getaddrinfo puede bloquear el hilo que lo llama) y fuera de este candado: su
                     // 'finally' lo necesita para quitarse de _enCurso, así que no puede terminar antes de anotarla.
@@ -310,11 +318,11 @@ namespace NativeSsh.Comun
 
             try
             {
-                return await resolucion.WaitAsync(PlazoResolucion, cancellationToken).ConfigureAwait(false);
+                return new Resolucion(await resolucion.WaitAsync(PlazoResolucion, cancellationToken).ConfigureAwait(false), IsCupoLleno: false);
             }
             catch (TimeoutException)
             {
-                return null;
+                return new Resolucion(null, IsCupoLleno: false);
             }
         }
 

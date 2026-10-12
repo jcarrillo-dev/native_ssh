@@ -307,6 +307,31 @@ namespace NativeSsh.Test.Comun
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
         }
 
+        // Con el cupo de resoluciones lleno, lo que no se llegó a resolver se distingue de lo que no se resolvió (fallo o
+        // plazo): el rechazo puede decir que se vuelva a intentar en unos segundos en lugar de culpar al DNS.
+        [Fact]
+        public async Task CupoLleno_SeDistingueDeNoResuelto()
+        {
+            // Arrange
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Resolver(string nombre, CancellationToken token) =>
+                nombre.StartsWith("colgado", StringComparison.Ordinal) ? nunca.Task : ResolverFalso(nombre, token);
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Resolver).Should().BeTrue();
+            ComprobacionSoloLectura fallo = await destinos.ComprobarAsync(Destino("root@nadie.ejemplo"), CancellationToken.None);
+            Task<ComprobacionSoloLectura>[] colgados = [.. Enumerable.Range(0, DestinosSoloLectura.MaxResolucionesEnCurso).Select(i => destinos.ComprobarAsync(Destino($"root@colgado{i}.ejemplo"), CancellationToken.None))];
+
+            // Act
+            ComprobacionSoloLectura sinCupo = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            ComprobacionSoloLectura[] porPlazo = await Task.WhenAll(colgados).WaitAsync(TimeSpan.FromSeconds(30));
+            nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
+
+            // Assert
+            _ = sinCupo.Should().Be(new ComprobacionSoloLectura(true, "otro.ejemplo", IsCupoLleno: true));
+            _ = porPlazo.Should().OnlyContain(r => r.IsSoloLectura && r.NoResuelto != null && !r.IsCupoLleno);
+            _ = fallo.Should().Be(new ComprobacionSoloLectura(true, "nadie.ejemplo", IsCupoLleno: false));
+        }
+
         // ssh_status marca las sesiones sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o lo ya resuelto de
         // las entradas), null si depende de un nombre de entrada aún no resuelto o del nombre del destino (no se recuerda).
         [Fact]
