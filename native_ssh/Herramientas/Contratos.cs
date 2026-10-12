@@ -57,9 +57,11 @@ namespace NativeSsh.Herramientas
     public sealed record ResultadoEscritura(string Ruta, long Bytes, int? Reemplazos, bool IsAtomica, string Mensaje);
 
     // Una edición de ssh_replace_file_content con 'ediciones' (CI5): se busca en todo el archivo, tras aplicar las anteriores.
+    // ReplacementContent es obligatorio (está en 'required' del esquema), pero el JSON del cliente puede omitirlo o traerlo
+    // nulo: la herramienta lo rechaza antes de enviar nada.
     public sealed record EdicionTexto(
         [property: Description("Texto exacto a reemplazar (incluyendo espacios e indentación). No puede estar vacío.")] string TargetContent,
-        [property: Description("Nuevo texto que reemplazará a targetContent.")] string ReplacementContent,
+        [property: Description("Nuevo texto que reemplazará a targetContent. Obligatorio (\"\" para borrar targetContent).")] string? ReplacementContent,
         [property: Description("Si es true, reemplaza todas las apariciones de targetContent; por defecto false (falla si aparece más de una vez).")] bool AllowMultiple = false);
 
     // ssh_set_cwd. Directorio: ruta absoluta fijada, o null si se restableció a $HOME.
