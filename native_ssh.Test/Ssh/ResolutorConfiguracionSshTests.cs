@@ -303,6 +303,29 @@ namespace NativeSsh.Test.Ssh
             await EsperasPruebaSinProceso(marca);
         }
 
+        // Si lo que dejó en segundo plano salió del grupo (su propio setsid) y retiene la salida, el error dice que ssh sí
+        // terminó y qué la retiene, no que no terminó.
+        [Fact]
+        public async Task MatchExecQueSaleDelGrupoYRetieneLaSalida_ErrorQueDiceQueSshTermino()
+        {
+            // Arrange
+            string marca = $"40.{Random.Shared.Next(100000, 999999)}";
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(setsid sleep {marca} &) ; true\"\n  Port 9\n"));
+
+            // Act
+            Func<Task> resolver = () => Task.Run(() => Resolver(resolutor, "fondo")).WaitAsync(TimeSpan.FromSeconds(20));
+
+            // Assert
+            try
+            {
+                _ = (await resolver.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("'ssh -G' terminó").And.Contain("mantiene abierta su salida").And.NotContain("no terminó");
+            }
+            finally
+            {
+                _ = BashLocal.Ejecutar($"pkill -f '[s]leep {marca}' || true");
+            }
+        }
+
         // El plazo por defecto es de 5 s: un Match exec colgado no retiene la llamada más que eso.
         [Fact]
         public async Task PlazoPorDefecto_CincoSegundos()
