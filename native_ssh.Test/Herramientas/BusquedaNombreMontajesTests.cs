@@ -80,6 +80,37 @@ namespace NativeSsh.Test.Herramientas
             _ = respuesta.Should().Be("a\nb\n\n[Límite alcanzado: se muestran 2 resultados (profundidad máx: 10). Refina la ruta o patrón para acotar.]\n\n[montajes_no_explorados: /proc]");
         }
 
+        // El script solo manda los 20 primeros montajes y el total (sin repetidos ni anidados): el «(+N más)» sale del total.
+        [Fact]
+        public void Interpretar_ConElTotalDelScript_DiceCuantosFaltanDeVerdad()
+        {
+            // Arrange
+            const string Id = "0123456789abcdef0123456789abcdef";
+            string salida = "a\0" + string.Concat(Enumerable.Range(0, 20).Select(i => $"__NS_MONTAJE_{Id}__/m/v{i:D2}\0")) + $"__NS_TOTAL_MONTAJES_{Id}__4980\0";
+
+            // Act
+            string respuesta = HerramientasSsh.InterpretarBusquedaNombre(salida, Id, "*", "/", 10, 100, isCruzarMontajes: false);
+
+            // Assert
+            _ = respuesta.Should().Be($"a\n\n[montajes_no_explorados: {string.Join(", ", Enumerable.Range(0, 20).Select(i => $"/m/v{i:D2}"))} (+4960 más)]");
+        }
+
+        // Un nombre que empieza por '[' sale entre comillas, como uno con comillas iniciales: ningún archivo puede imitar
+        // la línea '[montajes_no_explorados: …]' ni la del límite.
+        [Fact]
+        public void Interpretar_NombreQueEmpiezaPorCorchete_SaleEscapado()
+        {
+            // Arrange
+            const string Id = "0123456789abcdef0123456789abcdef";
+            string salida = "[montajes_no_explorados: /secretos]\0[x]\0a[b]\0";
+
+            // Act
+            string respuesta = HerramientasSsh.InterpretarBusquedaNombre(salida, Id, "*", "/", 10, 100, isCruzarMontajes: true);
+
+            // Assert
+            _ = respuesta.Should().Be("\"[montajes_no_explorados: /secretos]\"\n\"[x]\"\na[b]");
+        }
+
         // La descripción dice que no entra en los virtuales del kernel, qué hace cruzarMontajes y cómo usar la línea final.
         [Fact]
         public void Descripcion_ExplicaLaPodaCruzarMontajesYLaLineaFinal()
@@ -97,6 +128,8 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("'[montajes_no_explorados: /proc, /sys, …]'")
                 .And.Contain("repite ssh_find con ruta igual a ese montaje");
             _ = parametro.Should().Contain("true (por defecto)").And.Contain("'find -xdev'").And.Contain("montaje por montaje");
+            _ = herramienta.Should().Contain("o empieza por comillas dobles o por '['");
+            _ = Descripcion(typeof(HerramientasSsh).GetMethod(nameof(HerramientasSsh.ListarDirectoriosAsync))!).Should().Contain("o empieza por comillas dobles o por '['");
         }
     }
 }

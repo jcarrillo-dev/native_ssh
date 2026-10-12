@@ -849,15 +849,16 @@ namespace NativeSsh.Herramientas
 
         // Un nombre de un listado en una sola línea: tal cual, salvo si contiene caracteres de control (categoría Cc:
         // U+0000–U+001F y U+007F–U+009F, como '\n', '\r', '\t' o NEL), los separadores de línea y de párrafo de Unicode
-        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles;
-        // entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\), que se
-        // puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
+        // (U+2028 y U+2029, que no son de control pero muchos lectores toman como un salto) o empieza por comillas dobles o
+        // por '[' (así ningún nombre imita las líneas '[Límite alcanzado: …]' y '[montajes_no_explorados: …]' que añade
+        // native_ssh); entonces va entre comillas dobles y escapado como una cadena JSON (\n, \r, \t, \f, \b, \uXXXX, \" y \\),
+        // que se puede pegar tal cual como cadena JSON. Un nombre sin escapar nunca empieza por comillas, así que no hay ambigüedad;
         // una barra invertida o unas comillas en medio (p. ej. las unidades de systemd con \x2d) no cambian el nombre.
         private static void EscaparNombre(StringBuilder listado, string nombre)
         {
             ReadOnlySpan<char> caracteres = nombre;
             bool hasControl = caracteres.ContainsAnyInRange('\u0000', '\u001f') || caracteres.ContainsAnyInRange('\u007f', '\u009f') || caracteres.ContainsAnyInRange('\u2028', '\u2029');
-            if (!hasControl && !nombre.StartsWith('"'))
+            if (!hasControl && !nombre.StartsWith('"') && !nombre.StartsWith('['))
             {
                 _ = listado.Append(nombre);
                 return;
@@ -906,7 +907,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
@@ -963,7 +964,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles, sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto].")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -1006,6 +1007,7 @@ namespace NativeSsh.Herramientas
         private const string TiposVirtuales = "proc sysfs devtmpfs devpts cgroup cgroup2 debugfs tracefs securityfs pstore bpf mqueue hugetlbfs configfs fusectl binfmt_misc autofs efivarfs selinuxfs nsfs rpc_pipefs";
 
         private const string PrefijoMarcaMontaje = "__NS_MONTAJE_";
+        private const string PrefijoMarcaTotalMontajes = "__NS_TOTAL_MONTAJES_";
         private const string PrefijoMarcaSinTabla = "__NS_SIN_TABLA_";
         private const int MaxMontajesNoExplorados = 20;
 
@@ -1020,13 +1022,20 @@ namespace NativeSsh.Herramientas
         // decodifica (no hay otras secuencias con '\': la barra invertida misma va como \134). El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
         // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null): se mira
         // con -d cada montaje dentro de la profundidad que se recorre (find lo consultaría igual al recorrer su padre); el
-        // dispositivo (stat %d) solo con CRUZAR=0 y para los no virtuales. /dev/fd, si es un enlace (a /proc/self/fd), se
-        // poda siempre por su ruta: no es un montaje y no sale en la línea.
+        // dispositivo (stat %d, por lotes en comparar_dispositivos) solo con CRUZAR=0 y para los no virtuales. /dev/fd, si
+        // es un enlace (a /proc/self/fd), se poda siempre por su ruta: no es un montaje y no sale en la línea.
         // Sin /proc/self/mountinfo (busybox sin /proc, chroot): se podan /proc, /sys y /dev por su ruta y 'sin_tabla' lo
         // anota (con CRUZAR=0 no se puede saber qué otros montajes quedan fuera).
+        // La tabla se lee de una vez con cat y se parte en líneas sin 'read': con 'read' directamente sobre
+        // /proc/self/mountinfo, cada lectura vuelve a generar la tabla desde el principio (read lee poco y retrocede), con
+        // coste cuadrático (medido: 5 000 montajes, más de 20 s solo en leerla). Sin <(…) ni tuberías hacia el bucle: la
+        // sustitución de procesos necesita /dev/fd y un bucle al final de una tubería no deja sus variables. En la tabla
+        // ninguna línea está vacía ni lleva saltos o espacios dentro de un campo (van en octal), así que se parte por saltos
+        // de línea y por espacios (con set -f, sin expandir comodines). En 'no_explorados' cada punto va como en la tabla
+        // (con el octal) para ordenarlo y quitar repetidos y anidados (escribir_no_explorados).
         private static readonly string DefinicionMontajes = $$"""
             montaje() {
-              local punto=$1 tipo=$2 rel nivel dispositivo
+              local punto=$1 tipo=$2 crudo=$3 rel nivel
               case $raiz in
                 /) [ "$punto" = / ] && return 0; rel=.$punto ;;
                 *) case $punto in
@@ -1040,13 +1049,33 @@ namespace NativeSsh.Herramientas
               case " {{TiposVirtuales}} " in
                 *" $tipo "*)
                   podar "$rel"
-                  no_explorados+=("$punto")
+                  no_explorados+=("$crudo")
                   return 0 ;;
               esac
               [ "$cruzar_montajes" = 1 ] && return 0
-              dispositivo=$(stat -L -c %d -- "$punto" 2>/dev/null)
-              [ -n "$dispositivo" ] && [ "$dispositivo" = "$dispositivo_raiz" ] && return 0
-              no_explorados+=("$punto")
+              candidatos+=("$punto")
+              candidatos_crudo+=("$crudo")
+            }
+            # Con CRUZAR=0, el dispositivo de cada directorio montado no virtual, con un stat por cada 500 (uno por montaje
+            # eran miles de procesos con miles de montajes); si alguno del lote falla, ese lote se repite uno a uno. Un
+            # montaje cuyo dispositivo no se puede leer cuenta como no explorado.
+            comparar_dispositivos() {
+              local i j n lote dispositivos IFS=$' \n'
+              for ((i = 0; i < ${#candidatos[@]}; i += 500)); do
+                lote=("${candidatos[@]:i:500}")
+                n=${#lote[@]}
+                dispositivos=($(stat -L -c %d -- "${lote[@]}" 2>/dev/null))
+                if [ "${#dispositivos[@]}" != "$n" ]; then
+                  dispositivos=()
+                  for ((j = 0; j < n; j++)); do
+                    dispositivos+=("$(stat -L -c %d -- "${lote[j]}" 2>/dev/null)")
+                  done
+                fi
+                for ((j = 0; j < n; j++)); do
+                  [ -n "${dispositivos[j]}" ] && [ "${dispositivos[j]}" = "$dispositivo_raiz" ] && continue
+                  no_explorados+=("${candidatos_crudo[i + j]}")
+                done
+              done
             }
             podar() {
               local glob
@@ -1054,23 +1083,32 @@ namespace NativeSsh.Herramientas
               poda+=(-o -path "$glob")
             }
             explorar_montajes() {
-              local punto resto tipo
+              local punto crudo tipo linea lineas campos tabla IFS
               cruzar_montajes=$1 profundidad_montajes=$2
-              poda=() no_explorados=() sin_tabla=
+              poda=() no_explorados=() candidatos=() candidatos_crudo=() sin_tabla=
               dispositivo_raiz=$(stat -L -c %d . 2>/dev/null)
               if [ -r /proc/self/mountinfo ]; then
-                while IFS=' ' read -r _ _ _ _ punto resto; do
-                  tipo=${resto#* - }
+                tabla=$(cat /proc/self/mountinfo)
+                set -f
+                IFS=$'\n'
+                lineas=($tabla)
+                IFS=' '
+                for linea in "${lineas[@]}"; do
+                  tipo=${linea#* - }
                   tipo=${tipo%% *}
-                  printf -v punto '%b' "$punto"
-                  montaje "$punto" "$tipo"
-                done < /proc/self/mountinfo
+                  campos=($linea)
+                  crudo=${campos[4]}
+                  printf -v punto '%b' "$crudo"
+                  montaje "$punto" "$tipo" "$crudo"
+                done
+                set +f
               else
                 sin_tabla=1
                 for punto in /proc /sys /dev; do
-                  [ -d "$punto" ] && montaje "$punto" proc
+                  [ -d "$punto" ] && montaje "$punto" proc "$punto"
                 done
               fi
+              comparar_dispositivos
               # /dev/fd lleva a /proc/self/fd, donde el descriptor de un directorio abierto por find vuelve a un directorio
               # ya recorrido (el find de busybox no detecta ese bucle): con /dev sin podar (un tmpfs, como en los
               # contenedores), se poda el enlace.
@@ -1081,13 +1119,35 @@ namespace NativeSsh.Herramientas
               [ "${#poda[@]}" = 0 ] || poda[0]='('
               [ "${#poda[@]}" = 0 ] || poda+=(')')
             }
+            # escribir_no_explorados MARCA MARCA_TOTAL: los montajes no recorridos, sin repetidos ni los que están dentro de
+            # otro de la lista (tampoco se recorren), cada uno con MARCA delante y como mucho {{MaxMontajesNoExplorados}}, y después
+            # MARCA_TOTAL con cuántos hay: la salida no crece con el número de montajes. Se ordenan con '/' cambiada por un
+            # espacio (en la tabla el espacio va en octal), así cada montaje queda justo delante de los que tiene dentro y basta
+            # compararlo con el último que se conservó.
+            escribir_no_explorados() {
+              [ "${#no_explorados[@]}" = 0 ] && return 0
+              printf '%s\n' "${no_explorados[@]}" | tr / ' ' | LC_ALL=C sort | tr ' ' / | {
+                local crudo punto ultimo= total=0
+                while IFS= read -r crudo; do
+                  if [ -n "$ultimo" ]; then
+                    case $crudo in "$ultimo"|"$ultimo"/*) continue ;; esac
+                  fi
+                  ultimo=$crudo
+                  total=$((total + 1))
+                  [ "$total" -le {{MaxMontajesNoExplorados}} ] || continue
+                  printf -v punto '%b' "$crudo"
+                  printf '%s%s\0' "$1" "$punto"
+                done
+                printf '%s%s\0' "$2" "$total"
+              }
+            }
             """.ReplaceLineEndings("\n");
 
         // Script de ssh_find. Tras resolver la raíz (pwd -P) y los montajes (explorar_montajes), find recorre '.' con la poda
         // de los virtuales delante ('\( -path ./proc -o … \)', «imprimir pero podar» como los directorios pesados) y, con
         // cruzarMontajes=false, -xdev. Los montajes no recorridos salen detrás de los nombres, cada uno como un nombre más
-        // con la marca '__NS_MONTAJE_<id>__' (id aleatorio por petición: ningún archivo la puede imitar), y '__NS_SIN_TABLA_<id>__'
-        // si no se pudo leer la tabla de montajes.
+        // con la marca '__NS_MONTAJE_<id>__' (id aleatorio por petición: ningún archivo la puede imitar; solo los 20 primeros)
+        // seguidos de '__NS_TOTAL_MONTAJES_<id>__<n>', y '__NS_SIN_TABLA_<id>__' si no se pudo leer la tabla de montajes.
         internal static string ConstruirComandoBusquedaNombre(string patron, string rutaEfectiva, string filtroTipo, int profundidad, int limite, bool isCruzarMontajes, string idMarca)
         {
             string rutaEscapada = Escapar(rutaEfectiva);
@@ -1114,9 +1174,7 @@ namespace NativeSsh.Herramientas
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
                   \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
                   -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
-                for punto in "${no_explorados[@]}"; do
-                  printf '{{PrefijoMarcaMontaje}}{{idMarca}}__%s\0' "$punto"
-                done
+                escribir_no_explorados '{{PrefijoMarcaMontaje}}{{idMarca}}__' '{{PrefijoMarcaTotalMontajes}}{{idMarca}}__'
                 [ -z "$sin_tabla" ] || printf '{{PrefijoMarcaSinTabla}}{{idMarca}}__\0'
                 )
                 """);
@@ -1126,19 +1184,23 @@ namespace NativeSsh.Herramientas
         internal static string InterpretarBusquedaNombre(string salida, string idMarca, string patron, string rutaEfectiva, int profundidad, int limite, bool isCruzarMontajes)
         {
             string marcaMontaje = $"{PrefijoMarcaMontaje}{idMarca}__";
+            string marcaTotal = $"{PrefijoMarcaTotalMontajes}{idMarca}__";
             string marcaSinTabla = $"{PrefijoMarcaSinTabla}{idMarca}__";
             List<string> nombres = [];
             List<string> montajes = [];
+            int totalMontajes = 0;
             bool isSinTabla = false;
             foreach (string nombre in SepararNombres(salida))
                 if (nombre.StartsWith(marcaMontaje, StringComparison.Ordinal))
                     montajes.Add(nombre[marcaMontaje.Length..]);
+                else if (nombre.StartsWith(marcaTotal, StringComparison.Ordinal) && int.TryParse(nombre.AsSpan(marcaTotal.Length), NumberStyles.None, CultureInfo.InvariantCulture, out int total))
+                    totalMontajes = total;
                 else if (nombre == marcaSinTabla)
                     isSinTabla = true;
                 else
                     nombres.Add(nombre);
 
-            string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes);
+            string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes, totalMontajes);
             string pie = lineaMontajes.Length == 0 ? string.Empty : "\n\n" + lineaMontajes;
             string listado = UnirNombres([.. nombres], limite);
             return nombres.Count == 0
@@ -1150,8 +1212,9 @@ namespace NativeSsh.Herramientas
 
         // '[montajes_no_explorados: …]' con los montajes ordenados, sin repetidos (un punto puede estar montado varias veces) ni
         // los que están dentro de otro de la lista (no se recorren igualmente), con tope. Vacía si no hay ninguno y la tabla de
-        // montajes se pudo leer. Cada ruta va como un nombre de los listados (EscaparNombre).
-        internal static string LineaMontajesNoExplorados(List<string> montajes, bool isSinTablaSinCruzar)
+        // montajes se pudo leer. Cada ruta va como un nombre de los listados (EscaparNombre). 'totalMontajes' es cuántos contó
+        // el script (que solo manda los primeros): el «(+N más)» sale de él si es mayor que los recibidos.
+        internal static string LineaMontajesNoExplorados(List<string> montajes, bool isSinTablaSinCruzar, int totalMontajes = 0)
         {
             montajes.Sort(StringComparer.Ordinal);
             List<string> superiores = [];
@@ -1181,8 +1244,9 @@ namespace NativeSsh.Herramientas
                 EscaparNombre(linea, superiores[i]);
             }
 
-            if (superiores.Count > mostrados)
-                _ = linea.Append(CultureInfo.InvariantCulture, $" (+{superiores.Count - mostrados} más)");
+            int restantes = Math.Max(superiores.Count, totalMontajes) - mostrados;
+            if (restantes > 0)
+                _ = linea.Append(CultureInfo.InvariantCulture, $" (+{restantes} más)");
             if (isSinTablaSinCruzar)
                 _ = linea.Append(superiores.Count == 0 ? string.Empty : "; ").Append("no se pudo leer /proc/self/mountinfo: puede haber otros sistemas de ficheros montados por debajo de la ruta que no se recorrieron");
             return linea.Append(']').ToString();
