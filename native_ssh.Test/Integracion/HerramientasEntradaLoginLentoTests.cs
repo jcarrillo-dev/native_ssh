@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -13,14 +14,18 @@ namespace NativeSsh.Test.Integracion
     // incluye; con el shell abierto, la misma entrada llega (auditoría del A-septies, sondas Y01 e Y02).
     [Collection(ColeccionSshdLoginLento.Nombre)]
     [Trait("Categoria", "Integracion")]
-    public sealed class HerramientasEntradaLoginLentoTests(SshdLocalLoginLento fixture) : IAsyncDisposable
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    public sealed class HerramientasEntradaLoginLentoTests(SshdLocalLoginLento fixture) : IAsyncLifetime
     {
         private const string ComandoLectura = "read x; echo \"leido:$x\"";
 
         private readonly SshdLocal _sshd = fixture.Sshd;
         private GestorSesiones? _gestor;
 
-        public async ValueTask DisposeAsync()
+        // IAsyncLifetime (no IAsyncDisposable): es lo que xUnit v2 invoca al terminar cada prueba.
+        public Task InitializeAsync() => Task.CompletedTask;
+
+        public async Task DisposeAsync()
         {
             if (_gestor is not null)
                 await _gestor.DisposeAsync();
