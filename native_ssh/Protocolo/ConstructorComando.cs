@@ -29,11 +29,20 @@ namespace NativeSsh.Protocolo
         // lo que queda es el final del comando, o nada, y ejecutarlo sería ejecutar otra cosa; entonces no se ejecuta y el
         // marcador lleva MarcadorFin.CodigoEnvioIncompleto (medido: un lector de dos líneas se comía el salto y la primera
         // línea del base64, y el comando se daba por completado con código 0 sin haberse ejecutado).
+        // Dos comprobaciones: (1) la longitud del base64, para la línea que falta; (2) un nonce aleatorio por envío al final de
+        // lo codificado, que se comprueba tras decodificar y se quita antes del eval, para cuando la longitud cuadra con otro
+        // contenido: si el lector se come el salto que termina una línea del base64, bash junta la siguiente al valor, y si se
+        // come justo los caracteres que lo compensan, la longitud coincide. Un lector solo quita bytes y lo que bash añade solo
+        // puede venir de detrás, así que el final de lo decodificado cambia (o base64 -d falla con los caracteres ajenos al
+        // base64) y el nonce no está. No es una suma de comprobación: un cambio del mismo tamaño en medio que dejara el final
+        // intacto pasaría, pero eso no lo puede producir otro lector del terminal (y cksum puede faltar en el servidor).
         public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
-            using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(comando.Length));
+            Guid nonce = IdentidadShell.NuevoTestigo();
+            using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(comando.Length) + MarcadorFin.LongitudId);
             int longitud = Encoding.UTF8.GetBytes(comando, utf8.Span);
-            ReadOnlySpan<byte> resto = utf8.Span[..longitud];
+            _ = nonce.TryFormat(utf8.Span[longitud..], out int escritosNonce, "N");
+            ReadOnlySpan<byte> resto = utf8.Span[..(longitud + escritosNonce)];
 
             EscribirPrefijoCentinela(centinela, escritor);
             escritor.Write("__ns_b='"u8);
@@ -52,12 +61,16 @@ namespace NativeSsh.Protocolo
                 escritor.Write("'\n__ns_b+='"u8);
             }
 
-            // 997 = MarcadorFin.CodigoEnvioIncompleto.
+            // 997 = MarcadorFin.CodigoEnvioIncompleto. La decodificación va en un grupo con su stderr a /dev/null: lo que avisa
+            // base64 -d de un valor roto y bash de un byte nulo no es salida del comando. Con 'set -e' del usuario, un fallo
+            // dentro de la lista con '&&' no termina el shell.
             escritor.Write("'\n__ns_rc=997; __ns_b=${__ns_b-}; command [ \"${#__ns_b}\" = '"u8);
             Span<byte> cifras = escritor.GetSpan(11);
             _ = longitudBase64.TryFormat(cifras, out int escritasCifras, provider: CultureInfo.InvariantCulture);
             escritor.Advance(escritasCifras);
-            escritor.Write("' ] && { eval \"$(printf '%s' \"$__ns_b\" | base64 -d)\"; __ns_rc=$?; }; unset __ns_b; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("' ] && { __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%'"u8);
+            EscribirTestigo(nonce, escritor);
+            escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write("\n"u8);
         }
@@ -93,7 +106,7 @@ namespace NativeSsh.Protocolo
         {
             escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; stty -echo -onlcr -ixon; __ns_rc=0; printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; command read -r __ns_d; unset __ns_d\n"u8);
+            escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; unset __ns_rc; command read -r __ns_d; unset __ns_d\n"u8);
         }
 
         // "#<32 hexadecimales>\n". Para bash, un comentario: si no lo espera ninguna cola (tras un Ctrl+C que abortó la suya,
@@ -196,7 +209,7 @@ namespace NativeSsh.Protocolo
         public static void EscribirRecuperacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             EscribirPrefijoCentinela(centinela, escritor);
-            escritor.Write("__ns_rc=130; unset __ns_b __ns_d; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("__ns_rc=130; unset __ns_b __ns_k __ns_d; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write(" #"u8);
             EscribirTestigo(centinela, escritor);
@@ -243,6 +256,10 @@ namespace NativeSsh.Protocolo
         //   que termina mientras se espera), si devuelve más de 128: no es una línea. Defensa: medido, bash 5.2 y 5.3
         //   ejecutan la trampa y siguen leyendo (no hay vuelta que contar), y dash 0.5 y el ash de busybox 1.37 devuelven 1,
         //   que se cuenta como un EOF (solo pasa si una de ellos ejecuta la cola, en un shell anidado).
+        // El marcador lleva "${__ns_rc-997}" y __ns_rc se borra justo después: cada envío lo fija antes de su cola, así que si
+        // la línea que lo fija no llega a ejecutarse como tal (otro lector se comió el salto que la separa del base64 y bash
+        // la juntó al valor de __ns_b), el marcador lleva MarcadorFin.CodigoEnvioIncompleto y no el código del comando
+        // anterior (medido antes: «Completado, código 7» de un comando que no se ejecutó).
         // El recuento solo se sabe cuando llega el centinela, así que viaja en el marcador del envío SIGUIENTE
         // ("${__ns_n:+_$__ns_n}", MarcadorFin): el aviso va en la respuesta de ese comando. Se queda en
         // MarcadorFin.MaxLineasDescartadas (más cifras romperían el marcador), pero el bucle descarta todas.
@@ -281,13 +298,13 @@ namespace NativeSsh.Protocolo
                 escritor.Write("-}\"; __ns_t=${__ns_t#'"u8);
                 esperada.Escribir(escritor);
                 // 999 = MarcadorFin.CodigoShellAnidado.
-                escritor.Write("'}; __ns_t=${__ns_t:+999}; __ns_rc=${__ns_t:-$__ns_rc}; "u8);
+                escritor.Write("'}; __ns_t=${__ns_t:+999}; __ns_rc=${__ns_t:-${__ns_rc-997}}; "u8);
             }
 
             escritor.Write("printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             // 1000 = MaxEofSeguidos; 129 = CodigoSalidaTopeEof; 999999 = MarcadorFin.MaxLineasDescartadas.
-            escritor.Write("' \"$__ns_rc\" \"${__ns_n:+_$__ns_n}\"; __ns_n=; __ns_c=0; __ns_v=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { TMOUT= IFS= command read -r __ns_d; __ns_s=$?; { command [ \"$__ns_s\" -ne 1 ] && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ] || command exit 129; }; do __ns_x=${__ns_d%'#"u8);
+            escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; unset __ns_rc; __ns_n=; __ns_c=0; __ns_v=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { TMOUT= IFS= command read -r __ns_d; __ns_s=$?; { command [ \"$__ns_s\" -ne 1 ] && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ] || command exit 129; }; do __ns_x=${__ns_d%'#"u8);
             EscribirTestigo(centinela, escritor);
             escritor.Write("'}; __ns_f=$(( ${#__ns_x} < ${#__ns_d} )); __ns_g=$(( __ns_f == 0 && __ns_s <= 128 )); __ns_c=$(( __ns_c + __ns_g * (__ns_v + (${#__ns_d} > 0)) )); __ns_c=$(( __ns_c < 999999 ? __ns_c : 999999 )); __ns_v=$(( __ns_g ? ${#__ns_d} == 0 : __ns_v * (__ns_s > 128) )); __ns_d=; __ns_x=; done 2>/dev/null; __ns_n=${__ns_c#0}; unset __ns_d __ns_x __ns_c __ns_e __ns_f __ns_g __ns_s __ns_v"u8);
         }

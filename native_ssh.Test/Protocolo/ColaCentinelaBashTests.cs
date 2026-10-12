@@ -52,6 +52,19 @@ namespace NativeSsh.Test.Protocolo
             return _ids.Count - 1;
         }
 
+        // Un envío de comando que llega cambiado: 'cambio' recibe sus líneas (sin el '\n' final) y devuelve las que llegan al
+        // shell, como si otro proceso que lee del terminal se comiera parte de él; devuelve su posición en los marcadores.
+        private int ComandoCambiado(string comando, Func<List<string>, List<string>> cambio)
+        {
+            Guid id = Guid.NewGuid();
+            ArrayBufferWriter<byte> envio = new();
+            ConstructorComando.EscribirComando(comando, id, _centinela, envio);
+            List<string> lineas = [.. Encoding.UTF8.GetString(envio.WrittenSpan).Split('\n')];
+            _entrada.Write(Encoding.UTF8.GetBytes(string.Join('\n', cambio(lineas))));
+            _ids.Add(id);
+            return _ids.Count - 1;
+        }
+
         // Una línea de recuperación (tras Ctrl+C), como la escribe SesionShell; devuelve su posición en los marcadores.
         // isComidas: las dos primeras líneas (el salto y el centinela) se las come otro lector y no llegan; entonces su
         // marcador no sale (la cola que esperaba la consume sin ejecutarla) y no se añade.
@@ -298,16 +311,80 @@ namespace NativeSsh.Test.Protocolo
         // Si otro lector se come una línea del base64 del comando (la primera, o la única), lo que queda no se ejecuta: el
         // marcador lleva MarcadorFin.CodigoEnvioIncompleto y el shell sigue con el comando siguiente. Antes se ejecutaba el
         // final del comando (o nada, con código 0).
+        // Con 'set -u' dejado por un comando: la línea del base64 que falta es la única, __ns_b no se llega a asignar y la
+        // comprobación no debe fallar por la variable sin definir (el shell no interactivo de la prueba terminaría).
         [Theory]
-        [InlineData(1)]
-        [InlineData(2)]
-        public async Task EnvioSinUnaLineaDelBase64_NoSeEjecutaYDaElCodigo(int trozos)
+        [InlineData(1, "true")]
+        [InlineData(2, "true")]
+        [InlineData(1, "set -u")]
+        [InlineData(2, "set -u")]
+        public async Task EnvioSinUnaLineaDelBase64_NoSeEjecutaYDaElCodigo(int trozos, string preparacion)
         {
             // Arrange
             string testigo = Testigo("incompleto");
             string relleno = trozos == 1 ? string.Empty : $"; : '{new string('x', ConstructorComando.BytesPorLinea)}'";
-            _ = Comando("true");
+            _ = Comando(preparacion);
             _ = ComandoSinLinea($"touch {testigo}; echo NO{relleno}; touch {testigo}", perdida: 2);
+            _ = Comando("echo B");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = File.Exists(testigo).Should().BeFalse();
+            _ = _codigos.Should().Equal(0, MarcadorFin.CodigoEnvioIncompleto, 0);
+            _ = marcadores[1].Salida.Should().BeEmpty();
+            _ = marcadores[2].Salida.Should().Be("B\n");
+        }
+
+        // Otro lector se come el salto que termina la última línea del base64 (medido con un lector en segundo plano que lee
+        // con el 'read' de bash, byte a byte): bash junta esa línea con la siguiente, '__ns_rc=997' queda dentro del valor de
+        // __ns_b y no se asigna. El comando no se ejecuta y el marcador no puede llevar el código del comando anterior (antes,
+        // «Completado, código 7» de un comando que no se ejecutó).
+        [Fact]
+        public async Task SaltoDeLaUltimaLineaDelBase64Comido_NoDaElCodigoDelComandoAnterior()
+        {
+            // Arrange
+            string testigo = Testigo("unido");
+            _ = Comando("(exit 7)");
+            _ = ComandoCambiado($"touch {testigo}; : '{new string('x', ConstructorComando.BytesPorLinea)}'; echo HECHO", lineas =>
+            {
+                int ultimaBase64 = lineas.FindLastIndex(l => l.StartsWith("__ns_b", StringComparison.Ordinal));
+                lineas[ultimaBase64] += lineas[ultimaBase64 + 1];
+                lineas.RemoveAt(ultimaBase64 + 1);
+                return lineas;
+            });
+            _ = Comando("echo B");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = File.Exists(testigo).Should().BeFalse();
+            _ = _codigos.Should().Equal(7, MarcadorFin.CodigoEnvioIncompleto, 0);
+            _ = marcadores[2].Salida.Should().Be("B\n");
+        }
+
+        // El base64 llega con la longitud esperada pero su final no es el del envío: otro lector se comió caracteres y bash
+        // completó el valor con texto que venía detrás (la línea siguiente, si se come el salto). Lo único que un lector
+        // puede hacer es quitar bytes, y lo que bash añade solo puede venir después, así que el final cambia siempre: el
+        // comando decodificado no termina en el nonce del envío y no se ejecuta. Con caracteres ajenos al base64, base64 -d
+        // falla a mitad; con caracteres válidos, decodifica otro final. Antes se ejecutaba lo decodificado hasta ahí.
+        [Theory]
+        [InlineData("__ns_rc=997;")]
+        [InlineData("AAAAAAAAAAAA")]
+        public async Task Base64ConLaLongitudEsperadaYOtroFinal_NoSeEjecuta(string final)
+        {
+            // Arrange
+            string testigo = Testigo("cambiado");
+            _ = Comando("true");
+            _ = ComandoCambiado($"touch {testigo}; : '{new string('x', ConstructorComando.BytesPorLinea + 600)}'; echo HECHO", lineas =>
+            {
+                int ultimaBase64 = lineas.FindLastIndex(l => l.StartsWith("__ns_b", StringComparison.Ordinal));
+                string linea = lineas[ultimaBase64];
+                lineas[ultimaBase64] = string.Concat(linea.AsSpan(0, linea.Length - 1 - final.Length), final, "'");
+                return lineas;
+            });
             _ = Comando("echo B");
 
             // Act

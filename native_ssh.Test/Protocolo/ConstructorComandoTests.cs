@@ -21,7 +21,7 @@ namespace NativeSsh.Test.Protocolo
         private static string PrefijoCentinela => "\n" + LineaCentinela;
 
         // El marcador de fin (con el recuento de la cola anterior).
-        private static string Marcador => $"printf '%s_%s_%d%s__\\n' '__NSX' '{Id:N}' \"$__ns_rc\" \"${{__ns_n:+_$__ns_n}}\"; ";
+        private static string Marcador => $"printf '%s_%s_%d%s__\\n' '__NSX' '{Id:N}' \"${{__ns_rc-997}}\" \"${{__ns_n:+_$__ns_n}}\"; unset __ns_rc; ";
 
         // Principio de toda cola: el marcador y después la espera del centinela.
         private static string MarcadorDeLaCola => $"{Marcador}__ns_n=; ";
@@ -35,8 +35,12 @@ namespace NativeSsh.Test.Protocolo
             return Encoding.UTF8.GetString(escritor.WrittenSpan);
         }
 
+        // El comando del envío: el base64 decodificado sin el nonce del final, que debe estar.
         private static string DecodificarComando(string texto)
         {
+            const string Nonce = "__ns_k=${__ns_b%'";
+            int inicio = texto.IndexOf(Nonce, StringComparison.Ordinal) + Nonce.Length;
+            string nonce = texto.Substring(inicio, 32);
             StringBuilder base64 = new();
             foreach (string linea in texto.Split('\n'))
             {
@@ -46,8 +50,13 @@ namespace NativeSsh.Test.Protocolo
                     _ = base64.Append(linea[9..^1]);
             }
 
-            return Encoding.UTF8.GetString(Convert.FromBase64String(base64.ToString()));
+            string decodificado = Encoding.UTF8.GetString(Convert.FromBase64String(base64.ToString()));
+            _ = decodificado.Should().EndWith(nonce);
+            return decodificado[..^32];
         }
+
+        // El nonce del envío de un comando (32 hexadecimales).
+        private static string Nonce(string texto) => texto.Substring(texto.IndexOf("__ns_k=${__ns_b%'", StringComparison.Ordinal) + 17, 32);
 
         // La cola de 'texto': desde su marcador hasta el final.
         private static string Cola(string texto) => texto[texto.IndexOf("printf '%s_%s_%d%s__", StringComparison.Ordinal)..];
@@ -95,7 +104,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Act & Assert
             _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_b='");
-            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '4' ] && {{ eval \"$(printf '%s' \"$__ns_b\" | base64 -d)\"; __ns_rc=$?; }}; unset __ns_b; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '48' ] && {{ __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); }} 2>/dev/null && __ns_k=${{__ns_b%'{Nonce(texto)}'}} && command [ \"${{#__ns_k}}\" -lt \"${{#__ns_b}}\" ] && {{ eval \"$__ns_k\"; __ns_rc=$?; }}; unset __ns_b __ns_k; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
             _ = texto.Should().EndWith(FinDeLaCola + "\n");
             _ = texto.Should().NotContain($"__NSX_{Id:N}_").And.NotContain("trap");
             _ = MarcadorFin.CodigoEnvioIncompleto.Should().BeInRange(256, 999).And.NotBe(MarcadorFin.CodigoShellAnidado);
@@ -188,7 +197,7 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirRecuperacion(Id, Centinela, w));
 
             // Act & Assert
-            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_rc=130; unset __ns_b __ns_d; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_rc=130; unset __ns_b __ns_k __ns_d; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
             _ = texto.Should().EndWith($"{FinDeLaCola} #{Centinela:N}\n", "termina en el centinela: una cola que la lea fuera de sitio la reconoce y no la cuenta");
             _ = texto.Should().NotContain("\u0003");
         }
@@ -241,7 +250,7 @@ namespace NativeSsh.Test.Protocolo
         {
             // Arrange
             IdentidadShell identidad = new(123456, 789, Testigo);
-            string comprobacion = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-$__ns_rc}}; ";
+            string comprobacion = $"__ns_t=\"$$ $PPID ${{__NS_TESTIGO-}}\"; __ns_t=${{__ns_t#'123456 789 {Testigo:N}'}}; __ns_t=${{__ns_t:+{MarcadorFin.CodigoShellAnidado}}}; __ns_rc=${{__ns_t:-${{__ns_rc-997}}}}; ";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, Centinela, w, identidad));
