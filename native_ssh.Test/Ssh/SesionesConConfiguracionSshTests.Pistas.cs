@@ -41,7 +41,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = resultado.IsHecho.Should().BeTrue(resultado.Mensaje);
             _ = resultado.Mensaje.Should().StartWith("Conexión cerrada: root@127.0.0.1:2222 (IdentityFile /k/a).")
-                .And.Contain("deploy@127.0.0.1:2222").And.Contain("deploy@prod:2222");
+                .And.Contain($"deploy@127.0.0.1:2222 (comando en curso {largo.Id} «largo»), que se cierra con deploy@prod:2222");
             _ = _gestor.BuscarPeticion(largo.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
             _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().Be("deploy@127.0.0.1:2222|/k/a");
         }
