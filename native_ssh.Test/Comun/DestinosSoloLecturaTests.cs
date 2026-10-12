@@ -344,6 +344,28 @@ namespace NativeSsh.Test.Comun
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
         }
 
+        // Un nombre que es a la vez el de una entrada (de otro usuario) y el del destino: lo recordado por la entrada no se usa
+        // para el destino, que se resuelve de nuevo.
+        [Fact]
+        public async Task Destino_ConElNombreDeUnaEntradaRecordada_SeResuelveDeNuevo()
+        {
+            // Arrange
+            int consultas = 0;
+            Task<IPAddress[]> Cambiante(string nombre, CancellationToken token) =>
+                Task.FromResult(new[] { IPAddress.Parse(Interlocked.Increment(ref consultas) == 1 ? "10.0.0.9" : "10.0.0.5") });
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5, deploy@cambia.ejemplo", out DestinosSoloLectura destinos, out _, Cambiante).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura laEntrada = await destinos.ComprobarAsync(Destino("deploy@10.0.0.9"), CancellationToken.None);
+            ComprobacionSoloLectura elDestino = await destinos.ComprobarAsync(Destino("root@cambia.ejemplo"), CancellationToken.None);
+
+            // Assert
+            _ = laEntrada.Should().Be(new ComprobacionSoloLectura(true, null));
+            _ = elDestino.Should().Be(new ComprobacionSoloLectura(true, null), "cambia.ejemplo apunta ya a 10.0.0.5, aunque la entrada recuerde 10.0.0.9");
+            _ = consultas.Should().Be(2);
+        }
+
         // Con el cupo de resoluciones lleno, lo que no se llegó a resolver se distingue de lo que no se resolvió (fallo o
         // plazo): el rechazo puede decir que se vuelva a intentar en unos segundos en lugar de culpar al DNS.
         [Fact]
