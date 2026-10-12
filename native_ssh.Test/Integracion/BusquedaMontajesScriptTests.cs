@@ -145,6 +145,22 @@ namespace NativeSsh.Test.Integracion
             _ = respuesta.Should().StartWith("normal/objetivo.txt\n\n[montajes_no_explorados: ").And.EndWith($" (+{cuantos - 20} más)]");
         }
 
+        // Sin cruzar montajes, los que están dentro de otro no explorado no cuentan, tampoco en el «(+N más)»: el script los
+        // quita aunque haya hermanos que se ordenan entre el montaje y los suyos ('a-x' va antes que 'a/…' en orden de bytes).
+        [FactUnshare]
+        public void Script_SinCruzarMontajes_LosAnidadosNoCuentanEnElTotal()
+        {
+            // Arrange
+            string montajes = $"mkdir '{_raiz}/m' '{_raiz}/m/a' '{_raiz}/m/a-x'\nmount -t tmpfs a '{_raiz}/m/a'\nmount -t tmpfs ax '{_raiz}/m/a-x'\n"
+                + $"for i in $(seq 10 34); do mkdir '{_raiz}/m/a/'n$i; mount -t tmpfs n '{_raiz}/m/a/'n$i; done";
+
+            // Act
+            string salida = Buscar(montajes, _raiz, isCruzarMontajes: false);
+
+            // Assert
+            _ = salida.Should().Be($"normal/objetivo.txt\n\n[montajes_no_explorados: {_raiz}/m/a, {_raiz}/m/a-x]");
+        }
+
         // Solo cuentan los directorios montados: un archivo montado encima de otro (un contenedor monta así /etc/hosts) no es
         // un montaje que se pueda explorar, aunque sea de otro sistema de ficheros.
         [FactUnshare]

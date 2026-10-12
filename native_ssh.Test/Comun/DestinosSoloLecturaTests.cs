@@ -218,8 +218,8 @@ namespace NativeSsh.Test.Comun
             Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
-            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None)));
-            ComprobacionSoloLectura otraVez = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None))).WaitAsync(TimeSpan.FromSeconds(30));
+            ComprobacionSoloLectura otraVez = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
 
             // Assert
             _ = resultados.Should().AllBeEquivalentTo(new ComprobacionSoloLectura(true, "prod.ejemplo"));
@@ -246,7 +246,7 @@ namespace NativeSsh.Test.Comun
             _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Colgado).Should().BeTrue();
 
             // Act
-            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 40).Select(i => destinos.ComprobarAsync(Destino($"root@nombre{i}.ejemplo"), CancellationToken.None)));
+            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 40).Select(i => destinos.ComprobarAsync(Destino($"root@nombre{i}.ejemplo"), CancellationToken.None))).WaitAsync(TimeSpan.FromSeconds(30));
 
             // Assert
             _ = resultados.Should().OnlyContain(r => r.IsSoloLectura && r.NoResuelto != null);
