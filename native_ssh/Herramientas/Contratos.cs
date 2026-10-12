@@ -25,7 +25,8 @@ namespace NativeSsh.Herramientas
         int ConexionesAbiertas,
         int ComandosEnCola,
         string? PeticionActual,
-        int CanalesExecActivos);
+        int CanalesExecActivos,
+        bool? IsSoloLectura = null);
 
     public sealed record ResumenPeticion(
         string Id,
@@ -35,7 +36,9 @@ namespace NativeSsh.Herramientas
         string Comando,
         double SegundosEjecucion);
 
-    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones);
+    // SoloLectura: las entradas de NATIVE_SSH_SOLO_LECTURA (null si no hay). En cada sesión, IsSoloLectura es true o false si
+    // ya se sabe sin esperar al DNS y null si aún no (o si no hay modo solo lectura).
+    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, IReadOnlyList<string>? SoloLectura = null);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
 

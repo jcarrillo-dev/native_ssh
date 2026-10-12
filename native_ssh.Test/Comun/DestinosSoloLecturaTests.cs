@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using FluentAssertions;
 using NativeSsh.Comun;
 
@@ -13,9 +16,15 @@ namespace NativeSsh.Test.Comun
             return destino;
         }
 
-        // Resolución falsa: prod.ejemplo → 10.0.0.5; cualquier otro nombre no se resuelve.
-        private static Task<IPAddress[]> ResolverFalso(string nombre, CancellationToken _) =>
-            nombre == "prod.ejemplo" ? Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") }) : Task.FromException<IPAddress[]>(new System.Net.Sockets.SocketException(11001));
+        // Resolución falsa: prod.ejemplo → 10.0.0.5, otro.ejemplo → 10.0.0.9, mi-portatil → 127.0.1.1; cualquier otro nombre no
+        // se resuelve.
+        private static Task<IPAddress[]> ResolverFalso(string nombre, CancellationToken _) => nombre switch
+        {
+            "prod.ejemplo" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") }),
+            "otro.ejemplo" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.9") }),
+            "mi-portatil" => Task.FromResult(new[] { IPAddress.Parse("127.0.1.1") }),
+            _ => Task.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound))
+        };
 
         private static async Task<bool> EsSoloLecturaAsync(string configuracion, string destino)
         {
@@ -43,6 +52,18 @@ namespace NativeSsh.Test.Comun
         [InlineData("10.0.0.5", "root@prod.ejemplo", true)]
         [InlineData("deploy@prod.ejemplo", "root@10.0.0.5", false)]
         [InlineData("prod.ejemplo", "root@10.0.0.6", false)]
+        // Loopback: localhost, 127.0.0.0/8, ::1 y 0.0.0.0 (y ::) son la misma máquina, sin preguntar al DNS.
+        [InlineData("localhost", "ana@127.0.0.2", true)]
+        [InlineData("localhost", "ana@0.0.0.0", true)]
+        [InlineData("localhost", "ana@[::]", true)]
+        [InlineData("localhost", "ana@::ffff:127.0.0.1", true)]
+        [InlineData("127.0.0.1", "ana@localhost", true)]
+        [InlineData("127.0.0.1", "ana@LOCALHOST.", true)]
+        [InlineData("::1", "ana@127.0.0.1", true)]
+        [InlineData("0.0.0.0", "ana@[::1]:22", true)]
+        [InlineData("localhost", "ana@mi-portatil", true)]
+        [InlineData("localhost:2222", "ana@127.0.0.1", false)]
+        [InlineData("localhost", "ana@10.0.0.5", false)]
         public async Task Comparacion_PorUsuarioPuertoYServidor(string configuracion, string destino, bool isSoloLectura) =>
             _ = (await EsSoloLecturaAsync(configuracion, destino)).Should().Be(isSoloLectura);
 
@@ -71,6 +92,14 @@ namespace NativeSsh.Test.Comun
         [InlineData("[::1]x")]
         [InlineData("root@")]
         [InlineData("prod, mal entrada")]
+        // Entradas que nunca podrían coincidir con un destino al que se conecte: también impiden arrancar.
+        [InlineData("root@prod@ejemplo")]
+        [InlineData("prod.ejemplo:22:2222")]
+        [InlineData("prod/ejemplo")]
+        [InlineData("/")]
+        [InlineData("ssh://prod.ejemplo")]
+        [InlineData("*.prod.ejemplo")]
+        [InlineData("[prod.ejemplo:22]")]
         public void EntradaNoValida_ErrorQueLaNombra(string configuracion)
         {
             // Act
@@ -81,7 +110,7 @@ namespace NativeSsh.Test.Comun
             _ = error.Should().StartWith("NATIVE_SSH_SOLO_LECTURA: la entrada '").And.Contain("no es válida. Usa '[usuario@]servidor[:puerto]'");
         }
 
-        // Lo resuelto (también lo que no se pudo resolver) se recuerda: cada ssh_exec a otro destino no espera otra vez al DNS.
+        // Lo resuelto se recuerda: cada ssh_exec a otro destino no espera otra vez al DNS.
         [Fact]
         public async Task Resolucion_SeRecuerda()
         {
@@ -103,6 +132,154 @@ namespace NativeSsh.Test.Comun
             _ = primera.Should().BeFalse();
             _ = segunda.Should().BeFalse();
             _ = consultas.Should().Be(2, "una por nombre, solo la primera vez");
+        }
+
+        // Si una entrada que coincide en usuario y puerto, o el propio destino, no se pudo resolver, no se sabe si es la misma
+        // máquina: se trata como de solo lectura y se dice qué nombre no se resolvió (ante la duda, se deniega).
+        [Theory]
+        [InlineData("prod.ejemplo, nadie.ejemplo", "root@10.0.0.9", "nadie.ejemplo")]
+        [InlineData("nadie.ejemplo", "root@otro.ejemplo", "nadie.ejemplo")]
+        [InlineData("10.0.0.5", "root@nadie.ejemplo", "nadie.ejemplo")]
+        [InlineData("prod.ejemplo", "root@nadie.ejemplo", "nadie.ejemplo")]
+        public async Task NombreNoResuelto_SeRechazaPorSeguridadYLoNombra(string configuracion, string destino, string noResuelto)
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out _, ResolverFalso).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.IsSoloLectura.Should().BeTrue();
+            _ = comprobacion.NoResuelto.Should().Be(noResuelto);
+        }
+
+        // Una entrada que no se resuelve no afecta a los destinos que no coinciden en usuario o puerto, ni a la que ya
+        // coincide por otra entrada.
+        [Theory]
+        [InlineData("deploy@nadie.ejemplo", "root@otro.ejemplo", false)]
+        [InlineData("nadie.ejemplo:2222", "root@otro.ejemplo", false)]
+        [InlineData("nadie.ejemplo, otro.ejemplo", "root@otro.ejemplo", true)]
+        [InlineData("nadie.ejemplo, prod.ejemplo", "root@10.0.0.5", true)]
+        public async Task NombreNoResuelto_SoloCuentaSiPodriaSerElDestino(string configuracion, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out _, ResolverFalso).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.IsSoloLectura.Should().Be(isSoloLectura);
+            _ = comprobacion.NoResuelto.Should().BeNull();
+        }
+
+        // Un fallo pasajero del DNS no se recuerda: en cuanto el nombre se resuelve, la comparación es por sus direcciones.
+        [Fact]
+        public async Task FalloDeResolucion_NoSeRecuerda()
+        {
+            // Arrange
+            int consultas = 0;
+            Task<IPAddress[]> Pasajero(string nombre, CancellationToken _) =>
+                Interlocked.Increment(ref consultas) == 1
+                    ? Task.FromException<IPAddress[]>(new SocketException((int)SocketError.TryAgain))
+                    : Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") });
+
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, Pasajero).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura durante = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+            ComprobacionSoloLectura despues = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+            ComprobacionSoloLectura laIp = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+
+            // Assert
+            _ = durante.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = despues.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = laIp.Should().Be(new ComprobacionSoloLectura(true, null));
+            _ = consultas.Should().Be(2, "el fallo no se recuerda; el éxito sí");
+        }
+
+        // El plazo de 3 s se cumple aunque la resolución no haga caso de la cancelación (getaddrinfo no se puede cancelar):
+        // se deja de esperar y se rechaza. Las llamadas siguientes al mismo nombre esperan esa misma resolución en lugar de
+        // empezar otra (no se acumulan hilos bloqueados).
+        [Fact]
+        public async Task ResolucionQueNoTermina_SeRechazaAlVencerElPlazoSinLanzarOtra()
+        {
+            // Arrange
+            int consultas = 0;
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Colgado(string nombre, CancellationToken token)
+            {
+                _ = Interlocked.Increment(ref consultas);
+                return nunca.Task;
+            }
+
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, Colgado).Should().BeTrue();
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 10).Select(_ => destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None)));
+            ComprobacionSoloLectura otraVez = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+
+            // Assert
+            _ = resultados.Should().AllBeEquivalentTo(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = otraVez.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(9), "cada llamada espera como mucho 3 s");
+            _ = consultas.Should().Be(1, "una sola resolución en curso por nombre");
+            nunca.SetResult([IPAddress.Parse("10.0.0.5")]);
+        }
+
+        // Con muchos nombres distintos colgados a la vez, las resoluciones en curso tienen tope: las que pasan de él no se
+        // lanzan y se rechazan al momento.
+        [Fact]
+        public async Task ResolucionesEnCurso_TienenTope()
+        {
+            // Arrange
+            int consultas = 0;
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Colgado(string nombre, CancellationToken token)
+            {
+                _ = Interlocked.Increment(ref consultas);
+                return nunca.Task;
+            }
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Colgado).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura[] resultados = await Task.WhenAll(Enumerable.Range(0, 40).Select(i => destinos.ComprobarAsync(Destino($"root@nombre{i}.ejemplo"), CancellationToken.None)));
+
+            // Assert
+            _ = resultados.Should().OnlyContain(r => r.IsSoloLectura && r.NoResuelto != null);
+            _ = consultas.Should().Be(DestinosSoloLectura.MaxResolucionesEnCurso);
+            nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
+        }
+
+        // ssh_status marca las sesiones sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o lo ya resuelto),
+        // null si depende de un nombre que aún no se ha resuelto.
+        [Fact]
+        public async Task SinRed_SoloLoQueYaSeSabe()
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo, deploy@10.0.0.7:2222, localhost", out DestinosSoloLectura destinos, out _, ResolverFalso).Should().BeTrue();
+
+            // Act
+            bool? porTexto = destinos.IsSoloLecturaSinRed(Destino("root@PROD.ejemplo"));
+            bool? otroUsuario = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.7:2222"));
+            bool? loopback = destinos.IsSoloLecturaSinRed(Destino("root@127.0.0.1"));
+            bool? sinResolver = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            _ = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+            bool? yaResuelto = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            _ = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None);
+            bool? resueltoDistinto = destinos.IsSoloLecturaSinRed(Destino("root@otro.ejemplo"));
+
+            // Assert
+            _ = porTexto.Should().BeTrue();
+            _ = loopback.Should().BeTrue();
+            _ = sinResolver.Should().BeNull();
+            _ = otroUsuario.Should().BeNull("prod.ejemplo aún no se ha resuelto");
+            _ = yaResuelto.Should().BeTrue();
+            _ = resueltoDistinto.Should().BeFalse();
+            _ = destinos.Entradas.Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
         }
 
         // Con DNS real (/etc/hosts): localhost cubre 127.0.0.1.

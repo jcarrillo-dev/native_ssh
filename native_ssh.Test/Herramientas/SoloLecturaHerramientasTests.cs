@@ -1,3 +1,6 @@
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -17,13 +20,21 @@ namespace NativeSsh.Test.Herramientas
 
         public SoloLecturaHerramientasTests()
         {
-            _ = DestinosSoloLectura.TryParsear("prod", out DestinosSoloLectura soloLectura, out _).Should().BeTrue();
+            _ = DestinosSoloLectura.TryParsear("prod", out DestinosSoloLectura soloLectura, out _, ResolverFalso).Should().BeTrue();
             OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", SoloLectura = soloLectura };
             _gestor = new GestorSesiones(_fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
             _herramientas = new HerramientasSsh(_gestor, opciones);
         }
 
         public ValueTask DisposeAsync() => _gestor.DisposeAsync();
+
+        // prod → 10.0.0.5 y pruebas → 10.0.0.9; cualquier otro nombre no se resuelve.
+        private static Task<IPAddress[]> ResolverFalso(string nombre, CancellationToken _) => nombre switch
+        {
+            "prod" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") }),
+            "pruebas" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.9") }),
+            _ => Task.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound))
+        };
 
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("| tail -n +", StringComparison.Ordinal) ? new("[Líneas 1-1 de 1]\nhola\n") :
@@ -90,6 +101,42 @@ namespace NativeSsh.Test.Herramientas
             _ = lectura.Should().Be("[Líneas 1-1 de 1]\nhola\n");
             _ = cwd.Directorio.Should().Be("/srv");
             _ = otro.Estado.Should().Be(EstadoPeticionEnum.Completado);
+        }
+
+        // Un destino que no se puede comparar (su nombre no se resuelve) se rechaza por seguridad, sin conectar, y el mensaje
+        // dice qué nombre no se resolvió.
+        [Fact]
+        public async Task Escritura_DestinoNoResuelto_SeRechazaPorSeguridad()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EjecutarAsync("nadie.ejemplo", "echo hola")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be(HerramientasSsh.MensajeSoloLecturaNoComprobado("ana@nadie.ejemplo:22", "ssh_exec", "nadie.ejemplo"));
+            _ = _fabrica.Conexiones.Should().Be(0);
+        }
+
+        [Fact]
+        public void MensajeNoComprobado_DiceQueNoSeResolvioYQueSeRechazaPorSeguridad() =>
+            _ = HerramientasSsh.MensajeSoloLecturaNoComprobado("ana@prod:22", "ssh_exec", "prod").Should().Be("Rechazado: ana@prod:22: no se pudo comprobar si es de solo lectura (no se resolvió prod); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).");
+
+        // ssh_status dice qué destinos están configurados en solo lectura y marca cada sesión.
+        [Fact]
+        public async Task Estado_MarcaLosDestinosDeSoloLectura()
+        {
+            // Arrange
+            _ = await _herramientas.LeerArchivoAsync("prod", "a.txt");
+            _ = await _herramientas.EjecutarAsync("pruebas", "echo hola");
+
+            // Act
+            ResultadoEstado estado = _herramientas.Estado();
+            string json = System.Text.Json.JsonSerializer.Serialize(estado, ContextoJsonNativeSsh.Default.ResultadoEstado);
+
+            // Assert
+            _ = estado.SoloLectura.Should().Equal("prod");
+            _ = estado.Sesiones.Single(s => s.Destino == "ana@prod:22").IsSoloLectura.Should().BeTrue();
+            _ = estado.Sesiones.Single(s => s.Destino == "ana@pruebas:22").IsSoloLectura.Should().BeFalse();
+            _ = json.Should().Contain("\"soloLectura\":[\"prod\"]").And.Contain("\"isSoloLectura\":true");
         }
 
         [Fact]

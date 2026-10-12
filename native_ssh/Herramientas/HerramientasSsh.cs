@@ -394,16 +394,18 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
-        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
+        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino (usa las de lectura); sin isSoloLectura, aún no se ha podido comparar (depende de resolver un nombre) y la primera de esas herramientas lo comprobará.")]
         public ResultadoEstado Estado(
             [Description("Filtrar por destino (opcional).")] string? destino = null)
         {
             string? clave = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino).Clave;
             bool isSinFiltro = clave is null;
+            DestinosSoloLectura soloLectura = opciones.SoloLectura;
+            bool hasSoloLectura = !soloLectura.IsVacio;
             List<EstadoSesion> sesiones = [];
             foreach (SesionShell s in gestor.ListarSesiones())
                 if (isSinFiltro || s.Destino.Clave == clave)
-                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos));
+                    sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino) : null));
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
             List<ResumenPeticion> peticiones = [];
@@ -416,7 +418,7 @@ namespace NativeSsh.Herramientas
                     peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
-            return new ResultadoEstado(sesiones, peticiones);
+            return new ResultadoEstado(sesiones, peticiones, hasSoloLectura ? soloLectura.Entradas : null);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
