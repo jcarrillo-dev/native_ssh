@@ -15,11 +15,16 @@ namespace NativeSsh.Test.Ssh
     // en ssh, donde cada alias se autentica con las suyas. Un alias no usa la sesión (ni las claves) de otro alias al mismo
     // usuario@servidor:puerto; el limitador sigue por servidor real. Configuración propia (ssh -F) y conexiones falsas.
     [SupportedOSPlatform("linux")]
-    public sealed class SesionesConConfiguracionSshTests : IDisposable
+    public sealed partial class SesionesConConfiguracionSshTests : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(10);
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfg_ses_{Guid.NewGuid():N}")).FullName;
-        private readonly FabricaFalsa _fabrica = new(comando => comando == "pregunta" ? new RespuestaFalsa("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada) : new RespuestaFalsa($"eco:{comando}\n"));
+        private readonly FabricaFalsa _fabrica = new(comando => comando switch
+        {
+            "pregunta" => new RespuestaFalsa("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada),
+            "largo" => new RespuestaFalsa("", 0, ComportamientoFalsoEnum.Colgado),
+            _ => new RespuestaFalsa($"eco:{comando}\n")
+        });
         private readonly string _configuracion;
         private readonly GestorSesiones _gestor;
 
@@ -120,7 +125,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.IsHecho.Should().BeTrue();
-            _ = resultado.Mensaje.Should().Be("Conexión cerrada.");
+            _ = resultado.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
             _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Identidades.Should().Equal("/k/b");
         }
 

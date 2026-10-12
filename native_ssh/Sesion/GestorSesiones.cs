@@ -4,8 +4,8 @@ using NativeSsh.Comun;
 namespace NativeSsh.Sesion
 {
     // Punto de entrada del núcleo: una SesionShell por destino y claves (DestinoSsh.ClaveSesion), creada bajo demanda. Cada
-    // sesión recuerda los alias con los que se abrió o usó, para que ssh_disconnect y ssh_status con un alias la encuentren
-    // aunque después cambie la configuración de ssh del alias.
+    // sesión recuerda los alias con los que se abrió o usó (hasta MaxAliasPorSesion), para que ssh_disconnect y ssh_status
+    // con un alias la encuentren aunque después cambie el HostName (o las claves) del alias en la configuración de ssh.
     public sealed class GestorSesiones(
         IFabricaConexion fabrica,
         LimitadorConexiones limitador,
@@ -18,8 +18,10 @@ namespace NativeSsh.Sesion
         public static readonly TimeSpan TimeoutMinimo = TimeSpan.FromSeconds(1);
         public static readonly TimeSpan TimeoutMaximo = TimeSpan.FromHours(1);
 
+        // Alias que recuerda cada sesión (README; el mensaje de ssh_disconnect lo cita si alguna sesión llegó al tope).
+        public const int MaxAliasPorSesion = 64;
+
         private readonly Lock _candado = new();
-        private const int MaxAliasPorSesion = 16;
 
         private readonly Dictionary<string, EntradaSesion> _sesiones = new(StringComparer.Ordinal);
         private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
@@ -86,8 +88,10 @@ namespace NativeSsh.Sesion
         }
 
         // Las sesiones a las que se refiere un destino ya resuelto (ParsearDestino), para ssh_disconnect y ssh_status:
-        // - un alias (Alias != null): la de su destino y claves actuales y las que se abrieron o usaron con ese alias (aunque
-        //   su configuración haya cambiado después);
+        // - un alias (Alias != null): las de su usuario y puerto resueltos que son la de su destino y claves actuales o se
+        //   abrieron o usaron con ese alias (aunque su HostName o sus claves hayan cambiado después). El alias se compara como
+        //   en ssh, distinguiendo mayúsculas ('Host Web' no es 'Host web'), y el usuario y el puerto evitan que un destino
+        //   que nunca se usó (root@prod, prod:2223) alcance la sesión de otro (deploy@prod);
         // - el servidor real (usuario@servidor:puerto, o un nombre que la configuración no cambia): todas las de ese
         //   usuario@servidor:puerto, sean de las claves que sean.
         public IReadOnlyList<SesionShell> Seleccionar(DestinoSsh destino)
@@ -95,8 +99,8 @@ namespace NativeSsh.Sesion
             lock (_candado)
             {
                 List<SesionShell> sesiones = [];
-                foreach ((string clave, EntradaSesion entrada) in _sesiones)
-                    if (IsSeleccionada(destino, clave, entrada))
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                    if (IsSeleccionada(destino, entrada))
                         sesiones.Add(entrada.Sesion);
                 return sesiones;
             }
@@ -104,9 +108,25 @@ namespace NativeSsh.Sesion
 
         // ¿La petición es de una sesión a la que se refiere el destino (mismo criterio que Seleccionar)?
         public static bool IsDelDestino(Peticion peticion, DestinoSsh destino) =>
-            destino.Alias is null
-                ? string.Equals(peticion.Destino.Clave, destino.Clave, StringComparison.Ordinal)
-                : string.Equals(peticion.Destino.ClaveSesion, destino.ClaveSesion, StringComparison.Ordinal) || string.Equals(peticion.Destino.Alias, destino.Alias, StringComparison.OrdinalIgnoreCase);
+            IsDelDestino(peticion.Destino, string.Equals(peticion.Destino.Alias, destino.Alias, StringComparison.Ordinal), destino);
+
+        // Para el mensaje de ssh_disconnect con un alias que no cerró nada: las sesiones abiertas con ese alias para otro
+        // usuario o puerto (su configuración cambió con la sesión viva, o se pidió otro usuario o puerto), y si alguna sesión
+        // llegó al tope de alias y pudo olvidar este.
+        public PistasAlias BuscarPistasAlias(DestinoSsh destino)
+        {
+            List<string> otros = [];
+            bool isAlgunaLlena = false;
+            lock (_candado)
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                {
+                    isAlgunaLlena |= entrada.IsAliasOlvidado;
+                    if (destino.Alias is { } alias && entrada.Alias.Contains(alias))
+                        otros.Add(entrada.Sesion.Destino.Clave);
+                }
+
+            return new PistasAlias(otros, isAlgunaLlena);
+        }
 
         public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
 
@@ -118,8 +138,8 @@ namespace NativeSsh.Sesion
             List<SesionShell> cerradas = [];
             lock (_candado)
             {
-                foreach ((string clave, EntradaSesion entrada) in _sesiones)
-                    if (IsSeleccionada(destino, clave, entrada))
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                    if (IsSeleccionada(destino, entrada))
                         cerradas.Add(entrada.Sesion);
 
                 foreach (SesionShell sesion in cerradas)
@@ -191,26 +211,47 @@ namespace NativeSsh.Sesion
                     _sesiones[clave] = entrada;
                 }
 
-                if (destino.Alias is { } alias && entrada.Alias.Count < MaxAliasPorSesion)
-                    _ = entrada.Alias.Add(alias);
+                if (destino.Alias is { } alias && !entrada.Alias.Contains(alias))
+                {
+                    if (entrada.Alias.Count < MaxAliasPorSesion)
+                        _ = entrada.Alias.Add(alias);
+                    else
+                        entrada.IsAliasOlvidado = true;
+                }
+
                 return entrada.Sesion;
             }
         }
 
-        private static bool IsSeleccionada(DestinoSsh destino, string clave, EntradaSesion entrada) =>
-            destino.Alias is null
-                ? string.Equals(entrada.Sesion.Destino.Clave, destino.Clave, StringComparison.Ordinal)
-                : string.Equals(clave, destino.ClaveSesion, StringComparison.Ordinal) || entrada.Alias.Contains(destino.Alias);
+        private static bool IsSeleccionada(DestinoSsh destino, EntradaSesion entrada) =>
+            IsDelDestino(entrada.Sesion.Destino, destino.Alias is { } alias && entrada.Alias.Contains(alias), destino);
+
+        // El criterio de Seleccionar para una sesión (o petición) con ese destino; isConElAlias: se abrió o usó con el alias
+        // pedido. Con un alias, además, el mismo usuario y puerto resueltos.
+        private static bool IsDelDestino(DestinoSsh deLaSesion, bool isConElAlias, DestinoSsh pedido)
+        {
+            if (pedido.Alias is null)
+                return string.Equals(deLaSesion.Clave, pedido.Clave, StringComparison.Ordinal);
+
+            bool isMismoUsuarioYPuerto = deLaSesion.Puerto == pedido.Puerto && string.Equals(deLaSesion.Usuario, pedido.Usuario, StringComparison.Ordinal);
+            return isMismoUsuarioYPuerto && (isConElAlias || string.Equals(deLaSesion.ClaveSesion, pedido.ClaveSesion, StringComparison.Ordinal));
+        }
 
         private sealed class EntradaSesion(SesionShell sesion)
         {
             public SesionShell Sesion { get; } = sesion;
 
-            // Bajo _candado.
-            public HashSet<string> Alias { get; } = new(StringComparer.OrdinalIgnoreCase);
+            // Bajo _candado. Ordinal: ssh distingue mayúsculas en los Host.
+            public HashSet<string> Alias { get; } = new(StringComparer.Ordinal);
+
+            // Bajo _candado: se pidió recordar un alias más con la sesión ya en MaxAliasPorSesion.
+            public bool IsAliasOlvidado { get; set; }
         }
 
         private static TimeSpan Ajustar(TimeSpan timeout) =>
             timeout < TimeoutMinimo ? TimeoutMinimo : timeout > TimeoutMaximo ? TimeoutMaximo : timeout;
     }
+
+    // Ver GestorSesiones.BuscarPistasAlias.
+    public readonly record struct PistasAlias(IReadOnlyList<string> OtrosDestinos, bool IsTopeAlcanzado);
 }

@@ -395,7 +395,7 @@ namespace NativeSsh.Herramientas
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
         [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida).")]
         public ResultadoEstado Estado(
-            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias; usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
+            [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
             DestinoSsh? filtro = string.IsNullOrWhiteSpace(destino) ? null : gestor.ParsearDestino(destino);
             bool isSinFiltro = filtro is null;
@@ -421,7 +421,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo la sesión de ese alias; con usuario@servidor[:puerto], todas las de ese destino (la respuesta dice cuántas).")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor). Con un alias de ~/.ssh/config cierra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino); con usuario@servidor[:puerto], todas las de ese destino. La respuesta dice cuáles cerró.")]
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
@@ -429,23 +429,57 @@ namespace NativeSsh.Herramientas
             IReadOnlyList<DestinoSsh> cerradas = await gestor.DesconectarAsync(resuelto).ConfigureAwait(false);
             string mensaje = cerradas.Count switch
             {
-                0 => "No había conexión con ese destino.",
-                1 => "Conexión cerrada.",
-                _ => $"Se cerraron {cerradas.Count} conexiones con {resuelto.Clave}, una por cada juego de claves: {DescribirClaves(cerradas)}."
+                0 => MensajeSinConexion(resuelto),
+                1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
+                // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
+                _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Count} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
+                _ => $"Se cerraron {cerradas.Count} conexiones: {DescribirCerradas(cerradas, isConDestino: true)}."
             };
-            return new ResultadoAccion(resuelto.Clave, cerradas.Count > 0, mensaje);
+            return new ResultadoAccion(cerradas.Count == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Count > 0, mensaje);
         }
 
-        private static string DescribirClaves(IReadOnlyList<DestinoSsh> destinos)
+        private static bool IsMismoDestino(IReadOnlyList<DestinoSsh> destinos)
+        {
+            foreach (DestinoSsh destino in destinos)
+                if (!string.Equals(destino.Clave, destinos[0].Clave, StringComparison.Ordinal))
+                    return false;
+
+            return true;
+        }
+
+        // «usuario@servidor:puerto (claves)» o solo las claves de cada una, separadas por '; '.
+        private static string DescribirCerradas(IReadOnlyList<DestinoSsh> destinos, bool isConDestino)
         {
             StringBuilder texto = new();
             foreach (DestinoSsh destino in destinos)
             {
                 if (texto.Length > 0)
                     _ = texto.Append("; ");
+                if (isConDestino)
+                    _ = texto.Append(destino.Clave).Append(" (");
                 _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
+                if (isConDestino)
+                    _ = texto.Append(')');
             }
 
+            return texto.ToString();
+        }
+
+        // Con un alias que no cerró nada, el mensaje dice dónde puede estar la sesión que se buscaba: abierta con el alias para
+        // otro usuario o puerto, o en una sesión que llegó al tope de alias y no recuerda este.
+        private string MensajeSinConexion(DestinoSsh resuelto)
+        {
+            if (resuelto.Alias is not { } alias)
+                return "No había conexión con ese destino.";
+
+            PistasAlias pistas = gestor.BuscarPistasAlias(resuelto);
+            StringBuilder texto = new($"No había conexión con '{alias}' ({resuelto.Clave}).");
+            if (pistas.OtrosDestinos.Count > 0)
+                _ = texto.Append(" Hay sesiones abiertas con ese alias para otro usuario o puerto: ").AppendJoin(", ", pistas.OtrosDestinos)
+                    .Append("; para cerrarlas, usa ese usuario@servidor:puerto (ssh_status las muestra).");
+            if (pistas.IsTopeAlcanzado)
+                _ = texto.Append(" Alguna sesión abierta ya recuerda ").Append(GestorSesiones.MaxAliasPorSesion)
+                    .Append(" alias y no guarda más: si abriste una con este alias antes de cambiar su configuración, búscala con ssh_status y ciérrala con su usuario@servidor:puerto.");
             return texto.ToString();
         }
 
