@@ -184,6 +184,24 @@ namespace NativeSsh.Test.Ssh
             _ = _gestor.ListarSesiones().Should().ContainSingle();
         }
 
+        // Volver a usar un alias que la sesión ya recuerda, con la sesión en el tope, no cuenta como alias olvidado: el mensaje
+        // de un alias que no cierra nada no habla del tope.
+        [Fact]
+        public async Task AliasYaRecordadoConLaSesionEnElTope_NoCuentaComoOlvidado()
+        {
+            // Arrange
+            EscribirAlias(TopeAlias);
+            File.AppendAllText(_configuracion, "Host otro\n  HostName 127.0.0.1\n  User nadie\n  Port 2222\n");
+            await Ejecutar([.. Enumerable.Range(1, TopeAlias).Select(i => $"a{i:000}"), "a001"]);
+
+            // Act
+            ResultadoAccion resultado = await Herramientas.DesconectarAsync("otro");
+
+            // Assert
+            _ = resultado.IsHecho.Should().BeFalse();
+            _ = resultado.Mensaje.Should().NotContain("alias y no guarda más");
+        }
+
         // Si el alias cambió de usuario o de puerto con la sesión viva, ssh_disconnect no cierra la anterior (es otro destino)
         // pero lo dice y da su destino real.
         [Fact]
