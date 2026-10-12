@@ -7,6 +7,7 @@ using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
 using NativeSsh.Ssh;
 using NativeSsh.Test.Sesion.Falsos;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Ssh
 {
@@ -18,7 +19,7 @@ namespace NativeSsh.Test.Ssh
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(10);
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfg_ses_{Guid.NewGuid():N}")).FullName;
-        private readonly FabricaFalsa _fabrica = new(comando => new RespuestaFalsa($"eco:{comando}\n"));
+        private readonly FabricaFalsa _fabrica = new(comando => comando == "pregunta" ? new RespuestaFalsa("¿Nombre? ", 0, ComportamientoFalsoEnum.PideEntrada) : new RespuestaFalsa($"eco:{comando}\n"));
         private readonly string _configuracion;
         private readonly GestorSesiones _gestor;
 
@@ -177,6 +178,53 @@ namespace NativeSsh.Test.Ssh
                 .Should().BeEquivalentTo([("deploy@127.0.0.1:2222", "cuenta-a", "/k/a"), ("deploy@127.0.0.1:2222", "cuenta-b", "/k/b")]);
             _ = deB.Sesiones.Should().ContainSingle().Which.IdentityFile.Should().Equal("/k/b");
             _ = deB.Peticiones.Should().ContainSingle();
+        }
+
+        // ssh_input, ssh_reset_shell y ssh_set_cwd encuentran la sesión de un alias con IdentityFile (por su clave de sesión,
+        // no solo por usuario@servidor:puerto).
+        [Fact]
+        public async Task EntradaAUnComandoDeUnAliasConIdentityFile_LlegaASuSesion()
+        {
+            // Arrange
+            EscribirConfiguracion();
+            ResultadoComando pregunta = await Herramientas.EjecutarAsync("cuenta-a", "pregunta", esperarSegundos: 0);
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(pregunta.Id).Salida.Longitud > 0);
+
+            // Act
+            ResultadoComando respuesta = await Herramientas.EnviarEntradaAsync(pregunta.Id, "ana", esperarSegundos: 5);
+
+            // Assert
+            _ = respuesta.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = respuesta.Salida.Should().Be("recibido:ana\n");
+        }
+
+        [Fact]
+        public async Task ReiniciarElShellDeUnAliasConIdentityFile_ActuaSobreSuSesion()
+        {
+            // Arrange
+            EscribirConfiguracion();
+            await Ejecutar("cuenta-a");
+
+            // Act
+            ResultadoAccion resultado = Herramientas.ReiniciarShell("cuenta-a");
+
+            // Assert
+            _ = resultado.IsHecho.Should().BeTrue();
+        }
+
+        [Fact]
+        public async Task ConsecuenciaDelDirectorioDeUnAliasConIdentityFile_EncuentraSuSesion()
+        {
+            // Arrange
+            EscribirConfiguracion();
+            await Ejecutar("cuenta-a");
+            SesionShell sesion = _gestor.ListarSesiones().Single();
+
+            // Act
+            string consecuencia = Herramientas.ConsecuenciaCwd(sesion.Destino.Clave, sesion, null, claveSesion: sesion.Destino.ClaveSesion);
+
+            // Assert
+            _ = consecuencia.Should().NotContain("se cerró");
         }
     }
 }
