@@ -35,12 +35,12 @@ namespace NativeSsh.Test.Protocolo
             return Encoding.UTF8.GetString(escritor.WrittenSpan);
         }
 
-        // El comando del envío: el base64 decodificado sin el nonce del final, que debe estar.
+        // El comando del envío: el base64 decodificado sin el salto de línea y el nonce del final, que deben estar.
         private static string DecodificarComando(string texto)
         {
-            const string Nonce = "__ns_k=${__ns_b%'";
+            const string Nonce = "__ns_k=${__ns_b%$'\\n";
             int inicio = texto.IndexOf(Nonce, StringComparison.Ordinal) + Nonce.Length;
-            string nonce = texto.Substring(inicio, 32);
+            string nonce = string.Concat("\n", texto.AsSpan(inicio, 32));
             StringBuilder base64 = new();
             foreach (string linea in texto.Split('\n'))
             {
@@ -52,11 +52,11 @@ namespace NativeSsh.Test.Protocolo
 
             string decodificado = Encoding.UTF8.GetString(Convert.FromBase64String(base64.ToString()));
             _ = decodificado.Should().EndWith(nonce);
-            return decodificado[..^32];
+            return decodificado[..^nonce.Length];
         }
 
         // El nonce del envío de un comando (32 hexadecimales).
-        private static string Nonce(string texto) => texto.Substring(texto.IndexOf("__ns_k=${__ns_b%'", StringComparison.Ordinal) + 17, 32);
+        private static string Nonce(string texto) => texto.Substring(texto.IndexOf("__ns_k=${__ns_b%$'\\n", StringComparison.Ordinal) + 20, 32);
 
         // La cola de 'texto': desde su marcador hasta el final.
         private static string Cola(string texto) => texto[texto.IndexOf("printf '%s_%s_%d%s__", StringComparison.Ordinal)..];
@@ -104,7 +104,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Act & Assert
             _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_b='");
-            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '48' ] && {{ __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); }} 2>/dev/null && __ns_k=${{__ns_b%'{Nonce(texto)}'}} && command [ \"${{#__ns_k}}\" -lt \"${{#__ns_b}}\" ] && {{ eval \"$__ns_k\"; __ns_rc=$?; }}; unset __ns_b __ns_k; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '48' ] && {{ __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); }} 2>/dev/null && __ns_k=${{__ns_b%$'\\n{Nonce(texto)}'}} && command [ \"${{#__ns_k}}\" -lt \"${{#__ns_b}}\" ] && {{ eval \"$__ns_k\"; __ns_rc=$?; }}; unset __ns_b __ns_k; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
             _ = texto.Should().EndWith(FinDeLaCola + "\n");
             _ = texto.Should().NotContain($"__NSX_{Id:N}_").And.NotContain("trap");
             _ = MarcadorFin.CodigoEnvioIncompleto.Should().BeInRange(256, 999).And.NotBe(MarcadorFin.CodigoShellAnidado);

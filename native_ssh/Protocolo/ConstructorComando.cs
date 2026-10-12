@@ -36,11 +36,18 @@ namespace NativeSsh.Protocolo
         // puede venir de detrás, así que el final de lo decodificado cambia (o base64 -d falla con los caracteres ajenos al
         // base64) y el nonce no está. No es una suma de comprobación: un cambio del mismo tamaño en medio que dejara el final
         // intacto pasaría, pero eso no lo puede producir otro lector del terminal (y cksum puede faltar en el servidor).
+        // Entre el comando y el nonce va un salto de línea, y se quitan juntos ("${__ns_b%$'\n<nonce>'}"): bash compara por
+        // caracteres del locale del shell, y en uno multibyte heredado (GBK, Big5, Shift-JIS, GB18030) el último byte del
+        // comando y el primero del nonce podían formar un carácter (medido en zh_CN.GBK: 'echo x€' seguido de a–f no se
+        // ejecutaba). 0x0A no es byte de cola en ninguna de esas codificaciones ni en UTF-8, y lo evaluado es byte a byte el
+        // comando pedido, también sus saltos de línea finales (la sustitución de órdenes de la decodificación quita los del final,
+        // y el final es el nonce).
         public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             Guid nonce = IdentidadShell.NuevoTestigo();
-            using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(comando.Length) + MarcadorFin.LongitudId);
+            using BufferAlquilado utf8 = new(Encoding.UTF8.GetMaxByteCount(comando.Length) + 1 + MarcadorFin.LongitudId);
             int longitud = Encoding.UTF8.GetBytes(comando, utf8.Span);
+            utf8.Span[longitud++] = (byte)'\n';
             _ = nonce.TryFormat(utf8.Span[longitud..], out int escritosNonce, "N");
             ReadOnlySpan<byte> resto = utf8.Span[..(longitud + escritosNonce)];
 
@@ -68,7 +75,7 @@ namespace NativeSsh.Protocolo
             Span<byte> cifras = escritor.GetSpan(11);
             _ = longitudBase64.TryFormat(cifras, out int escritasCifras, provider: CultureInfo.InvariantCulture);
             escritor.Advance(escritasCifras);
-            escritor.Write("' ] && { __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%'"u8);
+            escritor.Write("' ] && { __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
             EscribirTestigo(nonce, escritor);
             escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);

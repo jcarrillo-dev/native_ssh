@@ -759,15 +759,16 @@ namespace NativeSsh.Test.Sesion.Falsos
                 int esperada = int.Parse(linea.AsSpan(inicio, linea.IndexOf('\'', inicio) - inicio), System.Globalization.CultureInfo.InvariantCulture);
                 string base64 = _base64.ToString();
                 _ = _base64.Clear();
-                // Y solo si lo decodificado termina en el nonce del envío, que se quita ("${__ns_b%'<nonce>'}").
-                const string Nonce = "__ns_k=${__ns_b%'";
+                // Y solo si lo decodificado termina en un salto de línea y el nonce del envío, que se quitan
+                // ("${__ns_b%$'\n<nonce>'}").
+                const string Nonce = "__ns_k=${__ns_b%$'\\n";
                 int inicioNonce = linea.IndexOf(Nonce, StringComparison.Ordinal) + Nonce.Length;
-                string nonce = linea.Substring(inicioNonce, MarcadorFin.LongitudId);
+                string nonce = string.Concat("\n", linea.AsSpan(inicioNonce, MarcadorFin.LongitudId));
                 string? comando = base64.Length == esperada ? Encoding.UTF8.GetString(Convert.FromBase64String(base64)) : null;
                 if (comando is null || !comando.EndsWith(nonce, StringComparison.Ordinal))
                     EmitirConMarcador("", ExtraerId(linea), CodigoCola(linea, MarcadorFin.CodigoEnvioIncompleto));
                 else
-                    Ejecutar(comando[..^MarcadorFin.LongitudId], ExtraerId(linea), linea);
+                    Ejecutar(comando[..^nonce.Length], ExtraerId(linea), linea);
             }
             else if (linea.StartsWith("__ns_rc=130", StringComparison.Ordinal))
             {

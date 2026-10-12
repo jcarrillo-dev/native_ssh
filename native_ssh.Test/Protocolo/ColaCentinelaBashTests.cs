@@ -85,7 +85,8 @@ namespace NativeSsh.Test.Protocolo
         }
 
         // Ejecuta todo con 'bash -s' y devuelve, por envío, el recuento de su marcador (null si no lo llevaba) y la salida.
-        private async Task<(int? Recuento, string Salida)[]> EjecutarAsync()
+        // entorno: variables de más para el bash (p. ej. el locale).
+        private async Task<(int? Recuento, string Salida)[]> EjecutarAsync(IReadOnlyDictionary<string, string>? entorno = null)
         {
             string fichero = Path.Combine(_directorio, "entrada");
             await File.WriteAllBytesAsync(fichero, _entrada.WrittenMemory.ToArray());
@@ -95,6 +96,8 @@ namespace NativeSsh.Test.Protocolo
                 RedirectStandardError = true,
                 UseShellExecute = false
             };
+            foreach ((string nombre, string valor) in entorno ?? new Dictionary<string, string>())
+                inicio.Environment[nombre] = valor;
             using Process bash = Process.Start(inicio)!;
             Task<string> errores = bash.StandardError.ReadToEndAsync();
             string salida;
@@ -397,6 +400,33 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
+        // Con el shell en un locale multibyte heredado (zh_CN.GBK), un comando que acaba en un carácter cuyo último byte UTF-8
+        // es byte inicial en GBK ('€' = E2 82 AC) se juntaba con el primer carácter del nonce si era a–f (bytes de cola en
+        // GBK), '${__ns_b%<nonce>}' no lo quitaba y el comando no se ejecutaba (997, «no llegó entero»). El salto de línea
+        // que separa comando y nonce no es byte de cola de ninguna codificación multibyte. Con 24 envíos, la probabilidad de
+        // que ningún nonce empiece por a–f es (10/16)^24, menos de 1 entre 10 000. Lo evaluado es byte a byte el comando.
+        [FactLocaleGbk]
+        public async Task LocaleGbk_ComandoQueAcabaEnUnCaracterMultibyte_SeEjecutaTalCual()
+        {
+            // Arrange
+            const int Envios = 24;
+            string locales = Directory.CreateDirectory(Path.Combine(_directorio, "loc")).FullName;
+            using (Process localedef = Process.Start(new ProcessStartInfo("localedef", ["-i", "zh_CN", "-f", "GBK", Path.Combine(locales, "zh_CN.GBK")]) { UseShellExecute = false })!)
+                await localedef.WaitForExitAsync().WaitAsync(Limite);
+            _ = Comando("__ns_l='€'; echo \"${#__ns_l}\"");
+            for (int k = 0; k < Envios; k++)
+                _ = Comando($"touch {Testigo($"gbk{k}")}; echo x€");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync(new Dictionary<string, string> { ["LOCPATH"] = locales, ["LC_ALL"] = "zh_CN.GBK" });
+
+            // Assert
+            _ = marcadores[0].Salida.Should().Be("2\n", "en GBK '€' (E2 82 AC) son dos caracteres: el locale está activo");
+            _ = _codigos.Should().AllSatisfy(c => c.Should().Be(0));
+            _ = marcadores.Skip(1).Select(m => m.Salida).Should().AllBe("x€\n");
+            _ = Enumerable.Range(0, Envios).Should().AllSatisfy(k => File.Exists(Testigo($"gbk{k}")).Should().BeTrue());
+        }
+
         // Sin centinela (la entrada se acaba: un terminal colgado da EOF sin fin) el shell termina tras MaxEofSeguidos EOF
         // seguidos, con CodigoSalidaTopeEof: nunca vuelve a leer órdenes.
         [Fact]
@@ -414,6 +444,25 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[0].Salida.Should().Be("A\n");
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30));
             _ = _codigoSalidaBash.Should().Be(ConstructorComando.CodigoSalidaTopeEof);
+        }
+    }
+
+    // Solo donde se puede compilar el locale zh_CN.GBK (localedef y las fuentes de glibc de zh_CN y GBK).
+    public sealed class FactLocaleGbkAttribute : FactAttribute
+    {
+        private static readonly string? Omision = CalcularOmision();
+
+        public override string? Skip
+        {
+            get => base.Skip ?? Omision;
+            set => base.Skip = value;
+        }
+
+        private static string? CalcularOmision()
+        {
+            bool hasLocaledef = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(':').Any(d => File.Exists(Path.Combine(d, "localedef")));
+            bool hasFuentes = File.Exists("/usr/share/i18n/locales/zh_CN") && (File.Exists("/usr/share/i18n/charmaps/GBK.gz") || File.Exists("/usr/share/i18n/charmaps/GBK"));
+            return hasLocaledef && hasFuentes ? null : "Sin localedef o sin las fuentes de zh_CN y GBK en /usr/share/i18n: no se puede compilar zh_CN.GBK.";
         }
     }
 }
