@@ -376,6 +376,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private int _ctrlCConOtrosBytes;
         private int _lineasATragarTrasCtrlC;
         private int _lineasPorTragar;
+        private int _isComerBase64;
         private int _lineasRecibidas;
         private volatile bool _isEscrituraRechazada;
         private ManualResetEventSlim? _liberacionEscrituras;
@@ -572,6 +573,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         // como contraseñas si la está pidiendo). Lo que llega en la misma escritura que el Ctrl+C se pierde siempre.
         public void TragarLineasTrasCtrlC(int lineas) => Volatile.Write(ref _lineasATragarTrasCtrlC, lineas);
 
+        // Otro proceso que lee del terminal se come la próxima línea del base64 de un comando ("__ns_b='...").
+        public void ComerSiguienteLineaDelBase64() => Volatile.Write(ref _isComerBase64, 1);
+
         // Desde ahora Dispose no vuelve hasta la confirmación: como SSH.NET esperando el CLOSE de un servidor cuyo bash no
         // muere al perder el terminal.
         public void RetenerCierre(ManualResetEventSlim confirmacion) => Volatile.Write(ref _confirmacionCierre, confirmacion);
@@ -657,6 +661,9 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _lineasPorTragar--;
                 return;
             }
+
+            if (linea.StartsWith("__ns_b='", StringComparison.Ordinal) && Interlocked.Exchange(ref _isComerBase64, 0) == 1)
+                return;
 
             if (_isEnLogin)
             {

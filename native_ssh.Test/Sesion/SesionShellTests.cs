@@ -1440,6 +1440,30 @@ namespace NativeSsh.Test.Sesion
             _ = fabrica.Ultima.ShellsAbiertos.Should().Be(1);
         }
 
+        // Otro proceso que lee del terminal se come una línea del base64 del comando: el shell no lo ejecuta (lo que queda
+        // sería otro comando) y el marcador lleva MarcadorFin.CodigoEnvioIncompleto; el comando termina con error y un
+        // mensaje que lo dice, y el shell sigue.
+        [Fact]
+        public async Task ComandoQueNoLlegaEntero_NoSeEjecutaYTerminaConError()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            _ = await EjecutarAsync(sesion, "primero");
+            fabrica.Ultima!.CanalActual!.ComerSiguienteLineaDelBase64();
+
+            // Act
+            Peticion incompleto = await EjecutarAsync(sesion, "incompleto");
+            Peticion siguiente = await EjecutarAsync(sesion, "siguiente");
+
+            // Assert
+            _ = (incompleto.Estado, incompleto.CodigoSalida).Should().Be((EstadoPeticionEnum.Error, -1));
+            _ = incompleto.Aviso.Should().Be(SesionShell.MensajeEnvioIncompleto);
+            _ = Texto(incompleto).Should().BeEmpty();
+            _ = fabrica.Ultima.Comandos.Should().NotContain("incompleto");
+            _ = Texto(siguiente).Should().Be("eco:siguiente\n");
+        }
+
         [Theory]
         [InlineData(1)]
         [InlineData(2)]

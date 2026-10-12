@@ -265,6 +265,25 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
+        // La línea de recuperación borra __ns_d: una cola abortada por Ctrl+C entre su 'read' y el borrado pudo dejar en ella
+        // la última línea tecleada (un secreto); el comando siguiente no la ve.
+        [Fact]
+        public async Task Recuperacion_BorraLoQueDejoUnaColaAbortada()
+        {
+            // Arrange
+            string canario = $"Canario{Guid.NewGuid():N}";
+            _ = Comando("true");
+            Teclear($"\n#{_centinela:N}\n__ns_d={canario}\n");
+            _ = Recuperacion(Guid.NewGuid());
+            _ = Comando("declare -p __ns_d 2>/dev/null || echo borrada");
+
+            // Act
+            (int? Recuento, string Salida)[] marcadores = await EjecutarAsync();
+
+            // Assert
+            _ = marcadores[2].Salida.Should().Be("borrada\n");
+        }
+
         // Si otro lector se come una línea del base64 del comando (la primera, o la única), lo que queda no se ejecuta: el
         // marcador lleva MarcadorFin.CodigoEnvioIncompleto y el shell sigue con el comando siguiente. Antes se ejecutaba el
         // final del comando (o nada, con código 0).
