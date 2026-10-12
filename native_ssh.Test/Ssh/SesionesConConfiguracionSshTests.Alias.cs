@@ -126,6 +126,23 @@ namespace NativeSsh.Test.Ssh
             _ = estado.Peticiones.Should().ContainSingle().Which.Destino.Should().Be("deploy@127.0.0.1:2222");
         }
 
+        // El destino de la respuesta es el de la sesión que se cerró, no el que resuelve ahora el alias.
+        [Fact]
+        public async Task DesconectarUnAliasCuyoHostNameCambio_LaRespuestaDaElDestinoCerrado()
+        {
+            // Arrange
+            EscribirProd();
+            await Ejecutar("prod");
+            EscribirProd(servidor: "localhost");
+
+            // Act
+            ResultadoAccion resultado = await Herramientas.DesconectarAsync("prod");
+
+            // Assert
+            _ = resultado.Destino.Should().Be("deploy@127.0.0.1:2222");
+            _ = resultado.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
+        }
+
         // Dos sesiones del mismo alias con las mismas claves (antes y después de cambiar su HostName): el mensaje nombra las
         // dos y no dice «una por cada juego de claves».
         [Fact]
