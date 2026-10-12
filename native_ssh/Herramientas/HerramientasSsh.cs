@@ -309,7 +309,7 @@ namespace NativeSsh.Herramientas
             [Description("Texto a enviar.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
-            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea, sin '\\n' ni '\\r' en medio: si no, se rechaza sin enviar nada.")] bool secreto = false,
+            [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. '^C' en lugar de un carácter de control) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea, sin '\\n', '\\r' ni Ctrl+D ('\\u0004') en medio: si no, se rechaza sin enviar nada.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
@@ -346,16 +346,18 @@ namespace NativeSsh.Herramientas
             return secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado;
         }
 
-        internal const string MensajeSecretoDeVariasLineas = "No se envió la entrada: con secreto=true el texto debe ser una sola línea, sin saltos de línea ('\\n' o '\\r') en medio (el salto final lo añade enter=true). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida.";
+        internal const string MensajeSecretoDeVariasLineas = "No se envió la entrada: con secreto=true el texto debe ser una sola línea, sin saltos de línea ('\\n' o '\\r') ni Ctrl+D ('\\u0004') en medio (el salto final lo añade enter=true). Envía cada línea en su propia llamada a ssh_input, cuando el comando la pida.";
 
-        // Más de una línea: algún '\n' o '\r' que no sea el salto final. Con enter=true el salto lo añade la herramienta, así
-        // que cualquiera del texto es otra línea; con enter=false se admite uno al final ('\n' o '\r'; "\r\n" son dos
-        // líneas para el terminal, que convierte '\r' en '\n').
+        // Más de una línea: algún fin de línea del terminal en modo canónico que no sea el último carácter: '\n', '\r' (el
+        // terminal lo convierte en '\n') o Ctrl+D ('\u0004', VEOF: entrega lo escrito sin salto, o un EOF al principio de una
+        // línea). Con enter=true el salto lo añade la herramienta, así que cualquiera del texto es otra línea; con enter=false
+        // se admite uno al final ("\r\n" son dos líneas). NUL no termina línea (medido en Linux: VEOL sin definir) y VEOL/VEOL2
+        // solo cuentan si un comando los define con stty: no se miran.
         internal static bool IsVariasLineas(ReadOnlySpan<char> texto, bool isEnter)
         {
-            if (!isEnter && (texto.EndsWith('\n') || texto.EndsWith('\r')))
+            if (!isEnter && !texto.IsEmpty && texto[^1] is '\n' or '\r' or '\u0004')
                 texto = texto[..^1];
-            return texto.IndexOfAny('\n', '\r') >= 0;
+            return texto.IndexOfAny('\n', '\r', '\u0004') >= 0;
         }
 
         internal const string AvisoEntradaSecreta = "Entrada enviada como secreto: no se ha escrito en los logs y sus apariciones en la salida (p. ej. el eco del terminal) se sustituyen por asteriscos.";
