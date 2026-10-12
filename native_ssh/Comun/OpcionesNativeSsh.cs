@@ -51,8 +51,8 @@ namespace NativeSsh.Comun
                 RutasIdentidad = rutas,
                 IsRutasIdentidadExplicitas = hasIdentidades,
                 ConfiguracionSsh = ElegirConfiguracionSsh(Environment.GetEnvironmentVariable("NATIVE_SSH_CONFIG_SSH"), directorioEntorno),
-                Contrasena = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSWORD"),
-                Passphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE"),
+                Contrasena = Environment.GetEnvironmentVariable(VariablesSecretas.Contrasena),
+                Passphrase = Environment.GetEnvironmentVariable(VariablesSecretas.Passphrase),
                 FicheroPassphrase = Environment.GetEnvironmentVariable("NATIVE_SSH_PASSPHRASE_FICHERO")
             };
         }

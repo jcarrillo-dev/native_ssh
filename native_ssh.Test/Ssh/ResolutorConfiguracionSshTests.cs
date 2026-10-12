@@ -410,5 +410,32 @@ namespace NativeSsh.Test.Ssh
             string entorno = File.ReadAllText(volcado);
             _ = entorno.Should().Contain("PATH=").And.NotContain("Canario-secreto-entorno");
         }
+
+        // ${VAR} de un IdentityFile no expande los secretos de native_ssh (ssh tampoco los tiene en su entorno): se tratan
+        // como no definidas y su valor no llega ni al error ni a las rutas (que van a los mensajes de credenciales y al log).
+        [Theory]
+        [InlineData("NATIVE_SSH_PASSPHRASE", "${{{0}}}")]
+        [InlineData("NATIVE_SSH_PASSPHRASE", "/nada/${{{0}}}")]
+        [InlineData("NATIVE_SSH_PASSWORD", "/nada/${{{0}}}")]
+        [InlineData("NATIVE_SSH_TOKEN_HTTP", "~/${{{0}}}/id")]
+        public void IdentityFileConUnaVariableSecreta_ComoNoDefinidaYSinSuValor(string variable, string formato)
+        {
+            // Arrange
+            const string Canario = "Canario-secreto-identityfile";
+            string identityFile = string.Format(System.Globalization.CultureInfo.InvariantCulture, formato, variable);
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, $"Host web\n  HostName 127.0.0.1\n  IdentityFile {identityFile}\n");
+            Environment.SetEnvironmentVariable(variable, Canario);
+            using LoggerPrueba log = new();
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh { ConfiguracionSsh = configuracion }, new LoggerDe<ResolutorConfiguracionSsh>(log));
+            _ = DestinoSsh.TryParse("web", "ana", out DestinoSsh destino);
+
+            // Act
+            Action resolver = () => resolutor.Resolver(destino, false, false);
+
+            // Assert
+            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain($"${{{variable}}}, que no está definida").And.NotContain(Canario);
+            _ = log.Entradas.Should().NotContain(e => e.Mensaje.Contains(Canario, StringComparison.Ordinal));
+        }
     }
 }

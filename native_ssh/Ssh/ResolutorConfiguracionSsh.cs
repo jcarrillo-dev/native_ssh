@@ -31,14 +31,13 @@ namespace NativeSsh.Ssh
     // - Plazo (TimeoutConfiguracionSsh, 5 s): un 'Match exec' o una búsqueda DNS de CanonicalizeHostname que se cuelga no
     //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice.
     // - Sin el programa ssh: el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
-    // - ssh hereda el entorno sin NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE ni NATIVE_SSH_TOKEN_HTTP (un Match exec los
-    //   vería).
+    // - ssh hereda el entorno sin las variables secretas (VariablesSecretas: NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE,
+    //   NATIVE_SSH_TOKEN_HTTP; un Match exec las vería), y ${VAR} en un IdentityFile las trata como no definidas.
     public sealed class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
     {
         private const int ErrorNoExiste = 2; // ENOENT
         private const int MaxCaracteresError = 400;
         private static readonly TimeSpan EsperaLectura = TimeSpan.FromSeconds(2);
-        private static readonly string[] VariablesSecretas = ["NATIVE_SSH_PASSWORD", FabricaConexionSsh.VariablePassphrase, TokenHttp.VariableToken];
 
         private readonly Lock _candado = new();
         private IReadOnlyList<string>? _identidadesPorDefecto;
@@ -214,10 +213,13 @@ namespace NativeSsh.Ssh
                 {
                     int cierre = identidad.IndexOf('}', i + 2);
                     string? nombre = cierre < 0 ? null : identidad[(i + 2)..cierre];
-                    string? valor = nombre is { Length: > 0 } ? Environment.GetEnvironmentVariable(nombre) : null;
+                    // Las variables secretas de native_ssh cuentan como no definidas: ssh no las tiene y su valor no debe salir.
+                    bool isSecreta = nombre is not null && VariablesSecretas.IsSecreta(nombre);
+                    string? valor = nombre is { Length: > 0 } && !isSecreta ? Environment.GetEnvironmentVariable(nombre) : null;
                     if (valor is null)
                     {
-                        motivo = nombre is { Length: > 0 } ? $"usa la variable de entorno ${{{nombre}}}, que no está definida" : "tiene un '${' sin cerrar";
+                        string aclaracion = isSecreta ? " para la configuración de ssh (es un secreto de native_ssh: ssh tampoco la recibe)" : "";
+                        motivo = nombre is { Length: > 0 } ? $"usa la variable de entorno ${{{nombre}}}, que no está definida{aclaracion}" : "tiene un '${' sin cerrar";
                         return false;
                     }
 
@@ -269,7 +271,7 @@ namespace NativeSsh.Ssh
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
-            foreach (string variable in VariablesSecretas)
+            foreach (string variable in VariablesSecretas.Nombres)
                 _ = inicio.Environment.Remove(variable);
 
             Process? proceso;

@@ -17,7 +17,7 @@ namespace NativeSsh.Ssh
     // reintenta en la siguiente conexión (arreglar la passphrase no exige reiniciar native_ssh).
     public sealed class FabricaConexionSsh(OpcionesNativeSsh opciones, VerificadorHostConocido verificador, ILogger<FabricaConexionSsh> logger) : IFabricaConexion, IDisposable
     {
-        public const string VariablePassphrase = "NATIVE_SSH_PASSPHRASE";
+        public const string VariablePassphrase = VariablesSecretas.Passphrase;
         public const string VariableFicheroPassphrase = "NATIVE_SSH_PASSPHRASE_FICHERO";
 
         private static readonly DescripcionSecreto DescripcionPassphrase = new("de la passphrase de las claves", "la passphrase", "una passphrase", VariableFicheroPassphrase, VariablePassphrase);
