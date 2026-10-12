@@ -55,7 +55,7 @@ namespace NativeSsh.Protocolo
             _isSaltarSaltoLinea = false;
         }
 
-        public bool Procesar(ReadOnlySpan<byte> bloque, BufferSalida? salida, out int codigo)
+        public bool Procesar(ReadOnlySpan<byte> bloque, IDestinoSalida? salida, out int codigo)
         {
             codigo = 0;
             if (bloque.Length > _tamanoMaximoBloque)
@@ -211,7 +211,7 @@ namespace NativeSsh.Protocolo
             return 0;
         }
 
-        private static void Emitir(BufferSalida? salida, ReadOnlySpan<byte> datos)
+        private static void Emitir(IDestinoSalida? salida, ReadOnlySpan<byte> datos)
         {
             if (!datos.IsEmpty)
                 salida?.Escribir(datos);

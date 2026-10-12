@@ -240,13 +240,12 @@ namespace NativeSsh.Test.Integracion
             _ = (await h.EjecutarAsync(Destino, "true", esperarSegundos: 30).ComoComando()).Aviso.Should().BeNull();
         }
 
-        // Limpieza: ssh_reset_shell, ssh_disconnect, cierre de la sesión y shell recreado tras una caída borran el directorio
-        // del shell (el base se queda).
+        // Limpieza: ssh_reset_shell, ssh_disconnect y el cierre de la sesión borran el directorio del shell (el base se queda).
+        // Un shell recreado tras una caída no lo borra (GuardarSalidaTests.Conservacion).
         [Theory]
         [InlineData("reset")]
         [InlineData("disconnect")]
         [InlineData("cierre")]
-        [InlineData("caida")]
         public async Task Limpieza_BorraElDirectorioDelShell(string camino)
         {
             // Arrange
@@ -264,14 +263,9 @@ namespace NativeSsh.Test.Integracion
                 case "disconnect":
                     _ = await h.DesconectarAsync(Destino);
                     break;
-                case "cierre":
+                default:
                     await _gestor!.DisposeAsync();
                     _gestor = null;
-                    break;
-                default:
-                    ResultadoComando caida = await h.EjecutarAsync(Destino, "exit", esperarSegundos: 30).ComoComando();
-                    _ = caida.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
-                    _ = (await h.EjecutarAsync(Destino, "true", esperarSegundos: 30).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Completado);
                     break;
             }
 
@@ -303,27 +297,6 @@ namespace NativeSsh.Test.Integracion
             _ = r.Aviso.Should().Contain($"está en {r.Archivo}").And.Contain("sin recuento");
             _ = (r.Aviso ?? string.Empty).Contains("ssh_reset_shell o ssh_disconnect", StringComparison.Ordinal).Should().Be(isCancelado);
             _ = (await File.ReadAllTextAsync(r.Archivo!)).Should().Be("antes\n");
-        }
-
-        // Shell perdido a mitad del comando: el aviso da la ruta y dice que hay que leerla antes del siguiente ssh_exec, que la
-        // borra al abrir el shell nuevo.
-        [Fact]
-        public async Task ShellPerdido_AvisaDeQueElSiguienteLaBorra()
-        {
-            // Arrange
-            HerramientasSsh h = Herramientas();
-
-            // Act
-            ResultadoComando r = await GuardarAsync(h, "echo parcial; kill -9 $$");
-            bool isAntes = File.Exists(r.Archivo!);
-            _ = await h.EjecutarAsync(Destino, "true", esperarSegundos: 30).ComoComando();
-
-            // Assert
-            salida.WriteLine(r.Aviso);
-            _ = r.Estado.Should().Be(EstadoPeticionEnum.ShellPerdido);
-            _ = r.Aviso.Should().Contain(r.Archivo).And.Contain("ANTES del siguiente ssh_exec");
-            _ = isAntes.Should().BeTrue();
-            await EsperasPrueba.EsperarHastaAsync(() => !File.Exists(r.Archivo!), TimeSpan.FromSeconds(15));
         }
 
         // Con MaxSessions 1 el shell ocupa la única sesión: la limpieza de ssh_reset_shell (un canal exec) la rechaza el

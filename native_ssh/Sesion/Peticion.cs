@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using NativeSsh.Buffers;
 using NativeSsh.Comun;
+using NativeSsh.Protocolo;
 
 namespace NativeSsh.Sesion
 {
@@ -26,7 +27,8 @@ namespace NativeSsh.Sesion
         private string? _aviso;
         private Func<string?>? _avisoEnCurso;
 
-        public Peticion(DestinoSsh destino, string comando, TimeSpan timeout, int maxBytesSalida, TimeProvider reloj)
+        // marcaGuardado: con ssh_exec y guardarSalida=true (MarcaGuardado).
+        public Peticion(DestinoSsh destino, string comando, TimeSpan timeout, int maxBytesSalida, TimeProvider reloj, Guid? marcaGuardado = null)
         {
             Id = Guid.NewGuid();
             IdTexto = Id.ToString("N");
@@ -36,6 +38,8 @@ namespace NativeSsh.Sesion
             _reloj = reloj;
             Salida = new BufferSalida(maxBytesSalida, reloj);
             CreadoTimestamp = reloj.GetTimestamp();
+            MarcaGuardado = marcaGuardado;
+            FiltroGuardado = marcaGuardado is { } marca ? new FiltroMarcasGuardado(marca, Salida) : null;
         }
 
         public Guid Id { get; }
@@ -46,7 +50,12 @@ namespace NativeSsh.Sesion
 
         // Con ssh_exec y guardarSalida=true: el nonce de las marcas que el envoltorio deja en el terminal (SalidaGuardada). La
         // sesión envuelve el comando al enviarlo; Comando sigue siendo el que pidió el LLM (ssh_status, avisos de antipatrón).
-        public Guid? MarcaGuardado { get; init; }
+        public Guid? MarcaGuardado { get; }
+
+        // Con MarcaGuardado: el filtro que quita sus marcas del terminal antes del búfer y guarda lo que dicen (su Informe).
+        public FiltroMarcasGuardado? FiltroGuardado { get; }
+
+        public InformeGuardado? InformeGuardado => FiltroGuardado?.Informe;
         public string IdTexto { get; }
         public DestinoSsh Destino { get; }
         public string Comando { get; }

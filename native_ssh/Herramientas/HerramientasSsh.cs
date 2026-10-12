@@ -294,7 +294,7 @@ namespace NativeSsh.Herramientas
             return DosBloques(Resultado(peticion, 0));
         }
 
-        private const string DescripcionGuardarSalida = "Pon true SIEMPRE que la salida pueda ser grande (consultas SQL, logs, volcados, listados largos): la salida completa (stdout y stderr, sin el límite de 1 MiB) se guarda en un archivo del servidor (/tmp/native_ssh-<usuario>/…, solo legible por ese usuario) y la respuesta trae solo el control (estado, codigoSalida, archivo, lineas, bytes) y las 5 primeras líneas. Después lee el archivo por tramos con ssh_read_file o busca en él con ssh_search; NUNCA lo vuelques entero con cat. NO lo uses con comandos interactivos: lo que el comando pregunte por su salida va al archivo y no lo verás (la contraseña de sudo sí se ve: va por el terminal). Los archivos se borran con ssh_reset_shell, ssh_disconnect o al cerrarse la sesión; como mucho 100 archivos o 256 MiB por shell (por encima, el comando no se ejecuta y la respuesta lo dice).";
+        private const string DescripcionGuardarSalida = "Pon true SIEMPRE que la salida pueda ser grande (consultas SQL, logs, volcados, listados largos): la salida completa (stdout y stderr, sin el límite de 1 MiB) se guarda en un archivo del servidor (/tmp/native_ssh-<usuario>/…, solo legible por ese usuario) y la respuesta trae solo el control (estado, codigoSalida, archivo, lineas, bytes) y las 5 primeras líneas. Después lee el archivo por tramos con ssh_read_file o busca en él con ssh_search; NUNCA lo vuelques entero con cat. NO lo uses con comandos interactivos: lo que el comando pregunte por su salida va al archivo y no lo verás (la contraseña de sudo sí se ve: va por el terminal). Los archivos se borran con ssh_reset_shell, ssh_disconnect o al cerrarse la sesión (un shell nuevo que se abra solo, tras un plazo agotado, una cancelación o una caída, no los borra); como mucho 100 archivos o 256 MiB por shell (por encima, el comando no se ejecuta y la respuesta lo dice).";
 
         [McpServerTool(Name = "ssh_output", ReadOnly = true, Idempotent = true)]
         [Description("Lee la salida de un comando a partir de 'desdeByte' (usa el 'siguienteByte' de la respuesta anterior). Si sigue en ejecución, espera hasta 'esperarSegundos' a que termine. Responde con los mismos dos bloques que ssh_exec: el control (JSON) y la salida tal cual.")]
@@ -478,23 +478,37 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
-        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor).")]
+        [Description("Cierra la conexión con un destino. Cancela lo que esté en ejecución o en cola y olvida el directorio de trabajo fijado con ssh_set_cwd. BORRA del servidor todos los archivos de salida guardados con guardarSalida en esta sesión (de todos sus shells): léelos antes. La próxima herramienta que use ese destino abrirá una conexión nueva (cuenta para el límite de conexiones del servidor).")]
         public async Task<ResultadoAccion> DesconectarAsync(
             [Description("usuario@servidor[:puerto].")] string destino)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            bool isHecho = await gestor.DesconectarAsync(destino).ConfigureAwait(false);
-            return new ResultadoAccion(clave, isHecho, isHecho ? "Conexión cerrada." : "No había conexión con ese destino.");
+            LimpiezaGuardados? limpieza = await gestor.DesconectarConLimpiezaAsync(destino).ConfigureAwait(false);
+            if (limpieza is null)
+                return new ResultadoAccion(clave, false, "No había conexión con ese destino.");
+
+            string borrado = limpieza.Archivos == 0
+                ? ""
+                : limpieza.SinBorrar == 0
+                ? $" Se borraron del servidor los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (los que seguían ahí)."
+                : $" NO se pudieron borrar los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (sin conexión o falló la limpieza): siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('rm -r -- <directorio>') si contienen datos sensibles.";
+            return new ResultadoAccion(clave, true, $"Conexión cerrada.{borrado}");
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
-        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd.")]
+        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd. BORRA del servidor todos los archivos de salida guardados con guardarSalida en esta sesión (de todos sus shells): léelos antes.")]
         public ResultadoAccion ReiniciarShell(
             [Description("usuario@servidor[:puerto].")] string destino)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            bool isHecho = gestor.ReiniciarShell(destino);
-            return new ResultadoAccion(clave, isHecho, isHecho ? "El próximo comando usará un shell nuevo." : "No había sesión con ese destino.");
+            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino);
+            if (limpieza is null)
+                return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
+
+            string borrado = limpieza.Archivos == 0
+                ? ""
+                : $" Se borran del servidor los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (los que seguían ahí), por un canal aparte; si el servidor no admite otro canal (MaxSessions), se borrarán con ssh_disconnect o al cerrarse la sesión.";
+            return new ResultadoAccion(clave, true, $"El próximo comando usará un shell nuevo.{borrado}");
         }
 
         // Script de ssh_read_file: cabecera '[Líneas X-Y de Total]' y el contenido tal cual. inicio < 0 = las últimas -inicio
@@ -2177,43 +2191,48 @@ namespace NativeSsh.Herramientas
                 Math.Round(peticion.TiempoEjecucion.TotalSeconds, 1),
                 tiempoSinSalida is { } sinSalida ? Math.Round(sinSalida.TotalSeconds, 1) : null,
                 avisoFinal);
-            return peticion.MarcaGuardado is { } marca ? ConSalidaGuardada(resultado, peticion, marca, estado) : resultado;
+            return peticion.InformeGuardado is { } informe ? ConSalidaGuardada(resultado, peticion, informe, estado) : resultado;
         }
+
+        // Cuándo se borra el archivo de guardarSalida (SesionShell: los directorios de todos los shells de la sesión).
+        internal const string ReglaBorradoGuardado = "Se borra con ssh_reset_shell, ssh_disconnect o al cerrarse la sesión; un shell nuevo que se abra solo (tras un plazo agotado, una cancelación o una caída del shell) no lo borra.";
 
         // ssh_exec con guardarSalida (SalidaGuardada): el control lleva el archivo, sus líneas y sus bytes, y el bloque de salida
         // sus primeras líneas en lugar de la salida. Lo que el comando escribió directamente en el terminal (no está en el
-        // archivo: la petición de contraseña de sudo, un programa que escribe en /dev/tty) va detrás, separado. La vista previa
-        // no se da si se envió un secreto con ssh_input: viene del archivo, que no pasa por el enmascarado.
-        private static ResultadoComando ConSalidaGuardada(ResultadoComando resultado, Peticion peticion, Guid marca, EstadoPeticionEnum estado)
+        // archivo: la petición de contraseña de sudo, un programa que escribe en /dev/tty) va detrás, separado. Las marcas del
+        // envoltorio nunca están en la salida (FiltroMarcasGuardado). La vista previa la leyó la sesión por un canal exec al
+        // terminar el comando, y no la hay si se envió un secreto con ssh_input (el archivo no pasa por el enmascarado).
+        private static ResultadoComando ConSalidaGuardada(ResultadoComando resultado, Peticion peticion, InformeGuardado informe, EstadoPeticionEnum estado)
         {
-            InformeGuardado informe = SalidaGuardada.Leer(SalidaGuardada.LeerTerminal(peticion.Salida), marca);
-            string terminal = SalidaGuardada.QuitarMarcas(resultado.Salida, marca);
+            string terminal = resultado.Salida;
             string? aviso;
             string vista = string.Empty;
             if (informe.Error is not null)
                 aviso = null;
+            else if (informe.IsTerminado && (informe.Lineas is null || informe.Bytes is null))
+                aviso = $"El comando terminó, pero su archivo {informe.Archivo} ya no estaba al contar sus líneas y sus bytes: lo borró o lo movió el propio comando u otro proceso, o lo borró el barrido de restos antiguos (sin cambios en 24 h) de otra sesión de native_ssh. No hay recuento ni vista previa.";
             else if (informe.IsTerminado)
             {
                 bool isSecreto = peticion.Salida.HasSecretos;
                 vista = isSecreto ? string.Empty : SalidaGuardada.TextoVistaPrevia(informe);
-                string cuenta = informe.Lineas is { } lineas && informe.Bytes is { } bytes
-                    ? $"{lineas} líneas, {bytes} bytes; aquí solo {(isSecreto ? "el control" : $"sus {Math.Min(lineas, SalidaGuardada.LineasVistaPrevia)} primeras líneas")}"
-                    : "no se pudieron contar sus líneas ni sus bytes: el comando lo movió o lo borró";
-                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo); NO la vuelques entera con cat. Se borra con ssh_reset_shell o ssh_disconnect.";
+                long lineas = informe.Lineas ?? 0;
+                bool isSinVista = isSecreto || (lineas > 0 && informe.VistaPrevia is null);
+                string cuenta = $"{lineas} líneas, {informe.Bytes} bytes; aquí solo {(isSinVista ? "el control" : $"sus {Math.Min(lineas, SalidaGuardada.LineasVistaPrevia)} primeras líneas")}";
+                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo); NO la vuelques entera con cat. {ReglaBorradoGuardado}";
                 if (isSecreto)
                     aviso += " Sin vista previa: se envió un secreto con ssh_input y el archivo no pasa por el enmascarado (tiene lo que imprimió el programa).";
+                else if (isSinVista)
+                    aviso += $" Sin vista previa: no se pudo leer el principio del archivo ({informe.MotivoSinVistaPrevia ?? "motivo desconocido"}).";
             }
             else if (!estado.IsFinal())
                 aviso = informe.Archivo is { } archivo
-                    ? $"Sigue en ejecución y su salida se está guardando en {archivo}: cuando termine, ssh_output (con este id) da sus líneas, sus bytes y sus primeras líneas. Mientras tanto, el bloque de salida solo lleva lo que el comando escribe directamente en el terminal (p. ej. la petición de contraseña de sudo)."
+                    ? $"Sigue en ejecución y su salida se está guardando en {archivo}: cuando termine, ssh_output (con este id) da sus líneas, sus bytes y sus primeras líneas. Mientras tanto, el bloque de salida solo lleva lo que el comando escribe directamente en el terminal (p. ej. la petición de contraseña de sudo). {ReglaBorradoGuardado}"
                     : "Su salida irá a un archivo del servidor (guardarSalida), pero el comando aún no ha empezado: ssh_output (con este id) dará la ruta.";
             else
                 aviso = informe.Archivo is not { } archivo ? null
-                    : estado == EstadoPeticionEnum.ShellPerdido
-                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa. Léelo con ssh_read_file ANTES del siguiente ssh_exec de este destino: ese abre un shell nuevo y borra el directorio del shell perdido."
                     : estado == EstadoPeticionEnum.Cancelado
-                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa (si lo canceló ssh_reset_shell o ssh_disconnect, ya se borró con su directorio); léelo con ssh_read_file."
-                    : $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file.";
+                    ? $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa (si lo canceló ssh_reset_shell o ssh_disconnect, ya se borró con su directorio); léelo con ssh_read_file. {ReglaBorradoGuardado}"
+                    : $"El comando no terminó normalmente (estado {estado}): lo que escribió hasta entonces está en {archivo}, sin recuento de líneas ni vista previa; léelo con ssh_read_file. {ReglaBorradoGuardado}";
 
             string salida = terminal.Length == 0 ? vista
                 : vista.Length == 0 ? terminal

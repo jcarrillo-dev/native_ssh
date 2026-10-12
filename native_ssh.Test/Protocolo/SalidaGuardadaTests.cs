@@ -1,10 +1,12 @@
 using System.Text;
 using FluentAssertions;
+using NativeSsh.Buffers;
 using NativeSsh.Protocolo;
 
 namespace NativeSsh.Test.Protocolo
 {
-    // Lectura de las marcas que deja en el terminal un comando con guardarSalida (SalidaGuardada) y vista previa.
+    // Las marcas que deja en el terminal un comando con guardarSalida (FiltroMarcasGuardado, SalidaGuardada), la ruta que lee
+    // la vista previa y su texto.
     public sealed class SalidaGuardadaTests
     {
         private static readonly Guid Nonce = Guid.Parse("0123456789abcdef0123456789abcdef");
@@ -13,63 +15,205 @@ namespace NativeSsh.Test.Protocolo
 
         private static string Marca(string cuerpo, Guid? nonce = null) => $"__NSG_{nonce ?? Nonce:N}_{cuerpo}__\n";
 
-        [Fact]
-        public void Leer_TomaLasMarcasDeSuNonceEIgnoraLasDeOtro()
+        private static FiltroMarcasGuardado Filtro(out BufferSalida salida)
         {
-            // Arrange
-            Guid otro = Guid.NewGuid();
-            string ajena = Marca($"F_9_99_0_{B64("/tmp/falso")}_{B64("falso\n")}", otro);
-            string terminal = Marca($"A_{B64("/tmp/b/s/i.out")}") + ajena + "[sudo] contraseña: " + Marca($"F_3_12_1_{B64("/tmp/b/s/i.out")}_{B64("uno\ndos\ntres\n")}");
+            salida = new BufferSalida(1024 * 1024, TimeProvider.System);
+            return new FiltroMarcasGuardado(Nonce, salida);
+        }
 
-            // Act
-            InformeGuardado informe = SalidaGuardada.Leer(terminal, Nonce);
+        private static string Texto(BufferSalida salida)
+        {
+            byte[] datos = new byte[(int)salida.Longitud];
+            _ = salida.Leer(0, datos);
+            return Encoding.UTF8.GetString(datos);
+        }
 
-            // Assert
+        // El flujo de un comando: texto, la marca A, más texto (sudo), una marca de otra petición (es texto) y la marca F.
+        private static readonly Guid OtroNonce = Guid.Parse("fedcba9876543210fedcba9876543210");
+        private static readonly string Ajena = Marca($"F_9_99_0", OtroNonce);
+        private static readonly string Flujo = "antes" + Marca($"A_{B64("/tmp/b/s/i.out")}") + "[sudo] contraseña: " + Ajena + "medio __NS sin marca __NSG_ tampoco\n" + Marca("F_3_12_1") + "despues";
+        private static readonly string FlujoSinMarcas = "antes[sudo] contraseña: " + Ajena + "medio __NS sin marca __NSG_ tampoco\ndespues";
+
+        private static void ComprobarInforme(InformeGuardado informe)
+        {
             _ = informe.Archivo.Should().Be("/tmp/b/s/i.out");
-            _ = (informe.Lineas, informe.Bytes, informe.IsSinSaltoFinal).Should().Be((3, 12, true));
+            _ = (informe.Lineas, informe.Bytes, informe.IsSinSaltoFinal, informe.IsTerminado).Should().Be((3, 12, true, true));
             _ = informe.Error.Should().BeNull();
-            _ = informe.IsTerminado.Should().BeTrue();
-            _ = SalidaGuardada.QuitarMarcas(terminal, Nonce).Should().Be(ajena + "[sudo] contraseña: ");
         }
 
-        // Sin contar (-1: el comando borró el archivo): líneas y bytes null; vista previa vacía.
+        // Las marcas de la petición no llegan al búfer y se aplican al informe; las de otra petición y lo que solo se parece
+        // pasan tal cual. Igual de una vez, partido en dos trozos por cualquier byte y byte a byte.
         [Fact]
-        public void Leer_SinRecuento_LineasYBytesNull()
+        public void Filtro_QuitaSusMarcasEnteras_AunquePartanEnCualquierByte()
         {
-            // Act
-            InformeGuardado informe = SalidaGuardada.Leer(Marca($"F_-1_-1_0_{B64("/tmp/x.out")}_"), Nonce);
+            byte[] flujo = Encoding.UTF8.GetBytes(Flujo);
+            for (int corte = 0; corte <= flujo.Length; corte++)
+            {
+                // Arrange
+                FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
 
-            // Assert
-            _ = informe.Lineas.Should().BeNull();
-            _ = informe.Bytes.Should().BeNull();
-            _ = informe.Archivo.Should().Be("/tmp/x.out");
-            _ = informe.VistaPrevia.Should().BeEmpty();
+                // Act
+                filtro.Escribir(flujo.AsSpan(0, corte));
+                filtro.Escribir(flujo.AsSpan(corte));
+                filtro.Vaciar();
+
+                // Assert
+                _ = Texto(salida).Should().Be(FlujoSinMarcas, $"corte en el byte {corte}");
+                ComprobarInforme(filtro.Informe);
+            }
+
+            FiltroMarcasGuardado unoAUno = Filtro(out BufferSalida salidaUnoAUno);
+            foreach (byte b in flujo)
+                unoAUno.Escribir([b]);
+            unoAUno.Vaciar();
+            _ = Texto(salidaUnoAUno).Should().Be(FlujoSinMarcas);
+            ComprobarInforme(unoAUno.Informe);
         }
 
-        // Error de la preparación: el mensaje dice que el comando no se ejecutó, con la ruta y, en el cupo, cuántos había.
+        // En ningún momento (tras cada trozo) el búfer tiene un trozo de una marca de la petición: lo que puede serlo se
+        // retiene hasta saber qué es.
         [Fact]
-        public void Leer_Error_MensajeConLaRutaYElCupo()
-        {
-            // Act
-            InformeGuardado cupo = SalidaGuardada.Leer(Marca($"E_archivos_{B64("/tmp/native_ssh-ana/abc")}_100_2048"), Nonce);
-            InformeGuardado ajeno = SalidaGuardada.Leer(Marca($"E_base_{B64("/tmp/native_ssh-ana")}_0_0"), Nonce);
-
-            // Assert
-            _ = cupo.Error.Should().StartWith("El comando NO se ejecutó").And.Contain("100 archivo(s)").And.Contain("2048 bytes").And.Contain("/tmp/native_ssh-ana/abc").And.Contain("ssh_reset_shell");
-            _ = ajeno.Error.Should().Contain("'/tmp/native_ssh-ana' ya existe y no es un directorio propio con permisos 700");
-            _ = cupo.IsTerminado.Should().BeFalse();
-        }
-
-        // Una marca cortada (el principio del búfer descartado, o una a medias mientras llega) no se toma ni se quita.
-        [Fact]
-        public void Leer_MarcaIncompleta_NoSeToma()
+        public void Filtro_NingunEstadoIntermedioEnsenaUnTrozoDeMarca()
         {
             // Arrange
-            string terminal = $"__NSG_{Nonce:N}_F_3_12_0_{B64("/tmp/x")}";
+            FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
+            byte[] flujo = Encoding.UTF8.GetBytes(Marca($"A_{B64("/tmp/b/s/i.out")}") + Marca("F_3_12_0"));
 
             // Act y Assert
-            _ = SalidaGuardada.Leer(terminal, Nonce).IsTerminado.Should().BeFalse();
-            _ = SalidaGuardada.QuitarMarcas(terminal, Nonce).Should().Be(terminal);
+            foreach (byte b in flujo)
+            {
+                filtro.Escribir([b]);
+                _ = Texto(salida).Should().BeEmpty();
+            }
+        }
+
+        // Con '\r\n' (terminal con onlcr) también se quita el salto entero.
+        [Fact]
+        public void Filtro_SaltoCrLf_SeQuitaEntero()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
+            string marca = Marca("F_1_2_0").Replace("\n", "\r\n", StringComparison.Ordinal);
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes("a" + marca[..^1]));
+            filtro.Escribir(Encoding.UTF8.GetBytes(marca[^1..] + "b"));
+
+            // Assert
+            _ = Texto(salida).Should().Be("ab");
+            _ = filtro.Informe.IsTerminado.Should().BeTrue();
+        }
+
+        // Sin recuento (-1: el archivo ya no estaba): líneas y bytes null, terminado.
+        [Fact]
+        public void Filtro_SinRecuento_LineasYBytesNull()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out _);
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca("F_-1_-1_0")));
+
+            // Assert
+            _ = (filtro.Informe.Lineas, filtro.Informe.Bytes, filtro.Informe.IsTerminado).Should().Be((null, null, true));
+        }
+
+        // Error de la preparación (también con un campo vacío): el mensaje dice que el comando no se ejecutó, con la ruta y, en
+        // el cupo, cuántos había.
+        [Fact]
+        public void Filtro_Error_MensajeConLaRutaYElCupo()
+        {
+            // Arrange
+            FiltroMarcasGuardado cupo = Filtro(out _);
+            FiltroMarcasGuardado ajeno = Filtro(out _);
+            FiltroMarcasGuardado usuario = Filtro(out BufferSalida salidaUsuario);
+
+            // Act
+            cupo.Escribir(Encoding.UTF8.GetBytes(Marca($"E_archivos_{B64("/tmp/native_ssh-ana/abc")}_100_2048")));
+            ajeno.Escribir(Encoding.UTF8.GetBytes(Marca($"E_base_{B64("/tmp/native_ssh-ana")}_0_0")));
+            usuario.Escribir(Encoding.UTF8.GetBytes(Marca("E_usuario__0_0") + "x"));
+
+            // Assert
+            _ = cupo.Informe.Error.Should().StartWith("El comando NO se ejecutó").And.Contain("100 archivo(s)").And.Contain("2048 bytes").And.Contain("/tmp/native_ssh-ana/abc").And.Contain("ssh_reset_shell");
+            _ = ajeno.Informe.Error.Should().Contain("'/tmp/native_ssh-ana' ya existe y no es un directorio propio con permisos 700");
+            _ = usuario.Informe.Error.Should().Contain("'id -un'");
+            _ = Texto(salidaUsuario).Should().Be("x");
+            _ = cupo.Informe.IsTerminado.Should().BeFalse();
+        }
+
+        // Al terminar el comando, lo retenido: una marca de la petición cortada (con el nonce entero) se descarta; un principio
+        // que no llega al nonce es texto del comando.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void Filtro_Vaciar_MarcaCortadaSeDescartaYTextoSeSuelta(bool isConNonce)
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
+            string resto = isConNonce ? $"__NSG_{Nonce:N}_F_3" : "__NSG_0123";
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes("texto" + resto));
+            string antes = Texto(salida);
+            filtro.Vaciar();
+
+            // Assert
+            _ = antes.Should().Be("texto");
+            _ = Texto(salida).Should().Be(isConNonce ? "texto" : "texto" + resto);
+            _ = filtro.Informe.IsTerminado.Should().BeFalse();
+        }
+
+        // Una marca que no cuadra (otro número de campos, un carácter que no va, más larga que el tope) es texto.
+        [Fact]
+        public void Filtro_MarcaQueNoCuadra_EsTexto()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
+            string dosCampos = Marca("F_3_12");
+            string conEspacio = Marca("A_a b");
+            string larga = Marca("A_" + new string('A', FiltroMarcasGuardado.MaxLongitudMarca + 10));
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(dosCampos + conEspacio + larga));
+            filtro.Vaciar();
+
+            // Assert
+            _ = Texto(salida).Should().Be(dosCampos + conEspacio + larga);
+            _ = filtro.Informe.Archivo.Should().BeNull();
+        }
+
+        // La marca A solo avisa una vez de que el archivo se creó (la sesión lo cuenta).
+        [Fact]
+        public void Filtro_AlCrearArchivo_UnaVez()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out _);
+            int veces = 0;
+            filtro.AlCrearArchivo = () => veces++;
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca($"A_{B64("/x")}") + Marca($"A_{B64("/x")}") + Marca("F_1_1_0")));
+
+            // Assert
+            _ = veces.Should().Be(1);
+        }
+
+        [Theory]
+        [InlineData("/tmp/native_ssh-ana/S/I.out", true)]
+        [InlineData("/tmp/native_ssh-a.b/S/I.out", true)]
+        [InlineData("/tmp/native_ssh-ana/otro/S/I.out", false)]
+        [InlineData("/tmp/native_ssh-/S/I.out", false)]
+        [InlineData("/tmp/native_ssh/S/I.out", false)]
+        [InlineData("/etc/native_ssh-ana/S/I.out", false)]
+        [InlineData("/tmp/native_ssh-ana/S/otro.out", false)]
+        public void IsRutaEsperada_SoloLaDeEsteShellYEstaPeticion(string ruta, bool esperado)
+        {
+            // Arrange
+            Guid shell = Guid.Parse("11111111111111111111111111111111");
+            string real = ruta.Replace("/S/", $"/{shell:N}/", StringComparison.Ordinal).Replace("/I.out", "/idpeticion.out", StringComparison.Ordinal);
+
+            // Act y Assert
+            _ = SalidaGuardada.IsRutaEsperada(real, "/tmp/native_ssh", shell, "idpeticion").Should().Be(esperado);
         }
 
         // Vista previa: como mucho 5 líneas, sin ANSI ni el CR de los CRLF; una línea de más de 512 bytes, cortada con ' […]';
@@ -102,9 +246,11 @@ namespace NativeSsh.Test.Protocolo
         }
 
         // El envoltorio lleva el comando como literal entre comillas simples (las del comando, escapadas) y las marcas con el
-        // nonce partido (printf '%s_%s'): el texto no contiene ninguna marca entera.
+        // nonce partido (printf '%s_%s'): el texto no contiene ninguna marca entera. Nada del contenido del archivo sale por el
+        // terminal: la marca final solo lleva números (no hay base64 ni head del archivo en el resumen), las subshells empiezan
+        // sin traza y los permisos se fijan con chmod tras crear.
         [Fact]
-        public void Envolver_ComandoComoLiteralYSinMarcasEnteras()
+        public void Envolver_ComandoComoLiteralSinMarcasEnterasNiContenidoDelArchivo()
         {
             // Act
             string texto = SalidaGuardada.Envolver("echo 'a' \"b\"", Nonce, Guid.NewGuid(), "id", "/tmp/native_ssh");
@@ -112,6 +258,9 @@ namespace NativeSsh.Test.Protocolo
             // Assert
             _ = texto.Should().StartWith("__ns_gc='echo '\\''a'\\'' \"b\"'\n");
             _ = texto.Should().NotContain($"__NSG_{Nonce:N}");
+            string resumen = texto[texto.IndexOf("_F_", StringComparison.Ordinal)..];
+            _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("printf '%d_%d_%d'");
+            _ = texto.Should().Contain("{ set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
         }
     }
 }

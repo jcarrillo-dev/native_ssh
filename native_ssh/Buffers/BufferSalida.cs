@@ -24,7 +24,7 @@ namespace NativeSsh.Buffers
     // después de que otro se enmascarara puede no encontrarse si su principio llegó antes y quedó tapado (la cola se amplía
     // con lo que queda en el búfer, que puede estar ya enmascarado). Solo se reconocen los bytes UTF-8 tal cual: un eco
     // transformado (^X de ECHOCTL, secuencias intercaladas por un readline, un programa que lo imprime alterado) no.
-    public sealed class BufferSalida
+    public sealed class BufferSalida : IDestinoSalida
     {
         public const int TamanoSegmento = 16 * 1024;
 

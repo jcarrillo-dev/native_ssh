@@ -1,16 +1,18 @@
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
-using NativeSsh.Buffers;
 
 namespace NativeSsh.Protocolo
 {
-    // Lo que deja en el terminal un comando lanzado con guardarSalida (Envolver): la ruta del archivo al empezar (A), el
-    // resumen al terminar (F: líneas, bytes, ruta y vista previa) o, si no llegó a ejecutarse, el motivo (E). Lineas y Bytes
-    // son null si no se pudieron contar (p. ej. el comando borró el archivo).
+    // Lo que se sabe del archivo de un comando lanzado con guardarSalida. Archivo, Lineas, Bytes, IsSinSaltoFinal, IsTerminado
+    // y Error vienen de las marcas que el envoltorio deja en el terminal (FiltroMarcasGuardado): la ruta al empezar (A), el
+    // recuento al terminar (F) o, si no llegó a ejecutarse, el motivo (E). Lineas y Bytes son null si no se pudieron contar (el
+    // archivo ya no estaba al terminar). VistaPrevia la lee después la sesión por un canal exec (SesionShell), nunca si hubo
+    // un secreto; MotivoSinVistaPrevia dice por qué no la hay cuando debía haberla.
     public sealed record InformeGuardado(string? Archivo, long? Lineas, long? Bytes, byte[]? VistaPrevia, string? Error, bool IsSinSaltoFinal = false)
     {
-        public bool IsTerminado => VistaPrevia is not null;
+        public bool IsTerminado { get; init; }
+
+        public string? MotivoSinVistaPrevia { get; init; }
     }
 
     // ssh_exec con guardarSalida=true (C12): la salida completa del comando (stdout y stderr, como en el terminal) va a un
@@ -22,14 +24,18 @@ namespace NativeSsh.Protocolo
     // y propio de cada shell de la sesión. Seguridad (un /tmp común lo pueden tocar otros usuarios del servidor):
     // - /tmp debe tener el bit sticky (o ser del propio usuario): sin él, otro usuario podría renombrar el directorio base y
     //   poner el suyo entre la comprobación y el uso;
-    // - el directorio base se crea con 'mkdir -m 700' y, exista ya o no, se comprueba que no es un enlace, que es un
-    //   directorio, que es del usuario (-O) y que su modo es exactamente drwx------ (sin ACL): si no, error sin escribir
-    //   nada (un /tmp/native_ssh común lo podría crear antes otro usuario para leer o redirigir las salidas, incluidas las
-    //   de root). Con el base así, nadie más puede crear, renombrar ni sustituir nada dentro;
-    // - el directorio del shell se crea igual ('mkdir -m 700', exclusivo como 'mktemp -d': falla si ya existe) y se
-    //   comprueba igual; el nombre lo fija C#, así que la limpieza (ScriptLimpieza) sabe qué borrar sin leer nada del shell;
-    // - el archivo se crea en una subshell con umask 077 y noclobber ('set -C'): 0600 y nunca pisa uno que exista; el comando
-    //   escribe en él anexando (un 'set -C' del usuario no lo impide).
+    // - el directorio base se crea con 'mkdir -m 700' seguido de 'chmod 700' (con una ACL por defecto en /tmp, la máscara
+    //   queda así sin permisos y ninguna entrada con nombre da acceso) y, exista ya o no, se comprueba que no es un enlace,
+    //   que es un directorio, que es del usuario (-O) y que 'ls -ld' da exactamente drwx------ (el de GNU coreutils añade
+    //   '+' si hay ACL, y entonces se rechaza; el de busybox no la muestra): si no, error sin escribir nada (un
+    //   /tmp/native_ssh común lo podría crear antes otro usuario para leer o redirigir las salidas, incluidas las de root).
+    //   Con el base así, nadie más puede crear, renombrar ni sustituir nada dentro;
+    // - el directorio del shell se crea igual ('mkdir -m 700' y 'chmod 700', exclusivo como 'mktemp -d': falla si ya
+    //   existe) y se comprueba igual; el nombre lo fija C#, así que la limpieza (ScriptLimpieza) sabe qué borrar sin leer
+    //   nada del shell;
+    // - el archivo se crea en una subshell con umask 077 y noclobber ('set -C'), y después 'chmod 600' (una ACL por defecto
+    //   anula la umask al crearlo): nunca pisa uno que exista; el comando escribe en él anexando (un 'set -C' del usuario no
+    //   lo impide).
     // El comando se evalúa en el shell de la sesión (como sin guardarSalida: sus 'export' y 'cd' cuentan) con su salida y su
     // error redirigidos al archivo; la entrada sigue siendo el terminal (ssh_input funciona y sudo pide la contraseña por el
     // terminal, que sí se ve). El código de salida es el del comando. Si no se pudo preparar el archivo, el comando no se
@@ -38,19 +44,24 @@ namespace NativeSsh.Protocolo
     // un proceso que murió sin limpiar; un comando que sigue escribiendo mantiene reciente su archivo). Antes de cada comando
     // se comprueba el cupo del shell (MaxArchivosPorShell, MaxBytesPorShell): por encima, error sin ejecutarlo. No se corta
     // un comando a medias: el cupo se mira antes, y un solo comando puede escribir más.
-    // Las marcas van al terminal con printf '%s_%s', así que el texto del envoltorio no las contiene (una traza de 'set -v'
-    // no las imita); llevan un nonce por petición. Todo en base64 salvo los números: la ruta y la vista previa no rompen la
-    // línea ni la confunden con otra cosa.
-    public static partial class SalidaGuardada
+    // Nada derivado de lo que hay en el archivo viaja por el terminal: las marcas solo llevan números (líneas, bytes) y la
+    // ruta, que no sale de la salida; la vista previa la lee la sesión después por un canal exec (ScriptVistaPrevia), y no se
+    // lee si se envió un secreto. Las marcas no llegan al búfer de la salida (FiltroMarcasGuardado las quita al pasar), así
+    // que ninguna página ni desdeByte puede enseñar un trozo. Van al terminal con printf '%s_%s', así que el texto del
+    // envoltorio no las contiene (una traza de 'set -v' no las imita); llevan un nonce por petición. Las subshells del
+    // envoltorio empiezan quitando 'set -x' y 'set -v' con su traza a /dev/null; las líneas del envoltorio que corren en el
+    // shell de la sesión sí se trazan si el usuario dejó 'set -x', pero solo llevan la ruta y los números.
+    public static class SalidaGuardada
     {
         public const int MaxArchivosPorShell = 100;
         public const long MaxBytesPorShell = 256L * 1024 * 1024;
         public const int LineasVistaPrevia = 5;
         public const int MaxBytesLineaVistaPrevia = 512;
 
-        // Lo que lee el servidor para la vista previa: el primer MiB del archivo (una primera línea enorme no se lee entera),
-        // sus 5 primeras líneas cortadas a 513 bytes (el byte de más dice que la línea seguía) y, en total, como mucho esto.
-        private const int MaxBytesVistaPrevia = LineasVistaPrevia * (MaxBytesLineaVistaPrevia + 2);
+        // Lo que lee la vista previa (ScriptVistaPrevia): el primer MiB del archivo (una primera línea enorme no se lee
+        // entera), sus 5 primeras líneas cortadas a 513 bytes (el byte de más dice que la línea seguía) y, en total, como
+        // mucho esto.
+        public const int MaxBytesVistaPrevia = LineasVistaPrevia * (MaxBytesLineaVistaPrevia + 2);
 
         // El texto que se evalúa en el shell en lugar del comando. idShell: el del shell que lo ejecuta (su directorio).
         // prefijo: OpcionesNativeSsh.PrefijoGuardado ('/tmp/native_ssh'); el base es prefijo + '-<usuario>' y su padre, el
@@ -68,18 +79,14 @@ namespace NativeSsh.Protocolo
                 .Replace("@I@", idPeticion, StringComparison.Ordinal)
                 .Replace("@MAXF@", MaxArchivosPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@MAXB@", MaxBytesPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
-            string resumen = PlantillaResumen
-                .Replace("@LINEAS@", LineasVistaPrevia.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@CORTE@", (MaxBytesLineaVistaPrevia + 1).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@TOTAL@", MaxBytesVistaPrevia.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
             return $$"""
                 __ns_gc='{{literal}}'
                 if __ns_gf=$({{preparacion}}); then
-                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$(printf '%s' "$__ns_gf" | command base64 | command tr -d '\n')"
+                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf" | command base64 | command tr -d '\n')"
                 { eval "$__ns_gc"
                 } >>"$__ns_gf" 2>&1
                 __ns_gr=$?
-                printf '%s_%s_F_%s__\n' '__NSG' '{{n}}' "$({{resumen}})"
+                printf '%s_%s_F_%s__\n' '__NSG' '{{n}}' "$({{PlantillaResumen}})"
                 else
                 __ns_gr=1
                 fi
@@ -89,9 +96,11 @@ namespace NativeSsh.Protocolo
         }
 
         // Dentro de una sustitución de órdenes (una subshell): sus opciones y funciones no tocan el shell de la sesión. Escribe
-        // la ruta del archivo en su salida o, si algo no cumple, la marca E en el terminal (stderr) y sale con 1. Sin 'set -e',
-        // 'set -u', 'set -f', failglob ni nullglob del usuario; LC_ALL=C para leer el modo de 'ls'.
+        // la ruta del archivo en su salida o, si algo no cumple, la marca E en el terminal (stderr) y sale con 1. Sin traza
+        // ('set -x', 'set -v'), 'set -e', 'set -u', 'set -f', failglob ni nullglob del usuario; LC_ALL=C para leer el modo de
+        // 'ls'.
         private static readonly string PlantillaPreparacion = """
+            { set +x +v; } 2>/dev/null
             set +e +u +f; shopt -u failglob nullglob 2>/dev/null; unset GLOBIGNORE
             __ns_ge() { printf '%s_%s_E_%s_%s_%s_%s__\n' '__NSG' '@N@' "$1" "$(printf '%s' "${2-}" | command base64 | command tr -d '\n')" "${3:-0}" "${4:-0}" >&2; exit 1; }
             __ns_gk() { [ ! -L "$1" ] && [ -d "$1" ] && [ -O "$1" ] && case $(LC_ALL=C command ls -ld -- "$1" 2>/dev/null) in 'drwx------ '*|'drwx------. '*) true ;; *) false ;; esac; }
@@ -99,10 +108,11 @@ namespace NativeSsh.Protocolo
             case $u in ''|*/*|.|..) __ns_ge usuario "$u" ;; esac
             [ -k @PADRE@ ] || [ -O @PADRE@ ] || __ns_ge tmp @PADRE@
             b=@PREFIJO@-$u
-            command mkdir -m 700 -- "$b" 2>/dev/null
+            command mkdir -m 700 -- "$b" 2>/dev/null && command chmod 700 -- "$b" 2>/dev/null
             __ns_gk "$b" || __ns_ge base "$b"
             d=$b/@S@
             if command mkdir -m 700 -- "$d" 2>/dev/null; then
+              command chmod 700 -- "$d" 2>/dev/null
               for x in "$b"/*; do
                 { [ "$x" != "$d" ] && [ -d "$x" ] && [ ! -L "$x" ]; } || continue
                 r=$(command find "$x" -mmin -1440 2>/dev/null) && [ -z "$r" ] && command rm -rf -- "$x"
@@ -118,25 +128,46 @@ namespace NativeSsh.Protocolo
             [ "$n" -lt @MAXF@ ] || __ns_ge archivos "$d" "$n" "$t"
             [ "$t" -lt @MAXB@ ] || __ns_ge bytes "$d" "$n" "$t"
             f=$d/@I@.out
-            (umask 077; set -C; : >"$f") 2>/dev/null || __ns_ge archivo "$f"
+            { (umask 077; set -C; : >"$f") && command chmod 600 -- "$f"; } 2>/dev/null || __ns_ge archivo "$f"
             printf '%s' "$f"
             """.ReplaceLineEndings("\n");
 
-        // Líneas: las de 'wc -l' más una si el archivo no termina en salto (una última línea sin '\n' cuenta, como en la
-        // cabecera de ssh_read_file); -1 si no se pudo contar (el comando borró o movió el archivo).
+        // Solo números: líneas, bytes y si el archivo no termina en salto (1). Líneas: las de 'wc -l' más una si el archivo no
+        // termina en salto (una última línea sin '\n' cuenta, como en la cabecera de ssh_read_file); -1 si no se pudo contar
+        // (el archivo ya no estaba).
         private static readonly string PlantillaResumen = """
+            { set +x +v; } 2>/dev/null
             set +e +u +f
             b=$(command wc -c < "$__ns_gf" 2>/dev/null) || b=-1
             l=$(command wc -l < "$__ns_gf" 2>/dev/null) || l=-1
             b=$((b)); l=$((l))
             z=0
             if [ "$b" -gt 0 ] && [ "$l" -ge 0 ] && [ "$(command tail -c 1 "$__ns_gf" 2>/dev/null | command wc -l)" -eq 0 ]; then l=$((l + 1)); z=1; fi
-            p=$(command head -c 1048576 "$__ns_gf" 2>/dev/null | command head -n @LINEAS@ | command cut -b 1-@CORTE@ | command head -c @TOTAL@ | command base64 | command tr -d '\n')
-            printf '%d_%d_%d_%s_%s' "$l" "$b" "$z" "$(printf '%s' "$__ns_gf" | command base64 | command tr -d '\n')" "$p"
+            printf '%d_%d_%d' "$l" "$b" "$z"
             """.ReplaceLineEndings("\n");
 
+        // Por un canal exec (sin el shell ni el terminal), acotado como ssh_read_file: el principio del archivo para la vista
+        // previa. Solo un archivo regular que no sea un enlace (código 3 si no).
+        public static string ScriptVistaPrevia(string archivo) => $$"""
+            f={{Literal(archivo)}}
+            { [ -f "$f" ] && [ ! -L "$f" ]; } || exit 3
+            head -c 1048576 -- "$f" | head -n {{LineasVistaPrevia}} | cut -b 1-{{MaxBytesLineaVistaPrevia + 1}} | head -c {{MaxBytesVistaPrevia}}
+            """.ReplaceLineEndings("\n");
+
+        // La ruta que dio la marca A es la que corresponde a este shell y esta petición (prefijo-<usuario>/<shell>/<id>.out):
+        // la vista previa solo lee esa.
+        public static bool IsRutaEsperada(string archivo, string prefijo, Guid idShell, string idPeticion)
+        {
+            string inicio = prefijo + "-";
+            string sufijo = $"/{idShell:N}/{idPeticion}.out";
+            return archivo.Length > inicio.Length + sufijo.Length
+                && archivo.StartsWith(inicio, StringComparison.Ordinal)
+                && archivo.EndsWith(sufijo, StringComparison.Ordinal)
+                && !archivo.AsSpan(inicio.Length, archivo.Length - inicio.Length - sufijo.Length).Contains('/');
+        }
+
         // Por un canal exec (sin el shell): borra los directorios de los shells indicados, solo si el base sigue siendo un
-        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#).
+        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Código 1 si algún borrado falló.
         public static string ScriptLimpieza(IEnumerable<Guid> idsShell, string prefijo)
         {
             StringBuilder ids = new();
@@ -147,75 +178,39 @@ namespace NativeSsh.Protocolo
                 u=$(id -un 2>/dev/null) || exit 0
                 b={{Literal(prefijo)}}-$u
                 { [ -n "$u" ] && [ -d "$b" ] && [ ! -L "$b" ] && [ -O "$b" ]; } || exit 0
+                r=0
                 for g in{{ids}}; do
                   d=$b/$g
-                  [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "$d"
+                  if [ -d "$d" ] && [ ! -L "$d" ]; then rm -rf -- "$d" || r=1; fi
                 done
-                exit 0
+                exit $r
                 """.ReplaceLineEndings("\n");
         }
 
-        // Lo que conserva el búfer de lo que el comando dejó en el terminal (sin secuencias ANSI): lo último, como mucho lo que
-        // puede retener (su capacidad más un segmento). Longitud cuenta desde el principio, también lo ya descartado, y la marca
-        // final está al final.
-        public static string LeerTerminal(BufferSalida salida)
+        // Una marca ya separada por FiltroMarcasGuardado: tipo ('A', 'F' o 'E') y sus campos. Devuelve el informe con ella
+        // aplicada (una marca con otros campos no cambia nada).
+        public static InformeGuardado Aplicar(InformeGuardado informe, char tipo, string[] campos) => (tipo, campos) switch
         {
-            long fin = salida.Longitud;
-            byte[] datos = new byte[(int)Math.Min(fin, (long)salida.CapacidadMaxima + BufferSalida.TamanoSegmento)];
-            LecturaSalida lectura = salida.Leer(fin - datos.Length, datos);
-            Span<byte> leidos = datos.AsSpan(0, lectura.Copiados);
-            leidos = leidos[ConversorTexto.ContarContinuacionesIniciales(leidos)..];
-            int longitud = ConversorTexto.LimpiarAnsi(leidos);
-            return ConversorTexto.ATexto(leidos[..longitud]);
-        }
-
-        // Las marcas de la petición con este nonce: la última de cada tipo.
-        public static InformeGuardado Leer(string terminal, Guid nonce)
-        {
-            string? archivo = null;
-            long? lineas = null;
-            long? bytes = null;
-            byte[]? vista = null;
-            string? error = null;
-            bool isSinSalto = false;
-            string prefijo = $"__NSG_{nonce:N}_";
-            foreach (Match marca in RegexMarca().Matches(terminal))
+            ('A', [string ruta]) => informe with { Archivo = Decodificar(ruta) ?? informe.Archivo },
+            ('F', [string l, string b, string z]) => informe with
             {
-                string cuerpo = marca.Groups["cuerpo"].Value;
-                if (!cuerpo.StartsWith(prefijo, StringComparison.Ordinal))
-                    continue;
+                Lineas = long.TryParse(l, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long nl) && nl >= 0 ? nl : null,
+                Bytes = long.TryParse(b, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long nb) && nb >= 0 ? nb : null,
+                IsSinSaltoFinal = z == "1",
+                IsTerminado = true
+            },
+            ('E', [string codigo, string ruta, string n, string t]) => informe with { Error = DescribirError(codigo, Decodificar(ruta) ?? string.Empty, n, t) },
+            _ => informe
+        };
 
-                string[] partes = cuerpo[prefijo.Length..].Split('_');
-                switch (partes)
-                {
-                    case ["A", string ruta]:
-                        archivo = Decodificar(ruta) ?? archivo;
-                        break;
-                    case ["F", string l, string b, string z, string ruta, string previa]:
-                        lineas = long.TryParse(l, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long nl) && nl >= 0 ? nl : null;
-                        bytes = long.TryParse(b, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out long nb) && nb >= 0 ? nb : null;
-                        archivo = Decodificar(ruta) ?? archivo;
-                        vista = DecodificarBytes(previa) ?? [];
-                        isSinSalto = z == "1";
-                        break;
-                    case ["E", string codigo, string ruta, string n, string t]:
-                        error = DescribirError(codigo, Decodificar(ruta) ?? string.Empty, n, t);
-                        break;
-                    default:
-                        // Una marca con otra forma (truncada por el tope del búfer, p. ej.): no se toma.
-                        break;
-                }
-            }
-
-            return new InformeGuardado(archivo, lineas, bytes, vista, error, isSinSalto);
-        }
-
-        // El texto del terminal sin las marcas de la petición (lo que el comando escribió de verdad en el terminal).
-        public static string QuitarMarcas(string terminal, Guid nonce)
+        // Campos de cada tipo de marca (FiltroMarcasGuardado: una marca con otro número no se toma).
+        public static int CamposDe(byte tipo) => tipo switch
         {
-            string prefijo = $"__NSG_{nonce:N}_";
-            return RegexMarca().Replace(terminal, m => m.Groups["cuerpo"].Value.StartsWith(prefijo, StringComparison.Ordinal) ? string.Empty : m.Value);
-        }
+            (byte)'A' => 1,
+            (byte)'F' => 3,
+            (byte)'E' => 4,
+            _ => -1
+        };
 
         // Las 5 primeras líneas (como mucho) en texto: cada una cortada a MaxBytesLineaVistaPrevia bytes sin partir un carácter
         // UTF-8 y con ' […]' si seguía; sin secuencias ANSI ni el CR de los CRLF. 'cut' termina siempre la última línea con un
@@ -255,7 +250,7 @@ namespace NativeSsh.Protocolo
             "base" => $"{NoEjecutado} '{ruta}' ya existe y no es un directorio propio con permisos 700 (es un enlace, es de otro usuario o tiene otros permisos o una ACL): otro usuario del servidor pudo crearlo para leer o redirigir las salidas. No se ha escrito nada. Compruébalo con ssh_stat: si no es tuyo, no lo uses y avisa al administrador; si es tuyo, déjalo con 'chmod 700' (sin ACL) o bórralo, y vuelve a lanzar el comando.",
             "sesion" => $"{NoEjecutado} el directorio de este shell, '{ruta}', no es un directorio propio con permisos 700 (se cambió o se sustituyó). No se ha escrito nada. Usa ssh_reset_shell (el shell nuevo usa otro directorio) y vuelve a lanzar el comando.",
             "archivos" or "bytes" => $"{NoEjecutado} este shell ya tiene {n} archivo(s) de salida guardados ({t} bytes) en '{ruta}' y el límite es de {MaxArchivosPorShell} archivos y {MaxBytesPorShell / (1024 * 1024)} MiB por shell. Borra los que ya no necesites (ssh_exec con 'rm -- <ruta>') o usa ssh_reset_shell (borra todos y abre un shell nuevo), y vuelve a lanzarlo.",
-            "archivo" => $"{NoEjecutado} no se pudo crear el archivo '{ruta}' (sin espacio o sin permiso en /tmp, o ya existía: nunca se pisa uno existente).",
+            "archivo" => $"{NoEjecutado} no se pudo crear el archivo '{ruta}' con permisos 600 (sin espacio o sin permiso en /tmp, o ya existía: nunca se pisa uno existente).",
             _ => $"{NoEjecutado} no se pudo preparar el archivo de salida ({codigo})."
         };
 
@@ -269,26 +264,19 @@ namespace NativeSsh.Protocolo
 
         private const string NoEjecutado = "El comando NO se ejecutó: con guardarSalida=true su salida va a un archivo del servidor y no se pudo preparar:";
 
-        private static string? Decodificar(string base64) => DecodificarBytes(base64) is { } bytes ? Encoding.UTF8.GetString(bytes) : null;
-
-        private static byte[]? DecodificarBytes(string base64)
+        private static string? Decodificar(string base64)
         {
             if (base64.Length == 0)
-                return [];
+                return string.Empty;
 
             try
             {
-                return Convert.FromBase64String(base64);
+                return Encoding.UTF8.GetString(Convert.FromBase64String(base64));
             }
             catch (FormatException)
             {
                 return null;
             }
         }
-
-        // Una marca entera hasta su fin de línea: el texto anterior de la misma línea (lo que el comando escribió sin salto) se
-        // conserva.
-        [GeneratedRegex(@"(?<cuerpo>__NSG_[0-9a-f]{32}_[AFE]_[A-Za-z0-9+/=_-]*)__\n?", RegexOptions.CultureInvariant)]
-        private static partial Regex RegexMarca();
     }
 }

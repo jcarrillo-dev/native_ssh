@@ -30,7 +30,7 @@ namespace NativeSsh.Sesion
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj) { IsHerramienta = isHerramienta, MarcaGuardado = isGuardarSalida ? IdentidadShell.NuevoTestigo() : null };
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj, isGuardarSalida ? IdentidadShell.NuevoTestigo() : null) { IsHerramienta = isHerramienta };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;
@@ -73,7 +73,10 @@ namespace NativeSsh.Sesion
 
         public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
 
-        public async Task<bool> DesconectarAsync(string destinoTexto)
+        public async Task<bool> DesconectarAsync(string destinoTexto) => await DesconectarConLimpiezaAsync(destinoTexto).ConfigureAwait(false) is not null;
+
+        // null si no había sesión; si no, los archivos de guardarSalida que tenía la sesión y los que no se pudieron borrar.
+        public async Task<LimpiezaGuardados?> DesconectarConLimpiezaAsync(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
@@ -84,21 +87,29 @@ namespace NativeSsh.Sesion
             }
 
             if (sesion is null)
-                return false;
+                return null;
 
+            int archivos = sesion.ArchivosGuardados;
             await sesion.DisposeAsync().ConfigureAwait(false);
-            return true;
+            return new LimpiezaGuardados(archivos, sesion.ArchivosGuardadosSinBorrarAlCerrar);
         }
 
-        public bool ReiniciarShell(string destinoTexto)
+        public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
+
+        // null si no había sesión; si no, los archivos de guardarSalida de la sesión cuyo borrado se lanza.
+        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
             lock (_candado)
                 _ = _sesiones.TryGetValue(destino.Clave, out sesion);
 
-            sesion?.SolicitarReset();
-            return sesion is not null;
+            if (sesion is null)
+                return null;
+
+            int archivos = sesion.ArchivosGuardados;
+            sesion.SolicitarReset();
+            return new LimpiezaGuardados(archivos, 0);
         }
 
         public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)
@@ -140,4 +151,8 @@ namespace NativeSsh.Sesion
         private static TimeSpan Ajustar(TimeSpan timeout) =>
             timeout < TimeoutMinimo ? TimeoutMinimo : timeout > TimeoutMaximo ? TimeoutMaximo : timeout;
     }
+
+    // Archivos de guardarSalida de una sesión al hacer ssh_reset_shell o ssh_disconnect: los que había (creados en sus shells
+    // y aún no borrados) y, al desconectar, los que no se pudieron borrar.
+    public sealed record LimpiezaGuardados(int Archivos, int SinBorrar);
 }
