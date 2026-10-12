@@ -15,6 +15,7 @@ namespace NativeSsh.Test.Integracion
         [Theory]
         [InlineData("root@prod@ejemplo")]
         [InlineData("prod, mal entrada")]
+        [InlineData("root@.")]
         [InlineData("--http", "prod:22:2222")]
         public async Task EntradaNoValida_SaleConElMensajeSinVolcadoDePila(params string[] argumentos)
         {

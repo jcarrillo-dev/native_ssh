@@ -17,8 +17,9 @@ namespace NativeSsh.Comun
     //
     // Formato: entradas separadas por comas (los blancos alrededor se ignoran), cada una '[usuario@]servidor[:puerto]'
     // (IPv6 entre corchetes con puerto: '[::1]:22') o '*' (todos los destinos). Sin usuario vale para cualquier usuario y sin
-    // puerto para cualquier puerto. El servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_'): lo que nunca podría
-    // ser el destino de una conexión ('a@b@c', 'host:22:2222', '/', '*.dominio') es un error. Se compara sin distinguir
+    // puerto para cualquier puerto. El servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_', con al menos una letra
+    // o un dígito): lo que nunca podría ser el destino de una conexión ('a@b@c', 'host:22:2222', '/', '*.dominio', '.', '-')
+    // es un error. Se compara sin distinguir
     // mayúsculas y sin el punto final de un nombre completo; localhost, 127.0.0.0/8, ::1, 0.0.0.0 y :: son la misma máquina
     // (sin DNS). Si el texto no coincide, se comparan las direcciones de los dos (DNS o /etc/hosts, con un plazo de 3 s que se
     // cumple aunque la resolución no se pueda cancelar): así 'prod.ejemplo.com' cubre también su IP. Si un nombre que haría
@@ -81,7 +82,7 @@ namespace NativeSsh.Comun
             {
                 if (!TryParsearEntrada(trozo, out Entrada entrada))
                 {
-                    error = $"{Variable}: la entrada '{trozo}' no es válida. Usa '[usuario@]servidor[:puerto]' ('[::1]:22' para IPv6 con puerto) o '*', separadas por comas; el servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_').";
+                    error = $"{Variable}: la entrada '{trozo}' no es válida. Usa '[usuario@]servidor[:puerto]' ('[::1]:22' para IPv6 con puerto) o '*', separadas por comas; el servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_', con al menos una letra o un dígito).";
                     return false;
                 }
 
@@ -152,20 +153,24 @@ namespace NativeSsh.Comun
         }
 
         // Una IP o un nombre de máquina: con ':' solo una IPv6 ('host:22:2222' no lo es); un nombre, solo letras, dígitos,
-        // '.', '-' y '_' (ni '@', ni '/', ni comodines: no hay patrones).
+        // '.', '-' y '_' (ni '@', ni '/', ni comodines: no hay patrones) y al menos una letra o un dígito ('.', '..', '-' o
+        // '_' no son el nombre de ninguna máquina).
         private static bool IsServidorValido(string servidor)
         {
-            if (servidor.Length == 0)
-                return false;
-
             if (servidor.Contains(':', StringComparison.Ordinal))
                 return IPAddress.TryParse(servidor, out IPAddress? direccion) && direccion.AddressFamily == AddressFamily.InterNetworkV6;
 
+            bool hasLetraODigito = false;
             foreach (char c in servidor)
-                if (!char.IsLetterOrDigit(c) && c is not ('.' or '-' or '_'))
+            {
+                bool isLetraODigito = char.IsLetterOrDigit(c);
+                if (!isLetraODigito && c is not ('.' or '-' or '_'))
                     return false;
 
-            return true;
+                hasLetraODigito |= isLetraODigito;
+            }
+
+            return hasLetraODigito;
         }
 
         private static string Normalizar(string servidor) => servidor.TrimEnd('.').ToLowerInvariant();

@@ -127,6 +127,14 @@ namespace NativeSsh.Test.Comun
         [InlineData("ssh://prod.ejemplo")]
         [InlineData("*.prod.ejemplo")]
         [InlineData("[prod.ejemplo:22]")]
+        // Sin letras ni dígitos: no son el nombre de ninguna máquina ('.' y '..' se quedan en nada sin el punto final).
+        [InlineData(".")]
+        [InlineData("..")]
+        [InlineData("-")]
+        [InlineData("_")]
+        [InlineData("root@.")]
+        [InlineData("root@-:22")]
+        [InlineData("prod, _")]
         public void EntradaNoValida_ErrorQueLaNombra(string configuracion)
         {
             // Act
