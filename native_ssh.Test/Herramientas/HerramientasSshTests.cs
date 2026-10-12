@@ -396,6 +396,26 @@ namespace NativeSsh.Test.Herramientas
             _ = texto.IndexOf($"el comando c{100_000 - Peticion.MaxAvisosTecleadoEnlazados} ", StringComparison.Ordinal).Should().BeLessThan(texto.IndexOf("el comando c99999 ", StringComparison.Ordinal), "del más antiguo al más reciente");
         }
 
+        // Los avisos que la compactación soltó por el tope los resume la respuesta: cuántos comandos y cuántas líneas, una
+        // sola vez, para que la respuesta siga diciendo exactamente cuántas líneas se descartaron (Y01 de la auditoría del
+        // tramo 1-septies: con más de 16 pendientes no decía que hubo más).
+        [Fact]
+        public void DescribirAvisosOmitidos_DiceCuantosComandosYLineasUnaSolaVez()
+        {
+            // Arrange
+            AvisosTecleadoOmitidos omitidos = new();
+            omitidos.Sumar(3);
+            omitidos.Sumar(1);
+
+            // Act
+            string? aviso = HerramientasSsh.DescribirAvisosOmitidos(omitidos);
+
+            // Assert
+            _ = aviso.Should().Be($"Además, otros 2 comandos anteriores no leyeron 4 líneas de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden). No se detallan uno por uno: cada respuesta detalla como mucho {Peticion.MaxAvisosTecleadoEnlazados}.");
+            _ = HerramientasSsh.DescribirAvisosOmitidos(omitidos).Should().BeNull();
+            _ = HerramientasSsh.DescribirAvisosOmitidos(null).Should().BeNull();
+        }
+
         // Sin grep de GNU el recorrido con find sale con 0 aunque no encuentre nada: una salida vacía es «sin coincidencias»
         // (nunca un resultado en blanco ni un error).
         [Fact]

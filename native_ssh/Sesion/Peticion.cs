@@ -154,36 +154,50 @@ namespace NativeSsh.Sesion
 
         // Tope de peticiones con el aviso pendiente que se enlazan (CompactarAvisosTecleadoPendientes) y que recorre una
         // respuesta (HerramientasSsh.AvisosTecleadoDeAnteriores). Cada respuesta de ssh_exec, ssh_input y ssh_output da los
-        // avisos de las enlazadas, así que con un uso normal quedan una o dos; si se pasara, los avisos más antiguos se pierden
-        // (antes la cadena crecía sin límite y su recorrido recursivo desbordaba la pila del servidor).
+        // avisos de las enlazadas, así que con un uso normal quedan una o dos; si se pasara, los avisos más antiguos no se
+        // detallan, pero se cuentan (AvisosTecleadoOmitidos) y la respuesta siguiente dice cuántos comandos y cuántas líneas
+        // fueron (antes la cadena crecía sin límite y su recorrido recursivo desbordaba la pila del servidor).
         public const int MaxAvisosTecleadoEnlazados = 16;
+
+        // Los avisos omitidos de la sesión de esta petición (los fija el bucle de la sesión al enlazarla): los da la primera
+        // respuesta que llega (HerramientasSsh.Resultado).
+        public AvisosTecleadoOmitidos? AvisosTecleadoOmitidos { get; private set; }
+
+        public void FijarAvisosTecleadoOmitidos(AvisosTecleadoOmitidos omitidos) => AvisosTecleadoOmitidos = omitidos;
 
         // Solo el bucle de la sesión, antes de enlazar la petición siguiente a 'ultima'. Deja la cadena que empieza en 'ultima'
         // solo con las peticiones cuyo aviso sigue pendiente, en el mismo orden y como mucho MaxAvisosTecleadoEnlazados, y
         // devuelve su cabeza (null si no queda ninguna): las ya avisadas no se retienen ni se recorren otra vez. Una dada puede
         // tener detrás una pendiente (el error de una herramienta da el aviso suyo sin recorrer los anteriores), por eso no basta
-        // con mirar la cabeza. Entre dos llamadas solo se añade una cabeza, así que el recorrido es corto; el tope de visitas es
-        // defensa. Quien recorre a la vez la cadena ve el enlace viejo o el nuevo: los dos llevan a las mismas pendientes.
-        internal static Peticion? CompactarAvisosTecleadoPendientes(Peticion? ultima)
+        // con mirar la cabeza. Las pendientes que no caben (las más antiguas) se dan por tomadas y se suman a 'omitidos', que
+        // la respuesta siguiente resume: nadie las repite ni se pierden en silencio. Entre dos llamadas solo se añade una
+        // cabeza, así que el recorrido es corto (como mucho una de más); el tope de visitas es defensa. Quien recorre a la vez
+        // la cadena ve el enlace viejo o el nuevo: los dos llevan a pendientes, y la que se toma aquí ya no la da.
+        internal static Peticion? CompactarAvisosTecleadoPendientes(Peticion? ultima, AvisosTecleadoOmitidos? omitidos = null)
         {
             Peticion? cabeza = null;
             Peticion? previa = null;
             int enlazadas = 0;
-            int visitadas = 0;
-            for (Peticion? actual = ultima; actual is not null && enlazadas < MaxAvisosTecleadoEnlazados && visitadas < 4 * MaxAvisosTecleadoEnlazados; visitadas++)
+            for (int visitadas = 0; ultima is not null && visitadas < 4 * MaxAvisosTecleadoEnlazados; visitadas++)
             {
-                Peticion? siguiente = actual.AnteriorConTecleadoDescartado;
-                if (actual.IsAvisoTecleadoPendiente)
+                Peticion actual = ultima;
+                ultima = actual.AnteriorConTecleadoDescartado;
+                if (!actual.IsAvisoTecleadoPendiente)
+                    continue;
+
+                if (enlazadas == MaxAvisosTecleadoEnlazados)
                 {
-                    if (previa is null)
-                        cabeza = actual;
-                    else
-                        previa.FijarAnteriorConTecleadoDescartado(actual);
-                    previa = actual;
-                    enlazadas++;
+                    if (omitidos is not null && actual.TryTomarAvisoTecleado())
+                        omitidos.Sumar(actual.LineasTecleadoDescartadas);
+                    continue;
                 }
 
-                actual = siguiente;
+                if (previa is null)
+                    cabeza = actual;
+                else
+                    previa.FijarAnteriorConTecleadoDescartado(actual);
+                previa = actual;
+                enlazadas++;
             }
 
             previa?.FijarAnteriorConTecleadoDescartado(null);

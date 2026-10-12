@@ -702,5 +702,35 @@ namespace NativeSsh.Test.Integracion
             _ = entrada.Salida.Should().Contain("longitud:20");
             _ = siguiente.Aviso.Should().BeNull("el comando leyó toda la entrada");
         }
+        // Un alias o una función 'base64'/'printf' que cambia lo que imprimen, o 'set -x' con BASH_XTRACEFD en la salida
+        // estándar: ningún comando se ejecuta (997), tampoco el que intenta deshacerlo (unalias, unset -f, set +x; medido en
+        // la auditoría del tramo 1-septies). El mensaje no lo propone como remedio: remite a ssh_reset_shell, que sí lo arregla.
+        [Theory]
+        [InlineData("alias base64='echo QUJD | command base64'", "unalias base64")]
+        [InlineData("printf() { builtin printf \"$@\"; builtin printf 'QUJD'; }", "unset -f printf")]
+        [InlineData("BASH_XTRACEFD=1; set -x", "set +x")]
+        public async Task EnvioQueNoCoincide_ElRemedioQueProponeElMensajeFunciona(string preparacion, string deshacer)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string destino = _sshd.Sshd.Destino.Clave;
+            await CalentarAsync(h, destino);
+            _ = await h.EjecutarAsync(destino, preparacion, esperarSegundos: 15);
+
+            // Act
+            ResultadoComando intento = await h.EjecutarAsync(destino, deshacer, esperarSegundos: 15, timeoutSegundos: 10);
+            string sinReset = Testigo();
+            ResultadoComando tras = await h.EjecutarAsync(destino, $"touch {sinReset}", esperarSegundos: 15, timeoutSegundos: 10);
+            _ = h.ReiniciarShell(destino);
+            string conReset = Testigo();
+            ResultadoComando nuevo = await h.EjecutarAsync(destino, $"touch {conReset}", esperarSegundos: 30, timeoutSegundos: 30);
+
+            // Assert
+            salida.WriteLine($"deshacer: {intento.Estado} '{intento.Aviso}'; después: {tras.Estado}; tras ssh_reset_shell: {nuevo.Estado}");
+            _ = intento.Estado.Should().Be(EstadoPeticionEnum.Error, "deshacer con ssh_exec tampoco se ejecuta");
+            _ = File.Exists(sinReset).Should().BeFalse();
+            _ = intento.Aviso.Should().Contain("ssh_reset_shell").And.NotContainAny(["set +x", "unset -f", "unalias"], "el mensaje no puede proponer un remedio que no se ejecuta");
+            _ = (nuevo.Estado, File.Exists(conReset)).Should().Be((EstadoPeticionEnum.Completado, true));
+        }
     }
 }

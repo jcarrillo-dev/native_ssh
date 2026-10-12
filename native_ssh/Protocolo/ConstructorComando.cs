@@ -37,11 +37,12 @@ namespace NativeSsh.Protocolo
         // base64) y el nonce no está. No es una suma de comprobación: un cambio del mismo tamaño en medio que dejara el final
         // intacto pasaría, pero eso no lo puede producir otro lector del terminal (y cksum puede faltar en el servidor).
         // Entre el comando y el nonce va un salto de línea, y se quitan juntos ("${__ns_b%$'\n<nonce>'}"): bash compara por
-        // caracteres del locale del shell, y en uno multibyte heredado (GBK, Big5, Shift-JIS, GB18030) el último byte del
-        // comando y el primero del nonce podían formar un carácter (medido en zh_CN.GBK: 'echo x€' seguido de a–f no se
-        // ejecutaba). 0x0A no es byte de cola en ninguna de esas codificaciones ni en UTF-8, y lo evaluado es byte a byte el
-        // comando pedido, también sus saltos de línea finales (la sustitución de órdenes de la decodificación quita los del final,
-        // y el final es el nonce).
+        // caracteres del locale del shell, y en uno multibyte heredado (GBK, Big5, GB18030) el último byte del comando y el
+        // primero del nonce podían formar un carácter (medido en zh_CN.GBK: 'echo x€' seguido de a–f no se ejecutaba). 0x0A no
+        // es byte de cola en ninguna de esas codificaciones ni en UTF-8, y lo evaluado es byte a byte el comando pedido, también
+        // sus saltos de línea finales (la sustitución de órdenes de la decodificación quita los del final, y el final es el
+        // nonce). Shift-JIS no está cubierto: con un shell en ja_JP.SJIS el primer comando se cuelga, también sin este
+        // separador (medido en la auditoría del tramo 1-septies; causa no verificada).
         public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             Guid nonce = IdentidadShell.NuevoTestigo();

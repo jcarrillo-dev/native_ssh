@@ -2107,6 +2107,18 @@ namespace NativeSsh.Herramientas
             return avisos;
         }
 
+        // El resumen de los avisos que la compactación soltó por el tope (Peticion.CompactarAvisosTecleadoPendientes), una sola
+        // vez: la cuenta exacta de comandos y de líneas, sin detallarlos.
+        internal static string? DescribirAvisosOmitidos(AvisosTecleadoOmitidos? omitidos)
+        {
+            if (omitidos is null || !omitidos.TryTomar(out int peticiones, out int lineas, out bool isAlMenos))
+                return null;
+
+            string comandos = peticiones == 1 ? "otro comando anterior no leyó" : $"otros {peticiones} comandos anteriores no leyeron";
+            string cuantas = isAlMenos ? $"{lineas} o más líneas" : SesionShell.DescribirLineas(lineas);
+            return $"Además, {comandos} {cuantas} de entrada tecleada con ssh_input: se descartaron sin ejecutarse (ninguna se ejecutó como orden). No se detallan uno por uno: cada respuesta detalla como mucho {Peticion.MaxAvisosTecleadoEnlazados}.";
+        }
+
         private ResultadoComando Resultado(Peticion peticion, long desdeByte)
         {
             // Se lee el estado antes que la salida: si ya era final, la salida está completa.
@@ -2123,6 +2135,7 @@ namespace NativeSsh.Herramientas
             avisoFinal = Unir(avisoFinal, AvisosTecleadoDeAnteriores(anterior));
             if (anterior is not null)
                 peticion.SoltarAnteriorConTecleadoDescartado(anterior);
+            avisoFinal = Unir(avisoFinal, DescribirAvisosOmitidos(peticion.AvisosTecleadoOmitidos));
 
             string? avisoAntipatron = DetectarAvisoAntipatron(peticion.Comando);
             if (avisoAntipatron is not null)

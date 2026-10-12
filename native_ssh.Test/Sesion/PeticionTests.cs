@@ -203,6 +203,60 @@ namespace NativeSsh.Test.Sesion
             _ = largo.Should().Be(Peticion.MaxAvisosTecleadoEnlazados);
         }
 
+        // Con más avisos pendientes que el tope, los que no caben no se pierden en silencio: se dan por tomados (nadie los
+        // repite) y se suman a los omitidos de la sesión, que la primera respuesta resume con su número y sus líneas.
+        [Fact]
+        public void CompactarAvisosTecleadoPendientes_LosQueNoCabenSeCuentanEnLosOmitidos()
+        {
+            // Arrange
+            const int Extra = 4;
+            Peticion? ultima = null;
+            List<Peticion> todas = [];
+            for (int k = 0; k < Peticion.MaxAvisosTecleadoEnlazados + Extra; k++)
+            {
+                Peticion peticion = Nueva();
+                peticion.FijarLineasTecleadoDescartadas(k + 1, null);
+                peticion.FijarAnteriorConTecleadoDescartado(ultima);
+                todas.Add(peticion);
+                ultima = peticion;
+            }
+
+            AvisosTecleadoOmitidos omitidos = new();
+
+            // Act
+            Peticion? cabeza = Peticion.CompactarAvisosTecleadoPendientes(ultima, omitidos);
+
+            // Assert
+            _ = cabeza.Should().BeSameAs(ultima);
+            _ = omitidos.TryTomar(out int peticiones, out int lineas, out bool isAlMenos).Should().BeTrue();
+            _ = (peticiones, lineas, isAlMenos).Should().Be((Extra, 1 + 2 + 3 + 4, false));
+            _ = todas.GetRange(0, Extra).Should().OnlyContain(p => p.IsAvisoTecleadoTomado, "su aviso ya lo da el resumen: no se repite");
+            _ = todas.GetRange(Extra, Peticion.MaxAvisosTecleadoEnlazados).Should().OnlyContain(p => p.IsAvisoTecleadoPendiente);
+            _ = omitidos.TryTomar(out _, out _, out _).Should().BeFalse("el resumen se da una sola vez");
+        }
+
+        // La respuesta que ya recorrió la cadena suelta su enlace solo si sigue siendo el que recorrió: si entretanto la
+        // compactación lo cambió (la petición está en medio de la cadena), el nuevo no se pisa (mutación Q02 de la auditoría
+        // del tramo 1-septies: soltar sin comparar).
+        [Fact]
+        public void SoltarAnteriorConTecleadoDescartado_NoPisaUnEnlaceNuevo()
+        {
+            // Arrange
+            Peticion peticion = Nueva();
+            Peticion recorrida = Nueva();
+            Peticion nueva = Nueva();
+            peticion.FijarAnteriorConTecleadoDescartado(recorrida);
+            peticion.FijarAnteriorConTecleadoDescartado(nueva);
+
+            // Act
+            peticion.SoltarAnteriorConTecleadoDescartado(recorrida);
+
+            // Assert
+            _ = peticion.AnteriorConTecleadoDescartado.Should().BeSameAs(nueva);
+            peticion.SoltarAnteriorConTecleadoDescartado(nueva);
+            _ = peticion.AnteriorConTecleadoDescartado.Should().BeNull();
+        }
+
         // Al terminar, la salida se cierra: lo retenido por si era el principio de un secreto (ssh_input con secreto=true) ya
         // no se completará, se enmascara y se puede leer (BufferSalida.Cerrar); sin cerrarla quedaría oculto para siempre.
         [Theory]
