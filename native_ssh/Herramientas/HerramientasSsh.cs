@@ -394,7 +394,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
-        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino (usa las de lectura); sin isSoloLectura, aún no se ha podido comparar (depende de resolver un nombre) y la primera de esas herramientas lo comprobará.")]
+        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino (usa las de lectura); sin isSoloLectura, no se puede saber sin resolver un nombre y cada una de esas herramientas lo comprueba en cada llamada.")]
         public ResultadoEstado Estado(
             [Description("Filtrar por destino (opcional).")] string? destino = null)
         {

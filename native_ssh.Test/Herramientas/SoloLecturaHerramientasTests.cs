@@ -135,7 +135,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = estado.SoloLectura.Should().Equal("prod");
             _ = estado.Sesiones.Single(s => s.Destino == "ana@prod:22").IsSoloLectura.Should().BeTrue();
-            _ = estado.Sesiones.Single(s => s.Destino == "ana@pruebas:22").IsSoloLectura.Should().BeFalse();
+            _ = estado.Sesiones.Single(s => s.Destino == "ana@pruebas:22").IsSoloLectura.Should().BeNull("el nombre del destino se resuelve en cada llamada, no se recuerda");
             _ = json.Should().Contain("\"soloLectura\":[\"prod\"]").And.Contain("\"isSoloLectura\":true");
         }
 

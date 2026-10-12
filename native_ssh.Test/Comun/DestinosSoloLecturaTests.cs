@@ -137,15 +137,17 @@ namespace NativeSsh.Test.Comun
             _ = error.Should().StartWith("NATIVE_SSH_SOLO_LECTURA: la entrada '").And.Contain("no es válida. Usa '[usuario@]servidor[:puerto]'");
         }
 
-        // Lo resuelto se recuerda: cada ssh_exec a otro destino no espera otra vez al DNS.
+        // Lo resuelto de las entradas se recuerda (cada ssh_exec a otro destino no espera otra vez al DNS por ellas); el destino
+        // se resuelve en cada llamada.
         [Fact]
-        public async Task Resolucion_SeRecuerda()
+        public async Task Resolucion_SeRecuerdaLaDeLasEntradasNoLaDelDestino()
         {
             // Arrange
-            int consultas = 0;
+            Dictionary<string, int> consultas = [];
             Task<IPAddress[]> Contador(string nombre, CancellationToken token)
             {
-                _ = Interlocked.Increment(ref consultas);
+                lock (consultas)
+                    consultas[nombre] = consultas.GetValueOrDefault(nombre) + 1;
                 return ResolverFalso(nombre, token);
             }
 
@@ -158,7 +160,31 @@ namespace NativeSsh.Test.Comun
             // Assert
             _ = primera.Should().BeFalse();
             _ = segunda.Should().BeFalse();
-            _ = consultas.Should().Be(2, "una por nombre, solo la primera vez");
+            _ = consultas.Should().BeEquivalentTo(new Dictionary<string, int> { ["prod.ejemplo"] = 1, ["otro.ejemplo"] = 2 });
+        }
+
+        // El destino no se recuerda: si su nombre pasa a apuntar a la dirección de una entrada (DNS que cambia entre dos
+        // llamadas), la llamada siguiente ya lo ve. Antes se comparaba con lo resuelto hasta 5 minutos antes mientras SSH.NET
+        // resolvía de nuevo al conectar.
+        [Fact]
+        public async Task Destino_QueCambiaDeDireccion_SeVeEnLaLlamadaSiguiente()
+        {
+            // Arrange
+            int consultas = 0;
+            Task<IPAddress[]> Cambiante(string nombre, CancellationToken _) =>
+                Task.FromResult(new[] { IPAddress.Parse(Interlocked.Increment(ref consultas) == 1 ? "10.0.0.9" : "10.0.0.5") });
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Cambiante).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura antes = await destinos.ComprobarAsync(Destino("root@cambia.ejemplo"), CancellationToken.None);
+            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@cambia.ejemplo"));
+            ComprobacionSoloLectura despues = await destinos.ComprobarAsync(Destino("root@cambia.ejemplo"), CancellationToken.None);
+
+            // Assert
+            _ = antes.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = sinRed.Should().BeNull("lo resuelto del destino no se recuerda: ssh_status no puede saberlo sin red");
+            _ = despues.Should().Be(new ComprobacionSoloLectura(true, null));
         }
 
         // Si una entrada que coincide en usuario y puerto, o el propio destino, no se pudo resolver, no se sabe si es la misma
@@ -281,8 +307,8 @@ namespace NativeSsh.Test.Comun
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
         }
 
-        // ssh_status marca las sesiones sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o lo ya resuelto),
-        // null si depende de un nombre que aún no se ha resuelto.
+        // ssh_status marca las sesiones sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o lo ya resuelto de
+        // las entradas), null si depende de un nombre de entrada aún no resuelto o del nombre del destino (no se recuerda).
         [Fact]
         public async Task SinRed_SoloLoQueYaSeSabe()
         {
@@ -305,7 +331,7 @@ namespace NativeSsh.Test.Comun
             _ = sinResolver.Should().BeNull();
             _ = otroUsuario.Should().BeNull("prod.ejemplo aún no se ha resuelto");
             _ = yaResuelto.Should().BeTrue();
-            _ = resueltoDistinto.Should().BeFalse();
+            _ = resueltoDistinto.Should().BeNull("el destino se resuelve en cada llamada: no se recuerda");
             _ = destinos.Entradas.Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
         }
 

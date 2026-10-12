@@ -22,8 +22,13 @@ namespace NativeSsh.Comun
     // (sin DNS). Si el texto no coincide, se comparan las direcciones de los dos (DNS o /etc/hosts, con un plazo de 3 s que se
     // cumple aunque la resolución no se pueda cancelar): así 'prod.ejemplo.com' cubre también su IP. Si un nombre que haría
     // falta comparar no se resuelve (fallo o plazo), el destino se trata como de solo lectura (falla cerrado). Solo se
-    // recuerdan las resoluciones correctas, 5 minutos; por nombre hay como mucho una resolución en curso, y en total
-    // MaxResolucionesEnCurso (las demás se rechazan sin lanzarse), para que un DNS colgado no acumule hilos bloqueados.
+    // recuerdan, 5 minutos, las resoluciones correctas de las entradas; el destino se resuelve en cada comprobación (si su
+    // nombre pasa a apuntar a una entrada, la llamada siguiente ya lo ve). Ventana que queda: SSH.NET vuelve a resolver el
+    // nombre al conectar (milisegundos después de esta comprobación) y una sesión ya abierta sigue conectada a la dirección
+    // de cuando se abrió, aunque el nombre apunte ahora a otra; solo quien controla el DNS del nombre puede aprovecharla
+    // (para cerrarla del todo, usa en los destinos la IP o el mismo texto que en la lista). La zona de una IPv6 ('%1',
+    // '%lo') no cuenta al comparar. Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso
+    // (las demás no se lanzan y el rechazo lo dice), para que un DNS colgado no acumule hilos bloqueados.
     public sealed class DestinosSoloLectura
     {
         public const string Variable = "NATIVE_SSH_SOLO_LECTURA";
@@ -36,11 +41,13 @@ namespace NativeSsh.Comun
         private readonly Lock _candadoEnCurso = new();
 
         private readonly Entrada[] _entradas;
+        private readonly HashSet<string> _nombresEntradas;
         private readonly Func<string, CancellationToken, Task<IPAddress[]>> _resolver;
 
         private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver)
         {
             _entradas = entradas;
+            _nombresEntradas = [.. Array.ConvertAll(entradas, e => e.Servidor)];
             _resolver = resolver ?? Dns.GetHostAddressesAsync;
             Entradas = Array.ConvertAll(entradas, e => e.Texto);
         }
@@ -178,8 +185,8 @@ namespace NativeSsh.Comun
             if (porResolver.Count == 0)
                 return new ComprobacionSoloLectura(false, null);
 
-            Task<HashSet<IPAddress>?> delDestino = ResolverAsync(servidor, cancellationToken);
-            List<Task<HashSet<IPAddress>?>> deLasEntradas = porResolver.ConvertAll(e => ResolverAsync(e.Servidor, cancellationToken));
+            Task<HashSet<IPAddress>?> delDestino = ResolverAsync(servidor, isDestino: true, cancellationToken);
+            List<Task<HashSet<IPAddress>?>> deLasEntradas = porResolver.ConvertAll(e => ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
             HashSet<IPAddress>? direcciones = await delDestino.ConfigureAwait(false);
             HashSet<IPAddress>?[] resueltas = await Task.WhenAll(deLasEntradas).ConfigureAwait(false);
             string? noResuelto = direcciones is null ? servidor : null;
@@ -206,11 +213,11 @@ namespace NativeSsh.Comun
             if (porResolver.Count == 0)
                 return false;
 
-            bool isDestinoConocido = TryDireccionesSinRed(servidor, out HashSet<IPAddress>? direcciones);
+            bool isDestinoConocido = TryDireccionesSinRed(servidor, isDestino: true, out HashSet<IPAddress>? direcciones);
             bool isDesconocido = !isDestinoConocido;
             foreach (Entrada entrada in porResolver)
             {
-                if (!TryDireccionesSinRed(entrada.Servidor, out HashSet<IPAddress>? deLaEntrada))
+                if (!TryDireccionesSinRed(entrada.Servidor, isDestino: false, out HashSet<IPAddress>? deLaEntrada))
                     isDesconocido = true;
                 else if (isDestinoConocido && deLaEntrada!.Overlaps(direcciones!))
                     return true;
@@ -264,25 +271,26 @@ namespace NativeSsh.Comun
             return IsDireccionLoopback(unificada) ? IPAddress.Loopback : unificada;
         }
 
-        // Sin red: la propia IP, localhost o lo ya resuelto y aún recordado.
-        private bool TryDireccionesSinRed(string servidor, out HashSet<IPAddress>? direcciones)
+        // Sin red: la propia IP, localhost o, para una entrada, lo ya resuelto y aún recordado. Lo del destino nunca se toma
+        // de lo recordado (isDestino): se resuelve en cada comprobación, lo más cerca posible de la conexión.
+        private bool TryDireccionesSinRed(string servidor, bool isDestino, out HashSet<IPAddress>? direcciones)
         {
             direcciones = null;
             if (IPAddress.TryParse(servidor, out IPAddress? literal))
                 direcciones = [Unificar(literal)];
             else if (servidor == "localhost")
                 direcciones = [IPAddress.Loopback];
-            else if (_resueltos.TryGetValue(servidor, out (long Caduca, HashSet<IPAddress> Direcciones) recordado) && recordado.Caduca > Environment.TickCount64)
+            else if (!isDestino && _resueltos.TryGetValue(servidor, out (long Caduca, HashSet<IPAddress> Direcciones) recordado) && recordado.Caduca > Environment.TickCount64)
                 direcciones = recordado.Direcciones;
             return direcciones is not null;
         }
 
         // Direcciones de un nombre (o la propia IP), o null si no se pudo resolver: fallo, plazo de 3 s vencido (se deja de
         // esperar aunque la resolución siga) o demasiadas resoluciones en curso. Si ya hay una en curso para ese nombre, se
-        // espera esa misma.
-        private async Task<HashSet<IPAddress>?> ResolverAsync(string servidor, CancellationToken cancellationToken)
+        // espera esa misma (también si la pidió otra llamada: está en curso, así que es igual de reciente).
+        private async Task<HashSet<IPAddress>?> ResolverAsync(string servidor, bool isDestino, CancellationToken cancellationToken)
         {
-            if (TryDireccionesSinRed(servidor, out HashSet<IPAddress>? conocidas))
+            if (TryDireccionesSinRed(servidor, isDestino, out HashSet<IPAddress>? conocidas))
                 return conocidas;
 
             Task<HashSet<IPAddress>?>? resolucion;
@@ -311,7 +319,8 @@ namespace NativeSsh.Comun
         }
 
         // Una resolución compartida: con su propio plazo (por si el resolver lo respeta), sin el token de quien la pidió
-        // (la esperan varios); si acaba bien, se recuerda. Al terminar deja de estar en curso.
+        // (la esperan varios); si acaba bien y es el nombre de una entrada, se recuerda (los del destino no). Al terminar deja
+        // de estar en curso.
         private async Task<HashSet<IPAddress>?> ResolverEnCursoAsync(string servidor)
         {
             try
@@ -323,7 +332,8 @@ namespace NativeSsh.Comun
                 if (direcciones.Count == 0)
                     return null;
 
-                _resueltos[servidor] = (Environment.TickCount64 + (long)DuracionRecuerdo.TotalMilliseconds, direcciones);
+                if (_nombresEntradas.Contains(servidor))
+                    _resueltos[servidor] = (Environment.TickCount64 + (long)DuracionRecuerdo.TotalMilliseconds, direcciones);
                 return direcciones;
             }
             catch (Exception ex) when (ex is SocketException or ArgumentException or OperationCanceledException)
