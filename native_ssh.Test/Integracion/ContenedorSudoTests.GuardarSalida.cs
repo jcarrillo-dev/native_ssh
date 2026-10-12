@@ -48,18 +48,20 @@ namespace NativeSsh.Test.Integracion
             _ = tras.Should().Be("borrado\nbase\n");
         }
 
-        // Directorio base creado antes por otro usuario (aquí root, con 1777 para que el de prueba pudiera escribir): error
-        // claro, el comando no se ejecuta y no se escribe nada dentro.
+        // Directorio base creado antes por otro usuario (aquí root): con 1777 (el de prueba podría escribir en él) o con 700
+        // (el modo coincide: solo el propietario lo delata). Error claro, el comando no se ejecuta y no se escribe nada dentro.
         [TheoryContenedor]
-        [InlineData(ContenedorSudo.Debian)]
-        [InlineData(ContenedorSudo.Alpine)]
-        public async Task GuardarSalida_BaseDeOtroUsuario_ErrorSinEscribir(string distro)
+        [InlineData(ContenedorSudo.Debian, "1777")]
+        [InlineData(ContenedorSudo.Alpine, "1777")]
+        [InlineData(ContenedorSudo.Debian, "700")]
+        [InlineData(ContenedorSudo.Alpine, "700")]
+        public async Task GuardarSalida_BaseDeOtroUsuario_ErrorSinEscribir(string distro, string modo)
         {
             // Arrange
             await using Entorno entorno = Preparar(distro);
             HerramientasSsh herramientas = entorno.Herramientas();
             string baseGuardado = BaseGuardado(entorno);
-            _ = entorno.Root("rm -rf -- \"$1\" && mkdir -m 1777 \"$1\"", baseGuardado);
+            _ = entorno.Root("rm -rf -- \"$1\" && mkdir -m \"$2\" \"$1\"", baseGuardado, modo);
             string testigo = $"{entorno.DirectorioUsuario}/ejecutado";
             try
             {
