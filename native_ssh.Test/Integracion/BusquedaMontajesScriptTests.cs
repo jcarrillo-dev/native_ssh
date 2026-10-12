@@ -95,6 +95,17 @@ namespace NativeSsh.Test.Integracion
             _ = salida.Should().Be("status");
         }
 
+        // Con la ruta igual al punto de montaje del proc: no se poda ni se da por no explorado.
+        [FactUnshare]
+        public void Script_RutaEnElPuntoDeMontajeDelProc_NoSeDaPorNoExplorado()
+        {
+            // Act
+            string salida = Buscar(MontarProcYTmpfs, $"{_raiz}/proc con espacio", isCruzarMontajes: true, patron: "status", profundidad: 2);
+
+            // Assert
+            _ = salida.Should().Contain("1/status").And.NotContain("[montajes_no_explorados");
+        }
+
         // Sin /proc/self/mountinfo (un directorio vacío encima de /proc), con la raíz como ruta: /proc, /sys y /dev se podan
         // por su ruta y, sin cruzar montajes, la línea avisa de que no se pudo leer la tabla de montajes.
         [FactUnshare]

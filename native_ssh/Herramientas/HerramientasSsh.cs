@@ -1016,8 +1016,8 @@ namespace NativeSsh.Herramientas
         // recorrerán: los virtuales y, con CRUZAR=0, los demás directorios montados cuyo dispositivo (stat, como compara
         // 'find -xdev') no es el de la raíz (un bind del mismo sistema de ficheros sí se recorre). Un montaje que contiene a
         // la raíz no está por debajo: ruta='/proc' no se poda. En mountinfo el punto de montaje va con el espacio, el
-        // tabulador, el salto de línea y la barra invertida en octal (\040, \011, \012, \134): se decodifica con printf %b
-        // tras convertir cada '\' en '\0'. El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
+        // tabulador, el salto de línea y la barra invertida en octal (\040, \011, \012, \134), que printf %b de bash
+        // decodifica (no hay otras secuencias con '\': la barra invertida misma va como \134). El tipo es el primer campo tras el separador ' - ' (las opciones no llevan
         // espacios). Solo cuentan los directorios (un contenedor monta también archivos sueltos, como /dev/null): se mira
         // con -d cada montaje dentro de la profundidad que se recorre (find lo consultaría igual al recorrer su padre); el
         // dispositivo (stat %d) solo con CRUZAR=0 y para los no virtuales. /dev/fd, si es un enlace (a /proc/self/fd), se
@@ -1062,7 +1062,6 @@ namespace NativeSsh.Herramientas
                 while IFS=' ' read -r _ _ _ _ punto resto; do
                   tipo=${resto#* - }
                   tipo=${tipo%% *}
-                  punto=${punto//\\/\\0}
                   printf -v punto '%b' "$punto"
                   montaje "$punto" "$tipo"
                 done < /proc/self/mountinfo

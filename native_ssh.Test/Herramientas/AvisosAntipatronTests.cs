@@ -12,6 +12,8 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("cat /etc/nginx/nginx.conf", "'cat'")]
         [InlineData("sudo cat /var/log/syslog", "'cat'")]
         [InlineData("cat app.log 2>&1", "'cat'")]
+        [InlineData("cat app.log >&2", "'cat'")]
+        [InlineData("cat app.log 1>&2", "'cat'")]
         [InlineData("cat -n src/main.py 2>/dev/null", "'cat'")]
         [InlineData("timeout 10 cat datos.txt", "'cat'")]
         [InlineData("env LANG=C cat datos.txt", "'cat'")]
