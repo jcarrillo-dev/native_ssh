@@ -404,8 +404,10 @@ namespace NativeSsh.Test.Ssh
             // Act
             Action resolver = () => Resolver(resolutor, "web");
 
-            // Assert
-            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no pudo leer").And.Contain(ruta);
+            // Assert: con la ruta del fichero (el ssh.exe de OpenSSH para Windows la escribe con cada barra invertida doblada).
+            string mensaje = resolver.Should().Throw<NativeSshException>().Which.Message;
+            _ = mensaje.Should().Contain("no pudo leer");
+            _ = mensaje.Should().ContainAny(ruta, ruta.Replace(@"\", @"\\", StringComparison.Ordinal));
         }
 
         // Sin el programa ssh, el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
