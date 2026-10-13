@@ -334,7 +334,12 @@ namespace NativeSsh.Test.Herramientas
             ResultadoEstado sinFiltro = herramientas.Estado();
 
             // Assert
-            _ = conFiltro.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue();
+            EstadoSesion sesion = conFiltro.Sesiones.Should().ContainSingle().Subject;
+            _ = sesion.IsSoloLectura.Should().BeTrue();
+            _ = sesion.Destino.Should().Be("ana@10.0.0.5:22");
+            _ = sesion.Alias.Should().Equal("prod");
+            _ = conFiltro.SoloLectura.Should().Equal("prod");
+            _ = conFiltro.Aviso.Should().BeNull();
             _ = sinFiltro.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue();
         }
     }
