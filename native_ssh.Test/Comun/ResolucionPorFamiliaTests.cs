@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using FluentAssertions;
 using NativeSsh.Comun;
 
@@ -84,7 +85,7 @@ namespace NativeSsh.Test.Comun
         {
             // Arrange
             string ruta = Path.GetTempFileName();
-            await File.WriteAllTextAsync(ruta, "127.0.0.1 localhost\n10.0.0.5\tprod  PROD.ejemplo # máquina protegida\n# 10.0.0.6 prod.ejemplo\nfd00::5 prod.ejemplo\nno-es-ip prod.ejemplo\n10.0.0.7 prod.ejemplo.com\n10.0.0.9 otro # prod.ejemplo\n10.0.0.8 prod.ejemplo.\n");
+            await File.WriteAllTextAsync(ruta, "127.0.0.1 localhost\n10.0.0.5\tprod  PROD.ejemplo # maquina protegida\n# 10.0.0.6 prod.ejemplo\nfd00::5 prod.ejemplo\n10.0.0.7 prod.ejemplo.com\n10.0.0.9 otro # prod.ejemplo\n10.0.0.8 prod.ejemplo.\n");
 
             try
             {
@@ -104,11 +105,11 @@ namespace NativeSsh.Test.Comun
             }
         }
 
-        // El fichero hosts se lee como glibc (medido con glibc en red propia): la dirección solo como la acepta inet_pton
-        // (IPv4 con cuatro números decimales sin ceros a la izquierda; IPv6 sin zona ni corchetes), el nombre sin punto final
-        // y sin mayúsculas solo en ASCII, separados por cualquier blanco de C (también \v, \f y \r), '#' o un NUL acaban la
-        // línea, que solo acaba en '\n' y puede ser tan larga como haga falta. Una línea que glibc no usa para el nombre no
-        // cuenta como estar en el fichero (no da la tolerancia de /etc/hosts); una que sí usa, cuenta.
+        // Solo cuentan las líneas sencillas e inequívocas del fichero hosts (más estricto que glibc, que usa algunas que no lo
+        // son): la dirección al principio, sin sangría, como la acepta inet_pton (IPv4 con cuatro números decimales sin ceros
+        // a la izquierda; IPv6 sin zona ni corchetes); campos separados por espacios o tabuladores; el nombre entero (sin punto
+        // final) y sin mayúsculas solo en ASCII; '#' empieza un comentario; la línea solo ASCII y acabada en '\n' (o "\r\n").
+        // Una línea que no cumple eso no da la tolerancia de /etc/hosts.
         [Theory]
         [InlineData("10.1 prod.ejemplo\n")]
         [InlineData("0x0a630007 prod.ejemplo\n")]
@@ -125,7 +126,16 @@ namespace NativeSsh.Test.Comun
         [InlineData("10.99.0.7 prodı.ejemplo\n")]
         [InlineData("10.99.0.7 otro\0 prod.ejemplo\n")]
         [InlineData("10.99.0.7 otro#prod.ejemplo\n")]
-        public void DireccionesEnHosts_LineaQueGlibcNoUsa_NoCuenta(string linea)
+        [InlineData("10.99.0.7 Prod.Ejemplo")]
+        [InlineData(" 10.99.0.7 prod.ejemplo\n")]
+        [InlineData("\t10.99.0.7 prod.ejemplo\n")]
+        [InlineData("10.99.0.7\vprod.ejemplo\n")]
+        [InlineData("10.99.0.7\fprod.ejemplo\n")]
+        [InlineData("10.99.0.7 otro\rprod.ejemplo\n")]
+        [InlineData("10.99.0.7\r10.99.0.8 prod.ejemplo\n")]
+        [InlineData("10.99.0.7 prod.ejemplo # máquina protegida\n")]
+        [InlineData("10.99.0.7 prod.ejemplo\u00a0otro\n")]
+        public void DireccionesEnHosts_LineaQueNoEsSencilla_NoCuenta(string linea)
         {
             // Arrange
             string ruta = Path.GetTempFileName();
@@ -146,20 +156,17 @@ namespace NativeSsh.Test.Comun
         }
 
         [Theory]
-        [InlineData("10.99.0.7\vprod.ejemplo\n", "10.99.0.7")]
-        [InlineData("10.99.0.7\fprod.ejemplo\n", "10.99.0.7")]
         [InlineData("10.99.0.7 prod.ejemplo\r\n", "10.99.0.7")]
-        [InlineData("10.99.0.7 otro\rprod.ejemplo\n", "10.99.0.7")]
-        [InlineData("10.99.0.7\r10.99.0.8 prod.ejemplo\n", "10.99.0.7")]
-        [InlineData("10.99.0.7 Prod.Ejemplo", "10.99.0.7")]
+        [InlineData("10.99.0.7\tprod.ejemplo\n", "10.99.0.7")]
+        [InlineData("10.99.0.7 otro \t PROD.ejemplo   # comentario\n", "10.99.0.7")]
         [InlineData("0.0.0.0 prod.ejemplo\n", "0.0.0.0")]
         [InlineData("fd00:0:0::5 prod.ejemplo\n", "fd00::5")]
         [InlineData("::ffff:10.99.0.7 prod.ejemplo\n", "::ffff:10.99.0.7")]
-        public void DireccionesEnHosts_LineaQueGlibcUsa_Cuenta(string linea, string direccion)
+        public void DireccionesEnHosts_LineaSencilla_Cuenta(string linea, string direccion)
         {
             // Arrange
             string ruta = Path.GetTempFileName();
-            File.WriteAllText(ruta, "127.0.0.1 localhost\n" + linea);
+            File.WriteAllText(ruta, "127.0.0.1 localhost\n" + linea + "10.99.0.8 prod.ejemplo.com # maquina de pruebas\n");
 
             try
             {
@@ -168,6 +175,75 @@ namespace NativeSsh.Test.Comun
 
                 // Assert
                 _ = direcciones.Should().Equal(IPAddress.Parse(direccion));
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        // Una sola línea que nombra la entrada y no es sencilla quita la tolerancia aunque otra línea sencilla la nombre: la
+        // máquina podría usar también esa dirección (p. ej. una IPv6 en una línea con sangría) y native_ssh no la compararía.
+        [Theory]
+        [InlineData(" fd00::5 prod.ejemplo\n")]
+        [InlineData("fd00::5 prod.ejemplo")]
+        [InlineData("fd00::5 prod.ejemplo # máquina protegida\n")]
+        [InlineData("fd00::5\vprod.ejemplo\n")]
+        [InlineData("10.1 prod.ejemplo\n")]
+        [InlineData("prod.ejemplo fd00::5\n")]
+        public void DireccionesEnHosts_OtraLineaQueLaNombraYNoEsSencilla_SinTolerancia(string linea)
+        {
+            // Arrange
+            string ruta = Path.GetTempFileName();
+            File.WriteAllText(ruta, "10.0.0.5 prod.ejemplo\n" + linea);
+
+            try
+            {
+                // Act
+                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+
+                // Assert
+                _ = direcciones.Should().BeEmpty();
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        // El fichero se lee como bytes: si empieza por una marca de orden de bytes (UTF-8, UTF-16 o UTF-32) o tiene un NUL en
+        // cualquier sitio, ninguna línea cuenta (glibc no lo lee como texto; File.ReadAllText quitaba la marca o lo
+        // decodificaba).
+        [Theory]
+        [InlineData("utf8-bom")]
+        [InlineData("utf16le")]
+        [InlineData("utf16be")]
+        [InlineData("utf32le")]
+        [InlineData("utf32be")]
+        [InlineData("nul-en-otra-linea")]
+        public void DireccionesEnHosts_FicheroConMarcaONul_NingunaLineaCuenta(string caso)
+        {
+            // Arrange
+            const string Texto = "10.0.0.5 prod.ejemplo\n";
+            byte[] contenido = caso switch
+            {
+                "utf8-bom" => [0xEF, 0xBB, 0xBF, .. Encoding.ASCII.GetBytes(Texto)],
+                "utf16le" => [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes(Texto)],
+                "utf16be" => [.. Encoding.BigEndianUnicode.GetPreamble(), .. Encoding.BigEndianUnicode.GetBytes(Texto)],
+                "utf32le" => [.. Encoding.UTF32.GetPreamble(), .. Encoding.UTF32.GetBytes(Texto)],
+                "utf32be" => [0x00, 0x00, 0xFE, 0xFF, .. new UTF32Encoding(true, false).GetBytes(Texto)],
+                _ => Encoding.ASCII.GetBytes("127.0.0.1 local\0host\n" + Texto),
+            };
+            string ruta = Path.GetTempFileName();
+            File.WriteAllBytes(ruta, contenido);
+
+            try
+            {
+                // Act
+                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+
+                // Assert
+                _ = direcciones.Should().BeEmpty();
             }
             finally
             {

@@ -573,7 +573,8 @@ namespace NativeSsh.Comun
             return direcciones.Count > 0 ? direcciones : null;
         }
 
-        // Una entrada, por familia (A y AAAA a la vez, dentro del plazo), más las direcciones con que aparece en /etc/hosts.
+        // Una entrada, por familia (A y AAAA a la vez, dentro del plazo), más las direcciones con que aparece en /etc/hosts
+        // (solo en líneas sencillas e inequívocas: ResolucionPorFamilia.DireccionesEnHosts).
         // Una familia sin direcciones (NODATA: un host solo IPv4 o solo IPv6) vale; si una familia falla de cualquier otra
         // forma (también que el nombre no exista o que no responda a tiempo), la entrada no se resuelve (falla cerrado),
         // salvo que el nombre esté en /etc/hosts: con 'files' antes de 'dns' en nsswitch.conf la máquina usa para ese nombre

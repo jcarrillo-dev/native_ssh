@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using FluentAssertions;
 using NativeSsh.Comun;
 
@@ -768,8 +769,8 @@ namespace NativeSsh.Test.Comun
         [Theory]
         [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.5", true)]
         [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.6", false)]
-        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # máquina protegida\n", null, null, "root@10.0.0.6", false)]
-        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # máquina protegida\n", null, null, "root@10.0.0.5", true)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # maquina protegida\n", null, null, "root@10.0.0.6", false)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # maquina protegida\n", null, null, "root@10.0.0.5", true)]
         [InlineData("fd00::5 prod.ejemplo\n", null, null, "root@[fd00::5]:22", true)]
         [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.7", true)]
         [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.5", true)]
@@ -872,6 +873,10 @@ namespace NativeSsh.Test.Comun
         [InlineData("10.1 prod.ejemplo\n")]
         [InlineData("10.0.0.5 prod.ejemplo.\n")]
         [InlineData("fe80::1%lo prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo")]
+        [InlineData(" 10.0.0.5 prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo # máquina protegida\n")]
+        [InlineData("10.0.0.5 prod.ejemplo\n fd00::6 prod.ejemplo\n")]
         public async Task NombreQueNoEstaEnHosts_ElFalloDeUnaFamiliaFallaCerrado(string hosts)
         {
             // Act
@@ -879,6 +884,33 @@ namespace NativeSsh.Test.Comun
 
             // Assert
             _ = comprobacion.Should().Be(NoResuelta);
+        }
+
+        // B1 de la prefusión-quinquies: un fichero hosts que empieza por la marca UTF-8 (o es UTF-16) no da la tolerancia; con
+        // la AAAA fallida, la IPv6 de la máquina protegida escrita tal cual se rechaza.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task HostsConMarcaDeOrden_AaaaFallida_LaIpv6SeRechaza(bool isUtf16)
+        {
+            // Arrange
+            byte[] contenido = isUtf16 ? [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("10.0.0.5 prod.ejemplo\n")] : [0xEF, 0xBB, 0xBF, .. "10.0.0.5 prod.ejemplo\n"u8];
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllBytesAsync(ruta, contenido);
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (_, _) => Task.FromResult(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], null)), ruta).Should().BeTrue();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("root@[fd00::5]:22"), CancellationToken.None);
+
+                // Assert
+                _ = comprobacion.Should().Be(NoResuelta);
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
         }
 
         // Con DNS real (/etc/hosts): localhost cubre 127.0.0.1.

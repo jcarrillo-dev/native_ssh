@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 namespace NativeSsh.Comun
 {
@@ -54,55 +55,108 @@ namespace NativeSsh.Comun
         public static DireccionesPorFamilia PorFamilia(IPAddress[] direcciones) =>
             new(Array.FindAll(direcciones, d => d.AddressFamily == AddressFamily.InterNetwork), Array.FindAll(direcciones, d => d.AddressFamily == AddressFamily.InterNetworkV6));
 
-        // Los blancos que separan los campos de una línea de hosts en glibc (isspace de C).
-        private static readonly SearchValues<char> Blancos = SearchValues.Create(" \t\v\f\r\n");
+        // Los blancos que separan los campos de una línea sencilla del fichero hosts.
+        private static readonly SearchValues<byte> Blancos = SearchValues.Create(" \t"u8);
+        private static readonly SearchValues<byte> ImprimiblesYTabulador = SearchValues.Create(CrearImprimiblesYTabulador());
         private static readonly SearchValues<char> CaracteresIpv6 = SearchValues.Create("0123456789abcdefABCDEF:.");
 
+        // Lo más largo que puede medir una dirección escrita (IPv6 con una IPv4 al final: 45).
+        private const int LongitudMaximaDireccion = 64;
+
         // Las direcciones de 'nombre' (ya normalizado: minúsculas, sin el punto final) en un fichero con el formato de
-        // /etc/hosts ('IP nombre [alias...]'); vacío si no está o el fichero no se puede leer. Se lee como glibc (las líneas
-        // que glibc no usaría para el nombre no cuentan, porque lo que da es la tolerancia de estar en /etc/hosts): las
-        // líneas acaban solo en '\n' y pueden ser de cualquier longitud; '#' o un NUL acaban lo que se lee de la línea; los
-        // campos se separan con cualquier blanco de C (también \v, \f y \r); la dirección, solo como la acepta inet_pton
-        // (EsDireccionEstricta); el nombre, entero (sin quitarle el punto final) y sin distinguir mayúsculas solo en ASCII.
+        // /etc/hosts ('IP nombre [alias...]'); vacío si no está, si el fichero no se puede leer o si no se puede estar seguro
+        // de que la máquina use para el nombre solo esas direcciones. Lo que da es la tolerancia de estar en /etc/hosts, así
+        // que solo cuentan las líneas sencillas e inequívocas (más estricto que glibc, que usa algunas que no lo son): el
+        // fichero se lee como bytes, sin quitar una marca de orden de bytes ni decodificarlo; si empieza por una (UTF-8,
+        // UTF-16 o UTF-32) o tiene un NUL, ninguna línea cuenta. Una línea es sencilla si acaba en '\n' (puede llevar '\r'
+        // justo antes), es solo ASCII imprimible (más tabuladores), empieza por la dirección sin sangría, como la acepta
+        // inet_pton (TryDireccionEstricta), y separa los campos con espacios o tabuladores; '#' empieza un comentario. El
+        // nombre se compara entero (sin quitarle el punto final) y sin distinguir mayúsculas solo en ASCII. Si una línea que
+        // no es sencilla contiene el nombre antes del comentario (aunque sea dentro de otro, como 'prod.ejemplo.com'), no
+        // cuenta ninguna: la máquina podría usar también su dirección y native_ssh no la compararía.
         public static List<IPAddress> DireccionesEnHosts(string ruta, string nombre)
         {
-            List<IPAddress> direcciones = [];
-            string contenido;
+            byte[] contenido;
             try
             {
-                contenido = File.ReadAllText(ruta);
+                contenido = File.ReadAllBytes(ruta);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 return [];
             }
 
-            ReadOnlySpan<char> resto = contenido;
+            ReadOnlySpan<byte> resto = contenido;
+            if (!Ascii.IsValid(nombre) || nombre.Length == 0 || IsConMarcaDeOrden(resto) || resto.Contains((byte)0))
+                return [];
+
+            List<IPAddress> direcciones = [];
             while (!resto.IsEmpty)
             {
-                int finLinea = resto.IndexOf('\n');
-                ReadOnlySpan<char> linea = finLinea < 0 ? resto : resto[..finLinea];
-                resto = finLinea < 0 ? [] : resto[(finLinea + 1)..];
-                int finUtil = linea.IndexOfAny('#', '\0');
-                if (finUtil >= 0)
-                    linea = linea[..finUtil];
+                int finLinea = resto.IndexOf((byte)'\n');
+                bool isAcabada = finLinea >= 0;
+                ReadOnlySpan<byte> linea = isAcabada ? resto[..finLinea] : resto;
+                resto = isAcabada ? resto[(finLinea + 1)..] : [];
+                if (isAcabada && linea.EndsWith("\r"u8))
+                    linea = linea[..^1];
 
-                if (!TrySiguienteCampo(ref linea, out ReadOnlySpan<char> campo) || !TryDireccionEstricta(campo, out IPAddress? direccion))
+                int comentario = linea.IndexOf((byte)'#');
+                ReadOnlySpan<byte> util = comentario < 0 ? linea : linea[..comentario];
+                if (!IsContieneSinMayusculasAscii(util, nombre))
                     continue;
 
-                while (TrySiguienteCampo(ref linea, out campo))
-                    if (IsIgualSinMayusculasAscii(campo, nombre))
-                    {
-                        direcciones.Add(direccion);
-                        break;
-                    }
+                if (!isAcabada || !IsLineaSencilla(linea) || !TryLeerLinea(util, nombre, out IPAddress? direccion))
+                    return [];
+
+                if (direccion is not null)
+                    direcciones.Add(direccion);
             }
 
             return direcciones;
         }
 
+        // UTF-8 (EF BB BF), UTF-16 (FE FF, FF FE; también UTF-32 LE, FF FE 00 00) o UTF-32 BE (00 00 FE FF).
+        private static bool IsConMarcaDeOrden(ReadOnlySpan<byte> contenido) =>
+            contenido is [0xEF, 0xBB, 0xBF, ..] or [0xFE, 0xFF, ..] or [0xFF, 0xFE, ..] or [0x00, 0x00, 0xFE, 0xFF, ..];
+
+        // Solo ASCII imprimible y tabuladores (sin '\r' en medio, '\v', '\f' ni otros de control), sin sangría.
+        private static bool IsLineaSencilla(ReadOnlySpan<byte> linea) =>
+            !linea.IsEmpty && linea[0] is not (byte)' ' and not (byte)'\t' && !linea.ContainsAnyExcept(ImprimiblesYTabulador);
+
+        private static byte[] CrearImprimiblesYTabulador()
+        {
+            byte[] bytes = new byte['~' - ' ' + 2];
+            for (int i = 0; i < bytes.Length - 1; i++)
+                bytes[i] = (byte)(' ' + i);
+            bytes[^1] = (byte)'\t';
+            return bytes;
+        }
+
+        // La dirección de una línea sencilla (sin el comentario) si 'nombre' es uno de sus nombres; null si no lo es. false si
+        // el primer campo no es una dirección.
+        private static bool TryLeerLinea(ReadOnlySpan<byte> util, string nombre, out IPAddress? direccion)
+        {
+            direccion = null;
+            if (!TrySiguienteCampo(ref util, out ReadOnlySpan<byte> campo) || campo.Length > LongitudMaximaDireccion)
+                return false;
+
+            Span<char> texto = stackalloc char[campo.Length];
+            _ = Ascii.ToUtf16(campo, texto, out _);
+            if (!TryDireccionEstricta(texto, out IPAddress? leida))
+                return false;
+
+            while (TrySiguienteCampo(ref util, out campo))
+                if (Ascii.EqualsIgnoreCase(campo, nombre))
+                {
+                    direccion = leida;
+                    break;
+                }
+
+            return true;
+        }
+
         // El siguiente campo de la línea (sin blancos) y lo que queda después; false si no queda ninguno.
-        private static bool TrySiguienteCampo(ref ReadOnlySpan<char> linea, out ReadOnlySpan<char> campo)
+        private static bool TrySiguienteCampo(ref ReadOnlySpan<byte> linea, out ReadOnlySpan<byte> campo)
         {
             int inicio = linea.IndexOfAnyExcept(Blancos);
             if (inicio < 0)
@@ -119,16 +173,13 @@ namespace NativeSsh.Comun
             return true;
         }
 
-        // Como strcasecmp en la configuración regional C: solo las letras ASCII se igualan sin distinguir mayúsculas.
-        private static bool IsIgualSinMayusculasAscii(ReadOnlySpan<char> campo, string nombre)
+        // Si 'nombre' (ASCII) aparece en cualquier sitio de 'texto', sin distinguir mayúsculas solo en las letras ASCII.
+        private static bool IsContieneSinMayusculasAscii(ReadOnlySpan<byte> texto, string nombre)
         {
-            if (campo.Length != nombre.Length)
-                return false;
-
-            for (int i = 0; i < campo.Length; i++)
-                if (campo[i] != nombre[i] && !(char.IsAsciiLetter(campo[i]) && (campo[i] | 0x20) == (nombre[i] | 0x20)))
-                    return false;
-            return true;
+            for (int i = 0; i + nombre.Length <= texto.Length; i++)
+                if (Ascii.EqualsIgnoreCase(texto.Slice(i, nombre.Length), nombre))
+                    return true;
+            return false;
         }
 
         // Una dirección como la acepta inet_pton de glibc: IPv4 con exactamente cuatro números decimales de 0 a 255 sin ceros
