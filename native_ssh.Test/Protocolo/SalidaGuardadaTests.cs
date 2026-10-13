@@ -338,20 +338,22 @@ namespace NativeSsh.Test.Protocolo
             _ = texto.Should().Contain($"__ns_gc{Token:N}=").And.Contain($"__ns_gf{Token:N}=");
         }
 
-        // Lo que cuenta ScriptLimpieza: antes de borrar, lo que queda y los shells cuyo directorio sigue; null si la última línea
-        // no cuadra.
+        // Lo que cuenta ScriptLimpieza: antes de borrar, lo que queda, los shells cuyo directorio sigue y lo demás que hay en
+        // ellos; null si la última línea no cuadra. Si algún directorio que sigue no se pudo listar (-1), no se sabe lo que
+        // queda.
         [Theory]
-        [InlineData("x\n__ns_archivos=3_0_\n", 3, 0, 0)]
-        [InlineData("rm: no\n__ns_archivos=4_1_0123456789abcdef0123456789abcdef,fedcba9876543210fedcba9876543210\n", 4, 1, 2)]
-        [InlineData("\n__ns_archivos=2_2_0123456789abcdef0123456789abcdef", 2, 2, 1)]
-        public void LeerRecuentoLimpieza_AntesQuedanYShells(string salida, int contados, int quedan, int shells)
+        [InlineData("x\n__ns_archivos=3_0__0\n", 3, 0, 0, 0)]
+        [InlineData("rm: no\n__ns_archivos=4_1_0123456789abcdef0123456789abcdef,fedcba9876543210fedcba9876543210_2\n", 4, 1, 2, 2)]
+        [InlineData("\n__ns_archivos=2_2_0123456789abcdef0123456789abcdef_0", 2, 2, 1, 0)]
+        [InlineData("\n__ns_archivos=0_0_0123456789abcdef0123456789abcdef_-1\n", 0, null, 1, null)]
+        public void LeerRecuentoLimpieza_AntesQuedanShellsYOtros(string salida, int contados, int? quedan, int shells, int? otros)
         {
             // Act
             RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(Encoding.ASCII.GetBytes(salida));
 
             // Assert
             _ = recuento.Should().NotBeNull();
-            _ = (recuento!.Contados, recuento.Quedan, recuento.ShellsQueSiguen.Length).Should().Be((contados, quedan, shells));
+            _ = (recuento!.Contados, recuento.Quedan, recuento.ShellsQueSiguen.Length, recuento.Otros).Should().Be((contados, quedan, shells, otros));
             if (shells > 0)
                 _ = recuento.ShellsQueSiguen[0].Should().Be(Nonce);
         }
@@ -360,7 +362,9 @@ namespace NativeSsh.Test.Protocolo
         [InlineData("")]
         [InlineData("\n__ns_archivos=3\n")]
         [InlineData("\n__ns_archivos=3_x_\n")]
-        [InlineData("\n__ns_archivos=3_0_noesunguid\n")]
+        [InlineData("\n__ns_archivos=3_0_noesunguid_0\n")]
+        [InlineData("\n__ns_archivos=3_0_\n")]
+        [InlineData("\n__ns_archivos=3_0__x\n")]
         public void LeerRecuentoLimpieza_SinLineaQueCuadre_Null(string salida)
         {
             // Act

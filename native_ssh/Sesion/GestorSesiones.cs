@@ -151,13 +151,17 @@ namespace NativeSsh.Sesion
     // Archivos de guardarSalida de una sesión al hacer ssh_reset_shell o ssh_disconnect: Creados, los que se crearon en los
     // shells cuyo directorio se borra (alguno pudo borrarse antes, p. ej. con 'rm'); Contados, las salidas que había en el
     // servidor al borrarlas (solo al desconectar, y null si no se sabe); IsFallida, si la limpieza al desconectar no se hizo
-    // o algún directorio no se pudo borrar, y Quedan, las salidas que siguen en ellos (null si no se sabe); IsSinComprobar,
+    // o algún directorio no se pudo borrar, y Quedan y Otros, las salidas y las demás entradas que siguen en ellos (null si
+    // no se sabe; un directorio que sigue sin nada dentro es que no se pudo quitar, p. ej. el base sin permiso de escritura);
+    // IsSinComprobar,
     // si al desconectar no se pudo comprobar nada (no se supo el usuario, o el base no estaba o no era un directorio propio).
     // Al hacer ssh_reset_shell: IsAnteriorFallido, si el borrado de un ssh_reset_shell anterior no se completó (sus shells
     // vuelven a estar entre los que se borran), y SinBorrarAnterior, cuántas salidas quedaron entonces (null si no se sabe).
     public sealed record LimpiezaGuardados(int Creados, int? Contados, bool IsFallida)
     {
         public int? Quedan { get; init; }
+
+        public int? Otros { get; init; }
 
         public bool IsSinComprobar { get; init; }
 

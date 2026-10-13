@@ -511,9 +511,12 @@ namespace NativeSsh.Herramientas
             if (!limpieza.IsAnteriorFallido)
                 return "";
 
-            string motivo = limpieza.SinBorrarAnterior is { } quedan
-                ? $"no se pudieron borrar {quedan} archivo(s) de salida guardados con guardarSalida (p. ej. un directorio sin permiso de escritura: arréglalo con 'chmod u+w')"
-                : "sin conexión, el servidor no admitió otro canal o falló en el servidor";
+            string motivo = limpieza.SinBorrarAnterior switch
+            {
+                0 => "sus salidas de guardarSalida sí se borraron, pero el directorio de algún shell no se pudo quitar: p. ej. sin permiso de escritura en el directorio que lo contiene (/tmp/native_ssh-<usuario>), y queda vacío, o con otras cosas que dejó un comando dentro",
+                int quedan => $"no se pudieron borrar {quedan} archivo(s) de salida guardados con guardarSalida (p. ej. un directorio sin permiso de escritura: arréglalo con 'chmod u+w')",
+                null => "sin conexión, el servidor no admitió otro canal, falló en el servidor o no se pudo listar algún directorio"
+            };
             return $" Ojo: el borrado del ssh_reset_shell anterior no se completó ({motivo}); se vuelve a intentar ahora con el resto, y lo que no se pueda borrar lo dirá el siguiente ssh_reset_shell o ssh_disconnect.";
         }
 
@@ -525,7 +528,7 @@ namespace NativeSsh.Herramientas
             bool isSinNada = limpieza.Creados == 0 && limpieza.Contados is null or 0 && !limpieza.IsFallida && !limpieza.IsSinComprobar;
             return isSinNada ? ""
                 : limpieza.IsSinComprobar ? $" No se pudo comprobar en el servidor si quedaban archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados) y no se ha borrado nada: el directorio /tmp/native_ssh-<usuario> no estaba, no era un directorio propio (o era un enlace) o no se pudo saber el usuario. Si lo moviste o lo sustituiste, revisa tú lo que contenga."
-                : limpieza is { IsFallida: true, Contados: { } contados, Quedan: 0 } ? $" Se borraron del servidor los {contados} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión, pero el directorio de algún shell no se pudo borrar del todo (tiene otras cosas que no son salidas de guardarSalida)."
+                : limpieza is { IsFallida: true, Contados: { } contados, Quedan: 0, Otros: { } otros } ? $"{DescribirBorradas(contados)}, pero el directorio de algún shell {(otros == 0 ? "quedó vacío y no se pudo quitar (p. ej. el directorio que lo contiene, /tmp/native_ssh-<usuario>, no tiene permiso de escritura): quítalo con ssh_exec ('chmod u+w' sobre ese directorio y 'rmdir' sobre el del shell)" : $"no se pudo borrar del todo: tiene {otros} entrada(s) que no son salidas de guardarSalida")}."
                 : limpieza is { IsFallida: true, Contados: { } antes, Quedan: { } quedan } ? $" NO se pudieron borrar {quedan} de los {antes} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión{(antes > quedan ? $" (los otros {antes - quedan} sí se borraron)" : "")}: el directorio de su shell no se pudo borrar (p. ej. sin permiso de escritura); {Quitar}"
                 : limpieza.IsFallida ? $" NO se pudieron borrar los archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados; sin conexión o falló la limpieza, sin saber cuántos quedan): {Quitar}"
                 : limpieza.Contados switch
@@ -535,6 +538,10 @@ namespace NativeSsh.Herramientas
                     int borrados => $" Se borraron del servidor los {borrados} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión."
                 };
         }
+
+        private static string DescribirBorradas(int contados) => contados == 0
+            ? " No quedaba en el servidor ningún archivo de salida guardado con guardarSalida en esta sesión"
+            : $" Se borraron del servidor los {contados} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión";
 
         // Script de ssh_read_file: cabecera '[Líneas X-Y de Total]' y el contenido tal cual. inicio < 0 = las últimas -inicio
         // líneas (tail -n); si no, de 'inicio' a 'fin' con head y tail, que no tocan los bytes: el sed de busybox añadía un

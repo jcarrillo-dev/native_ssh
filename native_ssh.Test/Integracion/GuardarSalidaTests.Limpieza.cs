@@ -196,6 +196,70 @@ namespace NativeSsh.Test.Integracion
             _ = resultado.Mensaje.Should().Contain("NO se pudieron borrar 1 de los 1");
         }
 
+        // El directorio base sin permiso de escritura: el borrado vacía el directorio del shell pero no lo puede quitar. Ni el
+        // ssh_reset_shell siguiente dice que no se pudieron borrar «0 archivo(s)» (dice que las salidas sí se borraron) ni
+        // ssh_disconnect que el directorio «tiene otras cosas» (dice que quedó vacío).
+        [Fact]
+        public async Task BaseSinEscritura_LosAvisosDicenQueElDirectorioQuedoVacio()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            ResultadoComando uno = await GuardarAsync(h, "echo uno");
+            string directorio = Path.GetDirectoryName(uno.Archivo)!;
+            _ = await h.EjecutarAsync(Destino, $"chmod 500 -- '{Base}'", esperarSegundos: 30).ComoComando();
+            _ = h.ReiniciarShell(Destino);
+            await Task.Delay(3000);
+
+            // Act
+            ResultadoAccion segundo = h.ReiniciarShell(Destino);
+            await Task.Delay(3000);
+            ResultadoAccion desconexion = await h.DesconectarAsync(Destino);
+
+            // Assert
+            salida.WriteLine($"{segundo.Mensaje}\n{desconexion.Mensaje}");
+            _ = Directory.GetFileSystemEntries(directorio).Should().BeEmpty();
+            _ = segundo.Mensaje.Should().Contain("no se completó").And.Contain("sí se borraron").And.NotContain(" 0 archivo(s)");
+            _ = desconexion.Mensaje.Should().Contain("vacío").And.NotContain("otras cosas").And.NotContain("NO se pudieron borrar");
+        }
+
+        // El comando borró su salida, dejó otro archivo en el directorio del shell y lo dejó en 500: ssh_disconnect no dice que
+        // se borraron 0 salidas; dice que no quedaba ninguna y que el directorio tiene 1 entrada que no es una salida.
+        [Fact]
+        public async Task DirectorioConOtraEntrada_DisconnectDiceCuantasNoSonSalidas()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            ResultadoComando uno = await GuardarAsync(h, "echo uno");
+            string directorio = Path.GetDirectoryName(uno.Archivo)!;
+            _ = await h.EjecutarAsync(Destino, $"rm -- '{uno.Archivo}' && touch '{directorio}/otro.txt' && chmod 500 -- '{directorio}'", esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoAccion desconexion = await h.DesconectarAsync(Destino);
+
+            // Assert
+            salida.WriteLine(desconexion.Mensaje);
+            _ = File.Exists(Path.Combine(directorio, "otro.txt")).Should().BeTrue();
+            _ = desconexion.Mensaje.Should().Contain("No quedaba en el servidor ningún archivo").And.Contain("tiene 1 entrada(s) que no son salidas").And.NotContain("Se borraron");
+        }
+
+        // El directorio de un shell sin ningún permiso: no se puede listar ni borrar. ssh_disconnect no afirma un número (antes
+        // ni después): dice que no se pudieron borrar, sin saber cuántos quedan.
+        [Fact]
+        public async Task DirectorioIlegible_DisconnectNoAfirmaCuantos()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            ResultadoComando uno = await GuardarAsync(h, "echo uno");
+            _ = await h.EjecutarAsync(Destino, $"chmod 000 -- '{Path.GetDirectoryName(uno.Archivo)}'", esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoAccion desconexion = await h.DesconectarAsync(Destino);
+
+            // Assert
+            salida.WriteLine(desconexion.Mensaje);
+            _ = desconexion.Mensaje.Should().Contain("NO se pudieron borrar").And.Contain("sin saber cuántos quedan").And.NotContain("Se borraron");
+        }
+
         // Decorador de la fábrica real: el primer canal exec de la limpieza de guardarSalida se queda retenido (en el hilo que lo
         // abre, antes de devolver su tarea) hasta Soltar.
         private sealed class FabricaQueRetieneLimpieza(IFabricaConexion interna) : IFabricaConexion, IDisposable

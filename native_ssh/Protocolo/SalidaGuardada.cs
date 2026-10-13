@@ -4,8 +4,10 @@ using System.Text;
 namespace NativeSsh.Protocolo
 {
     // Lo que contó en el servidor el borrado de los directorios de guardarSalida (SalidaGuardada.ScriptLimpieza): las
-    // salidas que había antes de borrar, las que quedan en los directorios que no se pudieron borrar y esos shells.
-    public sealed record RecuentoLimpieza(int Contados, int Quedan, Guid[] ShellsQueSiguen);
+    // salidas que había antes de borrar, las que quedan en los directorios que no se pudieron borrar, esos shells y lo demás
+    // que queda en ellos (entradas que no son salidas del protocolo). Quedan y Otros son null si alguno de esos directorios no
+    // se pudo listar (p. ej. sin permiso de lectura): entonces no se sabe lo que queda.
+    public sealed record RecuentoLimpieza(int Contados, int? Quedan, Guid[] ShellsQueSiguen, int? Otros);
 
     // Lo que se sabe del archivo de un comando lanzado con guardarSalida. Archivo, Lineas, Bytes, IsSinSaltoFinal, IsTerminado
     // y Error vienen de las marcas que el envoltorio deja en el terminal (FiltroMarcasGuardado): la ruta al empezar (A), el
@@ -211,9 +213,10 @@ namespace NativeSsh.Protocolo
         // Por un canal exec (sin el shell): borra los directorios de los shells indicados, solo si el base sigue siendo un
         // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Cuenta las salidas del protocolo
         // (los '<id>.out' regulares de primer nivel, no lo que el comando dejara allí) antes de borrar y, en los directorios
-        // que siguen existiendo después (el borrado falló, p. ej. un directorio sin permiso de escritura), las que quedan; lo
-        // dice en su última línea ('__ns_archivos=<antes>_<quedan>_<shells que siguen, separados por comas>',
-        // RecuentoLimpieza). Código 0 si se borró todo, 1 si algún directorio sigue y 2 si no se pudo comprobar nada (no se
+        // que siguen existiendo después (el borrado falló, p. ej. un directorio sin permiso de escritura, o el base sin él:
+        // entonces el directorio queda vacío), las que quedan y cuántas otras entradas; lo dice en su última línea
+        // ('__ns_archivos=<antes>_<quedan>_<shells que siguen, separados por comas>_<otras>', RecuentoLimpieza; <otras> es -1
+        // si algún directorio no se pudo listar). Código 0 si se borró todo, 1 si algún directorio sigue y 2 si no se pudo comprobar nada (no se
         // supo el usuario, o el base no está, es un enlace o no es propio): entonces no borra nada.
         public const int CodigoLimpiezaParcial = 1;
         public const int CodigoLimpiezaSinComprobar = 2;
@@ -227,6 +230,8 @@ namespace NativeSsh.Protocolo
             return $$"""
                 c=0
                 q=0
+                o=0
+                k=0
                 r=2
                 s=
                 u=$(id -un 2>/dev/null)
@@ -236,6 +241,7 @@ namespace NativeSsh.Protocolo
                   for g in{{ids}}; do
                     d=$b/$g
                     { [ -d "$d" ] && [ ! -L "$d" ]; } || continue
+                    { [ -r "$d" ] && [ -x "$d" ]; } || k=1
                     for x in "$d"/*.out; do
                       { [ -f "$x" ] && [ ! -L "$x" ]; } && c=$((c + 1))
                     done
@@ -243,13 +249,18 @@ namespace NativeSsh.Protocolo
                     if [ -e "$d" ]; then
                       r=1
                       s=$s,$g
+                      { [ -r "$d" ] && [ -x "$d" ]; } || k=1
                       for x in "$d"/*.out; do
-                        { [ -f "$x" ] && [ ! -L "$x" ]; } && q=$((q + 1))
+                        { [ -f "$x" ] && [ ! -L "$x" ]; } && q=$((q + 1)) && o=$((o - 1))
+                      done
+                      for x in "$d"/* "$d"/.[!.]* "$d"/..?*; do
+                        { [ -e "$x" ] || [ -L "$x" ]; } && o=$((o + 1))
                       done
                     fi
                   done
                 fi
-                printf '\n__ns_archivos=%d_%d_%s\n' "$c" "$q" "${s#,}"
+                [ "$k" = 0 ] || o=-1
+                printf '\n__ns_archivos=%d_%d_%s_%d\n' "$c" "$q" "${s#,}" "$o"
                 exit $r
                 """.ReplaceLineEndings("\n");
         }
@@ -265,9 +276,11 @@ namespace NativeSsh.Protocolo
             ReadOnlySpan<byte> resto = salida[(inicio + etiqueta.Length)..];
             int fin = resto.IndexOf((byte)'\n');
             string[] campos = Encoding.ASCII.GetString(fin < 0 ? resto : resto[..fin]).Split('_');
-            if (campos.Length != 3
+            if (campos.Length != 4
                 || !int.TryParse(campos[0], NumberStyles.None, CultureInfo.InvariantCulture, out int contados)
-                || !int.TryParse(campos[1], NumberStyles.None, CultureInfo.InvariantCulture, out int quedan))
+                || !int.TryParse(campos[1], NumberStyles.None, CultureInfo.InvariantCulture, out int quedan)
+                || !int.TryParse(campos[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out int otros)
+                || otros < -1)
                 return null;
 
             List<Guid> siguen = [];
@@ -278,7 +291,8 @@ namespace NativeSsh.Protocolo
                 siguen.Add(shell);
             }
 
-            return new RecuentoLimpieza(contados, quedan, [.. siguen]);
+            bool isListado = otros >= 0;
+            return new RecuentoLimpieza(contados, isListado ? quedan : null, [.. siguen], isListado ? otros : null);
         }
 
         // Una marca ya separada por FiltroMarcasGuardado: tipo ('A', 'F' o 'E') y sus campos. Devuelve el informe con ella

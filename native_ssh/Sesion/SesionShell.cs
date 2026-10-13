@@ -1089,9 +1089,11 @@ namespace NativeSsh.Sesion
                 RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(resultado.Salida.Span);
                 bool isSinComprobar = resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaSinComprobar;
                 bool isFallida = resultado.CodigoSalida != 0 && !isSinComprobar;
+                bool isParcial = resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaParcial;
                 LimpiezaAlCerrar = new LimpiezaGuardados(creados, isSinComprobar ? null : recuento?.Contados, isFallida)
                 {
-                    Quedan = isFallida && resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaParcial ? recuento?.Quedan : null,
+                    Quedan = isParcial ? recuento?.Quedan : null,
+                    Otros = isParcial ? recuento?.Otros : null,
                     IsSinComprobar = isSinComprobar
                 };
             }
