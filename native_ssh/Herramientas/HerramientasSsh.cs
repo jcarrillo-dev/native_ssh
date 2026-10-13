@@ -402,14 +402,26 @@ namespace NativeSsh.Herramientas
             bool isSinFiltro = filtro is null;
             DestinosSoloLectura soloLectura = opciones.SoloLectura;
             bool hasSoloLectura = !soloLectura.IsVacio;
-            List<EstadoSesion> sesiones = [];
-            foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
+            IReadOnlyList<SesionShell> seleccionadas = isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value);
+            IReadOnlyList<string>[] alias = new IReadOnlyList<string>[seleccionadas.Count];
+            List<ConsultaSinRed> consultas = new(seleccionadas.Count);
+            for (int i = 0; i < seleccionadas.Count; i++)
             {
-                IReadOnlyList<string> alias = gestor.AliasDe(s);
+                SesionShell s = seleccionadas[i];
+                alias[i] = gestor.AliasDe(s);
                 // Como una escritura con el texto del filtro: con un alias, cuenta ese texto pedido; con usuario@servidor:puerto,
                 // ninguno (no los alias con que se ha usado la sesión). Sin filtro, los alias con que se ha usado la sesión.
-                IReadOnlyCollection<string> textosPedidos = isSinFiltro ? alias : filtro!.Value.Alias is { } aliasFiltro ? [aliasFiltro] : [];
-                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino, s.Extremo, textosPedidos) : null));
+                IReadOnlyCollection<string> textosPedidos = isSinFiltro ? alias[i] : filtro!.Value.Alias is { } aliasFiltro ? [aliasFiltro] : [];
+                consultas.Add(new ConsultaSinRed(s.Destino, s.Extremo, textosPedidos));
+            }
+
+            // Las entradas se leen con la configuración de ssh una vez para todas las sesiones.
+            bool?[] isSoloLectura = hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(consultas) : new bool?[seleccionadas.Count];
+            List<EstadoSesion> sesiones = new(seleccionadas.Count);
+            for (int i = 0; i < seleccionadas.Count; i++)
+            {
+                SesionShell s = seleccionadas[i];
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Count == 0 ? null : alias[i], s.Destino.Identidades, isSoloLectura[i]));
             }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.

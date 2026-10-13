@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
@@ -25,6 +26,7 @@ namespace NativeSsh.Test.Herramientas
         private readonly ConcurrentDictionary<string, IPAddress> _dns = new(StringComparer.Ordinal);
         private readonly FabricaFalsa _fabrica = new(Guion);
         private GestorSesiones? _gestor;
+        private DestinosSoloLectura? _soloLectura;
 
         public SoloLecturaConexionTests()
         {
@@ -69,6 +71,7 @@ namespace NativeSsh.Test.Herramientas
         private HerramientasSsh Crear(string soloLectura, bool isConConfiguracion = true)
         {
             _ = DestinosSoloLectura.TryParsear(soloLectura, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
+            _soloLectura = destinos;
             OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", SoloLectura = destinos, ConfiguracionSsh = isConConfiguracion ? Path.Combine(_directorio, "config") : null };
             IResolutorDestino? resolutor = isConConfiguracion ? new ResolutorConfiguracionSsh(opciones, NullLogger<ResolutorConfiguracionSsh>.Instance) : null;
             _gestor = new GestorSesiones(_fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance, resolutor);
@@ -466,6 +469,36 @@ namespace NativeSsh.Test.Herramientas
             _ = conFiltro.SoloLectura.Should().Equal("prod");
             _ = conFiltro.Aviso.Should().BeNull();
             _ = sinFiltro.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue();
+        }
+
+        // ssh_status lee cada entrada con la configuración de ssh (ssh -G) una sola vez por llamada, no una vez por sesión, y
+        // todas a la vez: una entrada lenta (un Match exec colgado tarda el plazo de ssh -G, 5 s) cuesta su tiempo una vez.
+        // Aquí cada lectura tarda 0,5 s, con 2 entradas y 3 sesiones: antes, 6 lecturas seguidas (3 s).
+        [Fact]
+        public async Task Estado_LeeCadaEntradaUnaVezPorLlamadaYALaVez()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Crear("prod, web");
+            _ = await herramientas.FijarDirectorioAsync("ana@10.0.0.8", "/tmp");
+            _ = await herramientas.FijarDirectorioAsync("ana@10.0.0.6", "/tmp");
+            _ = await herramientas.FijarDirectorioAsync("ana@10.0.0.4", "/tmp");
+            ConcurrentBag<string> lecturas = [];
+            _soloLectura!.UsarConfiguracionSsh((usuario, servidor, puerto) =>
+            {
+                lecturas.Add(servidor);
+                Thread.Sleep(500);
+                return servidor == "prod" ? "10.0.0.5" : "10.0.0.7";
+            });
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            ResultadoEstado estado = herramientas.Estado();
+            reloj.Stop();
+
+            // Assert
+            _ = estado.Sesiones.Should().HaveCount(3).And.OnlyContain(s => s.IsSoloLectura == false);
+            _ = lecturas.Should().BeEquivalentTo("prod", "web");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2.5), "las dos lecturas van a la vez y una sola vez por llamada (antes, 6 seguidas: 3 s)");
         }
     }
 }

@@ -20,6 +20,10 @@ namespace NativeSsh.Comun
     // no se sabe.
     public readonly record struct ExtremoConectado(IPAddress? Direccion);
 
+    // Una sesión que ssh_status quiere marcar (DestinosSoloLectura.IsSoloLecturaSinRed): su destino, su conexión y los textos
+    // pedidos que cuentan (null: el alias del propio destino).
+    public readonly record struct ConsultaSinRed(DestinoSsh Destino, ExtremoConectado? Conectado, IReadOnlyCollection<string>? Alias);
+
     // Destinos en modo solo lectura (CI6): configuración local de native_ssh (variable NATIVE_SSH_SOLO_LECTURA), que ninguna
     // herramienta puede cambiar. Para ellos se rechazan ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content antes de
     // enviar nada; las herramientas de lectura y ssh_set_cwd (que solo ejecuta órdenes fijas de native_ssh) siguen
@@ -284,8 +288,9 @@ namespace NativeSsh.Comun
             return await Task.WhenAll(leidas).ConfigureAwait(false);
         }
 
+        // Lo mismo para quien no puede esperar de forma asíncrona (ssh_status): bloquea hasta leer todas, a la vez.
         private Entrada[] EntradasConConfiguracion() =>
-            _hostNameDeEntrada is not { } hostNameDeEntrada ? _entradas : Array.ConvertAll(_entradas, e => e.IsTodos ? e : ConConfiguracion(e, hostNameDeEntrada));
+            _hostNameDeEntrada is null ? _entradas : EntradasConConfiguracionAsync().GetAwaiter().GetResult();
 
         private static Entrada ConConfiguracion(Entrada entrada, Func<string?, string, int?, string?> hostNameDeEntrada)
         {
@@ -305,10 +310,28 @@ namespace NativeSsh.Comun
         // la dirección conectada o direcciones ya resueltas); null si depende de algo que aún no se sabe (un nombre sin
         // resolver, o una sesión conectada sin dirección conocida). alias: los textos pedidos que cuentan (null: el alias
         // del propio destino).
-        public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, IReadOnlyCollection<string>? alias = null)
+        public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, IReadOnlyCollection<string>? alias = null) =>
+            IsSoloLecturaSinRed(EntradasConConfiguracion(), destino, conectado, alias);
+
+        // Lo mismo para varias sesiones (ssh_status) con una sola lectura de las entradas con la configuración de ssh, todas a
+        // la vez: una entrada con un ssh -G lento (hasta su plazo de 5 s) cuesta ese tiempo una vez por llamada, no una vez
+        // por sesión. Sin sesiones no se lee nada.
+        public bool?[] IsSoloLecturaSinRed(IReadOnlyList<ConsultaSinRed> consultas)
+        {
+            bool?[] resultados = new bool?[consultas.Count];
+            if (consultas.Count == 0)
+                return resultados;
+
+            Entrada[] entradas = EntradasConConfiguracion();
+            for (int i = 0; i < consultas.Count; i++)
+                resultados[i] = IsSoloLecturaSinRed(entradas, consultas[i].Destino, consultas[i].Conectado, consultas[i].Alias);
+            return resultados;
+        }
+
+        private bool? IsSoloLecturaSinRed(Entrada[] entradas, DestinoSsh destino, ExtremoConectado? conectado, IReadOnlyCollection<string>? alias)
         {
             string servidor = Normalizar(destino.Servidor);
-            List<Entrada> porResolver = Candidatas(EntradasConConfiguracion(), destino, servidor, out bool isCoincideSinRed);
+            List<Entrada> porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
             if (isCoincideSinRed)
                 return true;
 
