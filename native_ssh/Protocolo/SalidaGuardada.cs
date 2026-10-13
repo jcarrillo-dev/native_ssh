@@ -167,7 +167,9 @@ namespace NativeSsh.Protocolo
         }
 
         // Por un canal exec (sin el shell): borra los directorios de los shells indicados, solo si el base sigue siendo un
-        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Código 1 si algún borrado falló.
+        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Antes de borrar cuenta los archivos
+        // que hay en ellos (como el cupo: los de primer nivel) y lo dice en su última línea ('__ns_archivos=<n>',
+        // ArchivosLimpieza); código 1 si algún borrado falló.
         public static string ScriptLimpieza(IEnumerable<Guid> idsShell, string prefijo)
         {
             StringBuilder ids = new();
@@ -175,16 +177,37 @@ namespace NativeSsh.Protocolo
                 _ = ids.Append(' ').Append(id.ToString("N"));
 
             return $$"""
-                u=$(id -un 2>/dev/null) || exit 0
-                b={{Literal(prefijo)}}-$u
-                { [ -n "$u" ] && [ -d "$b" ] && [ ! -L "$b" ] && [ -O "$b" ]; } || exit 0
+                c=0
                 r=0
-                for g in{{ids}}; do
-                  d=$b/$g
-                  if [ -d "$d" ] && [ ! -L "$d" ]; then rm -rf -- "$d" || r=1; fi
-                done
+                u=$(id -un 2>/dev/null)
+                b={{Literal(prefijo)}}-$u
+                if [ -n "$u" ] && [ -d "$b" ] && [ ! -L "$b" ] && [ -O "$b" ]; then
+                  for g in{{ids}}; do
+                    d=$b/$g
+                    { [ -d "$d" ] && [ ! -L "$d" ]; } || continue
+                    for x in "$d"/*; do
+                      [ -f "$x" ] && c=$((c + 1))
+                    done
+                    rm -rf -- "$d" || r=1
+                  done
+                fi
+                printf '\n__ns_archivos=%d\n' "$c"
                 exit $r
                 """.ReplaceLineEndings("\n");
+        }
+
+        // Los archivos que contó ScriptLimpieza antes de borrar (su última línea); null si la salida no la trae.
+        public static int? ArchivosLimpieza(ReadOnlySpan<byte> salida)
+        {
+            ReadOnlySpan<byte> etiqueta = "\n__ns_archivos="u8;
+            int inicio = salida.LastIndexOf(etiqueta);
+            if (inicio < 0)
+                return null;
+
+            ReadOnlySpan<byte> resto = salida[(inicio + etiqueta.Length)..];
+            int fin = resto.IndexOf((byte)'\n');
+            ReadOnlySpan<byte> numero = fin < 0 ? resto : resto[..fin];
+            return int.TryParse(numero, NumberStyles.None, CultureInfo.InvariantCulture, out int archivos) ? archivos : null;
         }
 
         // Una marca ya separada por FiltroMarcasGuardado: tipo ('A', 'F' o 'E') y sus campos. Devuelve el informe con ella

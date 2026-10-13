@@ -75,7 +75,8 @@ namespace NativeSsh.Sesion
 
         public async Task<bool> DesconectarAsync(string destinoTexto) => await DesconectarConLimpiezaAsync(destinoTexto).ConfigureAwait(false) is not null;
 
-        // null si no había sesión; si no, los archivos de guardarSalida que tenía la sesión y los que no se pudieron borrar.
+        // null si no había sesión; si no, los archivos de guardarSalida creados en la sesión, los que contó el servidor al
+        // borrarlos y si la limpieza falló.
         public async Task<LimpiezaGuardados?> DesconectarConLimpiezaAsync(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
@@ -90,12 +91,13 @@ namespace NativeSsh.Sesion
                 return null;
 
             await sesion.DisposeAsync().ConfigureAwait(false);
-            return new LimpiezaGuardados(sesion.ArchivosGuardadosAlCerrar, sesion.ArchivosGuardadosSinBorrarAlCerrar);
+            return new LimpiezaGuardados(sesion.ArchivosGuardadosAlCerrar, sesion.ArchivosContadosAlCerrar, sesion.IsLimpiezaFallidaAlCerrar);
         }
 
         public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
 
-        // null si no había sesión; si no, los archivos de guardarSalida de la sesión cuyo borrado se lanza.
+        // null si no había sesión; si no, los archivos de guardarSalida creados en los shells cuyo borrado se lanza (sin
+        // recuento del servidor: el borrado sigue en segundo plano).
         public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
@@ -103,7 +105,7 @@ namespace NativeSsh.Sesion
             lock (_candado)
                 _ = _sesiones.TryGetValue(destino.Clave, out sesion);
 
-            return sesion is null ? null : new LimpiezaGuardados(sesion.SolicitarResetConLimpieza(), 0);
+            return sesion is null ? null : new LimpiezaGuardados(sesion.SolicitarResetConLimpieza(), null, false);
         }
 
         public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)
@@ -146,7 +148,8 @@ namespace NativeSsh.Sesion
             timeout < TimeoutMinimo ? TimeoutMinimo : timeout > TimeoutMaximo ? TimeoutMaximo : timeout;
     }
 
-    // Archivos de guardarSalida de una sesión al hacer ssh_reset_shell o ssh_disconnect: los que había (creados en sus shells
-    // y aún no borrados) y, al desconectar, los que no se pudieron borrar.
-    public sealed record LimpiezaGuardados(int Archivos, int SinBorrar);
+    // Archivos de guardarSalida de una sesión al hacer ssh_reset_shell o ssh_disconnect: Creados, los que se crearon en los
+    // shells cuyo directorio se borra (alguno pudo borrarse antes, p. ej. con 'rm'); Contados, los que había en el servidor
+    // al borrarlos (solo al desconectar, y null si no se sabe); IsFallida, si la limpieza al desconectar no se hizo o falló.
+    public sealed record LimpiezaGuardados(int Creados, int? Contados, bool IsFallida);
 }

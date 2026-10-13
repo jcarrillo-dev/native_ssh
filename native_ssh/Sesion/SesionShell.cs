@@ -993,7 +993,8 @@ namespace NativeSsh.Sesion
 
         // Al cerrar la sesión, con el shell ya cerrado y antes de liberar la conexión: por la conexión que haya (si sigue viva),
         // sin el cupo de las lecturas ni el estado de cierre, acotado para no alargar ssh_disconnect con un servidor que no
-        // responde.
+        // responde. El script cuenta en el servidor los archivos que quedan antes de borrarlos: es lo que dice ssh_disconnect
+        // (el recuento de la lista son los creados; alguno pudo borrarse antes, p. ej. con 'rm' para liberar cupo).
         private async Task BorrarGuardadosAlCerrarAsync()
         {
             KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
@@ -1004,7 +1005,7 @@ namespace NativeSsh.Sesion
             IConexionSsh? conexion = _conexion;
             if (conexion is not { IsConectada: true })
             {
-                ArchivosGuardadosSinBorrarAlCerrar = Sumar(shells);
+                IsLimpiezaFallidaAlCerrar = true;
                 return;
             }
 
@@ -1013,21 +1014,24 @@ namespace NativeSsh.Sesion
             try
             {
                 ResultadoCanalExec resultado = await conexion.EjecutarExecAsync(comando, MaxBytesCapturaPath, static () => { }, limite.Token).WaitAsync(limite.Token).ConfigureAwait(false);
-                if (resultado.CodigoSalida != 0)
-                    ArchivosGuardadosSinBorrarAlCerrar = Sumar(shells);
+                ArchivosContadosAlCerrar = SalidaGuardada.ArchivosLimpieza(resultado.Salida.Span);
+                IsLimpiezaFallidaAlCerrar = resultado.CodigoSalida != 0;
             }
             catch (Exception ex)
             {
                 _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
-                ArchivosGuardadosSinBorrarAlCerrar = Sumar(shells);
+                IsLimpiezaFallidaAlCerrar = true;
             }
         }
 
-        // Tras cerrar la sesión: los archivos de guardarSalida que había al cerrarla (los que se intentaron borrar) y los que no
-        // se pudieron borrar (sin conexión o la limpieza falló).
+        // Tras cerrar la sesión: los archivos de guardarSalida que se crearon en los shells cuyo borrado se intentó, los que
+        // había en el servidor al borrarlos (null si no se sabe: sin conexión, o la limpieza no llegó a contarlos) y si la
+        // limpieza falló (sin conexión, error o algún borrado que no se pudo hacer).
         public int ArchivosGuardadosAlCerrar { get; private set; }
 
-        public int ArchivosGuardadosSinBorrarAlCerrar { get; private set; }
+        public int? ArchivosContadosAlCerrar { get; private set; }
+
+        public bool IsLimpiezaFallidaAlCerrar { get; private set; }
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
         // mensaje no afirma una causa: enumera las medidas. Un lector del terminal que se come parte del envío; 'set -x' con

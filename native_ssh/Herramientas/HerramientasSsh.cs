@@ -484,15 +484,9 @@ namespace NativeSsh.Herramientas
         {
             string clave = gestor.ParsearDestino(destino).Clave;
             LimpiezaGuardados? limpieza = await gestor.DesconectarConLimpiezaAsync(destino).ConfigureAwait(false);
-            if (limpieza is null)
-                return new ResultadoAccion(clave, false, "No había conexión con ese destino.");
-
-            string borrado = limpieza.Archivos == 0
-                ? ""
-                : limpieza.SinBorrar == 0
-                ? $" Se borraron del servidor los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (los que seguían ahí)."
-                : $" NO se pudieron borrar los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (sin conexión o falló la limpieza): siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('rm -r -- <directorio>') si contienen datos sensibles.";
-            return new ResultadoAccion(clave, true, $"Conexión cerrada.{borrado}");
+            return limpieza is null
+                ? new ResultadoAccion(clave, false, "No había conexión con ese destino.")
+                : new ResultadoAccion(clave, true, $"Conexión cerrada.{DescribirBorradoAlDesconectar(limpieza)}");
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
@@ -505,10 +499,25 @@ namespace NativeSsh.Herramientas
             if (limpieza is null)
                 return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
 
-            string borrado = limpieza.Archivos == 0
+            string borrado = limpieza.Creados == 0
                 ? ""
-                : $" Se borran del servidor los {limpieza.Archivos} archivo(s) de salida guardados con guardarSalida en esta sesión (los que seguían ahí), por un canal aparte; si el servidor no admite otro canal (MaxSessions), se borrarán con ssh_disconnect o al cerrarse la sesión.";
+                : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions), se borrarán con ssh_disconnect o al cerrarse la sesión.";
             return new ResultadoAccion(clave, true, $"El próximo comando usará un shell nuevo.{borrado}");
+        }
+
+        // ssh_disconnect: lo que contó el servidor al borrar (no lo que se creó: alguno pudo borrarse antes con 'rm').
+        private static string DescribirBorradoAlDesconectar(LimpiezaGuardados limpieza)
+        {
+            bool isSinNada = limpieza.Creados == 0 && limpieza.Contados is null or 0;
+            string cuantosSinBorrar = limpieza.Contados is { } contados ? $"(todos) los {contados} archivo(s)" : $"los archivos (hasta {limpieza.Creados} creados)";
+            return isSinNada ? ""
+                : limpieza.IsFallida ? $" NO se pudieron borrar {cuantosSinBorrar} de salida guardados con guardarSalida en esta sesión (sin conexión o falló la limpieza): siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('rm -r -- <directorio>') si contienen datos sensibles."
+                : limpieza.Contados switch
+                {
+                    null => $" Se borraron del servidor los directorios de las salidas guardadas con guardarSalida en esta sesión (hasta {limpieza.Creados} archivo(s) creados; no se pudo saber cuántos quedaban).",
+                    0 => " No quedaba en el servidor ningún archivo de salida guardado con guardarSalida en esta sesión (ya se habían borrado).",
+                    int borrados => $" Se borraron del servidor los {borrados} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión."
+                };
         }
 
         // Script de ssh_read_file: cabecera '[Líneas X-Y de Total]' y el contenido tal cual. inicio < 0 = las últimas -inicio

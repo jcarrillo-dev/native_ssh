@@ -145,7 +145,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             salida.WriteLine($"{reset.Mensaje}\n{desconexion.Mensaje}");
-            _ = reset.Mensaje.Should().Contain("2 archivo(s) de salida guardados").And.Contain("guardarSalida");
+            _ = reset.Mensaje.Should().Contain("hasta 2").And.Contain("guardarSalida");
             _ = desconexion.Mensaje.Should().Contain("1 archivo(s) de salida guardados").And.Contain("Se borraron");
         }
     }
