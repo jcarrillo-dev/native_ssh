@@ -1,13 +1,15 @@
 using FluentAssertions;
-using NativeSsh.Herramientas;
+using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
+using NativeSsh.Herramientas;
+using NativeSsh.Sesion;
 using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
     // guardarSalida: lo que dicen ssh_disconnect y ssh_reset_shell de lo que borran es cierto aunque se haya borrado algún
     // archivo antes (el flujo que recomienda el aviso del cupo); un comando no puede leer el nonce de las marcas ni, con él,
-    // cambiar el archivo, el recuento o el estado.
+    // cambiar el archivo, el recuento o el estado; la lista de shells con salidas guardadas tiene tope.
     public sealed partial class GuardarSalidaTests
     {
         // ssh_disconnect cuenta en el servidor los archivos que quedan antes de borrarlos: tras borrar uno de dos con rm, dice
@@ -101,6 +103,36 @@ namespace NativeSsh.Test.Integracion
             _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 0, 1L, 5L));
             _ = RegexArchivo().IsMatch(r.Archivo!).Should().BeTrue(r.Archivo);
             _ = r.Archivo.Should().StartWith(Base);
+        }
+
+        // Con más shells con salidas guardadas en la sesión que el tope (aquí 2: cada caída abre otro), el comando no se ejecuta
+        // y el aviso dice cómo seguir; tras ssh_reset_shell (que los borra) vuelve a funcionar. Los archivos de los shells
+        // anteriores siguen ahí hasta entonces.
+        [Fact]
+        public async Task TopeDeShellsConGuardado_NoSeEjecutaHastaElReset()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = _sshd.Sshd.Opciones() with { PrefijoGuardado = Prefijo, MaxShellsConGuardado = 2 };
+            _gestor = new GestorSesiones(_sshd.Sshd.Fabrica(opciones), new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh h = new(_gestor, opciones);
+            ResultadoComando uno = await GuardarAsync(h, "echo uno; kill -9 $$");
+            ResultadoComando dos = await GuardarAsync(h, "echo dos; kill -9 $$");
+            string testigo = Path.Combine(_raiz, "ejecutado");
+
+            // Act
+            ResultadoComando tres = await GuardarAsync(h, $"touch '{testigo}'; echo tres");
+            bool isSiguen = File.Exists(uno.Archivo) && File.Exists(dos.Archivo);
+            _ = h.ReiniciarShell(Destino);
+            ResultadoComando cuatro = await GuardarAsync(h, "echo cuatro");
+
+            // Assert
+            salida.WriteLine($"{tres.Estado} '{tres.Aviso}'");
+            _ = (uno.Estado, dos.Estado).Should().Be((EstadoPeticionEnum.ShellPerdido, EstadoPeticionEnum.ShellPerdido));
+            _ = (tres.Estado, tres.Archivo).Should().Be((EstadoPeticionEnum.Error, null));
+            _ = tres.Aviso.Should().Contain("El comando NO se ejecutó").And.Contain("2 shells").And.Contain("ssh_reset_shell");
+            _ = File.Exists(testigo).Should().BeFalse();
+            _ = isSiguen.Should().BeTrue();
+            _ = cuatro.Estado.Should().Be(EstadoPeticionEnum.Completado, cuatro.Aviso);
         }
     }
 }

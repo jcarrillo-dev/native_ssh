@@ -98,6 +98,14 @@ namespace NativeSsh.Protocolo
                 """.ReplaceLineEndings("\n");
         }
 
+        // En lugar de Envolver cuando la sesión ya tiene MaxShellsConGuardado shells con salidas guardadas sin borrar y este
+        // shell aún no tiene directorio (SesionShell): no crea nada ni ejecuta el comando; solo la marca E con el tope.
+        public static string EnvolverSinCupoShells(Guid nonce, int maxShells) => $$"""
+            unset __ns_k __ns_b
+            printf '%s_%s_E_shells__%d_0__\n' '__NSG' '{{nonce:N}}' {{maxShells.ToString(CultureInfo.InvariantCulture)}} >&2
+            (exit 1)
+            """.ReplaceLineEndings("\n");
+
         // Dentro de una sustitución de órdenes (una subshell): sus opciones y funciones no tocan el shell de la sesión. Escribe
         // la ruta del archivo en su salida o, si algo no cumple, la marca E en el terminal (stderr) y sale con 1. Sin traza
         // ('set -x', 'set -v'), 'set -e', 'set -u', 'set -f', failglob ni nullglob del usuario; LC_ALL=C para leer el modo de
@@ -274,6 +282,7 @@ namespace NativeSsh.Protocolo
             "usuario" => $"{NoEjecutado} no se pudo saber en el servidor el usuario de la sesión ('id -un' falló o dio un nombre no válido: '{ruta}').",
             "tmp" => $"{NoEjecutado} '{ruta}' no tiene el bit sticky (modo 1777) ni es del usuario de la sesión: cualquier usuario del servidor podría sustituir el directorio de native_ssh entre la comprobación y la escritura. No se ha escrito nada. Lanza el comando sin guardarSalida.",
             "base" => $"{NoEjecutado} '{ruta}' ya existe y no es un directorio propio con permisos 700 (es un enlace, es de otro usuario o tiene otros permisos o una ACL): otro usuario del servidor pudo crearlo para leer o redirigir las salidas. No se ha escrito nada. Compruébalo con ssh_stat: si no es tuyo, no lo uses y avisa al administrador; si es tuyo, déjalo con 'chmod 700' (sin ACL) o bórralo, y vuelve a lanzar el comando.",
+            "shells" => $"{NoEjecutado} esta sesión ya tiene {n} shells con salidas guardadas sin borrar (el actual y los que se abrieron solos tras un plazo agotado, una cancelación o una caída), que es el límite. Lee lo que necesites de esos archivos y usa ssh_reset_shell o ssh_disconnect (borran todos), y vuelve a lanzar el comando.",
             "sesion" => $"{NoEjecutado} el directorio de este shell, '{ruta}', no es un directorio propio con permisos 700 (se cambió o se sustituyó). No se ha escrito nada. Usa ssh_reset_shell (el shell nuevo usa otro directorio) y vuelve a lanzar el comando.",
             "archivos" or "bytes" => $"{NoEjecutado} este shell ya tiene {n} archivo(s) de salida guardados ({t} bytes) en '{ruta}' y el límite es de {MaxArchivosPorShell} archivos y {MaxBytesPorShell / (1024 * 1024)} MiB por shell. Borra los que ya no necesites (ssh_exec con 'rm -- <ruta>') o usa ssh_reset_shell (borra todos y abre un shell nuevo), y vuelve a lanzarlo.",
             "archivo" => $"{NoEjecutado} no se pudo crear el archivo '{ruta}' con permisos 600 (sin espacio o sin permiso en /tmp, o ya existía: nunca se pisa uno existente).",

@@ -19,6 +19,12 @@ namespace NativeSsh.Comun
         // guardarSalida (SalidaGuardada): el directorio base en el servidor es este prefijo + '-<usuario>'. Fijo en producción
         // (no hay variable de entorno); las pruebas lo cambian para no compartir el /tmp/native_ssh-<usuario> de la máquina.
         public string PrefijoGuardado { get; init; } = "/tmp/native_ssh";
+
+        // guardarSalida: como mucho tantos shells de una sesión (el actual y los que se reabrieron solos tras un plazo, una
+        // cancelación o una caída) con salidas guardadas sin borrar; por encima, un guardarSalida en un shell nuevo no se
+        // ejecuta hasta ssh_reset_shell o ssh_disconnect (SesionShell). Fijo en producción; las pruebas lo bajan.
+        public int MaxShellsConGuardado { get; init; } = 64;
+
         public TimeSpan VentanaConexiones { get; init; } = TimeSpan.FromSeconds(30);
 
         /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD.

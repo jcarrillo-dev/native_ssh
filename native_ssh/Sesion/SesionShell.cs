@@ -929,6 +929,19 @@ namespace NativeSsh.Sesion
                 _ = _shellsConGuardado.TryAdd(canal.IdGuardado, 0);
         }
 
+        // Tope de la lista (OpcionesNativeSsh.MaxShellsConGuardado): un shell que aún no está en ella no entra si ya está llena,
+        // y su guardarSalida no se ejecuta (SalidaGuardada.EnvolverSinCupoShells). Así ni la lista ni lo guardado en el servidor
+        // crecen sin límite con un shell que se reabre solo una y otra vez, y no se borra nada que los avisos dan por
+        // conservado: ssh_reset_shell y ssh_disconnect vacían la lista. Solo el bucle.
+        private bool IsSinCupoShells(ShellAbierto canal)
+        {
+            if (canal.IsGuardadoAnotado)
+                return false;
+
+            lock (_candadoGuardados)
+                return _shellsConGuardado.Count >= _opciones.MaxShellsConGuardado && !_shellsConGuardado.ContainsKey(canal.IdGuardado);
+        }
+
         // Saca de la lista todos los shells anotados y los devuelve con sus archivos.
         private KeyValuePair<Guid, int>[] TomarShellsConGuardado()
         {
@@ -1095,8 +1108,12 @@ namespace NativeSsh.Sesion
                 string comando = peticion.Comando;
                 if (peticion.MarcaGuardado is { } marca)
                 {
-                    comando = SalidaGuardada.Envolver(comando, marca, canal.IdGuardado, peticion.IdTexto, _opciones.PrefijoGuardado);
-                    AnotarShellConGuardado(canal);
+                    bool isSinCupoShells = IsSinCupoShells(canal);
+                    comando = isSinCupoShells
+                        ? SalidaGuardada.EnvolverSinCupoShells(marca, _opciones.MaxShellsConGuardado)
+                        : SalidaGuardada.Envolver(comando, marca, canal.IdGuardado, peticion.IdTexto, _opciones.PrefijoGuardado);
+                    if (!isSinCupoShells)
+                        AnotarShellConGuardado(canal);
                 }
 
                 Componer(canal, EscrituraEnum.Comando, peticion.Id, comando);
