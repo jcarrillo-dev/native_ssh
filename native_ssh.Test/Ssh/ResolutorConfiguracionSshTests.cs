@@ -267,6 +267,7 @@ namespace NativeSsh.Test.Ssh
 
         // Plazo: un Match exec que se cuelga no bloquea la llamada, y ssh y lo que lanzó mueren.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task SshQueNoTermina_ErrorTrasElPlazoYSinProcesosColgados()
         {
             // Arrange
@@ -287,6 +288,7 @@ namespace NativeSsh.Test.Ssh
         // salida, así que el destino se resuelve (sin decir que ssh no terminó), y lo que dejó en segundo plano muere (ssh va
         // en su propio grupo de procesos). La espera tiene tope para que una lectura sin plazo falle en vez de colgarse.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task MatchExecQueDejaUnProcesoEnSegundoPlano_SeResuelveYNoQuedanHuerfanos()
         {
             // Arrange
@@ -310,6 +312,7 @@ namespace NativeSsh.Test.Ssh
         [InlineData("hostname 10.99.99.98", "hostname")]
         [InlineData("user intruso", "user")]
         [InlineData("port 2299", "port")]
+        [Trait("Categoria", "SoloLinux")]
         public void MatchExecQueEscribeEnLaSalidaDeSshTrasTerminar_NoCambiaElDestino(string linea, string opcion)
         {
             // Arrange
@@ -327,6 +330,7 @@ namespace NativeSsh.Test.Ssh
         // Si lo que dejó en segundo plano salió del grupo (su propio setsid) y retiene la salida, el error dice que ssh sí
         // terminó y qué la retiene, no que no terminó.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task MatchExecQueSaleDelGrupoYRetieneLaSalida_ErrorQueDiceQueSshTermino()
         {
             // Arrange
@@ -349,6 +353,7 @@ namespace NativeSsh.Test.Ssh
 
         // El plazo por defecto es de 5 s: un Match exec colgado no retiene la llamada más que eso.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task PlazoPorDefecto_CincoSegundos()
         {
             // Arrange
@@ -399,8 +404,10 @@ namespace NativeSsh.Test.Ssh
             // Act
             Action resolver = () => Resolver(resolutor, "web");
 
-            // Assert
-            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no pudo leer").And.Contain(ruta);
+            // Assert: con la ruta del fichero (el ssh.exe de OpenSSH para Windows la escribe con cada barra invertida doblada).
+            string mensaje = resolver.Should().Throw<NativeSshException>().Which.Message;
+            _ = mensaje.Should().Contain("no pudo leer");
+            _ = mensaje.Should().ContainAny(ruta, ruta.Replace(@"\", @"\\", StringComparison.Ordinal));
         }
 
         // Sin el programa ssh, el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
@@ -425,7 +432,7 @@ namespace NativeSsh.Test.Ssh
         [InlineData("/ruta/config", false, "/ruta/config")]
         [InlineData(null, false, "")]
         [InlineData("", false, "")]
-        [InlineData(null, true, "DIRECTORIO/config")]
+        [InlineData(null, true, "DIRECTORIO")]
         public void ElegirConfiguracionSsh_SegunLasVariables(string? variable, bool isConDirectorio, string? esperado)
         {
             // Arrange
@@ -435,7 +442,8 @@ namespace NativeSsh.Test.Ssh
             string? elegida = OpcionesNativeSsh.ElegirConfiguracionSsh(variable, isConDirectorio ? _directorio : null);
 
             // Assert
-            _ = elegida.Should().Be(esperado?.Replace("DIRECTORIO", _directorio, StringComparison.Ordinal));
+            // El fichero config del directorio, con el separador del sistema (barra invertida en Windows).
+            _ = elegida.Should().Be(esperado?.Replace("DIRECTORIO", Path.Combine(_directorio, "config"), StringComparison.Ordinal));
         }
 
         // Con NATIVE_SSH_DIRECTORIO_SSH y sin config en él, no se usa ninguna configuración (nunca el ~/.ssh/config real).
@@ -468,6 +476,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void MatchExec_NoVeLosSecretosDeNativeSsh()
         {
             // Arrange

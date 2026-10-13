@@ -17,6 +17,7 @@ namespace NativeSsh.Test.Integracion
     // dicen que reintentar no sirve y que ssh_disconnect los libera.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ShellsAbandonadosMaxSessionsTests
     {
         // Duración única para poder matar el proceso de la prueba sin tocar otros 'sleep' de la máquina.

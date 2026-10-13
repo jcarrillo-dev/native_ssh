@@ -39,4 +39,11 @@
     <ProjectReference Include="..\externo\SSH.NET\src\Renci.SshNet\Renci.SshNet.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lo de cada sistema solo para su sistema (NativeSshSistema, en Directory.Build.props) -->
+    <Compile Remove="**/*.Linux.cs" Condition="'$(NativeSshSistema)' != 'linux'" />
+    <Compile Remove="**/*.Windows.cs" Condition="'$(NativeSshSistema)' != 'windows'" />
+    <Compile Remove="**/*.Unix.cs" Condition="'$(NativeSshSistema)' != 'unix'" />
+  </ItemGroup>
+
 </Project>

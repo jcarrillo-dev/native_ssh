@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using FluentAssertions;
 using NativeSsh.Comun;
 
@@ -529,6 +530,25 @@ namespace NativeSsh.Test.Comun
             _ = mensaje.Should().Be("Rechazado: root@otro.ejemplo:22: no se pudo comprobar si es de solo lectura (no se resolvió noexiste.ejemplo, de la entrada 'fantasma' de NATIVE_SSH_SOLO_LECTURA); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de NATIVE_SSH_SOLO_LECTURA, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh.");
         }
 
+        // El rechazo por una entrada que no se resuelve la nombra tal como se escribió, con su usuario y su puerto (no solo el
+        // servidor), para que se pueda encontrar en NATIVE_SSH_SOLO_LECTURA; también si es un alias.
+        [Theory]
+        [InlineData("deploy@nadie.ejemplo:2222", "nadie.ejemplo")]
+        [InlineData("deploy@fantasma:2222", "noexiste.ejemplo")]
+        public async Task EntradaConUsuarioYPuertoQueNoSeResuelve_ElRechazoLaNombraEntera(string entrada, string noResuelto)
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion(entrada);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("deploy@10.0.0.6:2222"), CancellationToken.None);
+            string mensaje = DestinosSoloLectura.MensajeRechazo(comprobacion, "deploy@10.0.0.6:2222", "ssh_exec")!;
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, noResuelto, Entrada: entrada));
+            _ = mensaje.Should().Contain($"(no se resolvió {noResuelto}, de la entrada '{entrada}' de NATIVE_SSH_SOLO_LECTURA)");
+        }
+
         // Una entrada que es un alias de la configuración de ssh se compara por el HostName al que lleva (por texto y, si es un
         // nombre, por sus direcciones), conservando el usuario y el puerto de la entrada (sin ellos, cualquiera); el alias
         // como texto pedido sigue contando. El nombre del alias no se busca en el DNS: no es adonde conecta ssh.
@@ -638,6 +658,259 @@ namespace NativeSsh.Test.Comun
             _ = otraConexion.Should().Be(new ComprobacionSoloLectura(false, null));
             _ = sinRed.Should().BeTrue();
             _ = sinRedOtro.Should().BeFalse();
+        }
+
+        // Entrada prod.ejemplo resuelta por familia con 'porFamilia' (y, si se da, un /etc/hosts con 'hosts'); el destino es una
+        // IP escrita tal cual.
+        private static async Task<ComprobacionSoloLectura> ComprobarPorFamiliaAsync(DireccionesPorFamilia porFamilia, string destino, string? hosts = null)
+        {
+            string? rutaHosts = hosts is null ? null : Path.GetTempFileName();
+            try
+            {
+                if (rutaHosts is not null)
+                    await File.WriteAllTextAsync(rutaHosts, hosts);
+
+                _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (_, _) => Task.FromResult(porFamilia), rutaHosts).Should().BeTrue();
+                return await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+            }
+            finally
+            {
+                if (rutaHosts is not null)
+                    File.Delete(rutaHosts);
+            }
+        }
+
+        private static readonly ComprobacionSoloLectura NoResuelta = new(true, "prod.ejemplo", Entrada: "prod.ejemplo");
+
+        // B1 de la prefusión-ter: si el DNS falla en una sola familia (SERVFAIL, REFUSED, NXDOMAIN o sin respuesta solo para
+        // AAAA, o solo para A), la entrada no se resuelve y se rechaza, también la dirección de la familia que falló (que con
+        // AF_UNSPEC no se comparaba: getaddrinfo daba la otra como si fuera todo) y cualquier otro destino que haya que
+        // comparar por dirección.
+        [Theory]
+        [InlineData("10.0.0.5", null, "root@[fd00::5]:22")]
+        [InlineData("10.0.0.5", null, "root@10.0.0.6")]
+        [InlineData(null, "fd00::5", "root@10.0.0.5")]
+        [InlineData(null, "fd00::5", "root@[fd00::6]:22")]
+        [InlineData(null, null, "root@10.0.0.5")]
+        public async Task FalloEnUnaFamilia_LaEntradaNoSeResuelve(string? ipv4, string? ipv6, string destino)
+        {
+            // Arrange
+            DireccionesPorFamilia porFamilia = new(ipv4 is null ? null : [IPAddress.Parse(ipv4)], ipv6 is null ? null : [IPAddress.Parse(ipv6)]);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await ComprobarPorFamiliaAsync(porFamilia, destino);
+
+            // Assert
+            _ = comprobacion.Should().Be(NoResuelta);
+        }
+
+        // B1 fuera de Linux (prefusión-quater), con un resolutor por familia que simula cada sistema: en Windows y en macOS
+        // la entrada también se resuelve por familia y la AAAA que falla lanza (o da null); la IPv6 de la máquina protegida
+        // se rechaza (con las dos familias juntas, AF_UNSPEC daba solo la A como si fuera todo y la IPv6 escribía). NoData:
+        // en Windows es «sin direcciones» (vacío) y solo cuenta la IPv4; en macOS se junta con «no existe» (fallo).
+        [Theory]
+        [InlineData("lanza", "root@[fd00::5]:22", true)]
+        [InlineData("lanza", "root@10.0.0.6", true)]
+        [InlineData("null", "root@[fd00::5]:22", true)]
+        [InlineData("nodata-windows", "root@[fd00::5]:22", false)]
+        [InlineData("nodata-windows", "root@10.0.0.5", true)]
+        [InlineData("nodata-windows", "root@10.0.0.6", false)]
+        public async Task SistemaSimulado_FalloSoloEnAaaa(string aaaa, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            IPAddress[]? Familia(string nombre, AddressFamily familia) =>
+                familia == AddressFamily.InterNetwork ? [IPAddress.Parse("10.0.0.5")]
+                : aaaa == "lanza" ? throw new SocketException((int)SocketError.TryAgain)
+                : aaaa == "null" ? null
+                : [];
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, Familia, plazo)).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.Should().Be(isSoloLectura && aaaa != "nodata-windows" ? NoResuelta : new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        // Una familia sin direcciones (NODATA: un host solo IPv4 o solo IPv6) es legítima: la entrada vale por la otra y los
+        // demás destinos no se bloquean. Sin direcciones en ninguna de las dos, no se resuelve.
+        [Theory]
+        [InlineData("10.0.0.5", "", "root@10.0.0.5", true)]
+        [InlineData("10.0.0.5", "", "root@10.0.0.6", false)]
+        [InlineData("10.0.0.5", "", "root@[fd00::5]:22", false)]
+        [InlineData("", "fd00::5", "root@[fd00::5]:22", true)]
+        [InlineData("", "fd00::5", "root@10.0.0.5", false)]
+        [InlineData("10.0.0.5", "fd00::5", "root@[fd00::5]:22", true)]
+        public async Task FamiliaSinDirecciones_EsLegitima(string ipv4, string ipv6, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            DireccionesPorFamilia porFamilia = new(ipv4.Length == 0 ? [] : [IPAddress.Parse(ipv4)], ipv6.Length == 0 ? [] : [IPAddress.Parse(ipv6)]);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await ComprobarPorFamiliaAsync(porFamilia, destino);
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        [Fact]
+        public async Task SinDireccionesEnNingunaFamilia_NoSeResuelve()
+        {
+            // Act
+            ComprobacionSoloLectura comprobacion = await ComprobarPorFamiliaAsync(new DireccionesPorFamilia([], []), "root@10.0.0.6");
+
+            // Assert
+            _ = comprobacion.Should().Be(NoResuelta);
+        }
+
+        // Un nombre que está en /etc/hosts: con 'files dns' la familia que no está en el fichero la pregunta el DNS, que dice
+        // que no existe (medido: getaddrinfo AF_INET6 da EAI_NONAME para un nombre solo IPv4 de /etc/hosts). Ese fallo no
+        // bloquea: la máquina usa lo de /etc/hosts. Las direcciones del fichero cuentan siempre, también si el DNS da otras.
+        [Theory]
+        [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.5", true)]
+        [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.6", false)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # maquina protegida\n", null, null, "root@10.0.0.6", false)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # maquina protegida\n", null, null, "root@10.0.0.5", true)]
+        [InlineData("fd00::5 prod.ejemplo\n", null, null, "root@[fd00::5]:22", true)]
+        [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.7", true)]
+        [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.5", true)]
+        public async Task NombreEnHosts_ValenSusDireccionesYElFalloDeUnaFamiliaNoBloquea(string hosts, string? ipv4, string? ipv6, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            DireccionesPorFamilia porFamilia = new(ipv4 is null ? null : [IPAddress.Parse(ipv4)], ipv6 is null ? null : ipv6.Length == 0 ? [] : [IPAddress.Parse(ipv6)]);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await ComprobarPorFamiliaAsync(porFamilia, destino, hosts);
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        // Solo se recuerdan las resoluciones completas: lo tolerado por estar el nombre en /etc/hosts (una familia falló) se
+        // vuelve a resolver en cada comprobación, como un fallo; lo completo, no (5 minutos).
+        [Theory]
+        [InlineData(true, 2)]
+        [InlineData(false, 1)]
+        public async Task ResueltoConTolerancia_NoSeRecuerda(bool isFalloIpv6, int consultasEsperadas)
+        {
+            // Arrange
+            int consultas = 0;
+            Task<DireccionesPorFamilia> Contador(string nombre, CancellationToken plazo)
+            {
+                _ = Interlocked.Increment(ref consultas);
+                return Task.FromResult(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], isFalloIpv6 ? null : []));
+            }
+
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllTextAsync(ruta, "10.0.0.5 prod.ejemplo\n");
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, Contador, ruta).Should().BeTrue();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura primera = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+                bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.6"));
+                ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+
+                // Assert
+                _ = primera.Should().Be(new ComprobacionSoloLectura(false, null));
+                _ = segunda.Should().Be(primera);
+                _ = sinRed.Should().Be(isFalloIpv6 ? null : false);
+                _ = consultas.Should().Be(consultasEsperadas);
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        // Una familia que no responde (getaddrinfo colgado, no se puede cancelar) cuenta como fallida al vencer el plazo de
+        // 3 s, que cubre las dos consultas: la entrada falla cerrado, salvo que el nombre esté en /etc/hosts (entonces vale
+        // lo resuelto más lo del fichero). En los dos casos la comprobación no espera a la familia colgada.
+        [Theory]
+        [InlineData(true, "root@10.0.0.6", false)]
+        [InlineData(true, "root@10.0.0.5", true)]
+        [InlineData(false, "root@10.0.0.6", true)]
+        public async Task FamiliaQueNoResponde_FallaAlVencerElPlazoSalvoEnHosts(bool isEnHosts, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            using ManualResetEventSlim soltar = new(false);
+            IPAddress[]? Ipv6Colgada(string nombre, AddressFamily familia)
+            {
+                if (familia == AddressFamily.InterNetworkV6)
+                    _ = soltar.Wait(TimeSpan.FromSeconds(30));
+                return familia == AddressFamily.InterNetwork ? [IPAddress.Parse("10.0.0.5")] : null;
+            }
+
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllTextAsync(ruta, isEnHosts ? "10.0.0.5 prod.ejemplo\n" : "10.0.0.8 otro.ejemplo\n");
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, Ipv6Colgada, plazo), ruta).Should().BeTrue();
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(20));
+
+                // Assert
+                _ = comprobacion.Should().Be(isSoloLectura && !isEnHosts ? NoResuelta : new ComprobacionSoloLectura(isSoloLectura, null));
+                _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(6));
+            }
+            finally
+            {
+                soltar.Set();
+                File.Delete(ruta);
+            }
+        }
+
+        // Un comentario, otro nombre que lo contiene o un fichero que no existe no son estar en /etc/hosts: el fallo de una
+        // familia sigue fallando cerrado.
+        [Theory]
+        [InlineData("# 10.0.0.5 prod.ejemplo\n10.0.0.8 prodx.ejemplo prod.ejemplo.com\n")]
+        [InlineData("10.0.0.8 otro.ejemplo #prod.ejemplo\n")]
+        [InlineData("10.0.0.8 otro.ejemplo # prod.ejemplo\n")]
+        [InlineData("prod.ejemplo 10.0.0.5\n")]
+        [InlineData("10.1 prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo.\n")]
+        [InlineData("fe80::1%lo prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo")]
+        [InlineData(" 10.0.0.5 prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo # máquina protegida\n")]
+        [InlineData("10.0.0.5 prod.ejemplo\n fd00::6 prod.ejemplo\n")]
+        public async Task NombreQueNoEstaEnHosts_ElFalloDeUnaFamiliaFallaCerrado(string hosts)
+        {
+            // Act
+            ComprobacionSoloLectura comprobacion = await ComprobarPorFamiliaAsync(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], null), "root@10.0.0.6", hosts);
+
+            // Assert
+            _ = comprobacion.Should().Be(NoResuelta);
+        }
+
+        // B1 de la prefusión-quinquies: un fichero hosts que empieza por la marca UTF-8 (o es UTF-16) no da la tolerancia; con
+        // la AAAA fallida, la IPv6 de la máquina protegida escrita tal cual se rechaza.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task HostsConMarcaDeOrden_AaaaFallida_LaIpv6SeRechaza(bool isUtf16)
+        {
+            // Arrange
+            byte[] contenido = isUtf16 ? [.. Encoding.Unicode.GetPreamble(), .. Encoding.Unicode.GetBytes("10.0.0.5 prod.ejemplo\n")] : [0xEF, 0xBB, 0xBF, .. "10.0.0.5 prod.ejemplo\n"u8];
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllBytesAsync(ruta, contenido);
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (_, _) => Task.FromResult(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], null)), ruta).Should().BeTrue();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("root@[fd00::5]:22"), CancellationToken.None);
+
+                // Assert
+                _ = comprobacion.Should().Be(NoResuelta);
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
         }
 
         // Con DNS real (/etc/hosts): localhost cubre 127.0.0.1.

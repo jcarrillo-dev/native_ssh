@@ -19,6 +19,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshdLoginLento.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "Se liberan en IAsyncLifetime.DisposeAsync.")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class HerramientasEntradaLoginLentoTests(SshdLocalLoginLento fixture) : IAsyncLifetime
     {
         private const string ComandoLectura = "read x; echo \"leido:$x\"";

@@ -8,6 +8,7 @@ namespace NativeSsh.Test.Integracion
     // Ejecuta el script de ssh_search con bash local y un PATH controlado para recorrer los tres motores.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed partial class MotoresBusquedaTests : IDisposable
     {
         private readonly string _raiz = Path.Combine(Path.GetTempPath(), $"ns_motores_{Guid.NewGuid():N}");

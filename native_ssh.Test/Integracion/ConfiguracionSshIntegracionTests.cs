@@ -13,6 +13,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ConfiguracionSshIntegracionTests(SshdLocal sshd) : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(30);

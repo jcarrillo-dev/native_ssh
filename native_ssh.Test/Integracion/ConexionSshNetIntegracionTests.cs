@@ -9,6 +9,7 @@ namespace NativeSsh.Test.Integracion
     // ConexionSshNet sobre un SshClient conectado al sshd local.
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ConexionSshNetIntegracionTests(SshdLocal sshd)
     {
         // Lo que hace SSH.NET al detectar la caída del TCP, antes de cerrar el socket: avisar con ErrorOccurred. Se dispara

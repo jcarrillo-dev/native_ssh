@@ -10,6 +10,7 @@ namespace NativeSsh.Test.Integracion
     // cual (Bloque S, P3: con 'sed -n A,Bp' el de busybox inventaba ese salto).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class LecturaRangoScriptTests : IDisposable
     {
         private readonly string _raiz = Path.Combine(Path.GetTempPath(), $"ns_lectura_{Guid.NewGuid():N}");

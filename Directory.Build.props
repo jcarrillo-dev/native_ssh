@@ -20,6 +20,34 @@
     <WarningsAsErrors>$(WarningsAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsAsErrors>
   </PropertyGroup>
 
+  <!-- Sistema para el que se compila lo que depende del sistema (*.Linux.cs, *.Windows.cs, *.Unix.cs: la resolución de
+       NATIVE_SSH_SOLO_LECTURA por familia): por el RID si lo hay (win-* windows, linux-* linux, los demás unix: osx, freebsd...)
+       y si no, el del sistema donde se compila. Solo entra en el binario lo de su sistema. Se puede fijar con
+       -p:NativeSshSistema=windows|linux|unix (p. ej. para compilar y probar en Linux lo de Windows). Define NATIVE_SSH_WINDOWS,
+       NATIVE_SSH_LINUX o NATIVE_SSH_UNIX para las pruebas propias de cada sistema. Una variable de entorno NativeSshSistema
+       (con cualquier combinación de mayúsculas: MSBuild convierte las variables de entorno en propiedades sin distinguirlas)
+       no lo fija: solo vale una propiedad global (-p:NativeSshSistema), que no se puede pisar; para saber si lo es, se le da
+       un valor de prueba: si lo toma, no era global y se descarta. -->
+  <PropertyGroup>
+    <NativeSshSistema>_sin_fijar_</NativeSshSistema>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' == '_sin_fijar_'"></NativeSshSistema>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(NativeSshSistema)' == ''">
+    <NativeSshSistema Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('win-'))">windows</NativeSshSistema>
+    <NativeSshSistema Condition="'$(RuntimeIdentifier)' != '' and '$(NativeSshSistema)' == '' and $(RuntimeIdentifier.StartsWith('linux-'))">linux</NativeSshSistema>
+    <NativeSshSistema Condition="'$(RuntimeIdentifier)' != '' and '$(NativeSshSistema)' == ''">unix</NativeSshSistema>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">windows</NativeSshSistema>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux</NativeSshSistema>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' == ''">unix</NativeSshSistema>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefineConstants Condition="'$(NativeSshSistema)' == 'windows'">$(DefineConstants);NATIVE_SSH_WINDOWS</DefineConstants>
+    <DefineConstants Condition="'$(NativeSshSistema)' == 'linux'">$(DefineConstants);NATIVE_SSH_LINUX</DefineConstants>
+    <DefineConstants Condition="'$(NativeSshSistema)' == 'unix'">$(DefineConstants);NATIVE_SSH_UNIX</DefineConstants>
+  </PropertyGroup>
+
   <ItemGroup>
     <Using Remove="System.Linq" />
   </ItemGroup>

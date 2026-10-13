@@ -20,6 +20,7 @@ namespace NativeSsh.Test.Herramientas
         [InlineData(256)]
         [InlineData(65_537)]
         [InlineData(773_184)]
+        [Trait("Categoria", "SoloLinux")]
         public async Task Calcular_CoincideConElCksumDelSistema(int longitud)
         {
             // Arrange: los datos llegan a cksum por su entrada estándar, sin archivos temporales.

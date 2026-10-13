@@ -4,9 +4,10 @@ using Microsoft.Win32.SafeHandles;
 
 namespace NativeSsh.Comun
 {
-    // Llamadas a libc que .NET no expone: abrir sin seguir un enlace ni bloquearse (O_NOFOLLOW | O_NONBLOCK) y leer el tipo,
-    // el dueño y los permisos del descriptor ya abierto (statx), para comprobar exactamente lo que se va a leer. statx tiene
-    // la misma disposición en todas las arquitecturas de Linux (struct stat no); los valores de O_NOFOLLOW cambian.
+    // Llamadas a libc que .NET no expone (getaddrinfo de una sola familia está en ResolucionPorFamilia.Linux.cs): abrir sin
+    // seguir un enlace ni bloquearse (O_NOFOLLOW | O_NONBLOCK) y leer el tipo, el dueño y los permisos del descriptor ya
+    // abierto (statx), para comprobar exactamente lo que se va a leer. statx tiene la misma disposición en todas las
+    // arquitecturas de Linux (struct stat no); los valores de O_NOFOLLOW cambian.
     [SupportedOSPlatform("linux")]
     internal static partial class InteropLinux
     {

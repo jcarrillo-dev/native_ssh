@@ -9,6 +9,7 @@ namespace NativeSsh.Test.Integracion
     // El programa de los canales exec ejecutado con bash local, como lo haría el shell de login del servidor.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ProgramaExecTests : IDisposable
     {
         // Tras salir bash, lo que tarde en cerrarse su salida: solo un proceso que sobreviva al script (p. ej. un watchdog

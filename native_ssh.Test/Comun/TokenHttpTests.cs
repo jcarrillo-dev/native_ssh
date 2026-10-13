@@ -36,6 +36,7 @@ namespace NativeSsh.Test.Comun
         [InlineData(TokenValido)]
         [InlineData(TokenValido + "\n")]
         [InlineData(TokenValido + "\r\n")]
+        [Trait("Categoria", "SoloLinux")]
         public void DesdeFichero0600_LoCargaSinElSaltoFinal(string contenido)
         {
             // Arrange
@@ -51,6 +52,7 @@ namespace NativeSsh.Test.Comun
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void DesdeFichero0400_LoCarga()
         {
             // Arrange
@@ -65,6 +67,7 @@ namespace NativeSsh.Test.Comun
         [InlineData(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead, "0644")]
         [InlineData(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherWrite, "0602")]
         [InlineData(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupExecute, "0610")]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroConPermisosParaElGrupoUOtros_SeRechaza(UnixFileMode modo, string octal)
         {
             // Arrange
@@ -81,6 +84,7 @@ namespace NativeSsh.Test.Comun
 
         // Un enlace simbólico no se sigue: sus permisos (0777) no dicen nada del fichero al que apunta.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroQueEsUnEnlace_SeRechaza()
         {
             // Arrange
@@ -97,6 +101,7 @@ namespace NativeSsh.Test.Comun
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroInexistenteOVacio_SeRechazaConLaRuta()
         {
             // Arrange
@@ -123,6 +128,7 @@ namespace NativeSsh.Test.Comun
         [Theory]
         [InlineData("fifo", "no es un fichero normal")]
         [InlineData("directorio", "es un directorio")]
+        [Trait("Categoria", "SoloLinux")]
         public async Task FifoODirectorio_SeRechazaSinColgarseYDiceQueEs(string tipo, string fragmento)
         {
             // Arrange
@@ -142,6 +148,7 @@ namespace NativeSsh.Test.Comun
         // a propósito (p. ej. /home -> /var/home): el dueño y los permisos se comprueban en el descriptor abierto, así que un
         // enlace ajeno solo puede llevar a un fichero propio y 0600.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void EnlaceEnUnDirectorioIntermedio_SeAceptaSiElFicheroEsPropioY0600()
         {
             // Arrange
@@ -162,6 +169,7 @@ namespace NativeSsh.Test.Comun
 
         // Un fichero de otro usuario (aunque sea 0600) no vale: otro lo controla. Se simula pidiendo otro uid.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroDeOtroUsuario_SeRechaza()
         {
             // Arrange
@@ -187,6 +195,7 @@ namespace NativeSsh.Test.Comun
         [InlineData("variable", TokenValido + "\t")]
         [InlineData("fichero", TokenValido + " \n")]
         [InlineData("fichero", " " + TokenValido + "\n")]
+        [Trait("Categoria", "SoloLinux")]
         public void TokenConEspaciosAlPrincipioOAlFinal_SeRechaza(string fuente, string valor)
         {
             // Arrange

@@ -33,6 +33,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshdIdioma.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class HerramientasIdiomaIntegracionTests : IAsyncLifetime
     {
         private readonly SshdLocal _sshd;

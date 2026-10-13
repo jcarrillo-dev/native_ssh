@@ -38,7 +38,11 @@ namespace NativeSsh.Ssh
     // - Sin el programa ssh: el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
     // - ssh hereda el entorno sin las variables secretas (VariablesSecretas: NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE,
     //   NATIVE_SSH_TOKEN_HTTP; un Match exec las vería), y ${VAR} en un IdentityFile las trata como no definidas.
-    public sealed class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
+    // - La entrada de ssh es una tubería que se cierra nada más arrancar (fin de fichero, como /dev/null o NUL): nunca la
+    //   heredada, que es el canal MCP de native_ssh en modo stdio. Process de .NET no permite darle NUL sin redirigirla.
+    // - Lo que cambia por sistema va en ResolutorConfiguracionSsh.<Sistema>.cs, compilado solo para el suyo (NativeSshSistema
+    //   en Directory.Build.props): solo Windows tiene (el registro de ssh a un fichero con -E, y -T).
+    public sealed partial class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
     {
         private const int ErrorNoExiste = 2; // ENOENT
         private const int MaxCaracteresError = 400;
@@ -300,8 +304,31 @@ namespace NativeSsh.Ssh
             return true;
         }
 
+        // Lo propio del sistema para el que se compila (sin fichero de ese sistema, nada): las opciones de ssh, delante de las
+        // demás, y el fichero adonde ssh escribe sus mensajes en lugar de su salida de errores (registro; null si no hay); los
+        // mensajes de ese fichero, delante de los de la salida de errores; y borrar el fichero.
+        static partial void AnadirOpcionesDelSistema(List<string> argumentos, ref string? registro);
+
+        static partial void LeerRegistroDelSistema(string? registro, ref string errores);
+
+        static partial void BorrarRegistroDelSistema(string? registro);
+
         // false: no existe el programa ssh (desde entonces, los destinos se usan tal cual). Lanza si ssh falla o no termina.
         private bool TryEjecutar(List<string> argumentos, string servidor, [NotNullWhen(true)] out string? salida)
+        {
+            string? registro = null;
+            AnadirOpcionesDelSistema(argumentos, ref registro);
+            try
+            {
+                return TryEjecutar(argumentos, servidor, registro, out salida);
+            }
+            finally
+            {
+                BorrarRegistroDelSistema(registro);
+            }
+        }
+
+        private bool TryEjecutar(List<string> argumentos, string servidor, string? registro, [NotNullWhen(true)] out string? salida)
         {
             salida = null;
             // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid.
@@ -366,7 +393,9 @@ namespace NativeSsh.Ssh
 
             if (ejecucion.ExitCode != 0)
             {
-                string error = errores.Result.Trim();
+                string error = errores.Result;
+                LeerRegistroDelSistema(registro, ref error);
+                error = error.Trim();
                 throw new NativeSshException($"'ssh -G' no pudo leer la configuración de ssh de '{servidor}' (código {ejecucion.ExitCode}): {(error.Length > MaxCaracteresError ? error[..MaxCaracteresError] + "…" : error)}");
             }
 

@@ -23,6 +23,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ShellAnidadoIntegracionTests : IAsyncLifetime
     {
         // Nombres únicos para poder matar los procesos de la prueba sin tocar otros de la máquina.

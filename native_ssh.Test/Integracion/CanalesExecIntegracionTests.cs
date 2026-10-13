@@ -15,6 +15,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class CanalesExecIntegracionTests : IAsyncLifetime
     {
         private static readonly string[] DirectoriosBinarios = ["/usr/bin", "/bin"];

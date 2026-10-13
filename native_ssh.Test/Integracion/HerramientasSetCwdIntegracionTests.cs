@@ -16,6 +16,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class HerramientasSetCwdIntegracionTests : IAsyncLifetime
     {
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_setcwd_int_{Guid.NewGuid():N}")).FullName;
