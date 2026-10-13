@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.Runtime.Versioning;
+using System.Text;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Test.Utilidades;
@@ -7,9 +7,9 @@ using NativeSsh.Test.Utilidades;
 namespace NativeSsh.Test.Integracion
 {
     // Con una entrada de NATIVE_SSH_SOLO_LECTURA que no se entiende, el binario no arranca (ni por stdio ni por HTTP): sale
-    // con código 2 y solo el mensaje que la nombra, sin el volcado de pila de una excepción sin capturar.
+    // con código 2 y solo el mensaje que la nombra, sin el volcado de pila de una excepción sin capturar. El mensaje llega en
+    // UTF-8 (también en Windows, sea cual sea la página de códigos de la consola).
     [Trait("Categoria", "Integracion")]
-    [SupportedOSPlatform("linux")]
     public sealed class ArranqueSoloLecturaTests
     {
         [Theory]
@@ -25,7 +25,8 @@ namespace NativeSsh.Test.Integracion
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardError = true,
+                StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true)
             };
             inicio.Environment[DestinosSoloLectura.Variable] = configuracion;
             _ = DestinosSoloLectura.TryParsear(configuracion, out _, out string? esperado).Should().BeFalse();

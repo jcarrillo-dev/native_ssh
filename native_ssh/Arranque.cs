@@ -5,8 +5,10 @@ using NativeSsh.Ssh;
 
 namespace NativeSsh
 {
-    // Registro común a los dos transportes: el núcleo y las herramientas no saben si hablan por stdio o HTTP.
-    public static class Arranque
+    // Registro común a los dos transportes: el núcleo y las herramientas no saben si hablan por stdio o HTTP. Lo de cada
+    // sistema va en Arranque.Windows.cs (solo se compila el del sistema para el que se compila: NativeSshSistema en
+    // Directory.Build.props).
+    public static partial class Arranque
     {
         // Categorías del SDK de MCP (ModelContextProtocol.*, también las de su transporte HTTP): en Trace escriben cada mensaje
         // JSON-RPC completo («transport received message. Message: '…'», «sending message. Message: '…'»), con los
@@ -14,6 +16,13 @@ namespace NativeSsh
         // ssh_write_file) y sus respuestas (salidas y archivos leídos). Nunca bajan de Debug, aunque NATIVE_SSH_NIVEL_LOG
         // pida Trace: se pierde esa traza del SDK. En la versión 2.2.0 solo los mensajes de Trace llevan el contenido.
         internal const string CategoriaSdkMcp = "ModelContextProtocol";
+
+        // Lo que necesita la salida de errores del sistema antes de que nada escriba en ella (los mensajes de arranque y los
+        // logs). Va lo primero de Program.cs: el log de consola toma la salida de errores al crearse.
+        public static void PrepararSalidaDeErrores() => PrepararSalidaDeErroresDelSistema();
+
+        // Lo propio del sistema para el que se compila (sin fichero de ese sistema, nada).
+        static partial void PrepararSalidaDeErroresDelSistema();
 
         public static void ConfigurarLogs(ILoggingBuilder logging)
         {

@@ -1,6 +1,8 @@
 using NativeSsh;
 using NativeSsh.Comun;
 
+Arranque.PrepararSalidaDeErrores();
+
 if (!OpcionesArranque.TryParsear(args, Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_HTTP"), out OpcionesArranque arranque, out string? error))
 {
     Console.Error.WriteLine(error);
