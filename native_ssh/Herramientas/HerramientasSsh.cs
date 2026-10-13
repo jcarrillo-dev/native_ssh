@@ -501,17 +501,33 @@ namespace NativeSsh.Herramientas
 
             string borrado = limpieza.Creados == 0
                 ? ""
-                : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions), se borrarán con ssh_disconnect o al cerrarse la sesión.";
-            return new ResultadoAccion(clave, true, $"El próximo comando usará un shell nuevo.{borrado}");
+                : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions) o el borrado falla, se dirá en el siguiente ssh_reset_shell y se volverán a intentar en él o con ssh_disconnect, que dice cuántos quedan.";
+            return new ResultadoAccion(clave, true, $"El próximo comando usará un shell nuevo.{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
         }
 
-        // ssh_disconnect: lo que contó el servidor al borrar (no lo que se creó: alguno pudo borrarse antes con 'rm').
+        // ssh_reset_shell: el borrado del anterior (en segundo plano) no se completó; sus shells están entre los de este.
+        private static string DescribirBorradoAnteriorFallido(LimpiezaGuardados limpieza)
+        {
+            if (!limpieza.IsAnteriorFallido)
+                return "";
+
+            string motivo = limpieza.SinBorrarAnterior is { } quedan
+                ? $"no se pudieron borrar {quedan} archivo(s) de salida guardados con guardarSalida (p. ej. un directorio sin permiso de escritura: arréglalo con 'chmod u+w')"
+                : "sin conexión, el servidor no admitió otro canal o falló en el servidor";
+            return $" Ojo: el borrado del ssh_reset_shell anterior no se completó ({motivo}); se vuelve a intentar ahora con el resto, y lo que no se pueda borrar lo dirá el siguiente ssh_reset_shell o ssh_disconnect.";
+        }
+
+        // ssh_disconnect: lo que contó el servidor al borrar (no lo que se creó: alguno pudo borrarse antes con 'rm'), lo que
+        // quedó si algún directorio no se pudo borrar, o que no se pudo comprobar nada.
         private static string DescribirBorradoAlDesconectar(LimpiezaGuardados limpieza)
         {
-            bool isSinNada = limpieza.Creados == 0 && limpieza.Contados is null or 0;
-            string cuantosSinBorrar = limpieza.Contados is { } contados ? $"(todos) los {contados} archivo(s)" : $"los archivos (hasta {limpieza.Creados} creados)";
+            const string Quitar = "siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('chmod -R u+w -- <directorio>' y 'rm -r -- <directorio>') si contienen datos sensibles.";
+            bool isSinNada = limpieza.Creados == 0 && limpieza.Contados is null or 0 && !limpieza.IsFallida && !limpieza.IsSinComprobar;
             return isSinNada ? ""
-                : limpieza.IsFallida ? $" NO se pudieron borrar {cuantosSinBorrar} de salida guardados con guardarSalida en esta sesión (sin conexión o falló la limpieza): siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('rm -r -- <directorio>') si contienen datos sensibles."
+                : limpieza.IsSinComprobar ? $" No se pudo comprobar en el servidor si quedaban archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados) y no se ha borrado nada: el directorio /tmp/native_ssh-<usuario> no estaba, no era un directorio propio (o era un enlace) o no se pudo saber el usuario. Si lo moviste o lo sustituiste, revisa tú lo que contenga."
+                : limpieza is { IsFallida: true, Contados: { } contados, Quedan: 0 } ? $" Se borraron del servidor los {contados} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión, pero el directorio de algún shell no se pudo borrar del todo (tiene otras cosas que no son salidas de guardarSalida)."
+                : limpieza is { IsFallida: true, Contados: { } antes, Quedan: { } quedan } ? $" NO se pudieron borrar {quedan} de los {antes} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión{(antes > quedan ? $" (los otros {antes - quedan} sí se borraron)" : "")}: el directorio de su shell no se pudo borrar (p. ej. sin permiso de escritura); {Quitar}"
+                : limpieza.IsFallida ? $" NO se pudieron borrar los archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados; sin conexión o falló la limpieza, sin saber cuántos quedan): {Quitar}"
                 : limpieza.Contados switch
                 {
                     null => $" Se borraron del servidor los directorios de las salidas guardadas con guardarSalida en esta sesión (hasta {limpieza.Creados} archivo(s) creados; no se pudo saber cuántos quedaban).",

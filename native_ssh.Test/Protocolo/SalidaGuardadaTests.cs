@@ -299,5 +299,37 @@ namespace NativeSsh.Test.Protocolo
             _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("printf '%d_%d_%d'");
             _ = texto.Should().Contain("{ set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
         }
+
+        // Lo que cuenta ScriptLimpieza: antes de borrar, lo que queda y los shells cuyo directorio sigue; null si la última línea
+        // no cuadra.
+        [Theory]
+        [InlineData("x\n__ns_archivos=3_0_\n", 3, 0, 0)]
+        [InlineData("rm: no\n__ns_archivos=4_1_0123456789abcdef0123456789abcdef,fedcba9876543210fedcba9876543210\n", 4, 1, 2)]
+        [InlineData("\n__ns_archivos=2_2_0123456789abcdef0123456789abcdef", 2, 2, 1)]
+        public void LeerRecuentoLimpieza_AntesQuedanYShells(string salida, int contados, int quedan, int shells)
+        {
+            // Act
+            RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(Encoding.ASCII.GetBytes(salida));
+
+            // Assert
+            _ = recuento.Should().NotBeNull();
+            _ = (recuento!.Contados, recuento.Quedan, recuento.ShellsQueSiguen.Length).Should().Be((contados, quedan, shells));
+            if (shells > 0)
+                _ = recuento.ShellsQueSiguen[0].Should().Be(Nonce);
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("\n__ns_archivos=3\n")]
+        [InlineData("\n__ns_archivos=3_x_\n")]
+        [InlineData("\n__ns_archivos=3_0_noesunguid\n")]
+        public void LeerRecuentoLimpieza_SinLineaQueCuadre_Null(string salida)
+        {
+            // Act
+            RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(Encoding.ASCII.GetBytes(salida));
+
+            // Assert
+            _ = recuento.Should().BeNull();
+        }
     }
 }

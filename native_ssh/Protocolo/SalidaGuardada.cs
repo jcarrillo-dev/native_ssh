@@ -3,6 +3,10 @@ using System.Text;
 
 namespace NativeSsh.Protocolo
 {
+    // Lo que contó en el servidor el borrado de los directorios de guardarSalida (SalidaGuardada.ScriptLimpieza): las
+    // salidas que había antes de borrar, las que quedan en los directorios que no se pudieron borrar y esos shells.
+    public sealed record RecuentoLimpieza(int Contados, int Quedan, Guid[] ShellsQueSiguen);
+
     // Lo que se sabe del archivo de un comando lanzado con guardarSalida. Archivo, Lineas, Bytes, IsSinSaltoFinal, IsTerminado
     // y Error vienen de las marcas que el envoltorio deja en el terminal (FiltroMarcasGuardado): la ruta al empezar (A), el
     // recuento al terminar (F) o, si no llegó a ejecutarse, el motivo (E). Lineas y Bytes son null si no se pudieron contar (el
@@ -183,9 +187,15 @@ namespace NativeSsh.Protocolo
         }
 
         // Por un canal exec (sin el shell): borra los directorios de los shells indicados, solo si el base sigue siendo un
-        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Antes de borrar cuenta los archivos
-        // que hay en ellos (como el cupo: los de primer nivel) y lo dice en su última línea ('__ns_archivos=<n>',
-        // ArchivosLimpieza); código 1 si algún borrado falló.
+        // directorio propio y no un enlace. Los nombres son hexadecimales (los fija C#). Cuenta las salidas del protocolo
+        // (los '<id>.out' regulares de primer nivel, no lo que el comando dejara allí) antes de borrar y, en los directorios
+        // que siguen existiendo después (el borrado falló, p. ej. un directorio sin permiso de escritura), las que quedan; lo
+        // dice en su última línea ('__ns_archivos=<antes>_<quedan>_<shells que siguen, separados por comas>',
+        // RecuentoLimpieza). Código 0 si se borró todo, 1 si algún directorio sigue y 2 si no se pudo comprobar nada (no se
+        // supo el usuario, o el base no está, es un enlace o no es propio): entonces no borra nada.
+        public const int CodigoLimpiezaParcial = 1;
+        public const int CodigoLimpiezaSinComprobar = 2;
+
         public static string ScriptLimpieza(IEnumerable<Guid> idsShell, string prefijo)
         {
             StringBuilder ids = new();
@@ -194,26 +204,36 @@ namespace NativeSsh.Protocolo
 
             return $$"""
                 c=0
-                r=0
+                q=0
+                r=2
+                s=
                 u=$(id -un 2>/dev/null)
                 b={{Literal(prefijo)}}-$u
                 if [ -n "$u" ] && [ -d "$b" ] && [ ! -L "$b" ] && [ -O "$b" ]; then
+                  r=0
                   for g in{{ids}}; do
                     d=$b/$g
                     { [ -d "$d" ] && [ ! -L "$d" ]; } || continue
-                    for x in "$d"/*; do
-                      [ -f "$x" ] && c=$((c + 1))
+                    for x in "$d"/*.out; do
+                      { [ -f "$x" ] && [ ! -L "$x" ]; } && c=$((c + 1))
                     done
-                    rm -rf -- "$d" || r=1
+                    rm -rf -- "$d" 2>/dev/null
+                    if [ -e "$d" ]; then
+                      r=1
+                      s=$s,$g
+                      for x in "$d"/*.out; do
+                        { [ -f "$x" ] && [ ! -L "$x" ]; } && q=$((q + 1))
+                      done
+                    fi
                   done
                 fi
-                printf '\n__ns_archivos=%d\n' "$c"
+                printf '\n__ns_archivos=%d_%d_%s\n' "$c" "$q" "${s#,}"
                 exit $r
                 """.ReplaceLineEndings("\n");
         }
 
-        // Los archivos que contó ScriptLimpieza antes de borrar (su última línea); null si la salida no la trae.
-        public static int? ArchivosLimpieza(ReadOnlySpan<byte> salida)
+        // Lo que contó ScriptLimpieza (su última línea); null si la salida no la trae o no cuadra.
+        public static RecuentoLimpieza? LeerRecuentoLimpieza(ReadOnlySpan<byte> salida)
         {
             ReadOnlySpan<byte> etiqueta = "\n__ns_archivos="u8;
             int inicio = salida.LastIndexOf(etiqueta);
@@ -222,8 +242,21 @@ namespace NativeSsh.Protocolo
 
             ReadOnlySpan<byte> resto = salida[(inicio + etiqueta.Length)..];
             int fin = resto.IndexOf((byte)'\n');
-            ReadOnlySpan<byte> numero = fin < 0 ? resto : resto[..fin];
-            return int.TryParse(numero, NumberStyles.None, CultureInfo.InvariantCulture, out int archivos) ? archivos : null;
+            string[] campos = Encoding.ASCII.GetString(fin < 0 ? resto : resto[..fin]).Split('_');
+            if (campos.Length != 3
+                || !int.TryParse(campos[0], NumberStyles.None, CultureInfo.InvariantCulture, out int contados)
+                || !int.TryParse(campos[1], NumberStyles.None, CultureInfo.InvariantCulture, out int quedan))
+                return null;
+
+            List<Guid> siguen = [];
+            foreach (string id in campos[2].Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!Guid.TryParseExact(id, "N", out Guid shell))
+                    return null;
+                siguen.Add(shell);
+            }
+
+            return new RecuentoLimpieza(contados, quedan, [.. siguen]);
         }
 
         // Una marca ya separada por FiltroMarcasGuardado: tipo ('A', 'F' o 'E') y sus campos. Devuelve el informe con ella
@@ -288,7 +321,7 @@ namespace NativeSsh.Protocolo
             "tmp" => $"{NoEjecutado} '{ruta}' no tiene el bit sticky (modo 1777) ni es del usuario de la sesión: cualquier usuario del servidor podría sustituir el directorio de native_ssh entre la comprobación y la escritura. No se ha escrito nada. Lanza el comando sin guardarSalida.",
             "base" => $"{NoEjecutado} '{ruta}' ya existe y no es un directorio propio con permisos 700 (es un enlace, es de otro usuario o tiene otros permisos o una ACL): otro usuario del servidor pudo crearlo para leer o redirigir las salidas. No se ha escrito nada. Compruébalo con ssh_stat: si no es tuyo, no lo uses y avisa al administrador; si es tuyo, déjalo con 'chmod 700' (sin ACL) o bórralo, y vuelve a lanzar el comando.",
             "basenuevo" => $"{NoEjecutado} native_ssh acaba de crear '{ruta}', pero no quedó como un directorio propio con permisos exactos 700: lo habitual es una ACL por defecto en el directorio que lo contiene ('ls -ld' lo marca con '+'), que daría acceso a otros usuarios del servidor. {(n == "1" ? "Se ha vuelto a borrar" : "No se pudo volver a borrar (está vacío: bórralo con 'rmdir')")} y no se ha escrito nada. Lanza el comando sin guardarSalida, o pide al administrador que quite la ACL por defecto de ese directorio ('setfacl -k').",
-            "shells" => $"{NoEjecutado} esta sesión ya tiene {n} shells con salidas guardadas sin borrar (el actual y los que se abrieron solos tras un plazo agotado, una cancelación o una caída), que es el límite. Lee lo que necesites de esos archivos y usa ssh_reset_shell o ssh_disconnect (borran todos), y vuelve a lanzar el comando.",
+            "shells" => $"{NoEjecutado} esta sesión ya tiene {n} shells anteriores con salidas guardadas sin borrar (shells que se cerraron tras un plazo agotado, una cancelación o una caída, o cuyo directorio no se pudo borrar con ssh_reset_shell), que es el límite. Lee lo que necesites de esos archivos y usa ssh_reset_shell o ssh_disconnect, que los borran; si un borrado falla (p. ej. un directorio sin permiso de escritura), su respuesta o la del ssh_reset_shell siguiente lo dice: arréglalo ('chmod u+w' sobre ese directorio) y vuelve a usarlos. Después vuelve a lanzar el comando.",
             "sesion" => $"{NoEjecutado} el directorio de este shell, '{ruta}', no es un directorio propio con permisos 700 (se cambió o se sustituyó). No se ha escrito nada. Usa ssh_reset_shell (el shell nuevo usa otro directorio) y vuelve a lanzar el comando.",
             "archivos" or "bytes" => $"{NoEjecutado} este shell ya tiene {n} archivo(s) de salida guardados ({t} bytes) en '{ruta}' y el límite es de {MaxArchivosPorShell} archivos y {MaxBytesPorShell / (1024 * 1024)} MiB por shell. Borra los que ya no necesites (ssh_exec con 'rm -- <ruta>') o usa ssh_reset_shell (borra todos y abre un shell nuevo), y vuelve a lanzarlo.",
             "archivo" => $"{NoEjecutado} no se pudo crear el archivo '{ruta}' con permisos 600 (sin espacio o sin permiso en /tmp, o ya existía: nunca se pisa uno existente).",

@@ -91,13 +91,13 @@ namespace NativeSsh.Sesion
                 return null;
 
             await sesion.DisposeAsync().ConfigureAwait(false);
-            return new LimpiezaGuardados(sesion.ArchivosGuardadosAlCerrar, sesion.ArchivosContadosAlCerrar, sesion.IsLimpiezaFallidaAlCerrar);
+            return sesion.LimpiezaAlCerrar;
         }
 
         public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
 
         // null si no había sesión; si no, los archivos de guardarSalida creados en los shells cuyo borrado se lanza (sin
-        // recuento del servidor: el borrado sigue en segundo plano).
+        // recuento del servidor: el borrado sigue en segundo plano) y si el de un ssh_reset_shell anterior no se completó.
         public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
@@ -105,7 +105,7 @@ namespace NativeSsh.Sesion
             lock (_candado)
                 _ = _sesiones.TryGetValue(destino.Clave, out sesion);
 
-            return sesion is null ? null : new LimpiezaGuardados(sesion.SolicitarResetConLimpieza(), null, false);
+            return sesion?.SolicitarResetConLimpieza();
         }
 
         public DestinoSsh ParsearDestino(string destinoTexto) => !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino)
@@ -149,7 +149,20 @@ namespace NativeSsh.Sesion
     }
 
     // Archivos de guardarSalida de una sesión al hacer ssh_reset_shell o ssh_disconnect: Creados, los que se crearon en los
-    // shells cuyo directorio se borra (alguno pudo borrarse antes, p. ej. con 'rm'); Contados, los que había en el servidor
-    // al borrarlos (solo al desconectar, y null si no se sabe); IsFallida, si la limpieza al desconectar no se hizo o falló.
-    public sealed record LimpiezaGuardados(int Creados, int? Contados, bool IsFallida);
+    // shells cuyo directorio se borra (alguno pudo borrarse antes, p. ej. con 'rm'); Contados, las salidas que había en el
+    // servidor al borrarlas (solo al desconectar, y null si no se sabe); IsFallida, si la limpieza al desconectar no se hizo
+    // o algún directorio no se pudo borrar, y Quedan, las salidas que siguen en ellos (null si no se sabe); IsSinComprobar,
+    // si al desconectar no se pudo comprobar nada (no se supo el usuario, o el base no estaba o no era un directorio propio).
+    // Al hacer ssh_reset_shell: IsAnteriorFallido, si el borrado de un ssh_reset_shell anterior no se completó (sus shells
+    // vuelven a estar entre los que se borran), y SinBorrarAnterior, cuántas salidas quedaron entonces (null si no se sabe).
+    public sealed record LimpiezaGuardados(int Creados, int? Contados, bool IsFallida)
+    {
+        public int? Quedan { get; init; }
+
+        public bool IsSinComprobar { get; init; }
+
+        public bool IsAnteriorFallido { get; init; }
+
+        public int? SinBorrarAnterior { get; init; }
+    }
 }

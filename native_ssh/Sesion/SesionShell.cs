@@ -159,6 +159,16 @@ namespace NativeSsh.Sesion
         private readonly Lock _candadoGuardados = new();
         private readonly Dictionary<Guid, int> _shellsConGuardado = [];
 
+        // Un borrado de ssh_reset_shell (en segundo plano) que no se completó: sus shells volvieron a la lista y lo dice el
+        // ssh_reset_shell siguiente (ssh_disconnect cuenta por su cuenta). Con el número de salidas que quedaron, si se supo.
+        // Bajo _candadoGuardados.
+        private bool _isBorradoAnteriorFallido;
+        private int? _archivosSinBorrarAnterior;
+
+        // Los borrados de ssh_reset_shell en curso: el cierre los espera (acotado) antes de tomar la lista, para que un shell
+        // que vuelve a ella por un borrado fallido no llegue después de que el cierre la haya vaciado. Bajo _candadoGuardados.
+        private Task _borradosEnCurso = Task.CompletedTask;
+
         // Plazo de la limpieza en el servidor; el local es algo mayor (MargenLimiteLocalExec) y acota también ssh_disconnect.
         private static readonly TimeSpan PlazoLimpiezaGuardados = TimeSpan.FromSeconds(2);
 
@@ -454,15 +464,31 @@ namespace NativeSsh.Sesion
 
         public void SolicitarReset() => _ = SolicitarResetConLimpieza();
 
-        // Devuelve los archivos de guardarSalida cuyo borrado lanza: los de todos los shells de la sesión (el actual y los
-        // anteriores), que se borran ya; el shell nuevo usará otro directorio.
-        public int SolicitarResetConLimpieza()
+        // Devuelve los archivos de guardarSalida cuyo borrado lanza (los de todos los shells de la sesión, el actual y los
+        // anteriores, que se borran ya; el shell nuevo usará otro directorio) y si el borrado de un ssh_reset_shell anterior
+        // no se completó (sus shells están entre estos).
+        public LimpiezaGuardados SolicitarResetConLimpieza()
         {
             _isResetSolicitado = true;
             _ = (_peticionActual?.SolicitarCancelacion());
-            KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
-            _ = BorrarGuardadosAsync(shells);
-            return Sumar(shells);
+            // La lista y el aviso del borrado anterior, juntos: los shells de ese borrado están en lo que se toma.
+            KeyValuePair<Guid, int>[] shells;
+            bool isAnteriorFallido;
+            int? sinBorrarAnterior;
+            lock (_candadoGuardados)
+            {
+                shells = [.. _shellsConGuardado];
+                _shellsConGuardado.Clear();
+                isAnteriorFallido = _isBorradoAnteriorFallido;
+                sinBorrarAnterior = _archivosSinBorrarAnterior;
+                _isBorradoAnteriorFallido = false;
+                _archivosSinBorrarAnterior = null;
+            }
+
+            Task borrado = BorrarGuardadosAsync(shells);
+            lock (_candadoGuardados)
+                _borradosEnCurso = _borradosEnCurso.IsCompleted ? borrado : Task.WhenAll(_borradosEnCurso, borrado);
+            return new LimpiezaGuardados(Sumar(shells), null, false) { IsAnteriorFallido = isAnteriorFallido, SinBorrarAnterior = sinBorrarAnterior };
         }
 
         public async ValueTask DisposeAsync()
@@ -977,9 +1003,11 @@ namespace NativeSsh.Sesion
         }
 
         // Borra los directorios de esos shells por un canal exec (sin tocar el shell). Sin conexión no reconecta solo para esto:
-        // los devuelve a la lista y se borrarán en la ocasión siguiente (otro ssh_reset_shell o el cierre); si falla, también
-        // vuelven a la lista. Nunca lanza: un fallo se anota en el log y lo que nunca se llegue a borrar lo barre el envoltorio
-        // a las 24 h.
+        // los devuelve a la lista y se borrarán en la ocasión siguiente (otro ssh_reset_shell o el cierre). Si el borrado no se
+        // completa (excepción, código distinto de 0 o sin respuesta), vuelven a la lista los shells cuyo directorio sigue (o
+        // todos, si no se sabe cuáles) y el ssh_reset_shell siguiente lo dice (AnotarBorradoFallido); así cuentan también para
+        // el tope (IsSinCupoShells) y ssh_disconnect los vuelve a intentar y dice cuántos quedan. Nunca lanza: un fallo se anota
+        // en el log y lo que nunca se llegue a borrar lo barre el envoltorio a las 24 h.
         private async Task BorrarGuardadosAsync(KeyValuePair<Guid, int>[] shells)
         {
             if (shells.Length == 0)
@@ -988,12 +1016,21 @@ namespace NativeSsh.Sesion
             if (IsCerrando || _conexion is not { IsConectada: true })
             {
                 DevolverShellsConGuardado(shells);
+                AnotarBorradoFallido(null);
                 return;
             }
 
             try
             {
-                _ = await EjecutarExecAsync(SalidaGuardada.ScriptLimpieza(Ids(shells), _opciones.PrefijoGuardado), PlazoLimpiezaGuardados, CancellationToken.None).ConfigureAwait(false);
+                ResultadoCanalExec resultado = await EjecutarExecAsync(SalidaGuardada.ScriptLimpieza(Ids(shells), _opciones.PrefijoGuardado), PlazoLimpiezaGuardados, CancellationToken.None).ConfigureAwait(false);
+                if (resultado.CodigoSalida == 0)
+                    return;
+
+                RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(resultado.Salida.Span);
+                bool isParcialConocido = resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaParcial && recuento is not null;
+                DevolverShellsConGuardado(isParcialConocido ? Siguen(shells, recuento!.ShellsQueSiguen) : shells);
+                AnotarBorradoFallido(isParcialConocido ? recuento!.Quedan : null);
+                _logger.LimpiezaGuardadosIncompleta(Destino.Clave, shells.Length, resultado.CodigoSalida);
             }
             catch (Exception ex)
             {
@@ -1001,24 +1038,54 @@ namespace NativeSsh.Sesion
                 // siguiente (ssh_reset_shell, cierre).
                 _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
                 DevolverShellsConGuardado(shells);
+                AnotarBorradoFallido(null);
             }
         }
 
-        // Al cerrar la sesión, con el shell ya cerrado y antes de liberar la conexión: por la conexión que haya (si sigue viva),
-        // sin el cupo de las lecturas ni el estado de cierre, acotado para no alargar ssh_disconnect con un servidor que no
-        // responde. El script cuenta en el servidor los archivos que quedan antes de borrarlos: es lo que dice ssh_disconnect
-        // (el recuento de la lista son los creados; alguno pudo borrarse antes, p. ej. con 'rm' para liberar cupo).
+        // Los shells de la lista cuyo directorio sigue en el servidor, con los archivos que se crearon en cada uno.
+        private static KeyValuePair<Guid, int>[] Siguen(KeyValuePair<Guid, int>[] shells, Guid[] siguen)
+        {
+            List<KeyValuePair<Guid, int>> quedan = [];
+            foreach (KeyValuePair<Guid, int> shell in shells)
+                if (Array.IndexOf(siguen, shell.Key) >= 0)
+                    quedan.Add(shell);
+            return [.. quedan];
+        }
+
+        // Varios borrados fallidos antes del ssh_reset_shell siguiente se suman; si de alguno no se sabe cuántos quedaron, el
+        // total tampoco se sabe.
+        private void AnotarBorradoFallido(int? sinBorrar)
+        {
+            lock (_candadoGuardados)
+            {
+                _archivosSinBorrarAnterior = _isBorradoAnteriorFallido ? _archivosSinBorrarAnterior + sinBorrar : sinBorrar;
+                _isBorradoAnteriorFallido = true;
+            }
+        }
+
+        // Al cerrar la sesión, con el shell ya cerrado y antes de liberar la conexión: espera (acotado) los borrados de
+        // ssh_reset_shell que sigan en curso y borra por la conexión que haya (si sigue viva), sin el cupo de las lecturas ni el
+        // estado de cierre, acotado para no alargar ssh_disconnect con un servidor que no responde. El script cuenta en el
+        // servidor las salidas que hay antes de borrarlas y las que quedan si algún borrado falla: es lo que dice
+        // ssh_disconnect (el recuento de la lista son los creados; alguno pudo borrarse antes, p. ej. con 'rm' para liberar
+        // cupo).
         private async Task BorrarGuardadosAlCerrarAsync()
         {
+            Task enCurso;
+            lock (_candadoGuardados)
+                enCurso = _borradosEnCurso;
+            _ = await Task.WhenAny(enCurso, Task.Delay(PlazoLimpiezaGuardados + MargenLimiteLocalExec)).ConfigureAwait(false);
+
             KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
-            ArchivosGuardadosAlCerrar = Sumar(shells);
+            int creados = Sumar(shells);
+            LimpiezaAlCerrar = new LimpiezaGuardados(creados, null, false);
             if (shells.Length == 0)
                 return;
 
             IConexionSsh? conexion = _conexion;
             if (conexion is not { IsConectada: true })
             {
-                IsLimpiezaFallidaAlCerrar = true;
+                LimpiezaAlCerrar = new LimpiezaGuardados(creados, null, true);
                 return;
             }
 
@@ -1027,24 +1094,27 @@ namespace NativeSsh.Sesion
             try
             {
                 ResultadoCanalExec resultado = await conexion.EjecutarExecAsync(comando, MaxBytesCapturaPath, static () => { }, limite.Token).WaitAsync(limite.Token).ConfigureAwait(false);
-                ArchivosContadosAlCerrar = SalidaGuardada.ArchivosLimpieza(resultado.Salida.Span);
-                IsLimpiezaFallidaAlCerrar = resultado.CodigoSalida != 0;
+                RecuentoLimpieza? recuento = SalidaGuardada.LeerRecuentoLimpieza(resultado.Salida.Span);
+                bool isSinComprobar = resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaSinComprobar;
+                bool isFallida = resultado.CodigoSalida != 0 && !isSinComprobar;
+                LimpiezaAlCerrar = new LimpiezaGuardados(creados, isSinComprobar ? null : recuento?.Contados, isFallida)
+                {
+                    Quedan = isFallida && resultado.CodigoSalida == SalidaGuardada.CodigoLimpiezaParcial ? recuento?.Quedan : null,
+                    IsSinComprobar = isSinComprobar
+                };
             }
             catch (Exception ex)
             {
                 _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
-                IsLimpiezaFallidaAlCerrar = true;
+                LimpiezaAlCerrar = new LimpiezaGuardados(creados, null, true);
             }
         }
 
-        // Tras cerrar la sesión: los archivos de guardarSalida que se crearon en los shells cuyo borrado se intentó, los que
-        // había en el servidor al borrarlos (null si no se sabe: sin conexión, o la limpieza no llegó a contarlos) y si la
-        // limpieza falló (sin conexión, error o algún borrado que no se pudo hacer).
-        public int ArchivosGuardadosAlCerrar { get; private set; }
-
-        public int? ArchivosContadosAlCerrar { get; private set; }
-
-        public bool IsLimpiezaFallidaAlCerrar { get; private set; }
+        // Tras cerrar la sesión, lo que se sabe del borrado de las salidas de guardarSalida (lo que dice ssh_disconnect): los
+        // archivos que se crearon en los shells cuyo borrado se intentó, los que había en el servidor al borrarlos y los que
+        // quedan (null si no se sabe: sin conexión, o la limpieza no llegó a contarlos), si la limpieza falló (sin conexión,
+        // error o algún directorio que no se pudo borrar) y si no se pudo comprobar nada (el base no estaba o no era propio).
+        public LimpiezaGuardados LimpiezaAlCerrar { get; private set; } = new(0, null, false);
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
         // mensaje no afirma una causa: enumera las medidas. Un lector del terminal que se come parte del envío; 'set -x' con

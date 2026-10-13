@@ -81,5 +81,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 64, Level = LogLevel.Warning, Message = "No se pudieron borrar en {Destino} los archivos de salida guardados (guardarSalida) de {Shells} shell(s); quedan en /tmp/native_ssh-<usuario> hasta el barrido de 24 h.")]
         public static partial void LimpiezaGuardadosFallida(this ILogger logger, Exception ex, string destino, int shells);
+
+        [LoggerMessage(EventId = 65, Level = LogLevel.Warning, Message = "El borrado en {Destino} de los archivos de salida guardados (guardarSalida) de {Shells} shell(s) terminó con código {Codigo}: los que siguen vuelven a la lista y se reintentan con el siguiente ssh_reset_shell o al cerrar.")]
+        public static partial void LimpiezaGuardadosIncompleta(this ILogger logger, string destino, int shells, int? codigo);
     }
 }
