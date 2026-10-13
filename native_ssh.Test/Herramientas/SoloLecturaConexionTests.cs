@@ -500,5 +500,35 @@ namespace NativeSsh.Test.Herramientas
             _ = lecturas.Should().BeEquivalentTo("prod", "web");
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2.5), "las dos lecturas van a la vez y una sola vez por llamada (antes, 6 seguidas: 3 s)");
         }
+
+        // ssh_status con usuario@servidor:puerto lista las sesiones de ese destino con cualquier lista de claves, pero una
+        // escritura con ese texto solo usa la de sus claves: solo esa lleva isSoloLectura (lo que hará esa escritura); las de
+        // otras claves (aquí la del alias prod, con su IdentityFile) van sin él. La sesión de prod se abrió cuando srv.ejemplo
+        // era 10.0.0.5 (la protegida) y srv.ejemplo pasa después a 10.0.0.9: antes, ssh_status marcaba true la sesión de prod
+        // y la escritura con ese texto se ejecutaba en otra sesión.
+        [Fact]
+        public async Task Estado_FiltroPorServidorReal_SoloMarcaLaSesionQueUsariaLaEscritura()
+        {
+            // Arrange
+            File.WriteAllText(Path.Combine(_directorio, "config"), $"Host prod\n  HostName srv.ejemplo\n  IdentityFile {_directorio}/k1\nHost *\n  User ana\n");
+            _dns["srv.ejemplo"] = IPAddress.Parse("10.0.0.5");
+            HerramientasSsh herramientas = Crear("10.0.0.5");
+            _ = await herramientas.FijarDirectorioAsync("prod", "/tmp");
+            _dns["srv.ejemplo"] = IPAddress.Parse("10.0.0.9");
+
+            // Act
+            ResultadoEstado antes = herramientas.Estado("ana@srv.ejemplo:22");
+            ResultadoComando escritura = await EjecutarHastaTerminar(herramientas, "ana@srv.ejemplo:22");
+            ResultadoEstado despues = herramientas.Estado("ana@srv.ejemplo:22");
+            ResultadoEstado porAlias = herramientas.Estado("prod");
+
+            // Assert
+            _ = antes.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeNull("es la sesión de prod, con otras claves: la escritura con ese texto no la usa");
+            _ = escritura.Estado.Should().Be(EstadoPeticionEnum.Completado, escritura.Aviso);
+            _ = despues.Sesiones.Should().HaveCount(2);
+            _ = despues.Sesiones.Single(s => s.IdentityFile is [.., var k] && k.EndsWith("/k1", StringComparison.Ordinal)).IsSoloLectura.Should().BeNull();
+            _ = despues.Sesiones.Single(s => s.IdentityFile is not [.., var k] || !k.EndsWith("/k1", StringComparison.Ordinal)).IsSoloLectura.Should().NotBe(true, "es la sesión que usó la escritura, conectada a 10.0.0.9 (sin red no se sabe: el nombre del destino no se recuerda)");
+            _ = porAlias.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue("la sesión de prod sigue conectada a 10.0.0.5");
+        }
     }
 }
