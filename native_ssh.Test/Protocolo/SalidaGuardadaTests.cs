@@ -235,6 +235,21 @@ namespace NativeSsh.Test.Protocolo
             _ = filtro.Informe.Error.Should().Contain("'/p'");
         }
 
+        // Solo la primera E cuenta: la del motivo concreto (la preparación), no la genérica que el envoltorio deja después si la
+        // preparación no llegó a dar la ruta.
+        [Fact]
+        public void Filtro_SegundaE_NoCambiaElMotivo()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out _);
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca($"E_archivo_{B64("/p")}_0_0") + Marca("E_prep__0_0")));
+
+            // Assert
+            _ = filtro.Informe.Error.Should().Contain("'/p'");
+        }
+
         [Theory]
         [InlineData("/tmp/native_ssh-ana/S/I.out", true)]
         [InlineData("/tmp/native_ssh-a.b/S/I.out", true)]
@@ -297,7 +312,7 @@ namespace NativeSsh.Test.Protocolo
             _ = texto.Should().NotContain($"__NSG_{Nonce:N}");
             string resumen = texto[texto.IndexOf("_F_", StringComparison.Ordinal)..];
             _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("_F_%d_%d_%d__").And.NotContain("$__ns_g");
-            _ = texto.Should().Contain("{ set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
+            _ = texto.Should().Contain("{ builtin set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
         }
 
         private static readonly Guid Token = Guid.Parse("abcdefabcdefabcdefabcdefabcdefab");

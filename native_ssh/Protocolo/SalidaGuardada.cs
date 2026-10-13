@@ -75,14 +75,20 @@ namespace NativeSsh.Protocolo
         // padre, el directorio que debe tener el bit sticky.
         // El nonce no está en ninguna variable que el comando pueda ver (ni en el nombre ni en el valor; tampoco sus hijos con
         // 'set -a'): solo en los argumentos de los printf de las marcas. Empieza quitando __ns_k y __ns_b, las variables de
-        // ConstructorComando con el texto que se evalúa (lleva el nonce), con 'builtin unset' (una función 'unset' no lo
-        // impide); las del envoltorio llevan el token en el nombre y el comando y la ruta en el valor. Así el comando no puede
-        // imitar una marca (y FiltroMarcasGuardado solo aplica las que siguen el orden del envoltorio).
+        // ConstructorComando con el texto que se evalúa (lleva el nonce); las del envoltorio llevan el token en el nombre y el
+        // comando y la ruta en el valor. Así el comando no puede imitar una marca (y FiltroMarcasGuardado solo aplica las que
+        // siguen el orden del envoltorio).
         // El resumen no depende de nada que el comando pueda cambiar en el shell: el nombre de las variables del envoltorio es
         // otro en cada petición (un 'readonly' de un comando anterior no impide asignarlas) y, después del comando, solo se
         // usan para borrarlas (sin error si no se puede); el código de salida y el recuento los saca una subshell con
         // parámetros posicionales (no se pueden hacer de solo lectura) y la ruta vuelta a calcular desde el prefijo, 'id -un' y
         // los dos ids, no la variable con la ruta, que el comando puede reasignar o quitar.
+        // Las órdenes internas del envoltorio van con 'builtin' (set, printf, exit, unset, eval, '[', ':', umask, shopt, true,
+        // false) y las externas con 'command': una función con su nombre, que dejara un comando anterior, no las sustituye.
+        // Una función 'builtin' o 'command' sí: no se protege más (ConstructorComando tampoco). 'builtin' y no 'command' para
+        // las internas, para que una función 'command' que solo intercepte una orden externa no cambie además el código ni el
+        // recuento. Si la preparación no da la ruta, el envoltorio no ejecuta el comando y lo dice con la marca E 'prep' (que
+        // no cuenta si la preparación ya dio su motivo: FiltroMarcasGuardado aplica solo la primera E).
         public static string Envolver(string comando, Guid nonce, Guid token, Guid idShell, string idPeticion, string prefijo)
         {
             string n = nonce.ToString("N");
@@ -95,14 +101,15 @@ namespace NativeSsh.Protocolo
                 builtin unset __ns_k __ns_b
                 __ns_gc{{t}}='{{literal}}'
                 if __ns_gf{{t}}=$({{preparacion}}); then
-                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf{{t}}" | command base64 | command tr -d '\n')"
-                { eval "$__ns_gc{{t}}"
+                builtin printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ builtin set +x +v; } 2>/dev/null; builtin printf '%s' "$__ns_gf{{t}}" | command base64 | command tr -d '\n')"
+                { builtin eval "$__ns_gc{{t}}"
                 } >>"$__ns_gf{{t}}" 2>&1
                 ({{resumen}})
                 else
-                (exit 1)
+                builtin printf '%s_%s_E_prep__0_0__\n' '__NSG' '{{n}}' >&2
+                (builtin exit 1)
                 fi
-                eval "builtin unset __ns_gc{{t}} __ns_gf{{t}} 2>/dev/null; (exit $?)"
+                builtin eval "builtin unset __ns_gc{{t}} __ns_gf{{t}} 2>/dev/null; (builtin exit $?)"
                 """.ReplaceLineEndings("\n");
         }
 
@@ -119,8 +126,8 @@ namespace NativeSsh.Protocolo
         // shell aún no tiene directorio (SesionShell): no crea nada ni ejecuta el comando; solo la marca E con el tope.
         public static string EnvolverSinCupoShells(Guid nonce, int maxShells) => $$"""
             builtin unset __ns_k __ns_b
-            printf '%s_%s_E_shells__%d_0__\n' '__NSG' '{{nonce:N}}' {{maxShells.ToString(CultureInfo.InvariantCulture)}} >&2
-            (exit 1)
+            builtin printf '%s_%s_E_shells__%d_0__\n' '__NSG' '{{nonce:N}}' {{maxShells.ToString(CultureInfo.InvariantCulture)}} >&2
+            (builtin exit 1)
             """.ReplaceLineEndings("\n");
 
         // Dentro de una sustitución de órdenes (una subshell): sus opciones y funciones no tocan el shell de la sesión. Escribe
@@ -128,13 +135,13 @@ namespace NativeSsh.Protocolo
         // ('set -x', 'set -v'), 'set -e', 'set -u', 'set -f', failglob ni nullglob del usuario; LC_ALL=C para leer el modo de
         // 'ls'.
         private static readonly string PlantillaPreparacion = """
-            { set +x +v; } 2>/dev/null
-            set +e +u +f; shopt -u failglob nullglob 2>/dev/null; unset GLOBIGNORE
-            __ns_ge() { printf '%s_%s_E_%s_%s_%s_%s__\n' '__NSG' '@N@' "$1" "$(printf '%s' "${2-}" | command base64 | command tr -d '\n')" "${3:-0}" "${4:-0}" >&2; exit 1; }
-            __ns_gk() { [ ! -L "$1" ] && [ -d "$1" ] && [ -O "$1" ] && case $(LC_ALL=C command ls -ld -- "$1" 2>/dev/null) in 'drwx------ '*|'drwx------. '*) true ;; *) false ;; esac; }
+            { builtin set +x +v; } 2>/dev/null
+            builtin set +e +u +f; builtin shopt -u failglob nullglob 2>/dev/null; builtin unset GLOBIGNORE
+            __ns_ge() { builtin printf '%s_%s_E_%s_%s_%s_%s__\n' '__NSG' '@N@' "$1" "$(builtin printf '%s' "${2-}" | command base64 | command tr -d '\n')" "${3:-0}" "${4:-0}" >&2; builtin exit 1; }
+            __ns_gk() { builtin [ ! -L "$1" ] && builtin [ -d "$1" ] && builtin [ -O "$1" ] && case $(LC_ALL=C command ls -ld -- "$1" 2>/dev/null) in 'drwx------ '*|'drwx------. '*) builtin true ;; *) builtin false ;; esac; }
             u=$(command id -un 2>/dev/null)
             case $u in ''|*/*|.|..) __ns_ge usuario "$u" ;; esac
-            [ -k @PADRE@ ] || [ -O @PADRE@ ] || __ns_ge tmp @PADRE@
+            builtin [ -k @PADRE@ ] || builtin [ -O @PADRE@ ] || __ns_ge tmp @PADRE@
             b=@PREFIJO@-$u
             if command mkdir -m 700 -- "$b" 2>/dev/null; then
               command chmod 700 -- "$b" 2>/dev/null
@@ -145,22 +152,22 @@ namespace NativeSsh.Protocolo
             if command mkdir -m 700 -- "$d" 2>/dev/null; then
               command chmod 700 -- "$d" 2>/dev/null
               for x in "$b"/*; do
-                { [ "$x" != "$d" ] && [ -d "$x" ] && [ ! -L "$x" ]; } || continue
-                r=$(command find "$x" -mmin -1440 2>/dev/null) && [ -z "$r" ] && command rm -rf -- "$x"
+                { builtin [ "$x" != "$d" ] && builtin [ -d "$x" ] && builtin [ ! -L "$x" ]; } || continue
+                r=$(command find "$x" -mmin -1440 2>/dev/null) && builtin [ -z "$r" ] && command rm -rf -- "$x"
               done
             fi
             __ns_gk "$d" || __ns_ge sesion "$d"
             n=0; t=0
             for x in "$d"/*; do
-              [ -f "$x" ] || continue
+              builtin [ -f "$x" ] || continue
               s=$(command wc -c < "$x" 2>/dev/null) || s=0
               n=$((n + 1)); t=$((t + s))
             done
-            [ "$n" -lt @MAXF@ ] || __ns_ge archivos "$d" "$n" "$t"
-            [ "$t" -lt @MAXB@ ] || __ns_ge bytes "$d" "$n" "$t"
+            builtin [ "$n" -lt @MAXF@ ] || __ns_ge archivos "$d" "$n" "$t"
+            builtin [ "$t" -lt @MAXB@ ] || __ns_ge bytes "$d" "$n" "$t"
             f=$d/@I@.out
-            { (umask 077; set -C; : >"$f") && command chmod 600 -- "$f"; } 2>/dev/null || __ns_ge archivo "$f"
-            printf '%s' "$f"
+            { (builtin umask 077; builtin set -C; builtin : >"$f") && command chmod 600 -- "$f"; } 2>/dev/null || __ns_ge archivo "$f"
+            builtin printf '%s' "$f"
             """.ReplaceLineEndings("\n");
 
         // Una subshell justo detrás del comando: guarda su código ($? al entrar) en $1, imprime la marca F y sale con él, así que
@@ -170,15 +177,15 @@ namespace NativeSsh.Protocolo
         // posicionales ($1 código, $2 ruta, $3 bytes, $4 líneas, $5 sin salto final), que el comando no puede dejar de solo
         // lectura (una variable de solo lectura del shell también lo es en la subshell, y asignarla la abortaría).
         private static readonly string PlantillaResumen = """
-            set -- "$?"
-            { set +x +v; } 2>/dev/null
-            set +e +u +f
-            set -- "$1" @PREFIJO@-"$(command id -un 2>/dev/null)"/@S@/@I@.out
-            set -- "$1" "$2" "$(command wc -c 2>/dev/null <"$2" || printf '%s' -1)" "$(command wc -l 2>/dev/null <"$2" || printf '%s' -1)"
-            set -- "$1" "$2" "$(($3))" "$(($4))" 0
-            if [ "$3" -gt 0 ] && [ "$4" -ge 0 ] && [ "$(command tail -c 1 "$2" 2>/dev/null | command wc -l)" -eq 0 ]; then set -- "$1" "$2" "$3" "$(($4 + 1))" 1; fi
-            printf '%s_%s_F_%d_%d_%d__\n' '__NSG' '@N@' "$4" "$3" "$5"
-            exit "$1"
+            builtin set -- "$?"
+            { builtin set +x +v; } 2>/dev/null
+            builtin set +e +u +f
+            builtin set -- "$1" @PREFIJO@-"$(command id -un 2>/dev/null)"/@S@/@I@.out
+            builtin set -- "$1" "$2" "$(command wc -c 2>/dev/null <"$2" || builtin printf '%s' -1)" "$(command wc -l 2>/dev/null <"$2" || builtin printf '%s' -1)"
+            builtin set -- "$1" "$2" "$(($3))" "$(($4))" 0
+            if builtin [ "$3" -gt 0 ] && builtin [ "$4" -ge 0 ] && builtin [ "$(command tail -c 1 "$2" 2>/dev/null | command wc -l)" -eq 0 ]; then builtin set -- "$1" "$2" "$3" "$(($4 + 1))" 1; fi
+            builtin printf '%s_%s_F_%d_%d_%d__\n' '__NSG' '@N@' "$4" "$3" "$5"
+            builtin exit "$1"
             """.ReplaceLineEndings("\n");
 
         // Por un canal exec (sin el shell ni el terminal), acotado como ssh_read_file: el principio del archivo para la vista
@@ -339,6 +346,7 @@ namespace NativeSsh.Protocolo
             "shells" => $"{NoEjecutado} esta sesión ya tiene {n} shells anteriores con salidas guardadas sin borrar (shells que se cerraron tras un plazo agotado, una cancelación o una caída, o cuyo directorio no se pudo borrar con ssh_reset_shell), que es el límite. Lee lo que necesites de esos archivos y usa ssh_reset_shell o ssh_disconnect, que los borran; si un borrado falla (p. ej. un directorio sin permiso de escritura), su respuesta o la del ssh_reset_shell siguiente lo dice: arréglalo ('chmod u+w' sobre ese directorio) y vuelve a usarlos. Después vuelve a lanzar el comando.",
             "sesion" => $"{NoEjecutado} el directorio de este shell, '{ruta}', no es un directorio propio con permisos 700 (se cambió o se sustituyó). No se ha escrito nada. Usa ssh_reset_shell (el shell nuevo usa otro directorio) y vuelve a lanzar el comando.",
             "archivos" or "bytes" => $"{NoEjecutado} este shell ya tiene {n} archivo(s) de salida guardados ({t} bytes) en '{ruta}' y el límite es de {MaxArchivosPorShell} archivos y {MaxBytesPorShell / (1024 * 1024)} MiB por shell. Borra los que ya no necesites (ssh_exec con 'rm -- <ruta>') o usa ssh_reset_shell (borra todos y abre un shell nuevo), y vuelve a lanzarlo.",
+            "prep" => $"{NoEjecutado} la preparación del archivo se interrumpió sin dar el motivo, por algo que un comando anterior dejó en el shell (p. ej. una variable de solo lectura con el nombre de una de las suyas). Usa ssh_reset_shell (abre un shell limpio) y vuelve a lanzar el comando.",
             "archivo" => $"{NoEjecutado} no se pudo crear el archivo '{ruta}' con permisos 600 (sin espacio o sin permiso en /tmp, o ya existía: nunca se pisa uno existente).",
             _ => $"{NoEjecutado} no se pudo preparar el archivo de salida ({codigo})."
         };
@@ -351,10 +359,12 @@ namespace NativeSsh.Protocolo
             return barra <= 0 ? "/" : prefijo[..barra];
         }
 
-        // Sin marca A ni E: la preparación del archivo se cortó sin decir por qué (el envoltorio solo ejecuta el comando después
-        // de imprimir la A). Lo puede provocar algo que dejó un comando anterior en el shell y que la subshell de la
-        // preparación hereda: una variable de solo lectura con el nombre de una de las suyas o una función con el de una orden.
-        public const string MensajeSinPreparacion = NoEjecutado + " la preparación del archivo se interrumpió sin dar el motivo, por algo que un comando anterior dejó en el shell (p. ej. una variable de solo lectura o una función con el nombre de una orden). Usa ssh_reset_shell (abre un shell limpio) y vuelve a lanzar el comando.";
+        // Sin ninguna marca (ni A, ni E, ni F): algo que un comando anterior dejó en el shell (p. ej. una función 'builtin')
+        // interceptó las del envoltorio, y no se sabe si el comando se ejecutó (la E 'prep' dice cuándo no llegó a hacerlo). El
+        // archivo, si se creó, está en el directorio de este shell, que ssh_reset_shell borra; el usuario del servidor no se
+        // conoce aquí.
+        public static string DescribirSinMarcas(string prefijo, Guid idShell, string idPeticion) =>
+            $"No se pudo confirmar si el comando se ejecutó: con guardarSalida=true su salida va a un archivo del servidor, y no llegó ninguna de las marcas con que el envoltorio dice la ruta del archivo, el recuento o por qué no lo ejecutó: algo que un comando anterior dejó en el shell las interceptó (p. ej. una función con el nombre 'builtin'). Si se ejecutó, su salida puede estar en '{prefijo}-<usuario>/{idShell:N}/{idPeticion}.out' (<usuario>: el que da 'id -un' en el servidor); compruébalo y léela antes de usar ssh_reset_shell, que la borra. Después usa ssh_reset_shell (abre un shell limpio) y, si no se ejecutó, vuelve a lanzarlo.";
 
         private const string NoEjecutado = "El comando NO se ejecutó: con guardarSalida=true su salida va a un archivo del servidor y no se pudo preparar:";
 

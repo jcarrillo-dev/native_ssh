@@ -100,5 +100,48 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine($"{r.Estado} {r.CodigoSalida} {r.Lineas} {r.Bytes} '{r.Salida}' '{r.Aviso}'");
             _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 0, 3L, 6L));
         }
+
+        // Funciones con el nombre de las órdenes que usa el envoltorio ('printf', 'set', 'exit', '['), definidas
+        // por un comando anterior, no cambian el resultado: el comando se ejecuta con su código, su archivo y su recuento.
+        [Theory]
+        [InlineData("printf() { case \"$2\" in __NSG) : ;; *) builtin printf \"$@\" ;; esac; }")]
+        [InlineData("set() { :; }")]
+        [InlineData("exit() { :; }")]
+        [InlineData("[() { return 1; }")]
+        public async Task FuncionesConNombreDeOrden_ElResultadoEsElDelComando(string funcion)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string testigo = Path.Combine(_raiz, "ejecutado");
+            _ = await h.EjecutarAsync(Destino, funcion, esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, $"command touch '{testigo}'; echo LINEA_REAL; (command exit 7)");
+
+            // Assert
+            salida.WriteLine($"{r.Estado} {r.CodigoSalida} {r.Archivo} {r.Lineas} {r.Bytes} '{r.Salida}' '{r.Aviso}'");
+            _ = File.Exists(testigo).Should().BeTrue();
+            _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 7, 1L, 11L));
+        }
+
+        // Si no llega ninguna marca (aquí, una función 'builtin' que se traga las del envoltorio), no se sabe si el comando se
+        // ejecutó: la respuesta no afirma que no, dice dónde estaría su salida y que ssh_reset_shell la borra.
+        [Fact]
+        public async Task SinNingunaMarca_NoAfirmaQueNoSeEjecuto()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string testigo = Path.Combine(_raiz, "ejecutado");
+            _ = await h.EjecutarAsync(Destino, "builtin() { if command [ \"$1\" = printf ] && command [ \"$3\" = __NSG ]; then return 0; fi; command builtin \"$@\"; }", esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, $"touch '{testigo}'; echo otro");
+
+            // Assert
+            salida.WriteLine($"{r.Estado} {r.CodigoSalida} {r.Archivo} '{r.Salida}' '{r.Aviso}'");
+            _ = File.Exists(testigo).Should().BeTrue();
+            _ = r.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = r.Aviso.Should().NotContain("NO se ejecutó").And.Contain("No se pudo confirmar").And.Contain($"{Prefijo}-<usuario>/").And.Contain($"/{r.Id}.out").And.Contain("ssh_reset_shell");
+        }
     }
 }

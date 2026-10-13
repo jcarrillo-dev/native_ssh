@@ -32,6 +32,7 @@ namespace NativeSsh.Protocolo
         private InformeGuardado _informe = new(null, null, null, null, null);
         private bool _isVistaA;
         private bool _isVistaF;
+        private bool _isVistaE;
 
         public FiltroMarcasGuardado(Guid nonce, BufferSalida salida)
         {
@@ -163,10 +164,10 @@ namespace NativeSsh.Protocolo
             Retener(ventana[^retenidos..]);
         }
 
-        // El envoltorio deja como mucho una A, después una F, o, si no llegó a ejecutar el comando, una E antes de la A. Otra
-        // marca con el nonce (una segunda A, una E tras la A, una F antes de la A o una segunda F) solo la pudo imprimir el propio
-        // comando o un proceso suyo: se quita igual de la salida, pero no cambia el archivo, el recuento ni el estado. Bajo
-        // _candadoInforme.
+        // El envoltorio deja como mucho una A, después una F, o, si no llegó a ejecutar el comando, una E antes de la A (la del
+        // motivo y, si la preparación se cortó sin darlo, la genérica 'prep': cuenta solo la primera). Otra marca con el nonce
+        // (una segunda A, una E tras la A, una F antes de la A o una segunda F) solo la pudo imprimir el propio comando o un
+        // proceso suyo: se quita igual de la salida, pero no cambia el archivo, el recuento ni el estado. Bajo _candadoInforme.
         private bool IsAceptada(byte tipo)
         {
             bool isAceptada;
@@ -181,7 +182,8 @@ namespace NativeSsh.Protocolo
                     _isVistaF |= isAceptada;
                     break;
                 default:
-                    isAceptada = !_isVistaA;
+                    isAceptada = !_isVistaA && !_isVistaE;
+                    _isVistaE |= isAceptada;
                     break;
             }
 
