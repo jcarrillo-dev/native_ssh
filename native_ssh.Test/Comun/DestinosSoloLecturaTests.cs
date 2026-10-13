@@ -529,6 +529,25 @@ namespace NativeSsh.Test.Comun
             _ = mensaje.Should().Be("Rechazado: root@otro.ejemplo:22: no se pudo comprobar si es de solo lectura (no se resolvió noexiste.ejemplo, de la entrada 'fantasma' de NATIVE_SSH_SOLO_LECTURA); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de NATIVE_SSH_SOLO_LECTURA, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh.");
         }
 
+        // El rechazo por una entrada que no se resuelve la nombra tal como se escribió, con su usuario y su puerto (no solo el
+        // servidor), para que se pueda encontrar en NATIVE_SSH_SOLO_LECTURA; también si es un alias.
+        [Theory]
+        [InlineData("deploy@nadie.ejemplo:2222", "nadie.ejemplo")]
+        [InlineData("deploy@fantasma:2222", "noexiste.ejemplo")]
+        public async Task EntradaConUsuarioYPuertoQueNoSeResuelve_ElRechazoLaNombraEntera(string entrada, string noResuelto)
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion(entrada);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("deploy@10.0.0.6:2222"), CancellationToken.None);
+            string mensaje = DestinosSoloLectura.MensajeRechazo(comprobacion, "deploy@10.0.0.6:2222", "ssh_exec")!;
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, noResuelto, Entrada: entrada));
+            _ = mensaje.Should().Contain($"(no se resolvió {noResuelto}, de la entrada '{entrada}' de NATIVE_SSH_SOLO_LECTURA)");
+        }
+
         // Una entrada que es un alias de la configuración de ssh se compara por el HostName al que lleva (por texto y, si es un
         // nombre, por sus direcciones), conservando el usuario y el puerto de la entrada (sin ellos, cualquiera); el alias
         // como texto pedido sigue contando. El nombre del alias no se busca en el DNS: no es adonde conecta ssh.
