@@ -24,7 +24,13 @@
        NATIVE_SSH_SOLO_LECTURA por familia): por el RID si lo hay (win-* windows, linux-* linux, los demás unix: osx, freebsd...)
        y si no, el del sistema donde se compila. Solo entra en el binario lo de su sistema. Se puede fijar con
        -p:NativeSshSistema=windows|linux|unix (p. ej. para compilar y probar en Linux lo de Windows). Define NATIVE_SSH_WINDOWS,
-       NATIVE_SSH_LINUX o NATIVE_SSH_UNIX para las pruebas propias de cada sistema. -->
+       NATIVE_SSH_LINUX o NATIVE_SSH_UNIX para las pruebas propias de cada sistema. Una variable de entorno NativeSshSistema
+       no lo fija (MSBuild convierte las variables de entorno en propiedades): si el valor viene de ella se descarta; si
+       además se pasa -p:NativeSshSistema, esa propiedad global no se puede pisar y es la que vale. -->
+  <PropertyGroup>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' != '' and '$(NativeSshSistema)' == '$([System.Environment]::GetEnvironmentVariable(`NativeSshSistema`))'"></NativeSshSistema>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(NativeSshSistema)' == ''">
     <NativeSshSistema Condition="'$(RuntimeIdentifier)' != '' and $(RuntimeIdentifier.StartsWith('win-'))">windows</NativeSshSistema>
     <NativeSshSistema Condition="'$(RuntimeIdentifier)' != '' and '$(NativeSshSistema)' == '' and $(RuntimeIdentifier.StartsWith('linux-'))">linux</NativeSshSistema>
