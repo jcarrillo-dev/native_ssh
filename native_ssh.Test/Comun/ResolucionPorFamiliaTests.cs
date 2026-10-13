@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using FluentAssertions;
@@ -174,7 +175,7 @@ namespace NativeSsh.Test.Comun
         {
             // Arrange
             string ruta = Path.GetTempFileName();
-            await File.WriteAllTextAsync(ruta, "127.0.0.1 localhost\n10.0.0.5\tprod  PROD.ejemplo. # máquina protegida\n# 10.0.0.6 prod.ejemplo\nfd00::5 prod.ejemplo\nno-es-ip prod.ejemplo\n10.0.0.7 prod.ejemplo.com\n10.0.0.9 otro # prod.ejemplo\n");
+            await File.WriteAllTextAsync(ruta, "127.0.0.1 localhost\n10.0.0.5\tprod  PROD.ejemplo # máquina protegida\n# 10.0.0.6 prod.ejemplo\nfd00::5 prod.ejemplo\nno-es-ip prod.ejemplo\n10.0.0.7 prod.ejemplo.com\n10.0.0.9 otro # prod.ejemplo\n10.0.0.8 prod.ejemplo.\n");
 
             try
             {
@@ -187,6 +188,96 @@ namespace NativeSsh.Test.Comun
                 _ = direcciones.Should().Equal(IPAddress.Parse("10.0.0.5"), IPAddress.Parse("fd00::5"));
                 _ = ninguna.Should().BeEmpty();
                 _ = sinFichero.Should().BeEmpty();
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        // El fichero hosts se lee como glibc (medido con glibc en red propia): la dirección solo como la acepta inet_pton
+        // (IPv4 con cuatro números decimales sin ceros a la izquierda; IPv6 sin zona ni corchetes), el nombre sin punto final
+        // y sin mayúsculas solo en ASCII, separados por cualquier blanco de C (también \v, \f y \r), '#' o un NUL acaban la
+        // línea, que solo acaba en '\n' y puede ser tan larga como haga falta. Una línea que glibc no usa para el nombre no
+        // cuenta como estar en el fichero (no da la tolerancia de /etc/hosts); una que sí usa, cuenta.
+        [Theory]
+        [InlineData("10.1 prod.ejemplo\n")]
+        [InlineData("0x0a630007 prod.ejemplo\n")]
+        [InlineData("010.099.000.007 prod.ejemplo\n")]
+        [InlineData("10.99.0.256 prod.ejemplo\n")]
+        [InlineData("10.99.0.7. prod.ejemplo\n")]
+        [InlineData("10.99.0.7 prod.ejemplo.\n")]
+        [InlineData("fe80::1%lo prod.ejemplo\n")]
+        [InlineData("[fd00::5] prod.ejemplo\n")]
+        [InlineData("fd00::5/64 prod.ejemplo\n")]
+        [InlineData("::ffff:010.0.0.1 prod.ejemplo\n")]
+        [InlineData("10.99.0.7 prodı.ejemplo\n")]
+        [InlineData("10.99.0.7 otro\0 prod.ejemplo\n")]
+        [InlineData("10.99.0.7 otro#prod.ejemplo\n")]
+        public void DireccionesEnHosts_LineaQueGlibcNoUsa_NoCuenta(string linea)
+        {
+            // Arrange
+            string ruta = Path.GetTempFileName();
+            File.WriteAllText(ruta, "127.0.0.1 localhost\n" + linea);
+
+            try
+            {
+                // Act
+                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+
+                // Assert
+                _ = direcciones.Should().BeEmpty();
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        [Theory]
+        [InlineData("10.99.0.7\vprod.ejemplo\n", "10.99.0.7")]
+        [InlineData("10.99.0.7\fprod.ejemplo\n", "10.99.0.7")]
+        [InlineData("10.99.0.7 prod.ejemplo\r\n", "10.99.0.7")]
+        [InlineData("10.99.0.7 otro\rprod.ejemplo\n", "10.99.0.7")]
+        [InlineData("10.99.0.7\r10.99.0.8 prod.ejemplo\n", "10.99.0.7")]
+        [InlineData("10.99.0.7 Prod.Ejemplo", "10.99.0.7")]
+        [InlineData("0.0.0.0 prod.ejemplo\n", "0.0.0.0")]
+        [InlineData("fd00:0:0::5 prod.ejemplo\n", "fd00::5")]
+        [InlineData("::ffff:10.99.0.7 prod.ejemplo\n", "::ffff:10.99.0.7")]
+        public void DireccionesEnHosts_LineaQueGlibcUsa_Cuenta(string linea, string direccion)
+        {
+            // Arrange
+            string ruta = Path.GetTempFileName();
+            File.WriteAllText(ruta, "127.0.0.1 localhost\n" + linea);
+
+            try
+            {
+                // Act
+                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+
+                // Assert
+                _ = direcciones.Should().Equal(IPAddress.Parse(direccion));
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        [Fact]
+        public void DireccionesEnHosts_LineaLarga()
+        {
+            // Arrange
+            string ruta = Path.GetTempFileName();
+            File.WriteAllText(ruta, "10.99.0.7 " + string.Join(' ', Enumerable.Range(0, 3000).Select(i => $"a{i}.x")) + " prod.ejemplo\n");
+
+            try
+            {
+                // Act
+                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+
+                // Assert
+                _ = direcciones.Should().Equal(IPAddress.Parse("10.99.0.7"));
             }
             finally
             {

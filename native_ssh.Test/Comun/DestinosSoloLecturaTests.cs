@@ -762,8 +762,8 @@ namespace NativeSsh.Test.Comun
         [Theory]
         [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.5", true)]
         [InlineData("10.0.0.5 prod.ejemplo\n", "10.0.0.5", null, "root@10.0.0.6", false)]
-        [InlineData("10.0.0.5\tlocal  PROD.ejemplo. # máquina protegida\n", null, null, "root@10.0.0.6", false)]
-        [InlineData("10.0.0.5\tlocal  PROD.ejemplo. # máquina protegida\n", null, null, "root@10.0.0.5", true)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # máquina protegida\n", null, null, "root@10.0.0.6", false)]
+        [InlineData("10.0.0.5\tlocal  PROD.ejemplo # máquina protegida\n", null, null, "root@10.0.0.5", true)]
         [InlineData("fd00::5 prod.ejemplo\n", null, null, "root@[fd00::5]:22", true)]
         [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.7", true)]
         [InlineData("10.0.0.7 prod.ejemplo\n", "10.0.0.5", "", "root@10.0.0.5", true)]
@@ -777,6 +777,44 @@ namespace NativeSsh.Test.Comun
 
             // Assert
             _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        // Solo se recuerdan las resoluciones completas: lo tolerado por estar el nombre en /etc/hosts (una familia falló) se
+        // vuelve a resolver en cada comprobación, como un fallo; lo completo, no (5 minutos).
+        [Theory]
+        [InlineData(true, 2)]
+        [InlineData(false, 1)]
+        public async Task ResueltoConTolerancia_NoSeRecuerda(bool isFalloIpv6, int consultasEsperadas)
+        {
+            // Arrange
+            int consultas = 0;
+            Task<DireccionesPorFamilia> Contador(string nombre, CancellationToken plazo)
+            {
+                _ = Interlocked.Increment(ref consultas);
+                return Task.FromResult(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], isFalloIpv6 ? null : []));
+            }
+
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllTextAsync(ruta, "10.0.0.5 prod.ejemplo\n");
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, Contador, ruta).Should().BeTrue();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura primera = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+                bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.6"));
+                ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
+
+                // Assert
+                _ = primera.Should().Be(new ComprobacionSoloLectura(false, null));
+                _ = segunda.Should().Be(primera);
+                _ = sinRed.Should().Be(isFalloIpv6 ? null : false);
+                _ = consultas.Should().Be(consultasEsperadas);
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
         }
 
         // Una familia que no responde (getaddrinfo colgado, no se puede cancelar) cuenta como fallida al vencer el plazo de
@@ -825,6 +863,9 @@ namespace NativeSsh.Test.Comun
         [InlineData("10.0.0.8 otro.ejemplo #prod.ejemplo\n")]
         [InlineData("10.0.0.8 otro.ejemplo # prod.ejemplo\n")]
         [InlineData("prod.ejemplo 10.0.0.5\n")]
+        [InlineData("10.1 prod.ejemplo\n")]
+        [InlineData("10.0.0.5 prod.ejemplo.\n")]
+        [InlineData("fe80::1%lo prod.ejemplo\n")]
         public async Task NombreQueNoEstaEnHosts_ElFalloDeUnaFamiliaFallaCerrado(string hosts)
         {
             // Act
