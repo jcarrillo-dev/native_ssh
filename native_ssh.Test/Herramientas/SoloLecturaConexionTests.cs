@@ -247,6 +247,32 @@ namespace NativeSsh.Test.Herramientas
             _ = ComandosEnviados("b.txt").Should().Be(0);
         }
 
+        // Lo mismo con guardarSalida: el envoltorio no se compone ni se envía (ningún archivo ni directorio en el servidor) y la
+        // respuesta es el rechazo, sin archivo, sin recuento y sin decir que no se sabe si se ejecutó.
+        [Fact]
+        public async Task GuardarSalidaConConexionHechaTrasLaComprobacion_ALaProtegida_NoEnviaNadaYDiceElRechazo()
+        {
+            // Arrange
+            _dns["ventana.ejemplo"] = IPAddress.Parse("10.0.0.9");
+            _fabrica.DireccionRemota = _ => IPAddress.Parse("10.0.0.5");
+            HerramientasSsh herramientas = Crear("10.0.0.5", isConConfiguracion: false);
+
+            // Act
+            ResultadoComando inicial = await herramientas.EjecutarAsync("ventana.ejemplo", "touch marca", esperarSegundos: 10, guardarSalida: true).ComoComando();
+            await _gestor!.BuscarPeticion(inicial.Id).Finalizacion.WaitAsync(Limite);
+            ResultadoComando resultado = await herramientas.LeerSalidaAsync(inicial.Id).ComoComando();
+
+            // Assert
+            _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = resultado.Aviso.Should().Contain("Rechazado: la sesión de ana@ventana.ejemplo:22 está conectada a 10.0.0.5, que está en modo solo lectura (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que el comando de ssh_exec no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarlo).")
+                .And.NotContain("No se pudo confirmar").And.NotContain(".out");
+            _ = resultado.Archivo.Should().BeNull();
+            _ = resultado.Lineas.Should().BeNull();
+            _ = resultado.Bytes.Should().BeNull();
+            _ = ComandosEnviados("touch marca").Should().Be(0);
+            _ = ComandosEnviados("native_ssh").Should().Be(0);
+        }
+
         // Lo mismo con ssh_write_file como primera llamada: la sesión no la envía y el error es el rechazo (no «no se pudo
         // abrir»).
         [Fact]

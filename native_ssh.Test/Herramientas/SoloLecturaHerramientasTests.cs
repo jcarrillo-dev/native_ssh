@@ -73,6 +73,20 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Conexiones.Should().Be(0);
         }
 
+        // ssh_exec con guardarSalida también se rechaza entero, antes de registrar la petición o conectar: nada que limpiar.
+        [Fact]
+        public async Task GuardarSalida_DestinoDeSoloLectura_SeRechazaSinRegistrarNiConectar()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EjecutarAsync("prod", "echo hola", guardarSalida: true)).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Be(Rechazo("ssh_exec"));
+            _ = _gestor.ListarPeticiones().Should().BeEmpty();
+            _ = _gestor.ListarSesiones().Should().BeEmpty();
+            _ = _fabrica.Conexiones.Should().Be(0);
+        }
+
         // ssh_input sobre un comando del destino (creado sin pasar por ssh_exec): rechazado sin enviar el texto.
         [Fact]
         public async Task Input_DestinoDeSoloLectura_SeRechazaSinEnviar()
