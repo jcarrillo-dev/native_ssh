@@ -38,7 +38,11 @@ namespace NativeSsh.Ssh
     // - Sin el programa ssh: el destino se usa tal cual (lo de antes) y un aviso en el log, una sola vez.
     // - ssh hereda el entorno sin las variables secretas (VariablesSecretas: NATIVE_SSH_PASSWORD, NATIVE_SSH_PASSPHRASE,
     //   NATIVE_SSH_TOKEN_HTTP; un Match exec las vería), y ${VAR} en un IdentityFile las trata como no definidas.
-    public sealed class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
+    // - La entrada de ssh es una tubería que se cierra nada más arrancar (fin de fichero, como /dev/null o NUL): nunca la
+    //   heredada, que es el canal MCP de native_ssh en modo stdio. Process de .NET no permite darle NUL sin redirigirla.
+    // - Lo que cambia por sistema (opciones de ssh) va en ResolutorConfiguracionSsh.<Sistema>.cs, compilado solo para el
+    //   suyo (NativeSshSistema en Directory.Build.props): solo Windows tiene (-T).
+    public sealed partial class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
     {
         private const int ErrorNoExiste = 2; // ENOENT
         private const int MaxCaracteresError = 400;
@@ -300,10 +304,15 @@ namespace NativeSsh.Ssh
             return true;
         }
 
+        // Las opciones de ssh propias del sistema para el que se compila, delante de las demás (sin fichero de ese sistema,
+        // ninguna).
+        static partial void AnadirOpcionesDelSistema(List<string> argumentos);
+
         // false: no existe el programa ssh (desde entonces, los destinos se usan tal cual). Lanza si ssh falla o no termina.
         private bool TryEjecutar(List<string> argumentos, string servidor, [NotNullWhen(true)] out string? salida)
         {
             salida = null;
+            AnadirOpcionesDelSistema(argumentos);
             // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid.
             string? programa = OperatingSystem.IsWindows() ? opciones.BinarioSsh : BuscarPrograma(opciones.BinarioSsh);
             if (programa is null)
