@@ -6,7 +6,11 @@ namespace NativeSsh.Ssh
     // con errores, un -F que no existe o, con la entrada en una tubería, «Pseudo-terminal will not be allocated because
     // stdin is not a terminal.») no terminaba y agotaba el plazo. Por eso sus mensajes van a un fichero propio de cada
     // ejecución (-E), que se lee como su salida de errores y se borra; y -T (no pedir terminal), para que el mensaje del
-    // terminal ni siquiera se escriba. En los demás sistemas no hace falta.
+    // terminal ni siquiera se escriba. En los demás sistemas no hace falta. Lo que lanza un Match exec no escribe en ese
+    // fichero, sino en la salida de errores de ssh (la tubería), y ssh lo ejecuta mientras lee la configuración, antes de
+    // terminar con su error: en el error, la salida de errores va delante y los mensajes de ssh del fichero detrás, en el
+    // orden en que ocurren en el caso normal (si ssh escribe algo antes del Match exec, como sus mensajes de depuración,
+    // ese orden entre los dos no se puede saber y sale detrás).
     public sealed partial class ResolutorConfiguracionSsh
     {
         static partial void AnadirOpcionesDelSistema(List<string> argumentos, ref string? registro)
@@ -19,8 +23,11 @@ namespace NativeSsh.Ssh
         {
             try
             {
-                if (registro is not null && File.Exists(registro))
-                    errores = File.ReadAllText(registro) + errores;
+                if (registro is null || !File.Exists(registro))
+                    return;
+
+                string mensajes = File.ReadAllText(registro);
+                errores = errores.Length == 0 || errores.EndsWith('\n') ? errores + mensajes : errores + Environment.NewLine + mensajes;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
