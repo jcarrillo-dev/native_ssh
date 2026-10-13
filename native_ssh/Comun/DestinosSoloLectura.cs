@@ -84,13 +84,13 @@ namespace NativeSsh.Comun
         // resolver: el del destino (las dos familias juntas, como la conexión). resolverEntrada: el de las entradas, por
         // familia; sin él, el de resolver repartido por familia (un fallo es de las dos) si se dio, y si no, getaddrinfo por
         // familia (ResolucionPorFamilia). rutaHosts: el fichero con el formato de /etc/hosts donde se buscan también las
-        // entradas; sin resolvers propios, /etc/hosts.
+        // entradas; sin resolvers propios, el del sistema (/etc/hosts; en Windows, %SystemRoot%\System32\drivers\etc\hosts).
         private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver, Func<string, CancellationToken, Task<DireccionesPorFamilia>>? resolverEntrada, string? rutaHosts)
         {
             _entradas = entradas;
             _resolver = resolver ?? Dns.GetHostAddressesAsync;
             _resolverEntrada = resolverEntrada ?? (resolver is null ? ResolucionPorFamilia.ResolverAsync : (nombre, token) => RepartirAsync(resolver, nombre, token));
-            _rutaHosts = rutaHosts ?? (resolver is null && resolverEntrada is null ? "/etc/hosts" : null);
+            _rutaHosts = rutaHosts ?? (resolver is null && resolverEntrada is null ? ResolucionPorFamilia.RutaHostsDelSistema : null);
             Entradas = Array.ConvertAll(entradas, e => e.Texto);
         }
 

@@ -703,6 +703,28 @@ namespace NativeSsh.Test.Comun
             _ = comprobacion.Should().Be(NoResuelta);
         }
 
+        // B1 fuera de Linux (prefusión-quater): en Windows y en macOS la entrada también se resuelve por familia, así que si
+        // el DNS falla solo en AAAA la IPv6 de la máquina protegida se rechaza (con las dos familias juntas, AF_UNSPEC daba
+        // solo la A como si fuera todo y la IPv6 escribía).
+        [Theory]
+        [InlineData(SistemaNoLinuxEnum.Windows, "root@[fd00::5]:22")]
+        [InlineData(SistemaNoLinuxEnum.Windows, "root@10.0.0.6")]
+        [InlineData(SistemaNoLinuxEnum.Otro, "root@[fd00::5]:22")]
+        [InlineData(SistemaNoLinuxEnum.Otro, "root@10.0.0.6")]
+        public async Task FueraDeLinux_FalloSoloEnAaaa_LaEntradaNoSeResuelve(SistemaNoLinuxEnum sistema, string destino)
+        {
+            // Arrange
+            static IPAddress[] Dns(string nombre, AddressFamily familia) =>
+                familia == AddressFamily.InterNetworkV6 ? throw new SocketException((int)SocketError.TryAgain) : [IPAddress.Parse("10.0.0.5")];
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, sistema, Dns, plazo)).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.Should().Be(NoResuelta);
+        }
+
         // Una familia sin direcciones (NODATA: un host solo IPv4 o solo IPv6) es legítima: la entrada vale por la otra y los
         // demás destinos no se bloquean. Sin direcciones en ninguna de las dos, no se resuelve.
         [Theory]
