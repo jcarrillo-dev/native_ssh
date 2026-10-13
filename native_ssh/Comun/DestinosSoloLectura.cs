@@ -7,12 +7,14 @@ namespace NativeSsh.Comun
 {
     // Resultado de comparar un destino con NATIVE_SSH_SOLO_LECTURA. NoResuelto: el nombre (de una entrada o del destino) que no
     // se pudo resolver; entonces IsSoloLectura es true aunque no conste que sea la misma máquina (ante la duda, se deniega).
+    // Entrada: si NoResuelto es el nombre de una entrada (o el HostName de una entrada que es un alias) que no se resolvió,
+    // la entrada tal como se escribió (el rechazo la nombra para que se pueda corregir); null si es el destino.
     // IsCupoLleno: no se llegó a intentar resolverlo (demasiadas resoluciones en curso), no es que el DNS fallara.
     // DireccionConectada: es de solo lectura por la dirección a la que está conectada la sesión (ExtremoConectado), aunque ni
     // el texto pedido ni lo que resuelve ahora el nombre lo sean. IsDireccionDesconocida: la sesión está conectada y no se sabe
     // a qué dirección (también se deniega). IsErrorConfiguracion: NoResuelto es una entrada que ssh -G no pudo leer (no se
     // sabe a qué máquina lleva).
-    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false, IPAddress? DireccionConectada = null, bool IsDireccionDesconocida = false, bool IsErrorConfiguracion = false);
+    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false, IPAddress? DireccionConectada = null, bool IsDireccionDesconocida = false, bool IsErrorConfiguracion = false, string? Entrada = null);
 
     // La conexión abierta de una sesión: Direccion es el extremo remoto de su socket (IConexionSsh.DireccionRemota), null si
     // no se sabe.
@@ -39,16 +41,17 @@ namespace NativeSsh.Comun
     // - la dirección a la que está conectada de verdad la sesión, si ya lo está (ExtremoConectado: el extremo remoto del
     //   socket; FabricaConexionSsh conecta a una dirección ya resuelta, así que es exactamente esa): una sesión abierta
     //   cuando el nombre apuntaba a una máquina protegida sigue protegida aunque el nombre apunte ahora a otra.
-    // Si el DNS dice que el nombre de una entrada no existe (HostNotFound: NXDOMAIN o un nombre sin direcciones, medido en
-    // Linux), la entrada no es ninguna dirección: solo coincide como texto y no hace fallar a nadie. Si un nombre que haría
-    // falta comparar no se resuelve por otra causa (TryAgain: el DNS falla o no responde; plazo; cualquier otro error), si
-    // ssh -G no puede leer una entrada, o si la sesión está conectada y no se sabe a qué dirección, el destino se trata como
-    // de solo lectura (falla cerrado). Solo se recuerdan, 5 minutos, las resoluciones
-    // correctas de las entradas; el destino se resuelve en cada comprobación. Además de la comprobación de cada herramienta
-    // (antes de conectar), la sesión vuelve a comparar la dirección de la conexión justo antes de enviar una escritura al
-    // shell (ComprobarConexionAsync): si la sesión se abre o se reabre después de la comprobación y el nombre resuelve
-    // entonces a una máquina protegida, la escritura tampoco se envía. Lo que queda: el nombre de una entrada que pase a
-    // apuntar a otra máquina se ve, como tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no cuenta al comparar.
+    // Si un nombre que haría falta comparar no se resuelve, sea cual sea la causa (también HostNotFound: con el nsswitch de
+    // systemd, 'resolve [!UNAVAIL=return]', un SERVFAIL o un REFUSED llegan como HostNotFound, igual que un NXDOMAIN, así que
+    // la clase del error no dice si el nombre existe), si ssh -G no puede leer una entrada, o si la sesión está conectada y no
+    // se sabe a qué dirección, el destino se trata como de solo lectura (falla cerrado): una entrada mal escrita rechaza las
+    // escrituras con su usuario y puerto hasta que se corrija, y el rechazo la nombra. Solo se recuerdan, 5 minutos, las
+    // resoluciones correctas de las entradas; el destino se resuelve en cada comprobación. Además de la comprobación de
+    // cada herramienta (antes de conectar), la sesión vuelve a comparar la dirección de la conexión justo antes de enviar
+    // una escritura al shell (ComprobarConexionAsync): si la sesión se abre o se reabre después de la comprobación y el
+    // nombre resuelve entonces a una máquina protegida, la escritura tampoco se envía. Lo que queda: el nombre de una
+    // entrada que pase a apuntar a otra máquina se ve, como tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no
+    // cuenta al comparar.
     // Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso (las demás no se lanzan y el
     // rechazo lo dice), para que un DNS colgado no acumule hilos bloqueados.
     public sealed class DestinosSoloLectura
@@ -80,8 +83,7 @@ namespace NativeSsh.Comun
         // Las entradas tal como se configuraron (ssh_status las muestra).
         public IReadOnlyList<string> Entradas { get; }
 
-        // IsInexistente: el DNS dice que el nombre no existe (HostNotFound); Direcciones es null.
-        private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno, bool IsInexistente = false);
+        private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno);
 
         // Escrito: el servidor de la entrada tal como se escribió (normalizado), con el que se comparan los textos pedidos;
         // Servidor: el que se compara con el destino, el HostName si la entrada es un alias de la configuración de ssh (si
@@ -251,16 +253,16 @@ namespace NativeSsh.Comun
             string? noResuelto = isResolverDestino && direcciones is null ? servidor : null;
             bool isCupoLleno = destinoResuelto.IsCupoLleno;
             bool isErrorConfiguracion = false;
+            string? entradaNoResuelta = null;
             for (int i = 0; i < resueltas.Length; i++)
             {
-                // Una entrada cuyo nombre no existe no es ninguna dirección: ya se comparó como texto y no cuenta más.
-                if (resueltas[i].IsInexistente)
-                    continue;
-
                 if (resueltas[i].Direcciones is not { } deLaEntrada)
                 {
+                    // La entrada se nombra solo si su nombre no se resolvió (no si ssh -G no la pudo leer ni si no se llegó a
+                    // intentar por el cupo: esos mensajes ya dicen lo que pasa).
+                    bool isFalloDns = !porResolver[i].IsIlegible && !resueltas[i].IsCupoLleno;
                     if (noResuelto is null)
-                        (noResuelto, isCupoLleno, isErrorConfiguracion) = porResolver[i].IsIlegible ? (porResolver[i].Escrito, false, true) : (porResolver[i].Servidor, resueltas[i].IsCupoLleno, false);
+                        (noResuelto, isCupoLleno, isErrorConfiguracion, entradaNoResuelta) = porResolver[i].IsIlegible ? (porResolver[i].Escrito, false, true, null) : (porResolver[i].Servidor, resueltas[i].IsCupoLleno, false, isFalloDns ? porResolver[i].Texto : null);
                 }
                 else if (conectada is not null && deLaEntrada.Contains(conectada))
                     return new ComprobacionSoloLectura(true, null, DireccionConectada: conectada);
@@ -268,7 +270,7 @@ namespace NativeSsh.Comun
                     return new ComprobacionSoloLectura(true, null);
             }
 
-            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno, IsErrorConfiguracion: isErrorConfiguracion);
+            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno, IsErrorConfiguracion: isErrorConfiguracion, Entrada: entradaNoResuelta);
         }
 
         // Las entradas con el HostName que les da la configuración de ssh, todas a la vez (ssh -G puede tardar hasta su plazo
@@ -391,7 +393,7 @@ namespace NativeSsh.Comun
         // (abrir el shell, la lectura de ssh_replace_file_content): el mensaje dice que no se envió la escritura, no «nada».
         public static string? MensajeRechazo(ComprobacionSoloLectura comprobacion, string clave, string herramienta, bool isEnSesion = false) => comprobacion switch
         {
-            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion, isEnSesion),
+            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion, isEnSesion, comprobacion.Entrada),
             { IsDireccionDesconocida: true } => MensajeNoComprobado(clave, herramienta, null, isEnSesion: isEnSesion),
             { IsSoloLectura: true } => MensajeSoloLectura(clave, herramienta, comprobacion.DireccionConectada, isEnSesion),
             _ => null
@@ -405,16 +407,19 @@ namespace NativeSsh.Comun
 
         // noResuelto: el nombre que no se resolvió (null: la sesión está conectada y no se sabe a qué dirección). isCupoLleno:
         // el nombre no se llegó a resolver (demasiadas resoluciones a la vez), no es que el DNS fallara. isErrorConfiguracion:
-        // noResuelto es una entrada que ssh -G no pudo leer.
-        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false)
+        // noResuelto es una entrada que ssh -G no pudo leer. entrada: noResuelto es el nombre (o el HostName) de esa entrada de
+        // NATIVE_SSH_SOLO_LECTURA, que no se resolvió: el mensaje la nombra y dice qué hacer (corregirla o comprobar el DNS).
+        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false, string? entrada = null)
         {
             string causa = noResuelto is null ? "no se sabe a qué dirección está conectada su sesión"
                 : isErrorConfiguracion ? $"no se pudo leer la entrada {noResuelto} con la configuración de ssh (ssh -G)"
                 : isCupoLleno ? $"no se llegó a resolver {noResuelto}: demasiadas resoluciones a la vez"
+                : entrada is not null ? $"no se resolvió {noResuelto}, de la entrada '{entrada}' de {Variable}"
                 : $"no se resolvió {noResuelto}";
             string cuando = noResuelto is null ? "la comprobación se repite en cada llamada."
                 : isErrorConfiguracion ? "la comprobación se repite en cada llamada y pasará cuando ssh -G pueda leer esa entrada (quien configura native_ssh debe revisar su configuración de ssh)."
                 : isCupoLleno ? "vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada."
+                : entrada is not null ? $"la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de {Variable}, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh."
                 : "la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).";
             return $"Rechazado: {clave}: no se pudo comprobar si es de solo lectura ({causa}); se rechaza por seguridad (configuración local de native_ssh, variable {Variable}), así que {QueNoSeHizo(herramienta, isEnSesion)}. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: {cuando}";
         }
@@ -494,8 +499,9 @@ namespace NativeSsh.Comun
         }
 
         // Una resolución compartida: con su propio plazo (por si el resolver lo respeta), sin el token de quien la pidió
-        // (la esperan varios); si acaba bien y la pidió una entrada (isRecordar), se recuerda (las del destino no). Que el
-        // nombre no exista (HostNotFound) se distingue de los demás fallos y no se recuerda. Al terminar deja de estar en curso.
+        // (la esperan varios); si acaba bien y la pidió una entrada (isRecordar), se recuerda (las del destino no). Cualquier
+        // fallo (también HostNotFound, que no distingue un nombre inexistente de un DNS que falla) es no resuelto y no se
+        // recuerda. Al terminar deja de estar en curso.
         private async Task<Resolucion> ResolverEnCursoAsync(string servidor, bool isRecordar)
         {
             try
@@ -510,10 +516,6 @@ namespace NativeSsh.Comun
                 if (isRecordar)
                     _resueltos[servidor] = (Environment.TickCount64 + (long)DuracionRecuerdo.TotalMilliseconds, direcciones);
                 return new Resolucion(direcciones, IsCupoLleno: false);
-            }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.HostNotFound)
-            {
-                return new Resolucion(null, IsCupoLleno: false, IsInexistente: true);
             }
             catch (Exception ex) when (ex is SocketException or ArgumentException or OperationCanceledException)
             {

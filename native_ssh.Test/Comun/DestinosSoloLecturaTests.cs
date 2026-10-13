@@ -277,9 +277,9 @@ namespace NativeSsh.Test.Comun
             ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
 
             // Assert
-            _ = primera.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = primera.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = sinRed.Should().BeNull("no se recordó nada");
-            _ = segunda.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = segunda.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = consultas.Should().Be(2, "se vuelve a resolver");
         }
 
@@ -302,7 +302,7 @@ namespace NativeSsh.Test.Comun
             ComprobacionSoloLectura laIp = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
 
             // Assert
-            _ = durante.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = durante.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = despues.Should().Be(new ComprobacionSoloLectura(false, null));
             _ = laIp.Should().Be(new ComprobacionSoloLectura(true, null));
             _ = consultas.Should().Be(2, "el fallo no se recuerda; el éxito sí");
@@ -331,8 +331,8 @@ namespace NativeSsh.Test.Comun
             ComprobacionSoloLectura otraVez = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
 
             // Assert
-            _ = resultados.Should().AllBeEquivalentTo(new ComprobacionSoloLectura(true, "prod.ejemplo"));
-            _ = otraVez.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = resultados.Should().AllBeEquivalentTo(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
+            _ = otraVez.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(9), "cada llamada espera como mucho 3 s");
             _ = consultas.Should().Be(1, "una sola resolución en curso por nombre");
             nunca.SetResult([IPAddress.Parse("10.0.0.5")]);
@@ -440,16 +440,18 @@ namespace NativeSsh.Test.Comun
             _ = destinos.Entradas.Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
         }
 
-        // El DNS dice que el nombre de una entrada no existe (NXDOMAIN, o un nombre sin direcciones: en Linux los dos llegan
-        // como HostNotFound, medido): la entrada no es ninguna dirección, así que solo coincide como texto y no hace fallar a
-        // los demás destinos. Antes se rechazaba todo destino con su usuario y puerto («no se resolvió …»).
+        // Que el DNS diga que el nombre de una entrada no existe (HostNotFound) no la deja solo como texto: falla cerrado como
+        // cualquier otro fallo. Con el nsswitch de systemd (resolve [!UNAVAIL=return]), un SERVFAIL o un REFUSED llegan también
+        // como HostNotFound (medido), así que «no existe» no se distingue de «el DNS falla», y quien hace fallar el DNS no debe
+        // poder escribir en la dirección protegida. El rechazo nombra la entrada.
         [Theory]
-        [InlineData("noexiste.ejemplo", "root@otro.ejemplo", false)]
-        [InlineData("noexiste.ejemplo", "root@10.0.0.5", false)]
-        [InlineData("noexiste.ejemplo", "root@NOEXISTE.ejemplo.", true)]
-        [InlineData("noexiste.ejemplo, prod.ejemplo", "root@10.0.0.5", true)]
-        [InlineData("noexiste.ejemplo, nadie.ejemplo", "root@10.0.0.5", true)]
-        public async Task EntradaQueNoExiste_SoloCoincideComoTexto(string configuracion, string destino, bool isSoloLectura)
+        [InlineData("noexiste.ejemplo", "root@otro.ejemplo", true, "noexiste.ejemplo")]
+        [InlineData("noexiste.ejemplo", "root@10.0.0.5", true, "noexiste.ejemplo")]
+        [InlineData("noexiste.ejemplo", "root@NOEXISTE.ejemplo.", true, null)]
+        [InlineData("noexiste.ejemplo, prod.ejemplo", "root@10.0.0.5", true, null)]
+        [InlineData("noexiste.ejemplo, nadie.ejemplo", "root@10.0.0.5", true, "noexiste.ejemplo")]
+        [InlineData("deploy@noexiste.ejemplo", "root@10.0.0.5", false, null)]
+        public async Task EntradaQueNoExiste_FallaCerrado(string configuracion, string destino, bool isSoloLectura, string? noResuelto)
         {
             // Arrange
             _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
@@ -459,18 +461,20 @@ namespace NativeSsh.Test.Comun
 
             // Assert
             _ = comprobacion.IsSoloLectura.Should().Be(isSoloLectura);
-            _ = comprobacion.NoResuelto.Should().Be(configuracion.Contains("nadie", StringComparison.Ordinal) ? "nadie.ejemplo" : null);
+            _ = comprobacion.NoResuelto.Should().Be(noResuelto);
+            _ = comprobacion.Entrada.Should().Be(noResuelto);
         }
 
-        // Cualquier otro fallo del DNS sigue fallando cerrado: TryAgain (SERVFAIL, REFUSED, sin respuesta o sin servidor, medido
-        // en Linux), NoData (en Linux no llega: un nombre sin direcciones da HostNotFound; donde llegue, no consta que el
-        // nombre no exista), NoRecovery o un error genérico. No se sabe adónde apunta el nombre.
+        // Cualquier fallo al resolver una entrada falla cerrado: HostNotFound (NXDOMAIN o un nombre sin direcciones; con
+        // nss-resolve, también SERVFAIL y REFUSED), TryAgain (SERVFAIL, REFUSED, sin respuesta o sin servidor con el módulo dns
+        // de glibc), NoData, NoRecovery o un error genérico. No se sabe adónde apunta el nombre.
         [Theory]
+        [InlineData(SocketError.HostNotFound)]
         [InlineData(SocketError.TryAgain)]
         [InlineData(SocketError.NoData)]
         [InlineData(SocketError.NoRecovery)]
         [InlineData(SocketError.SocketError)]
-        public async Task EntradaConFalloQueNoDiceQueNoExiste_FallaCerrado(SocketError codigo)
+        public async Task EntradaQueNoSeResuelve_FallaCerradoSeaCualSeaElFallo(SocketError codigo)
         {
             // Arrange
             Task<IPAddress[]> Fallo(string nombre, CancellationToken _) => Task.FromException<IPAddress[]>(new SocketException((int)codigo));
@@ -480,12 +484,12 @@ namespace NativeSsh.Test.Comun
             ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("root@10.0.0.9"), CancellationToken.None);
 
             // Assert
-            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
         }
 
         // Que el nombre no exista no se recuerda: si se crea, la llamada siguiente ya lo compara por sus direcciones.
         [Fact]
-        public async Task EntradaQueNoExiste_NoSeRecuerda()
+        public async Task EntradaQueNoExiste_FallaCerradoYNoSeRecuerda()
         {
             // Arrange
             int consultas = 0;
@@ -501,8 +505,28 @@ namespace NativeSsh.Test.Comun
             ComprobacionSoloLectura despues = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
 
             // Assert
-            _ = antes.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = antes.Should().Be(new ComprobacionSoloLectura(true, "nuevo.ejemplo", Entrada: "nuevo.ejemplo"));
             _ = despues.Should().Be(new ComprobacionSoloLectura(true, null));
+        }
+
+        // Una entrada que es un alias cuyo HostName no se resuelve también falla cerrado; el rechazo nombra el HostName y la
+        // entrada tal como se escribió, y dice qué hacer (corregir la entrada o comprobar el DNS). Un destino que se llama como
+        // su HostName coincide por texto.
+        [Fact]
+        public async Task EntradaQueEsAliasConHostNameQueNoSeResuelve_FallaCerradoYNombraLaEntrada()
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion("fantasma");
+
+            // Act
+            ComprobacionSoloLectura otro = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None);
+            ComprobacionSoloLectura porTexto = await destinos.ComprobarAsync(Destino("root@noexiste.ejemplo"), CancellationToken.None);
+            string mensaje = DestinosSoloLectura.MensajeRechazo(otro, "root@otro.ejemplo:22", "ssh_exec")!;
+
+            // Assert
+            _ = otro.Should().Be(new ComprobacionSoloLectura(true, "noexiste.ejemplo", Entrada: "fantasma"));
+            _ = porTexto.Should().Be(new ComprobacionSoloLectura(true, null));
+            _ = mensaje.Should().Be("Rechazado: root@otro.ejemplo:22: no se pudo comprobar si es de solo lectura (no se resolvió noexiste.ejemplo, de la entrada 'fantasma' de NATIVE_SSH_SOLO_LECTURA); se rechaza por seguridad (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de NATIVE_SSH_SOLO_LECTURA, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh.");
         }
 
         // Una entrada que es un alias de la configuración de ssh se compara por el HostName al que lleva (por texto y, si es un
@@ -523,7 +547,6 @@ namespace NativeSsh.Test.Comun
         [InlineData("interno", "root@prod.ejemplo", true)]
         [InlineData("interno", "root@10.0.0.5", true)]
         [InlineData("interno", "root@otro.ejemplo", false)]
-        [InlineData("fantasma", "root@otro.ejemplo", false)]
         [InlineData("fantasma", "root@noexiste.ejemplo", true)]
         [InlineData("*", "root@otro.ejemplo", true)]
         public async Task EntradaQueEsAlias_SeComparaPorSuHostName(string configuracion, string destino, bool isSoloLectura)
