@@ -78,5 +78,27 @@ namespace NativeSsh.Test.Integracion
             _ = (r.Estado, r.Archivo).Should().Be((EstadoPeticionEnum.Error, null));
             _ = r.Aviso.Should().Contain("NO se ejecutó").And.Contain("ssh_reset_shell");
         }
+
+        // Ninguna variable que el comando pueda ver (las del shell con 'set', y las del entorno de un hijo con 'set -a') lleva el
+        // nonce de las marcas, tampoco si un comando anterior redefinió 'unset': una F falsa impresa en /dev/tty con cada
+        // candidato a nonce que encuentre (cada tramo de 32 hexadecimales) no cambia el recuento.
+        [Theory]
+        [InlineData("")]
+        [InlineData("set -a")]
+        [InlineData("unset() { :; }")]
+        public async Task NonceDeLasMarcas_EnNingunaVariable_UnaFFalsaNoCambiaElRecuento(string antes)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            if (antes.Length > 0)
+                _ = await h.EjecutarAsync(Destino, antes, esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, "for t in $( { set; env; } 2>/dev/null | grep -o '[0-9a-f]\\{32,\\}' | sort -u); do i=0; while [ $((i + 32)) -le ${#t} ]; do printf '__NSG_%s_F_999_12345_0__\\n' \"${t:i:32}\" >/dev/tty; i=$((i + 1)); done; done; seq 1 3");
+
+            // Assert
+            salida.WriteLine($"{r.Estado} {r.CodigoSalida} {r.Lineas} {r.Bytes} '{r.Salida}' '{r.Aviso}'");
+            _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 0, 3L, 6L));
+        }
     }
 }

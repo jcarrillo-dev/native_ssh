@@ -1183,7 +1183,7 @@ namespace NativeSsh.Sesion
                     bool isSinCupoShells = IsSinCupoShells(canal);
                     comando = isSinCupoShells
                         ? SalidaGuardada.EnvolverSinCupoShells(marca, _opciones.MaxShellsConGuardado)
-                        : SalidaGuardada.Envolver(comando, marca, canal.IdGuardado, peticion.IdTexto, _opciones.PrefijoGuardado);
+                        : SalidaGuardada.Envolver(comando, marca, Guid.NewGuid(), canal.IdGuardado, peticion.IdTexto, _opciones.PrefijoGuardado);
                     if (!isSinCupoShells)
                         AnotarShellConGuardado(canal);
                 }

@@ -290,14 +290,37 @@ namespace NativeSsh.Test.Protocolo
         public void Envolver_ComandoComoLiteralSinMarcasEnterasNiContenidoDelArchivo()
         {
             // Act
-            string texto = SalidaGuardada.Envolver("echo 'a' \"b\"", Nonce, Guid.NewGuid(), "id", "/tmp/native_ssh");
+            string texto = SalidaGuardada.Envolver("echo 'a' \"b\"", Nonce, Token, Guid.NewGuid(), "id", "/tmp/native_ssh");
 
             // Assert
-            _ = texto.Should().StartWith($"unset __ns_k __ns_b\n__ns_gc{Nonce:N}='echo '\\''a'\\'' \"b\"'\n");
+            _ = texto.Should().StartWith($"builtin unset __ns_k __ns_b\n__ns_gc{Token:N}='echo '\\''a'\\'' \"b\"'\n");
             _ = texto.Should().NotContain($"__NSG_{Nonce:N}");
             string resumen = texto[texto.IndexOf("_F_", StringComparison.Ordinal)..];
             _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("_F_%d_%d_%d__").And.NotContain("$__ns_g");
             _ = texto.Should().Contain("{ set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
+        }
+
+        private static readonly Guid Token = Guid.Parse("abcdefabcdefabcdefabcdefabcdefab");
+
+        // El nonce de las marcas solo está en los argumentos de los printf de las marcas, nunca en el nombre ni en el valor de una
+        // variable del shell: las del envoltorio llevan otro token (el comando las ve con 'compgen -v' o 'set').
+        [Fact]
+        public void Envolver_ElNonceSoloEstaEnLasMarcas()
+        {
+            // Act
+            string texto = SalidaGuardada.Envolver("echo x", Nonce, Token, Guid.NewGuid(), "id", "/tmp/native_ssh");
+
+            // Assert
+            string n = Nonce.ToString("N");
+            int apariciones = 0;
+            for (int i = texto.IndexOf(n, StringComparison.Ordinal); i >= 0; i = texto.IndexOf(n, i + 1, StringComparison.Ordinal))
+            {
+                apariciones++;
+                _ = texto[..i].Should().EndWith("'__NSG' '");
+            }
+
+            _ = apariciones.Should().BeGreaterThan(0);
+            _ = texto.Should().Contain($"__ns_gc{Token:N}=").And.Contain($"__ns_gf{Token:N}=");
         }
 
         // Lo que cuenta ScriptLimpieza: antes de borrar, lo que queda y los shells cuyo directorio sigue; null si la última línea

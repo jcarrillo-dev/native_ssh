@@ -69,35 +69,40 @@ namespace NativeSsh.Protocolo
         // mucho esto.
         public const int MaxBytesVistaPrevia = LineasVistaPrevia * (MaxBytesLineaVistaPrevia + 2);
 
-        // El texto que se evalúa en el shell en lugar del comando. idShell: el del shell que lo ejecuta (su directorio).
-        // prefijo: OpcionesNativeSsh.PrefijoGuardado ('/tmp/native_ssh'); el base es prefijo + '-<usuario>' y su padre, el
-        // directorio que debe tener el bit sticky. Empieza quitando __ns_k y __ns_b, las variables de ConstructorComando con el
-        // texto que se evalúa (lleva el nonce de las marcas): el comando no las ve, ni sus hijos con 'set -a', así que no puede
+        // El texto que se evalúa en el shell en lugar del comando. nonce: el de las marcas (FiltroMarcasGuardado). token: otro
+        // aleatorio por petición, para el nombre de las variables del envoltorio. idShell: el del shell que lo ejecuta (su
+        // directorio). prefijo: OpcionesNativeSsh.PrefijoGuardado ('/tmp/native_ssh'); el base es prefijo + '-<usuario>' y su
+        // padre, el directorio que debe tener el bit sticky.
+        // El nonce no está en ninguna variable que el comando pueda ver (ni en el nombre ni en el valor; tampoco sus hijos con
+        // 'set -a'): solo en los argumentos de los printf de las marcas. Empieza quitando __ns_k y __ns_b, las variables de
+        // ConstructorComando con el texto que se evalúa (lleva el nonce), con 'builtin unset' (una función 'unset' no lo
+        // impide); las del envoltorio llevan el token en el nombre y el comando y la ruta en el valor. Así el comando no puede
         // imitar una marca (y FiltroMarcasGuardado solo aplica las que siguen el orden del envoltorio).
-        // El resumen no depende de nada que el comando pueda cambiar en el shell: las variables del envoltorio llevan el nonce
-        // en el nombre (un 'readonly' de un comando anterior no impide asignarlas: el nombre es otro en cada petición) y,
-        // después del comando, solo se usan para borrarlas (sin error si no se puede); el código de salida y el recuento los
-        // saca una subshell con parámetros posicionales (no se pueden hacer de solo lectura) y la ruta vuelta a calcular desde
-        // el prefijo, 'id -un' y los dos ids, no la variable con la ruta, que el comando puede reasignar o quitar.
-        public static string Envolver(string comando, Guid nonce, Guid idShell, string idPeticion, string prefijo)
+        // El resumen no depende de nada que el comando pueda cambiar en el shell: el nombre de las variables del envoltorio es
+        // otro en cada petición (un 'readonly' de un comando anterior no impide asignarlas) y, después del comando, solo se
+        // usan para borrarlas (sin error si no se puede); el código de salida y el recuento los saca una subshell con
+        // parámetros posicionales (no se pueden hacer de solo lectura) y la ruta vuelta a calcular desde el prefijo, 'id -un' y
+        // los dos ids, no la variable con la ruta, que el comando puede reasignar o quitar.
+        public static string Envolver(string comando, Guid nonce, Guid token, Guid idShell, string idPeticion, string prefijo)
         {
             string n = nonce.ToString("N");
+            string t = token.ToString("N");
             string s = idShell.ToString("N");
             string literal = comando.Replace("'", "'\\''", StringComparison.Ordinal);
             string preparacion = Sustituir(PlantillaPreparacion, n, s, idPeticion, prefijo);
             string resumen = Sustituir(PlantillaResumen, n, s, idPeticion, prefijo);
             return $$"""
-                unset __ns_k __ns_b
-                __ns_gc{{n}}='{{literal}}'
-                if __ns_gf{{n}}=$({{preparacion}}); then
-                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf{{n}}" | command base64 | command tr -d '\n')"
-                { eval "$__ns_gc{{n}}"
-                } >>"$__ns_gf{{n}}" 2>&1
+                builtin unset __ns_k __ns_b
+                __ns_gc{{t}}='{{literal}}'
+                if __ns_gf{{t}}=$({{preparacion}}); then
+                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf{{t}}" | command base64 | command tr -d '\n')"
+                { eval "$__ns_gc{{t}}"
+                } >>"$__ns_gf{{t}}" 2>&1
                 ({{resumen}})
                 else
                 (exit 1)
                 fi
-                eval "unset __ns_gc{{n}} __ns_gf{{n}} 2>/dev/null; (exit $?)"
+                eval "builtin unset __ns_gc{{t}} __ns_gf{{t}} 2>/dev/null; (exit $?)"
                 """.ReplaceLineEndings("\n");
         }
 
@@ -113,7 +118,7 @@ namespace NativeSsh.Protocolo
         // En lugar de Envolver cuando la sesión ya tiene MaxShellsConGuardado shells con salidas guardadas sin borrar y este
         // shell aún no tiene directorio (SesionShell): no crea nada ni ejecuta el comando; solo la marca E con el tope.
         public static string EnvolverSinCupoShells(Guid nonce, int maxShells) => $$"""
-            unset __ns_k __ns_b
+            builtin unset __ns_k __ns_b
             printf '%s_%s_E_shells__%d_0__\n' '__NSG' '{{nonce:N}}' {{maxShells.ToString(CultureInfo.InvariantCulture)}} >&2
             (exit 1)
             """.ReplaceLineEndings("\n");
