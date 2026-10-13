@@ -757,6 +757,45 @@ namespace NativeSsh.Test.Comun
             _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
         }
 
+        // Una familia que no responde (getaddrinfo colgado, no se puede cancelar) cuenta como fallida al vencer el plazo de
+        // 3 s, que cubre las dos consultas: la entrada falla cerrado, salvo que el nombre esté en /etc/hosts (entonces vale
+        // lo resuelto más lo del fichero). En los dos casos la comprobación no espera a la familia colgada.
+        [Theory]
+        [InlineData(true, "root@10.0.0.6", false)]
+        [InlineData(true, "root@10.0.0.5", true)]
+        [InlineData(false, "root@10.0.0.6", true)]
+        public async Task FamiliaQueNoResponde_FallaAlVencerElPlazoSalvoEnHosts(bool isEnHosts, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            using ManualResetEventSlim soltar = new(false);
+            IPAddress[]? Ipv6Colgada(string nombre, AddressFamily familia)
+            {
+                if (familia == AddressFamily.InterNetworkV6)
+                    _ = soltar.Wait(TimeSpan.FromSeconds(30));
+                return familia == AddressFamily.InterNetwork ? [IPAddress.Parse("10.0.0.5")] : null;
+            }
+
+            string ruta = Path.GetTempFileName();
+            await File.WriteAllTextAsync(ruta, isEnHosts ? "10.0.0.5 prod.ejemplo\n" : "10.0.0.8 otro.ejemplo\n");
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, Ipv6Colgada, plazo), ruta).Should().BeTrue();
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            try
+            {
+                // Act
+                ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(20));
+
+                // Assert
+                _ = comprobacion.Should().Be(isSoloLectura && !isEnHosts ? NoResuelta : new ComprobacionSoloLectura(isSoloLectura, null));
+                _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(6));
+            }
+            finally
+            {
+                soltar.Set();
+                File.Delete(ruta);
+            }
+        }
+
         // Un comentario, otro nombre que lo contiene o un fichero que no existe no son estar en /etc/hosts: el fallo de una
         // familia sigue fallando cerrado.
         [Theory]
