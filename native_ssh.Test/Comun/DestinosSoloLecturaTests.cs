@@ -801,6 +801,7 @@ namespace NativeSsh.Test.Comun
         [Theory]
         [InlineData("# 10.0.0.5 prod.ejemplo\n10.0.0.8 prodx.ejemplo prod.ejemplo.com\n")]
         [InlineData("10.0.0.8 otro.ejemplo #prod.ejemplo\n")]
+        [InlineData("10.0.0.8 otro.ejemplo # prod.ejemplo\n")]
         [InlineData("prod.ejemplo 10.0.0.5\n")]
         public async Task NombreQueNoEstaEnHosts_ElFalloDeUnaFamiliaFallaCerrado(string hosts)
         {
