@@ -425,7 +425,7 @@ namespace NativeSsh.Test.Ssh
         [InlineData("/ruta/config", false, "/ruta/config")]
         [InlineData(null, false, "")]
         [InlineData("", false, "")]
-        [InlineData(null, true, "DIRECTORIO/config")]
+        [InlineData(null, true, "DIRECTORIO")]
         public void ElegirConfiguracionSsh_SegunLasVariables(string? variable, bool isConDirectorio, string? esperado)
         {
             // Arrange
@@ -435,7 +435,8 @@ namespace NativeSsh.Test.Ssh
             string? elegida = OpcionesNativeSsh.ElegirConfiguracionSsh(variable, isConDirectorio ? _directorio : null);
 
             // Assert
-            _ = elegida.Should().Be(esperado?.Replace("DIRECTORIO", _directorio, StringComparison.Ordinal));
+            // El fichero config del directorio, con el separador del sistema (barra invertida en Windows).
+            _ = elegida.Should().Be(esperado?.Replace("DIRECTORIO", Path.Combine(_directorio, "config"), StringComparison.Ordinal));
         }
 
         // Con NATIVE_SSH_DIRECTORIO_SSH y sin config en él, no se usa ninguna configuración (nunca el ~/.ssh/config real).
