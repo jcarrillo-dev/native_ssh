@@ -394,7 +394,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
-        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino, o al menos para el alias que lo hace de solo lectura (usa las de lectura). Cuentan el destino de la sesión, la dirección a la que está conectada y sus alias (con un alias en 'destino', solo ese; sin él, todos los alias con que se usó la sesión): una sesión conectada a una máquina de solo lectura lo sigue siendo aunque el nombre apunte ya a otra. Sin isSoloLectura, no se puede saber sin resolver un nombre y cada una de esas herramientas lo comprueba en cada llamada.")]
+        [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino, o al menos para el alias que lo hace de solo lectura (usa las de lectura). Cuentan el destino de la sesión, la dirección a la que está conectada y sus alias (con un alias en 'destino', solo ese; con usuario@servidor[:puerto] en 'destino', ninguno: isSoloLectura dice entonces exactamente si una escritura con ese mismo texto se rechaza; sin 'destino', todos los alias con que se usó la sesión): una sesión conectada a una máquina de solo lectura lo sigue siendo aunque el nombre apunte ya a otra. Sin isSoloLectura, no se puede saber sin resolver un nombre y cada una de esas herramientas lo comprueba en cada llamada.")]
         public ResultadoEstado Estado(
             [Description("Filtrar por destino (opcional): un alias de ~/.ssh/config muestra solo las sesiones de ese alias con su usuario y puerto (usuario@alias o alias:puerto con otros son otro destino; 'aviso' nombra las suyas que siguen abiertas para otro usuario o puerto, con qué destino cerrarlas y qué más cerraría ese destino); usuario@servidor[:puerto], todas las de ese destino.")] string? destino = null)
         {
@@ -406,8 +406,9 @@ namespace NativeSsh.Herramientas
             foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
             {
                 IReadOnlyList<string> alias = gestor.AliasDe(s);
-                // Con un alias en el filtro, cuenta ese texto pedido; sin filtro, los alias con que se ha usado la sesión.
-                IReadOnlyCollection<string> textosPedidos = filtro?.Alias is { } aliasFiltro ? [aliasFiltro] : alias;
+                // Como una escritura con el texto del filtro: con un alias, cuenta ese texto pedido; con usuario@servidor:puerto,
+                // ninguno (no los alias con que se ha usado la sesión). Sin filtro, los alias con que se ha usado la sesión.
+                IReadOnlyCollection<string> textosPedidos = isSinFiltro ? alias : filtro!.Value.Alias is { } aliasFiltro ? [aliasFiltro] : [];
                 sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino, s.Extremo, textosPedidos) : null));
             }
 

@@ -359,6 +359,55 @@ namespace NativeSsh.Test.Herramientas
             _ = _gestor!.ListarSesiones().Should().ContainSingle();
         }
 
+        // ssh_status con filtro usuario@servidor:puerto calcula isSoloLectura como una escritura a ese mismo texto en esa sesión
+        // (texto, destino resuelto y dirección conectada), sin los alias con que se usó la sesión; con un alias en el filtro,
+        // con ese alias; sin filtro, con todos. La sesión se abrió con prod (entonces 10.0.0.5); después la configuración
+        // lleva prod a 10.0.0.9 y staging a 10.0.0.5, y la sesión se usa también con staging.
+        [Fact]
+        public async Task Estado_FiltroPorServidorReal_DiceLoQueHaceLaEscritura()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Crear("prod");
+            _ = await herramientas.LeerArchivoAsync("prod", "a.txt");
+            File.WriteAllText(Path.Combine(_directorio, "config"), "Host prod\n  HostName 10.0.0.9\nHost staging\n  HostName 10.0.0.5\nHost *\n  User ana\n");
+            _ = await herramientas.LeerArchivoAsync("staging", "a.txt");
+
+            // Act
+            ResultadoEstado porServidor = herramientas.Estado("ana@10.0.0.5:22");
+            ResultadoEstado porStaging = herramientas.Estado("staging");
+            ResultadoEstado sinFiltro = herramientas.Estado();
+            ResultadoComando escritura = await EjecutarHastaTerminar(herramientas, "ana@10.0.0.5:22");
+            ResultadoComando escrituraStaging = await EjecutarHastaTerminar(herramientas, "staging");
+
+            // Assert
+            _ = porServidor.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeFalse();
+            _ = porStaging.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeFalse();
+            EstadoSesion sesion = sinFiltro.Sesiones.Should().ContainSingle().Subject;
+            _ = sesion.Alias.Should().Equal("prod", "staging");
+            _ = sesion.IsSoloLectura.Should().BeTrue("sin filtro cuentan los alias con que se usó la sesión: prod es de solo lectura por su texto");
+            _ = escritura.Estado.Should().Be(EstadoPeticionEnum.Completado, escritura.Aviso);
+            _ = escrituraStaging.Estado.Should().Be(EstadoPeticionEnum.Completado, escrituraStaging.Aviso);
+        }
+
+        // Al revés (la sonda de la auditoría con la garantía nueva): filtrado por el HostName de la entrada, ssh_status dice
+        // true y la escritura a ese texto se rechaza.
+        [Fact]
+        public async Task Estado_FiltroPorElHostNameDeLaEntrada_DiceLoQueHaceLaEscritura()
+        {
+            // Arrange
+            _dns["prod"] = IPAddress.Parse("10.0.0.99");
+            HerramientasSsh herramientas = Crear("prod");
+            _ = await herramientas.FijarDirectorioAsync("prod", "/tmp");
+
+            // Act
+            ResultadoEstado estado = herramientas.Estado("ana@10.0.0.5:22");
+            Func<Task> escribir = () => herramientas.EjecutarAsync("ana@10.0.0.5:22", "touch marca");
+
+            // Assert
+            _ = estado.Sesiones.Should().ContainSingle().Which.IsSoloLectura.Should().BeTrue();
+            _ = (await escribir.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Be(HerramientasSsh.MensajeSoloLectura("ana@10.0.0.5:22", "ssh_exec"));
+        }
+
         // ssh_status del alias con sesión: true por el texto pedido, aunque su HostName no esté en la lista.
         [Fact]
         public async Task Estado_AliasDeLaLista_SuSesionSeMarca()
