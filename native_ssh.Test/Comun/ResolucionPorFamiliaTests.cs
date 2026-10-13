@@ -113,6 +113,8 @@ namespace NativeSsh.Test.Comun
         [InlineData("10.1 prod.ejemplo\n")]
         [InlineData("0x0a630007 prod.ejemplo\n")]
         [InlineData("010.099.000.007 prod.ejemplo\n")]
+        [InlineData("010.0.0.5 prod.ejemplo\n")]
+        [InlineData("10.0.0.05 prod.ejemplo\n")]
         [InlineData("10.99.0.256 prod.ejemplo\n")]
         [InlineData("10.99.0.7. prod.ejemplo\n")]
         [InlineData("10.99.0.7 prod.ejemplo.\n")]
