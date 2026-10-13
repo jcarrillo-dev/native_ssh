@@ -39,6 +39,26 @@ namespace NativeSsh.Test.Integracion
             _ = desconexion.Mensaje.Should().Contain("NO se pudieron borrar 1 de los 2").And.NotContain("Se borraron del servidor los");
         }
 
+        // ssh_reset_shell con el borrado fallido y ssh_disconnect enseguida: el cierre espera el borrado en curso, así que el
+        // shell que vuelve a la lista no llega después de que el cierre la haya tomado y ssh_disconnect lo dice.
+        [Fact]
+        public async Task ResetYDisconnectSeguidos_ConBorradoFallido_DisconnectLoDice()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            ResultadoComando uno = await GuardarAsync(h, "echo uno");
+            _ = await h.EjecutarAsync(Destino, $"chmod 500 -- '{Path.GetDirectoryName(uno.Archivo)}'", esperarSegundos: 30).ComoComando();
+            _ = h.ReiniciarShell(Destino);
+
+            // Act
+            ResultadoAccion desconexion = await h.DesconectarAsync(Destino);
+
+            // Assert
+            salida.WriteLine(desconexion.Mensaje);
+            _ = File.Exists(uno.Archivo).Should().BeTrue();
+            _ = desconexion.Mensaje.Should().Contain("NO se pudieron borrar");
+        }
+
         // El ssh_reset_shell siguiente a uno cuyo borrado falló lo dice (el primero no puede: borra en segundo plano).
         [Fact]
         public async Task ResetConBorradoFallido_ElSiguienteResetLoDice()
