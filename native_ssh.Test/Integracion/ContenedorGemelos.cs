@@ -17,7 +17,7 @@ namespace NativeSsh.Test.Integracion
         private ServidorGemelos(int puertoA)
         {
             DirectorioPruebas = SshdLocal.BuscarDirectorioPruebas();
-            DirectorioEstado = Path.Combine(DirectorioPruebas, ".estado-contenedor-gemelos");
+            DirectorioEstado = RutaEstado(DirectorioPruebas);
             PuertoA = puertoA;
             Usuario = File.ReadAllText(Path.Combine(DirectorioEstado, "usuario")).Trim();
         }
@@ -31,10 +31,17 @@ namespace NativeSsh.Test.Integracion
         // Orden con la que el usuario de prueba de A entra en B (la clave del cliente está montada en A).
         public string SshAlGemelo => $"ssh -tt -i /etc/ns/cliente_ed25519 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR {Usuario}@gemelo-b";
 
+        // El script deja el estado en NATIVE_SSH_DIR_ESTADO si está definida: se le pasa siempre el directorio que se lee
+        // aquí, para no heredar la del entorno exterior.
+        private static string RutaEstado(string directorioPruebas) => Path.Combine(directorioPruebas, ".estado-contenedor-gemelos");
+
+        private static Dictionary<string, string> EntornoScript(string directorioPruebas) => new() { ["NATIVE_SSH_DIR_ESTADO"] = RutaEstado(directorioPruebas) };
+
         public static ServidorGemelos Iniciar()
         {
-            string script = Path.Combine(SshdLocal.BuscarDirectorioPruebas(), "contenedor-sudo.sh");
-            (int codigo, string salida, string errores) = ServidorContenedor.Ejecutar("bash", [script, "gemelos", "iniciar"], TimeSpan.FromMinutes(10));
+            string directorioPruebas = SshdLocal.BuscarDirectorioPruebas();
+            string script = Path.Combine(directorioPruebas, "contenedor-sudo.sh");
+            (int codigo, string salida, string errores) = ServidorContenedor.Ejecutar("bash", [script, "gemelos", "iniciar"], TimeSpan.FromMinutes(10), EntornoScript(directorioPruebas));
             return codigo != 0
                 ? throw new InvalidOperationException($"contenedor-sudo.sh gemelos iniciar falló ({codigo}): {errores}")
                 : new ServidorGemelos(int.Parse(salida.Trim().Split('\n')[^1].Split(' ')[0], CultureInfo.InvariantCulture));
@@ -53,6 +60,6 @@ namespace NativeSsh.Test.Integracion
             return new GestorSesiones(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
         }
 
-        public void Dispose() => _ = ServidorContenedor.Ejecutar("bash", [Path.Combine(DirectorioPruebas, "contenedor-sudo.sh"), "gemelos", "parar"], TimeSpan.FromMinutes(1));
+        public void Dispose() => _ = ServidorContenedor.Ejecutar("bash", [Path.Combine(DirectorioPruebas, "contenedor-sudo.sh"), "gemelos", "parar"], TimeSpan.FromMinutes(1), EntornoScript(DirectorioPruebas));
     }
 }

@@ -66,6 +66,30 @@ namespace NativeSsh.Test.Integracion
 
         private string Ruta(string nombre) => Path.Combine(_directorio, nombre);
 
+        // Un socket UNIX escuchando en 'ruta'. La dirección de un socket UNIX admite como mucho 108 bytes y el directorio
+        // de la prueba, bajo TMPDIR, puede pasar de ahí: se enlaza a través de un enlace simbólico corto en /tmp al
+        // directorio de 'ruta' (bind lo resuelve) y el socket queda en 'ruta'; el enlace se borra en cuanto existe.
+        private static Socket CrearSocket(string ruta)
+        {
+            string enlace = Path.Combine("/tmp", $"ns_s_{Guid.NewGuid():N}");
+            _ = Directory.CreateSymbolicLink(enlace, Path.GetDirectoryName(ruta)!);
+            Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            try
+            {
+                socket.Bind(new UnixDomainSocketEndPoint(Path.Combine(enlace, Path.GetFileName(ruta))));
+                return socket;
+            }
+            catch
+            {
+                socket.Dispose();
+                throw;
+            }
+            finally
+            {
+                File.Delete(enlace);
+            }
+        }
+
         private static string Bash(string comando)
         {
             ProcessStartInfo inicio = new("bash", ["-c", comando]) { RedirectStandardOutput = true };
@@ -113,8 +137,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             _ = Bash($"mkfifo '{Ruta("fifo")}'");
             _ = File.CreateSymbolicLink(Ruta("enlace_fifo"), "fifo");
-            using Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            socket.Bind(new UnixDomainSocketEndPoint(Ruta("socket")));
+            using Socket socket = CrearSocket(Ruta("socket"));
             string ruta = destino.StartsWith('/') ? destino : Ruta(destino);
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(20));
             Stopwatch cronometro = Stopwatch.StartNew();
@@ -159,8 +182,7 @@ namespace NativeSsh.Test.Integracion
             _ = Directory.CreateDirectory(Ruta("directorio"));
             _ = File.CreateSymbolicLink(Ruta("enlace"), "archivo.txt");
             _ = Bash($"mkfifo '{Ruta("fifo")}'");
-            using Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            socket.Bind(new UnixDomainSocketEndPoint(Ruta("socket")));
+            using Socket socket = CrearSocket(Ruta("socket"));
             string bloques = Bash("find /dev -maxdepth 1 -type b 2>/dev/null | head -n 1");
             Dictionary<string, string> esperados = new()
             {

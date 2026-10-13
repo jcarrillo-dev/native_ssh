@@ -1,3 +1,4 @@
+using System.Net;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -293,6 +294,8 @@ namespace NativeSsh.Test.Integracion
             private sealed class Conexion(IConexionSsh interna, FabricaQueRetieneLimpieza fabrica) : IConexionSsh
             {
                 public bool IsConectada => interna.IsConectada;
+
+                public IPAddress? DireccionRemota => interna.DireccionRemota;
 
                 public ICanalShell AbrirShell() => interna.AbrirShell();
 

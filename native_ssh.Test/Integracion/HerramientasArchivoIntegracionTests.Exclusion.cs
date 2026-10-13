@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
@@ -214,7 +215,8 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{temporales}'", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
             string[] entradas = Directory.GetFileSystemEntries(carpeta);
-            using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", "37.5"]);
+            SleepPropio dormido = SleepPropio.Crear("37.5");
+            using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", dormido.Duracion]);
             await EsperasPrueba.EsperarHastaAsync(() => !IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
 
             try
@@ -225,7 +227,7 @@ namespace NativeSsh.Test.Integracion
                 Exception? anexado = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADA\n", append: true, sudo: isSudo));
                 Exception? reemplazo = await Record.ExceptionAsync(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "ESCRITA", "REEMPLAZADA", sudo: isSudo));
                 string[] entradasConCandado = Directory.GetFileSystemEntries(carpeta);
-                SoltarCandadoAjeno(ajeno);
+                SoltarCandadoAjeno(ajeno, dormido);
                 ResultadoEscritura libre = await herramientas.EscribirArchivoAsync(Destino, archivo, "LIBRE\n", overwrite: true, sudo: isSudo);
                 ResultadoEscritura libreAnexado = await herramientas.EscribirArchivoAsync(Destino, archivo, "MAS\n", append: true, sudo: isSudo);
 
@@ -256,7 +258,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                SoltarCandadoAjeno(ajeno);
+                SoltarCandadoAjeno(ajeno, dormido);
             }
         }
 
@@ -274,7 +276,8 @@ namespace NativeSsh.Test.Integracion
             string archivo = Ruta("f.txt");
             await File.WriteAllTextAsync(archivo, "viejo\n");
             string marca = Ruta("sustituido");
-            string ocupar = isNuevoOcupado ? $"( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep 21.5 ) </dev/null >/dev/null 2>&1 &\nsleep 0.5\n" : string.Empty;
+            SleepPropio dormido = SleepPropio.Crear("21.5");
+            string ocupar = isNuevoOcupado ? $"( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep {dormido.Duracion} ) </dev/null >/dev/null 2>&1 &\nsleep 0.5\n" : string.Empty;
             await SustituirComandoAsync(herramientas, "flock", $"if [ ! -e '{marca}' ]; then\n: > '{marca}'\nprintf 'nuevo\\n' > '{archivo}.otro'\nmv -f '{archivo}.otro' '{archivo}'\n{ocupar}fi\nexec /usr/bin/flock \"$@\"");
 
             try
@@ -298,7 +301,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = Bash("pkill -f -- '^sleep 21[.]5$'; true");
+                _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
             }
         }
 
@@ -358,10 +361,11 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
             string archivo = Ruta("compartido.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
-            using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", "38.5"]);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos("^sleep 38[.]5$"), TimeSpan.FromSeconds(10));
+            SleepPropio dormido = SleepPropio.Crear("38.5");
+            using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", dormido.Duracion]);
+            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos(dormido.Patron), TimeSpan.FromSeconds(10));
             string soltado = Ruta("lector_soltado");
-            await SustituirComandoAsync(herramientas, "base64", $"if [ $# = 0 ] && pkill -f -- '^sleep 38[.]5$'; then\n  while pgrep -f -- '^(flock -s -n|sleep 38[.]5)' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
+            await SustituirComandoAsync(herramientas, "base64", $"if [ $# = 0 ] && pkill -f -- '{dormido.Patron}'; then\n  while pgrep -f -- '{dormido.PatronConSuFlock}' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
 
             try
             {
@@ -375,16 +379,31 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = Bash("pkill -f -- '^sleep 38[.]5$'; true");
+                _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
                 lector.WaitForExit();
             }
         }
 
-        // 'flock ARCHIVO sleep 37.5' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor.
-        private static void SoltarCandadoAjeno(Process ajeno)
+        // 'flock ARCHIVO sleep 37.5…' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor.
+        private static void SoltarCandadoAjeno(Process ajeno, SleepPropio dormido)
         {
-            _ = Bash("pkill -f -- '^sleep 37[.]5$'; true");
+            _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
             ajeno.WaitForExit();
+        }
+
+        // Un 'sleep' que solo lanza esta prueba: la duración base con seis decimales al azar detrás. Los pkill y pgrep que
+        // lo buscan por sus argumentos no alcanzan así a los de otra copia de la suite que corra a la vez en la máquina.
+        private readonly record struct SleepPropio(string Duracion)
+        {
+            public static SleepPropio Crear(string baseSegundos) => new($"{baseSegundos}{Random.Shared.Next(100_000, 1_000_000).ToString(CultureInfo.InvariantCulture)}");
+
+            // El 'sleep' (pkill/pgrep -f).
+            public string Patron => $"^sleep {DuracionEscapada}$";
+
+            // El 'sleep' y el 'flock … sleep' que lo lanza.
+            public string PatronConSuFlock => $"^(flock .* )?sleep {DuracionEscapada}$";
+
+            private string DuracionEscapada => Duracion.Replace(".", "[.]", StringComparison.Ordinal);
         }
 
         // Nadie tiene el flock del archivo. Las pruebas leen el archivo después: .NET toma un flock compartido al abrirlo

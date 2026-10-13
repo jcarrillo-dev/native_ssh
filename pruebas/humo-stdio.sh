@@ -5,10 +5,14 @@ set -euo pipefail
 
 RAIZ="$(cd "$(dirname "$0")/.." && pwd)"
 BINARIO="${1:-$RAIZ/artefactos/NativeSsh}"
-ESTADO="$RAIZ/pruebas/.estado"
+# Directorio de estado propio, que se le pasa siempre a sshd-local.sh (al iniciar y al parar) junto con el ForceCommand y
+# las líneas extra por defecto: lo exportado fuera (NATIVE_SSH_DIR_ESTADO, NATIVE_SSH_FORCE_COMMAND, NATIVE_SSH_SSHD_EXTRA)
+# no cambia dónde busca el humo la clave y known_hosts, y el humo no para el sshd de las pruebas de este repositorio.
+ESTADO="$RAIZ/pruebas/.estado-humo-stdio"
+sshd_local() { NATIVE_SSH_DIR_ESTADO="$ESTADO" NATIVE_SSH_FORCE_COMMAND= NATIVE_SSH_SSHD_EXTRA= "$RAIZ/pruebas/sshd-local.sh" "$1"; }
 
-PUERTO="$("$RAIZ/pruebas/sshd-local.sh" iniciar)"
-trap '"$RAIZ/pruebas/sshd-local.sh" parar' EXIT
+trap 'sshd_local parar' EXIT
+PUERTO="$(sshd_local iniciar)"
 
 NATIVE_SSH_DIRECTORIO_SSH="$ESTADO" \
 NATIVE_SSH_IDENTIDADES="$ESTADO/cliente_ed25519" \

@@ -69,6 +69,8 @@ namespace NativeSsh.Sesion
         // Base64 del PATH del login: muy por encima de cualquier PATH real.
         private const int MaxBytesCapturaPath = 16 * 1024;
 
+        // Sin respuesta a la inicialización en este tiempo, se reenvía una vez (un login lento pudo consumir la línea);
+        // cuenta dentro de TimeoutInicializacionShell, como la sincronización que sigue al reenvío (ver AbrirShellAsync).
         private static readonly TimeSpan ReenvioInicializacion = TimeSpan.FromSeconds(2);
 
         // Lo que DisposeAsync espera al bucle antes de liberar la conexión para sacarlo de una escritura que el servidor no
@@ -228,6 +230,9 @@ namespace NativeSsh.Sesion
 
         public DestinoSsh Destino { get; }
         public bool IsConectada => _conexion?.IsConectada ?? false;
+
+        // La conexión vigente, si está conectada, con la dirección a la que va su socket (modo solo lectura).
+        public ExtremoConectado? Extremo => _conexion is { IsConectada: true } conexion ? new ExtremoConectado(conexion.DireccionRemota) : null;
         public long ComandosEjecutados => Interlocked.Read(ref _comandosEjecutados);
         public int ConexionesAbiertas => Volatile.Read(ref _conexionesAbiertas);
         public int ComandosEnCola => Volatile.Read(ref _comandosEnCola);
@@ -806,6 +811,29 @@ namespace NativeSsh.Sesion
                 canal = _canal;
                 conexionDelCanal = _conexionDelCanal;
                 _salidaConCanalCerrado = null;
+            }
+
+            // Una escritura solo se envía si la conexión de este canal no va a un destino de solo lectura (la herramienta ya lo
+            // comprobó, pero el shell pudo abrirse o reabrirse después, con el nombre resolviendo a otra máquina).
+            if (peticion.HerramientaEscritura is { } herramienta && !_opciones.SoloLectura.IsVacio && conexionDelCanal is not null)
+            {
+                string? rechazo;
+                try
+                {
+                    ComprobacionSoloLectura comprobacion = await _opciones.SoloLectura.ComprobarConexionAsync(peticion.Destino, new ExtremoConectado(conexionDelCanal.DireccionRemota), token).ConfigureAwait(false);
+                    rechazo = DestinosSoloLectura.MensajeRechazo(comprobacion, peticion.Destino.Clave, herramienta, isEnSesion: true);
+                }
+                catch (OperationCanceledException) when (!IsCerrando)
+                {
+                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, avisoShell);
+                    return;
+                }
+
+                if (rechazo is not null)
+                {
+                    _ = peticion.TryRechazarSoloLectura(Unir(avisoShell, rechazo));
+                    return;
+                }
             }
 
             bool isEnviado = canal is not null && TryEnviarComando(canal, peticion, espera);
@@ -1564,6 +1592,10 @@ namespace NativeSsh.Sesion
 
             IniciarBomba(canal);
 
+            // Un solo plazo, TimeoutInicializacionShell, para toda la inicialización desde que el canal está abierto: la
+            // espera de la respuesta, el reenvío a los ReenvioInicializacion, la sincronización que le sigue y la captura de
+            // identidad y PATH. La sincronización no tiene plazo propio: dispone de lo que quede de este (con un login que
+            // tarde casi todo el plazo, muy poco), y si se agota, la inicialización falla con el error de abajo.
             using CancellationTokenSource limite = CancellationTokenSource.CreateLinkedTokenSource(token);
             limite.CancelAfter(_opciones.TimeoutInicializacionShell);
             int codigo;

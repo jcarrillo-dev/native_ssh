@@ -1,3 +1,4 @@
+using System.Net;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Sesion
@@ -18,6 +19,10 @@ namespace NativeSsh.Sesion
     public interface IConexionSsh : IDisposable
     {
         bool IsConectada { get; }
+
+        // Dirección a la que está conectado el socket (su extremo remoto), null si el adaptador no la sabe. El modo solo
+        // lectura (DestinosSoloLectura) la compara con sus entradas: así el DNS de ahora no decide por una sesión ya abierta.
+        IPAddress? DireccionRemota { get; }
 
         // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta.
         ICanalShell AbrirShell();
@@ -48,5 +53,17 @@ namespace NativeSsh.Sesion
     public interface IFabricaConexion
     {
         Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken);
+    }
+
+    // Resolución de un destino con la configuración de ssh (alias, HostName, User, Port, IdentityFile). Lo explícito del
+    // destino (usuario@, :puerto) manda sobre la configuración. Lanza NativeSshException si no se puede resolver.
+    public interface IResolutorDestino
+    {
+        DestinoSsh Resolver(DestinoSsh destino, bool isUsuarioExplicito, bool isPuertoExplicito);
+
+        // El HostName al que lleva una entrada de NATIVE_SSH_SOLO_LECTURA (DestinosSoloLectura.UsarConfiguracionSsh), con su
+        // usuario y su puerto si los lleva; null si la configuración no la cambia o no se usa configuración. Lanza
+        // NativeSshException si no se pudo leer.
+        string? HostNameDeEntrada(string? usuario, string servidor, int? puerto);
     }
 }

@@ -59,6 +59,9 @@ namespace NativeSsh.Test.Integracion
             Distro = distro;
             DirectorioPruebas = SshdLocal.BuscarDirectorioPruebas();
             DirectorioEstado = Path.Combine(DirectorioPruebas, $".estado-contenedor-{distro}");
+            // El script deja el estado en NATIVE_SSH_DIR_ESTADO si está definida: se le pasa siempre el directorio que se
+            // lee aquí, para no heredar la del entorno exterior (con ella, las tres distribuciones compartirían directorio).
+            _entorno["NATIVE_SSH_DIR_ESTADO"] = DirectorioEstado;
             string? puerto = Environment.GetEnvironmentVariable($"NATIVE_SSH_PUERTO_CONTENEDOR_{distro.ToUpperInvariant()}");
             if (puerto is not null)
                 _entorno["NATIVE_SSH_PUERTO_CONTENEDOR"] = puerto;

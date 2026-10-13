@@ -254,6 +254,7 @@ namespace NativeSsh.Test.Integracion
         [InlineData("ssh_read_file")]
         [InlineData("ssh_list_dir")]
         [InlineData("ssh_find")]
+        [InlineData("ssh_find sin cruzar montajes")]
         [InlineData("ssh_search")]
         [InlineData("ssh_stat")]
         public async Task SinBash_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita(string herramienta)
@@ -308,6 +309,8 @@ namespace NativeSsh.Test.Integracion
                     return await TextoAsync(() => herramientas.ListarDirectoriosAsync(Destino, "/tmp"));
                 case "ssh_find":
                     return await TextoAsync(() => herramientas.BuscarPorNombreAsync(Destino, "*.txt", "/tmp"));
+                case "ssh_find sin cruzar montajes":
+                    return await TextoAsync(() => herramientas.BuscarPorNombreAsync(Destino, "*.txt", "/", cruzarMontajes: false));
                 case "ssh_search":
                     return await TextoAsync(() => herramientas.BuscarAsync(Destino, "uno", archivo));
                 case "ssh_stat":

@@ -7,6 +7,14 @@ if (!OpcionesArranque.TryParsear(args, Environment.GetEnvironmentVariable("NATIV
     return 2;
 }
 
+// Una entrada de NATIVE_SSH_SOLO_LECTURA que no se entiende impide arrancar: se comprueba aquí para salir con el mensaje,
+// sin el volcado de pila de la excepción que lanzaría OpcionesNativeSsh.DesdeEntorno al registrar los servicios.
+if (!DestinosSoloLectura.TryParsear(Environment.GetEnvironmentVariable(DestinosSoloLectura.Variable), out _, out string? errorSoloLectura))
+{
+    Console.Error.WriteLine(errorSoloLectura);
+    return 2;
+}
+
 if (!arranque.IsHttp)
 {
     // stdout es el canal MCP: nada más puede escribir en él. Los logs van a stderr.

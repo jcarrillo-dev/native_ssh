@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
@@ -94,6 +95,15 @@ namespace NativeSsh.Test.Sesion.Falsos
         // La línea de captura no imprime la identidad del bash ($$ y $PPID).
         public bool IsSinIdentidad { get; set; }
 
+        // Dirección remota que tendrá cada conexión (IConexionSsh.DireccionRemota), calculada al conectar: por defecto, la IP
+        // si el destino es una, 127.0.0.1 para localhost y, para cualquier otro nombre, 192.0.2.1 (de documentación).
+        public Func<DestinoSsh, IPAddress?> DireccionRemota { get; set; } = DireccionPorDefecto;
+
+        public static IPAddress DireccionPorDefecto(DestinoSsh destino) =>
+            IPAddress.TryParse(destino.Servidor, out IPAddress? ip) ? ip
+            : destino.Servidor == "localhost" ? IPAddress.Loopback
+            : IPAddress.Parse("192.0.2.1");
+
         // Servidor sin bash: el shell de login responde al 'exec bash' de la inicialización con este texto y sale.
         public string? RespuestaSinBash { get; set; }
 
@@ -121,6 +131,7 @@ namespace NativeSsh.Test.Sesion.Falsos
             _ = Interlocked.Increment(ref _conexiones);
             ConexionFalsa conexion = new(guion, tamanoTrozo, login, retrasoLogin)
             {
+                DireccionRemota = DireccionRemota(destino),
                 BloqueoExec = BloqueoExec,
                 BloqueoAperturaExec = BloqueoAperturaExec,
                 BloqueoAperturaShell = BloqueoAperturaShell,
@@ -161,6 +172,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 return isConectada;
             }
         }
+
+        public IPAddress? DireccionRemota { get; init; }
 
         public Action? AlConsultarConexion
         {

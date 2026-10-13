@@ -84,5 +84,11 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 65, Level = LogLevel.Warning, Message = "El borrado en {Destino} de los archivos de salida guardados (guardarSalida) de {Shells} shell(s) terminó con código {Codigo}: los que siguen vuelven a la lista y se reintentan con el siguiente ssh_reset_shell o al cerrar.")]
         public static partial void LimpiezaGuardadosIncompleta(this ILogger logger, string destino, int shells, int? codigo);
+
+        [LoggerMessage(EventId = 66, Level = LogLevel.Warning, Message = "No se encontró el programa '{Binario}': los destinos se usan tal cual, sin la configuración de ssh (alias, HostName, User, Port e IdentityFile de ~/.ssh/config). Instala el cliente de OpenSSH y reinicia native_ssh para usarla.")]
+        public static partial void SshNoEncontrado(this ILogger logger, string binario);
+
+        [LoggerMessage(EventId = 67, Level = LogLevel.Debug, Message = "'{Servidor}' resuelto con la configuración de ssh: {Destino} ({Claves}).")]
+        public static partial void DestinoResuelto(this ILogger logger, string servidor, string destino, string claves);
     }
 }

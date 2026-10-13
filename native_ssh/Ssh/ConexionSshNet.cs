@@ -1,3 +1,4 @@
+using System.Net;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 using NativeSsh.Sesion;
@@ -69,15 +70,19 @@ namespace NativeSsh.Ssh
         // E-quater y CupoCanalesExecTests (el cupo se liberaba antes que la sesión del servidor). Por eso sigue infinito.
         // Quien cierra el canal del shell no lo espera más de un segundo (SesionShell.CerrarCanal): un bash remoto que no
         // muere al perder el terminal no puede bloquear la cola.
-        public ConexionSshNet(SshClient cliente)
+        public ConexionSshNet(SshClient cliente, IPAddress direccionRemota)
         {
             _cliente = cliente;
+            DireccionRemota = direccionRemota;
             cliente.ConnectionInfo.Timeout = Timeout.InfiniteTimeSpan;
             cliente.ConnectionInfo.ChannelCloseTimeout = Timeout.InfiniteTimeSpan;
             cliente.ErrorOccurred += OnErrorConexionEvent;
         }
 
         public bool IsConectada => !_isPerdida && IsClienteConectado();
+
+        // La dirección a la que FabricaConexionSsh conectó el socket (SSH.NET la recibe ya resuelta y no vuelve a resolver).
+        public IPAddress DireccionRemota { get; }
 
         public ICanalShell AbrirShell()
         {
