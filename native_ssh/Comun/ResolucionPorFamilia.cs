@@ -3,7 +3,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.Versioning;
 
 namespace NativeSsh.Comun
 {
@@ -15,58 +14,27 @@ namespace NativeSsh.Comun
         public bool HasFallo => Ipv4 is null || Ipv6 is null;
     }
 
-    // Fuera de Linux: Windows distingue «sin direcciones de esa familia» (WSANO_DATA); macOS y los demás Unix no.
-    public enum SistemaNoLinuxEnum
-    {
-        Windows,
-        Otro
-    }
-
     // Resolución de las entradas de NATIVE_SSH_SOLO_LECTURA por familia (A y AAAA por separado, a la vez) en todos los
     // sistemas, nunca las dos juntas: con AF_UNSPEC, si el DNS falla solo en una familia, getaddrinfo devuelve la otra como
-    // si fuera todo y la dirección de la familia que falló no se compararía; preguntando cada familia, el fallo se ve.
-    // «Sin direcciones de esa familia» (un host solo IPv4 o solo IPv6) se distingue en Linux con getaddrinfo propio
-    // (EAI_NODATA) y en Windows con SocketError.NoData (WSANO_DATA, que .NET pasa tal cual); en macOS y los demás Unix .NET lo
-    // junta con «no existe», así que ahí cualquier fallo de una familia es un fallo (falla cerrado).
-    public static class ResolucionPorFamilia
+    // si fuera todo y la dirección de la familia que falló no se compararía; preguntando cada familia, el fallo se ve. Lo
+    // de cada sistema (cómo se pide una familia, si se distingue «sin direcciones de esa familia», dónde está el fichero
+    // hosts) va en ResolucionPorFamilia.Linux.cs, .Windows.cs y .Unix.cs, y solo se compila el del sistema para el que se
+    // compila (NativeSshSistema en Directory.Build.props); esta parte común no mira el sistema.
+    public static partial class ResolucionPorFamilia
     {
         public static Task<DireccionesPorFamilia> ResolverAsync(string nombre, CancellationToken plazo) =>
-            OperatingSystem.IsLinux()
-                ? ResolverAsync(nombre, ResolverFamiliaLinux, plazo)
-                : ResolverAsync(nombre, OperatingSystem.IsWindows() ? SistemaNoLinuxEnum.Windows : SistemaNoLinuxEnum.Otro, Dns.GetHostAddresses, plazo);
+            ResolverAsync(nombre, ResolverFamiliaDelSistema, plazo);
 
-        [SupportedOSPlatform("linux")]
-        private static IPAddress[]? ResolverFamiliaLinux(string nombre, AddressFamily familia) => InteropLinux.ResolverFamilia(nombre, familia, out _);
+        // Las direcciones de 'nombre' de una sola familia en este sistema: vacío si no tiene direcciones de esa familia y el
+        // sistema lo distingue; null o una excepción si esa familia falla. Bloquea el hilo.
+        private static partial IPAddress[]? ResolverFamiliaDelSistema(string nombre, AddressFamily familia);
 
-        // Fuera de Linux, por familia con el DNS de .NET ('dns': Dns.GetHostAddresses(nombre, familia)).
-        internal static Task<DireccionesPorFamilia> ResolverAsync(string nombre, SistemaNoLinuxEnum sistema, Func<string, AddressFamily, IPAddress[]> dns, CancellationToken plazo)
-        {
-            bool isNoDataSinDirecciones = sistema == SistemaNoLinuxEnum.Windows;
-            return ResolverAsync(nombre, (n, familia) => ResolverFamiliaPorDns(n, familia, isNoDataSinDirecciones, dns), plazo);
-        }
+        // El fichero con el formato de /etc/hosts del sistema.
+        public static partial string RutaHostsDelSistema { get; }
 
-        // Una familia con el DNS de .NET: solo las direcciones de esa familia; vacío si el sistema dice que el nombre no tiene
-        // direcciones de esa familia (SocketError.NoData) y eso se distingue (isNoDataSinDirecciones: Windows). Cualquier otra
-        // excepción sale y hace fallar esa familia.
-        internal static IPAddress[] ResolverFamiliaPorDns(string nombre, AddressFamily familia, bool isNoDataSinDirecciones, Func<string, AddressFamily, IPAddress[]> dns)
-        {
-            try
-            {
-                return Array.FindAll(dns(nombre, familia), d => d.AddressFamily == familia);
-            }
-            catch (SocketException ex) when (isNoDataSinDirecciones && ex.SocketErrorCode == SocketError.NoData)
-            {
-                return [];
-            }
-        }
-
-        // El fichero hosts del sistema: en Windows, %SystemRoot%\System32\drivers\etc\hosts; en los demás, /etc/hosts.
-        public static string RutaHostsDelSistema =>
-            OperatingSystem.IsWindows() ? RutaHostsWindows(Environment.GetFolderPath(Environment.SpecialFolder.System)) : "/etc/hosts";
-
-        // carpetaSistema: %SystemRoot%\System32 (vacía si no se sabe: la de una instalación normal).
-        internal static string RutaHostsWindows(string carpetaSistema) =>
-            (carpetaSistema.Length > 0 ? carpetaSistema.TrimEnd('\\') : @"C:\Windows\System32") + @"\drivers\etc\hosts";
+        // Solo las direcciones de la familia pedida (por si el sistema devuelve también la otra).
+        internal static IPAddress[] DeLaFamilia(IPAddress[] direcciones, AddressFamily familia) =>
+            Array.FindAll(direcciones, d => d.AddressFamily == familia);
 
         // Las dos familias a la vez, cada una en un hilo del grupo (getaddrinfo bloquea y no se puede cancelar); cuando vence
         // 'plazo' se deja de esperar y la familia que no terminó cuenta como fallida (su hilo acaba cuando acabe getaddrinfo).

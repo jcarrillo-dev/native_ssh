@@ -703,26 +703,32 @@ namespace NativeSsh.Test.Comun
             _ = comprobacion.Should().Be(NoResuelta);
         }
 
-        // B1 fuera de Linux (prefusión-quater): en Windows y en macOS la entrada también se resuelve por familia, así que si
-        // el DNS falla solo en AAAA la IPv6 de la máquina protegida se rechaza (con las dos familias juntas, AF_UNSPEC daba
-        // solo la A como si fuera todo y la IPv6 escribía).
+        // B1 fuera de Linux (prefusión-quater), con un resolutor por familia que simula cada sistema: en Windows y en macOS
+        // la entrada también se resuelve por familia y la AAAA que falla lanza (o da null); la IPv6 de la máquina protegida
+        // se rechaza (con las dos familias juntas, AF_UNSPEC daba solo la A como si fuera todo y la IPv6 escribía). NoData:
+        // en Windows es «sin direcciones» (vacío) y solo cuenta la IPv4; en macOS se junta con «no existe» (fallo).
         [Theory]
-        [InlineData(SistemaNoLinuxEnum.Windows, "root@[fd00::5]:22")]
-        [InlineData(SistemaNoLinuxEnum.Windows, "root@10.0.0.6")]
-        [InlineData(SistemaNoLinuxEnum.Otro, "root@[fd00::5]:22")]
-        [InlineData(SistemaNoLinuxEnum.Otro, "root@10.0.0.6")]
-        public async Task FueraDeLinux_FalloSoloEnAaaa_LaEntradaNoSeResuelve(SistemaNoLinuxEnum sistema, string destino)
+        [InlineData("lanza", "root@[fd00::5]:22", true)]
+        [InlineData("lanza", "root@10.0.0.6", true)]
+        [InlineData("null", "root@[fd00::5]:22", true)]
+        [InlineData("nodata-windows", "root@[fd00::5]:22", false)]
+        [InlineData("nodata-windows", "root@10.0.0.5", true)]
+        [InlineData("nodata-windows", "root@10.0.0.6", false)]
+        public async Task SistemaSimulado_FalloSoloEnAaaa(string aaaa, string destino, bool isSoloLectura)
         {
             // Arrange
-            static IPAddress[] Dns(string nombre, AddressFamily familia) =>
-                familia == AddressFamily.InterNetworkV6 ? throw new SocketException((int)SocketError.TryAgain) : [IPAddress.Parse("10.0.0.5")];
-            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, sistema, Dns, plazo)).Should().BeTrue();
+            IPAddress[]? Familia(string nombre, AddressFamily familia) =>
+                familia == AddressFamily.InterNetwork ? [IPAddress.Parse("10.0.0.5")]
+                : aaaa == "lanza" ? throw new SocketException((int)SocketError.TryAgain)
+                : aaaa == "null" ? null
+                : [];
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, Familia, plazo)).Should().BeTrue();
 
             // Act
             ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
 
             // Assert
-            _ = comprobacion.Should().Be(NoResuelta);
+            _ = comprobacion.Should().Be(isSoloLectura && aaaa != "nodata-windows" ? NoResuelta : new ComprobacionSoloLectura(isSoloLectura, null));
         }
 
         // Una familia sin direcciones (NODATA: un host solo IPv4 o solo IPv6) es legítima: la entrada vale por la otra y los

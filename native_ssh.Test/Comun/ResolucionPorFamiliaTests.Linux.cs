@@ -1,17 +1,16 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using FluentAssertions;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Test.Comun
 {
-    // getaddrinfo propio de una familia (InteropLinux.ResolverFamilia): qué hace con cada código, cómo lee la lista de struct
+    // Lo de Linux (ResolucionPorFamilia.Linux.cs; solo se compila para Linux). getaddrinfo propio de una familia
+    // (GetAddrInfoLinux.ResolverFamilia): qué hace con cada código, cómo lee la lista de struct
     // addrinfo y que la libera. Con getaddrinfo y freeaddrinfo falsos (una lista construida en memoria nativa) y con los de
     // libc para direcciones literales, que no pasan por el DNS ni por NSS.
-    [SupportedOSPlatform("linux")]
-    public sealed class InteropLinuxGetAddrInfoTests
+    public sealed class ResolucionPorFamiliaLinuxTests
     {
         private const int EaiNoName = -2;
         private const int EaiAgain = -3;
@@ -42,19 +41,19 @@ namespace NativeSsh.Test.Comun
                 IntPtr sockaddr = Reservar(longitud);
                 for (int i = 0; i < longitud; i++)
                     Marshal.WriteByte(sockaddr, i, 0xAB);
-                Marshal.WriteInt16(sockaddr, 0, (short)(isIpv6 ? InteropLinux.FamiliaIpv6 : InteropLinux.FamiliaIpv4));
+                Marshal.WriteInt16(sockaddr, 0, (short)(isIpv6 ? GetAddrInfoLinux.FamiliaIpv6 : GetAddrInfoLinux.FamiliaIpv4));
                 byte[] bytes = direccion.GetAddressBytes();
                 Marshal.Copy(bytes, 0, sockaddr + (isIpv6 ? 8 : 4), bytes.Length);
 
-                InteropLinux.InfoDireccion info = new()
+                GetAddrInfoLinux.InfoDireccion info = new()
                 {
-                    Familia = isIpv6 ? InteropLinux.FamiliaIpv6 : InteropLinux.FamiliaIpv4,
+                    Familia = isIpv6 ? GetAddrInfoLinux.FamiliaIpv6 : GetAddrInfoLinux.FamiliaIpv4,
                     TipoSocket = 1,
                     LongitudDireccion = (uint)longitud,
                     Direccion = sockaddr,
                     Siguiente = siguiente
                 };
-                IntPtr nodo = Reservar(Marshal.SizeOf<InteropLinux.InfoDireccion>());
+                IntPtr nodo = Reservar(Marshal.SizeOf<GetAddrInfoLinux.InfoDireccion>());
                 Marshal.StructureToPtr(info, nodo, fDeleteOld: false);
                 return nodo;
             }
@@ -77,7 +76,7 @@ namespace NativeSsh.Test.Comun
         // Cualquier otro código es un fallo de la familia (null), también que el nombre no exista. Sin lista no hay nada que
         // liberar.
         [Theory]
-        [InlineData(InteropLinux.SinDireccionesDeLaFamilia, false)]
+        [InlineData(GetAddrInfoLinux.SinDireccionesDeLaFamilia, false)]
         [InlineData(EaiNoName, true)]
         [InlineData(EaiAgain, true)]
         [InlineData(EaiFail, true)]
@@ -94,7 +93,7 @@ namespace NativeSsh.Test.Comun
             }
 
             // Act
-            IPAddress[]? resultado = InteropLinux.ResolverFamilia("prod.ejemplo", AddressFamily.InterNetworkV6, Obtener, _ => liberadas++, out int codigo);
+            IPAddress[]? resultado = GetAddrInfoLinux.ResolverFamilia("prod.ejemplo", AddressFamily.InterNetworkV6, Obtener, _ => liberadas++, out int codigo);
 
             // Assert
             _ = codigo.Should().Be(codigoGetAddrInfo);
@@ -106,8 +105,8 @@ namespace NativeSsh.Test.Comun
         // Con éxito: cada dirección de la lista una vez (IPv4 en el byte 4 de sockaddr_in, IPv6 en el byte 8 de sockaddr_in6),
         // la familia pedida a getaddrinfo es la de la consulta, y la lista se libera una vez, la misma que se obtuvo.
         [Theory]
-        [InlineData(AddressFamily.InterNetwork, InteropLinux.FamiliaIpv4, new[] { "10.0.0.5", "10.0.0.6", "10.0.0.5" }, new[] { "10.0.0.5", "10.0.0.6" })]
-        [InlineData(AddressFamily.InterNetworkV6, InteropLinux.FamiliaIpv6, new[] { "fd00::5", "2001:db8::1:2:3", "fd00::5" }, new[] { "fd00::5", "2001:db8::1:2:3" })]
+        [InlineData(AddressFamily.InterNetwork, GetAddrInfoLinux.FamiliaIpv4, new[] { "10.0.0.5", "10.0.0.6", "10.0.0.5" }, new[] { "10.0.0.5", "10.0.0.6" })]
+        [InlineData(AddressFamily.InterNetworkV6, GetAddrInfoLinux.FamiliaIpv6, new[] { "fd00::5", "2001:db8::1:2:3", "fd00::5" }, new[] { "fd00::5", "2001:db8::1:2:3" })]
         public void ConExito_LeeLaListaYLaLibera(AddressFamily familia, int familiaPedida, string[] lista, string[] esperadas)
         {
             // Arrange
@@ -122,7 +121,7 @@ namespace NativeSsh.Test.Comun
             }
 
             // Act
-            IPAddress[]? resultado = InteropLinux.ResolverFamilia("prod.ejemplo", familia, Obtener, liberadas.Add, out int codigo);
+            IPAddress[]? resultado = GetAddrInfoLinux.ResolverFamilia("prod.ejemplo", familia, Obtener, liberadas.Add, out int codigo);
 
             // Assert
             _ = codigo.Should().Be(0);
@@ -141,7 +140,7 @@ namespace NativeSsh.Test.Comun
         public void ConLibc_LiteralDeSuFamilia(string nombre, AddressFamily familia, string esperada)
         {
             // Act
-            IPAddress[]? resultado = InteropLinux.ResolverFamilia(nombre, familia, out int codigo);
+            IPAddress[]? resultado = GetAddrInfoLinux.ResolverFamilia(nombre, familia, out int codigo);
 
             // Assert
             _ = codigo.Should().Be(0);
@@ -154,11 +153,15 @@ namespace NativeSsh.Test.Comun
         public void ConLibc_LiteralDeLaOtraFamilia_EsFallo(string nombre, AddressFamily familia)
         {
             // Act
-            IPAddress[]? resultado = InteropLinux.ResolverFamilia(nombre, familia, out int codigo);
+            IPAddress[]? resultado = GetAddrInfoLinux.ResolverFamilia(nombre, familia, out int codigo);
 
             // Assert
             _ = resultado.Should().BeNull();
             _ = codigo.Should().Be(EaiAddrFamily);
         }
+
+        [Fact]
+        public void RutaHostsDelSistema_EsEtcHosts() =>
+            _ = ResolucionPorFamilia.RutaHostsDelSistema.Should().Be("/etc/hosts");
     }
 }
