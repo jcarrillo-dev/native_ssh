@@ -25,10 +25,12 @@
        y si no, el del sistema donde se compila. Solo entra en el binario lo de su sistema. Se puede fijar con
        -p:NativeSshSistema=windows|linux|unix (p. ej. para compilar y probar en Linux lo de Windows). Define NATIVE_SSH_WINDOWS,
        NATIVE_SSH_LINUX o NATIVE_SSH_UNIX para las pruebas propias de cada sistema. Una variable de entorno NativeSshSistema
-       no lo fija (MSBuild convierte las variables de entorno en propiedades): si el valor viene de ella se descarta; si
-       además se pasa -p:NativeSshSistema, esa propiedad global no se puede pisar y es la que vale. -->
+       (con cualquier combinación de mayúsculas: MSBuild convierte las variables de entorno en propiedades sin distinguirlas)
+       no lo fija: solo vale una propiedad global (-p:NativeSshSistema), que no se puede pisar; para saber si lo es, se le da
+       un valor de prueba: si lo toma, no era global y se descarta. -->
   <PropertyGroup>
-    <NativeSshSistema Condition="'$(NativeSshSistema)' != '' and '$(NativeSshSistema)' == '$([System.Environment]::GetEnvironmentVariable(`NativeSshSistema`))'"></NativeSshSistema>
+    <NativeSshSistema>_sin_fijar_</NativeSshSistema>
+    <NativeSshSistema Condition="'$(NativeSshSistema)' == '_sin_fijar_'"></NativeSshSistema>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(NativeSshSistema)' == ''">
