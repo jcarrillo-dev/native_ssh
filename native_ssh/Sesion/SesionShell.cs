@@ -876,12 +876,14 @@ namespace NativeSsh.Sesion
 
             FijarTecleadoDescartado(peticion, idAnterior);
 
-            // guardarSalida: si el archivo no se pudo preparar, el envoltorio no ejecutó el comando y dejó el motivo; si terminó,
-            // la vista previa se lee antes de dar el comando por terminado.
+            // guardarSalida: si el archivo no se pudo preparar, el envoltorio no ejecutó el comando y dejó el motivo; si ni lo
+            // dejó ni dio la ruta, tampoco lo ejecutó (solo lo hace tras dar la ruta) y no se sabe por qué; si terminó, la vista
+            // previa se lee antes de dar el comando por terminado.
             if (peticion.FiltroGuardado is { } filtro)
             {
                 InformeGuardado informe = filtro.Informe;
-                if (informe.Error is { } errorGuardado)
+                string? errorGuardado = informe.Error ?? (informe.Archivo is null ? SalidaGuardada.MensajeSinPreparacion : null);
+                if (errorGuardado is not null)
                 {
                     _ = peticion.TryFinalizar(EstadoPeticionEnum.Error, -1, Unir(avisoShell, errorGuardado));
                     return;

@@ -293,10 +293,10 @@ namespace NativeSsh.Test.Protocolo
             string texto = SalidaGuardada.Envolver("echo 'a' \"b\"", Nonce, Guid.NewGuid(), "id", "/tmp/native_ssh");
 
             // Assert
-            _ = texto.Should().StartWith("unset __ns_k __ns_b\n__ns_gc='echo '\\''a'\\'' \"b\"'\n");
+            _ = texto.Should().StartWith($"unset __ns_k __ns_b\n__ns_gc{Nonce:N}='echo '\\''a'\\'' \"b\"'\n");
             _ = texto.Should().NotContain($"__NSG_{Nonce:N}");
             string resumen = texto[texto.IndexOf("_F_", StringComparison.Ordinal)..];
-            _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("printf '%d_%d_%d'");
+            _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("_F_%d_%d_%d__").And.NotContain("$__ns_g");
             _ = texto.Should().Contain("{ set +x +v; } 2>/dev/null").And.Contain("chmod 700 -- \"$b\"").And.Contain("chmod 700 -- \"$d\"").And.Contain("chmod 600 -- \"$f\"");
         }
 

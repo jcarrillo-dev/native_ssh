@@ -74,35 +74,41 @@ namespace NativeSsh.Protocolo
         // directorio que debe tener el bit sticky. Empieza quitando __ns_k y __ns_b, las variables de ConstructorComando con el
         // texto que se evalúa (lleva el nonce de las marcas): el comando no las ve, ni sus hijos con 'set -a', así que no puede
         // imitar una marca (y FiltroMarcasGuardado solo aplica las que siguen el orden del envoltorio).
+        // El resumen no depende de nada que el comando pueda cambiar en el shell: las variables del envoltorio llevan el nonce
+        // en el nombre (un 'readonly' de un comando anterior no impide asignarlas: el nombre es otro en cada petición) y,
+        // después del comando, solo se usan para borrarlas (sin error si no se puede); el código de salida y el recuento los
+        // saca una subshell con parámetros posicionales (no se pueden hacer de solo lectura) y la ruta vuelta a calcular desde
+        // el prefijo, 'id -un' y los dos ids, no la variable con la ruta, que el comando puede reasignar o quitar.
         public static string Envolver(string comando, Guid nonce, Guid idShell, string idPeticion, string prefijo)
         {
             string n = nonce.ToString("N");
             string s = idShell.ToString("N");
             string literal = comando.Replace("'", "'\\''", StringComparison.Ordinal);
-            string preparacion = PlantillaPreparacion
-                .Replace("@PREFIJO@", Literal(prefijo), StringComparison.Ordinal)
-                .Replace("@PADRE@", Literal(Padre(prefijo)), StringComparison.Ordinal)
-                .Replace("@N@", n, StringComparison.Ordinal)
-                .Replace("@S@", s, StringComparison.Ordinal)
-                .Replace("@I@", idPeticion, StringComparison.Ordinal)
-                .Replace("@MAXF@", MaxArchivosPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("@MAXB@", MaxBytesPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
+            string preparacion = Sustituir(PlantillaPreparacion, n, s, idPeticion, prefijo);
+            string resumen = Sustituir(PlantillaResumen, n, s, idPeticion, prefijo);
             return $$"""
                 unset __ns_k __ns_b
-                __ns_gc='{{literal}}'
-                if __ns_gf=$({{preparacion}}); then
-                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf" | command base64 | command tr -d '\n')"
-                { eval "$__ns_gc"
-                } >>"$__ns_gf" 2>&1
-                __ns_gr=$?
-                printf '%s_%s_F_%s__\n' '__NSG' '{{n}}' "$({{PlantillaResumen}})"
+                __ns_gc{{n}}='{{literal}}'
+                if __ns_gf{{n}}=$({{preparacion}}); then
+                printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf{{n}}" | command base64 | command tr -d '\n')"
+                { eval "$__ns_gc{{n}}"
+                } >>"$__ns_gf{{n}}" 2>&1
+                ({{resumen}})
                 else
-                __ns_gr=1
+                (exit 1)
                 fi
-                unset __ns_gc __ns_gf
-                eval "unset __ns_gr; (exit $__ns_gr)"
+                eval "unset __ns_gc{{n}} __ns_gf{{n}} 2>/dev/null; (exit $?)"
                 """.ReplaceLineEndings("\n");
         }
+
+        private static string Sustituir(string plantilla, string n, string s, string idPeticion, string prefijo) => plantilla
+            .Replace("@PREFIJO@", Literal(prefijo), StringComparison.Ordinal)
+            .Replace("@PADRE@", Literal(Padre(prefijo)), StringComparison.Ordinal)
+            .Replace("@N@", n, StringComparison.Ordinal)
+            .Replace("@S@", s, StringComparison.Ordinal)
+            .Replace("@I@", idPeticion, StringComparison.Ordinal)
+            .Replace("@MAXF@", MaxArchivosPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
+            .Replace("@MAXB@", MaxBytesPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
 
         // En lugar de Envolver cuando la sesión ya tiene MaxShellsConGuardado shells con salidas guardadas sin borrar y este
         // shell aún no tiene directorio (SesionShell): no crea nada ni ejecuta el comando; solo la marca E con el tope.
@@ -152,18 +158,22 @@ namespace NativeSsh.Protocolo
             printf '%s' "$f"
             """.ReplaceLineEndings("\n");
 
-        // Solo números: líneas, bytes y si el archivo no termina en salto (1). Líneas: las de 'wc -l' más una si el archivo no
-        // termina en salto (una última línea sin '\n' cuenta, como en la cabecera de ssh_read_file); -1 si no se pudo contar
-        // (el archivo ya no estaba).
+        // Una subshell justo detrás del comando: guarda su código ($? al entrar) en $1, imprime la marca F y sale con él, así que
+        // el código del envoltorio es el del comando. Solo números: líneas, bytes y si el archivo no termina en salto (1).
+        // Líneas: las de 'wc -l' más una si el archivo no termina en salto (una última línea sin '\n' cuenta, como en la
+        // cabecera de ssh_read_file); -1 si no se pudo contar (el archivo ya no estaba). Sin variables: solo parámetros
+        // posicionales ($1 código, $2 ruta, $3 bytes, $4 líneas, $5 sin salto final), que el comando no puede dejar de solo
+        // lectura (una variable de solo lectura del shell también lo es en la subshell, y asignarla la abortaría).
         private static readonly string PlantillaResumen = """
+            set -- "$?"
             { set +x +v; } 2>/dev/null
             set +e +u +f
-            b=$(command wc -c < "$__ns_gf" 2>/dev/null) || b=-1
-            l=$(command wc -l < "$__ns_gf" 2>/dev/null) || l=-1
-            b=$((b)); l=$((l))
-            z=0
-            if [ "$b" -gt 0 ] && [ "$l" -ge 0 ] && [ "$(command tail -c 1 "$__ns_gf" 2>/dev/null | command wc -l)" -eq 0 ]; then l=$((l + 1)); z=1; fi
-            printf '%d_%d_%d' "$l" "$b" "$z"
+            set -- "$1" @PREFIJO@-"$(command id -un 2>/dev/null)"/@S@/@I@.out
+            set -- "$1" "$2" "$(command wc -c 2>/dev/null <"$2" || printf '%s' -1)" "$(command wc -l 2>/dev/null <"$2" || printf '%s' -1)"
+            set -- "$1" "$2" "$(($3))" "$(($4))" 0
+            if [ "$3" -gt 0 ] && [ "$4" -ge 0 ] && [ "$(command tail -c 1 "$2" 2>/dev/null | command wc -l)" -eq 0 ]; then set -- "$1" "$2" "$3" "$(($4 + 1))" 1; fi
+            printf '%s_%s_F_%d_%d_%d__\n' '__NSG' '@N@' "$4" "$3" "$5"
+            exit "$1"
             """.ReplaceLineEndings("\n");
 
         // Por un canal exec (sin el shell ni el terminal), acotado como ssh_read_file: el principio del archivo para la vista
@@ -335,6 +345,11 @@ namespace NativeSsh.Protocolo
             int barra = prefijo.TrimEnd('/').LastIndexOf('/');
             return barra <= 0 ? "/" : prefijo[..barra];
         }
+
+        // Sin marca A ni E: la preparación del archivo se cortó sin decir por qué (el envoltorio solo ejecuta el comando después
+        // de imprimir la A). Lo puede provocar algo que dejó un comando anterior en el shell y que la subshell de la
+        // preparación hereda: una variable de solo lectura con el nombre de una de las suyas o una función con el de una orden.
+        public const string MensajeSinPreparacion = NoEjecutado + " la preparación del archivo se interrumpió sin dar el motivo, por algo que un comando anterior dejó en el shell (p. ej. una variable de solo lectura o una función con el nombre de una orden). Usa ssh_reset_shell (abre un shell limpio) y vuelve a lanzar el comando.";
 
         private const string NoEjecutado = "El comando NO se ejecutó: con guardarSalida=true su salida va a un archivo del servidor y no se pudo preparar:";
 
