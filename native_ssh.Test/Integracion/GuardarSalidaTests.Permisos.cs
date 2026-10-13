@@ -7,7 +7,8 @@ using NativeSsh.Test.Utilidades;
 namespace NativeSsh.Test.Integracion
 {
     // guardarSalida con una ACL por defecto en el directorio que contiene el base: GNU 'ls -ld' la muestra ('+') en el base
-    // recién creado y se rechaza sin ejecutar ni escribir nada (el busybox de Alpine no la muestra: ContenedorSudoTests).
+    // recién creado y se rechaza sin ejecutar ni escribir nada; el error dice que lo acaba de crear (no que ya existía) y el
+    // base se vuelve a borrar (el busybox de Alpine no la muestra: ContenedorSudoTests).
     public sealed partial class GuardarSalidaTests
     {
         [Fact]
@@ -29,9 +30,9 @@ namespace NativeSsh.Test.Integracion
             // Assert
             salida.WriteLine($"{r.Estado} '{r.Aviso}'");
             _ = r.Estado.Should().Be(EstadoPeticionEnum.Error);
-            _ = r.Aviso.Should().StartWith("El comando NO se ejecutó").And.Contain(Base).And.Contain("ACL");
+            _ = r.Aviso.Should().StartWith("El comando NO se ejecutó").And.Contain(Base).And.Contain("ACL").And.Contain("acaba de crear").And.NotContain("ya existe");
             _ = File.Exists(testigo).Should().BeFalse();
-            _ = Directory.EnumerateFileSystemEntries(Base).Should().BeEmpty();
+            _ = Directory.Exists(Base).Should().BeFalse("el base que acaba de crear el envoltorio y no cumple se vuelve a borrar");
         }
     }
 }

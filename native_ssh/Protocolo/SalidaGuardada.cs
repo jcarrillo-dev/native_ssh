@@ -29,6 +29,8 @@ namespace NativeSsh.Protocolo
     //   que es un directorio, que es del usuario (-O) y que 'ls -ld' da exactamente drwx------ (el de GNU coreutils añade
     //   '+' si hay ACL, y entonces se rechaza; el de busybox no la muestra): si no, error sin escribir nada (un
     //   /tmp/native_ssh común lo podría crear antes otro usuario para leer o redirigir las salidas, incluidas las de root).
+    //   Si lo acaba de crear el propio envoltorio y no cumple (una ACL por defecto en /tmp que el 'ls' de GNU marca con '+'),
+    //   lo vuelve a borrar ('rmdir': está vacío) y el error lo dice así, no que ya existía.
     //   Con el base así, nadie más puede crear, renombrar ni sustituir nada dentro;
     // - el directorio del shell se crea igual ('mkdir -m 700' y 'chmod 700', exclusivo como 'mktemp -d': falla si ya
     //   existe) y se comprueba igual; el nombre lo fija C#, así que la limpieza (ScriptLimpieza) sabe qué borrar sin leer
@@ -119,7 +121,10 @@ namespace NativeSsh.Protocolo
             case $u in ''|*/*|.|..) __ns_ge usuario "$u" ;; esac
             [ -k @PADRE@ ] || [ -O @PADRE@ ] || __ns_ge tmp @PADRE@
             b=@PREFIJO@-$u
-            command mkdir -m 700 -- "$b" 2>/dev/null && command chmod 700 -- "$b" 2>/dev/null
+            if command mkdir -m 700 -- "$b" 2>/dev/null; then
+              command chmod 700 -- "$b" 2>/dev/null
+              __ns_gk "$b" || { command rmdir -- "$b" 2>/dev/null && __ns_ge basenuevo "$b" 1; __ns_ge basenuevo "$b" 0; }
+            fi
             __ns_gk "$b" || __ns_ge base "$b"
             d=$b/@S@
             if command mkdir -m 700 -- "$d" 2>/dev/null; then
@@ -282,6 +287,7 @@ namespace NativeSsh.Protocolo
             "usuario" => $"{NoEjecutado} no se pudo saber en el servidor el usuario de la sesión ('id -un' falló o dio un nombre no válido: '{ruta}').",
             "tmp" => $"{NoEjecutado} '{ruta}' no tiene el bit sticky (modo 1777) ni es del usuario de la sesión: cualquier usuario del servidor podría sustituir el directorio de native_ssh entre la comprobación y la escritura. No se ha escrito nada. Lanza el comando sin guardarSalida.",
             "base" => $"{NoEjecutado} '{ruta}' ya existe y no es un directorio propio con permisos 700 (es un enlace, es de otro usuario o tiene otros permisos o una ACL): otro usuario del servidor pudo crearlo para leer o redirigir las salidas. No se ha escrito nada. Compruébalo con ssh_stat: si no es tuyo, no lo uses y avisa al administrador; si es tuyo, déjalo con 'chmod 700' (sin ACL) o bórralo, y vuelve a lanzar el comando.",
+            "basenuevo" => $"{NoEjecutado} native_ssh acaba de crear '{ruta}', pero no quedó como un directorio propio con permisos exactos 700: lo habitual es una ACL por defecto en el directorio que lo contiene ('ls -ld' lo marca con '+'), que daría acceso a otros usuarios del servidor. {(n == "1" ? "Se ha vuelto a borrar" : "No se pudo volver a borrar (está vacío: bórralo con 'rmdir')")} y no se ha escrito nada. Lanza el comando sin guardarSalida, o pide al administrador que quite la ACL por defecto de ese directorio ('setfacl -k').",
             "shells" => $"{NoEjecutado} esta sesión ya tiene {n} shells con salidas guardadas sin borrar (el actual y los que se abrieron solos tras un plazo agotado, una cancelación o una caída), que es el límite. Lee lo que necesites de esos archivos y usa ssh_reset_shell o ssh_disconnect (borran todos), y vuelve a lanzar el comando.",
             "sesion" => $"{NoEjecutado} el directorio de este shell, '{ruta}', no es un directorio propio con permisos 700 (se cambió o se sustituyó). No se ha escrito nada. Usa ssh_reset_shell (el shell nuevo usa otro directorio) y vuelve a lanzar el comando.",
             "archivos" or "bytes" => $"{NoEjecutado} este shell ya tiene {n} archivo(s) de salida guardados ({t} bytes) en '{ruta}' y el límite es de {MaxArchivosPorShell} archivos y {MaxBytesPorShell / (1024 * 1024)} MiB por shell. Borra los que ya no necesites (ssh_exec con 'rm -- <ruta>') o usa ssh_reset_shell (borra todos y abre un shell nuevo), y vuelve a lanzarlo.",
