@@ -288,6 +288,7 @@ namespace NativeSsh.Test.Ssh
         // salida, así que el destino se resuelve (sin decir que ssh no terminó), y lo que dejó en segundo plano muere (ssh va
         // en su propio grupo de procesos). La espera tiene tope para que una lectura sin plazo falle en vez de colgarse.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task MatchExecQueDejaUnProcesoEnSegundoPlano_SeResuelveYNoQuedanHuerfanos()
         {
             // Arrange
@@ -311,6 +312,7 @@ namespace NativeSsh.Test.Ssh
         [InlineData("hostname 10.99.99.98", "hostname")]
         [InlineData("user intruso", "user")]
         [InlineData("port 2299", "port")]
+        [Trait("Categoria", "SoloLinux")]
         public void MatchExecQueEscribeEnLaSalidaDeSshTrasTerminar_NoCambiaElDestino(string linea, string opcion)
         {
             // Arrange
@@ -472,6 +474,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void MatchExec_NoVeLosSecretosDeNativeSsh()
         {
             // Arrange
