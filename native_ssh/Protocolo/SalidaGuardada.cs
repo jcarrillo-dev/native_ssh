@@ -65,7 +65,9 @@ namespace NativeSsh.Protocolo
 
         // El texto que se evalúa en el shell en lugar del comando. idShell: el del shell que lo ejecuta (su directorio).
         // prefijo: OpcionesNativeSsh.PrefijoGuardado ('/tmp/native_ssh'); el base es prefijo + '-<usuario>' y su padre, el
-        // directorio que debe tener el bit sticky.
+        // directorio que debe tener el bit sticky. Empieza quitando __ns_k y __ns_b, las variables de ConstructorComando con el
+        // texto que se evalúa (lleva el nonce de las marcas): el comando no las ve, ni sus hijos con 'set -a', así que no puede
+        // imitar una marca (y FiltroMarcasGuardado solo aplica las que siguen el orden del envoltorio).
         public static string Envolver(string comando, Guid nonce, Guid idShell, string idPeticion, string prefijo)
         {
             string n = nonce.ToString("N");
@@ -80,6 +82,7 @@ namespace NativeSsh.Protocolo
                 .Replace("@MAXF@", MaxArchivosPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
                 .Replace("@MAXB@", MaxBytesPorShell.ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal);
             return $$"""
+                unset __ns_k __ns_b
                 __ns_gc='{{literal}}'
                 if __ns_gf=$({{preparacion}}); then
                 printf '%s_%s_A_%s__\n' '__NSG' '{{n}}' "$({ set +x +v; } 2>/dev/null; printf '%s' "$__ns_gf" | command base64 | command tr -d '\n')"

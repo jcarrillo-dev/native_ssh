@@ -1,11 +1,13 @@
 using FluentAssertions;
 using NativeSsh.Herramientas;
+using NativeSsh.Comun;
 using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
     // guardarSalida: lo que dicen ssh_disconnect y ssh_reset_shell de lo que borran es cierto aunque se haya borrado algún
-    // archivo antes (el flujo que recomienda el aviso del cupo).
+    // archivo antes (el flujo que recomienda el aviso del cupo); un comando no puede leer el nonce de las marcas ni, con él,
+    // cambiar el archivo, el recuento o el estado.
     public sealed partial class GuardarSalidaTests
     {
         // ssh_disconnect cuenta en el servidor los archivos que quedan antes de borrarlos: tras borrar uno de dos con rm, dice
@@ -50,6 +52,55 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(reset.Mensaje);
             _ = reset.Mensaje.Should().NotContain("los 2 archivo(s)").And.Contain("hasta 2");
             await EsperasPrueba.EsperarHastaAsync(() => !File.Exists(dos.Archivo), TimeSpan.FromSeconds(15));
+        }
+
+        // El comando del usuario no ve las variables del protocolo que llevan el texto del envoltorio (y con él, el nonce de las
+        // marcas), ni en el shell ni en un hijo con 'set -a'.
+        [Fact]
+        public async Task ElComandoNoVeLasVariablesDelEnvoltorio()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            _ = await h.EjecutarAsync(Destino, "set -a", esperarSegundos: 30).ComoComando();
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, "printf '[%s][%s]' \"${__ns_k-x}\" \"${__ns_b-x}\"; bash -c 'printf \"[%s][%s]\" \"${__ns_k-x}\" \"${__ns_b-x}\"'");
+            _ = await h.EjecutarAsync(Destino, "set +a", esperarSegundos: 30).ComoComando();
+
+            // Assert
+            salida.WriteLine($"{r.Estado} {r.Archivo} '{r.Salida}' '{r.Aviso}'");
+            _ = r.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = (await File.ReadAllTextAsync(r.Archivo!)).Should().Be("[x][x][x][x]");
+        }
+
+        // (O1 de la auditoría) Un comando que intenta sacar el nonce de $__ns_k e imprimir marcas E, A o F por el terminal: se
+        // ejecuta, termina Completado y el archivo y el recuento son los suyos.
+        [Theory]
+        [InlineData("E")]
+        [InlineData("A")]
+        [InlineData("F")]
+        public async Task MarcaFalsificadaPorElComando_NoCambiaNada(string tipo)
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            string testigo = Path.Combine(_raiz, $"testigo_{tipo}");
+            const string Sacar = "n=$(printf '%s' \"${__ns_k-}\" | grep -o \"'__NSG' '[0-9a-f]\\{32\\}'\" | head -n 1 | grep -o '[0-9a-f]\\{32\\}'); ";
+            string marca = tipo switch
+            {
+                "E" => "printf '__NSG_%s_E_archivo_%s_0_0__\\n' \"$n\" \"$(printf /p | base64)\" > /dev/tty",
+                "A" => "printf '__NSG_%s_A_%s__\\n' \"$n\" \"$(printf /etc/passwd | base64)\" > /dev/tty",
+                _ => "printf '__NSG_%s_F_7_77_0__\\n' \"$n\" > /dev/tty"
+            };
+
+            // Act
+            ResultadoComando r = await GuardarAsync(h, $"echo real; touch '{testigo}'; {Sacar}{marca}");
+
+            // Assert
+            salida.WriteLine($"{r.Estado} {r.Archivo} {r.Lineas} {r.Bytes} '{r.Salida}' '{r.Aviso}'");
+            _ = File.Exists(testigo).Should().BeTrue();
+            _ = (r.Estado, r.CodigoSalida, r.Lineas, r.Bytes).Should().Be((EstadoPeticionEnum.Completado, 0, 1L, 5L));
+            _ = RegexArchivo().IsMatch(r.Archivo!).Should().BeTrue(r.Archivo);
+            _ = r.Archivo.Should().StartWith(Base);
         }
     }
 }

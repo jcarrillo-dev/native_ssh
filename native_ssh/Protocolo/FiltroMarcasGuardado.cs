@@ -11,8 +11,9 @@ namespace NativeSsh.Protocolo
     // (A, F o E) + sus campos (cada uno "_" + [A-Za-z0-9+/=-]*, tantos como dice SalidaGuardada.CamposDe) + "__" y el salto
     // de línea que la sigue ("\n", o "\r\n" si el terminal convierte los saltos). Lo que al final de un trozo puede ser el
     // principio de una marca se retiene hasta el trozo siguiente; lo que deja de cuadrar (otro nonce, otro carácter, más de
-    // MaxLongitudMarca) es texto del comando y pasa tal cual. Vaciar suelta lo retenido al terminar el comando: si ya llevaba
-    // el nonce entero (una marca de esta petición cortada, p. ej. por el cierre del shell) se descarta; si no, es texto.
+    // MaxLongitudMarca) es texto del comando y pasa tal cual. Solo se aplican las marcas en el orden del envoltorio
+    // (IsAceptada). Vaciar suelta lo retenido al terminar el comando: si ya llevaba el nonce entero (una marca de esta
+    // petición cortada, p. ej. por el cierre del shell) se descarta; si no, es texto.
     // No es seguro entre hilos: Escribir y Vaciar van bajo el candado de proceso de la sesión. Informe sí se lee desde
     // cualquier hilo.
     public sealed class FiltroMarcasGuardado : IDestinoSalida
@@ -29,6 +30,8 @@ namespace NativeSsh.Protocolo
         private int _retenidos;
         private int _saltarSalto;
         private InformeGuardado _informe = new(null, null, null, null, null);
+        private bool _isVistaA;
+        private bool _isVistaF;
 
         public FiltroMarcasGuardado(Guid nonce, BufferSalida salida)
         {
@@ -144,7 +147,8 @@ namespace NativeSsh.Protocolo
                 lock (_candadoInforme)
                 {
                     bool isSinArchivo = _informe.Archivo is null;
-                    _informe = SalidaGuardada.Aplicar(_informe, (char)tipo, campos);
+                    if (IsAceptada(tipo))
+                        _informe = SalidaGuardada.Aplicar(_informe, (char)tipo, campos);
                     isPrimerArchivo = isSinArchivo && _informe.Archivo is not null;
                 }
 
@@ -157,6 +161,31 @@ namespace NativeSsh.Protocolo
             int retenidos = LongitudPrefijoFinal(ventana[emitido..]);
             Emitir(ventana[emitido..^retenidos]);
             Retener(ventana[^retenidos..]);
+        }
+
+        // El envoltorio deja como mucho una A, después una F, o, si no llegó a ejecutar el comando, una E antes de la A. Otra
+        // marca con el nonce (una segunda A, una E tras la A, una F antes de la A o una segunda F) solo la pudo imprimir el propio
+        // comando o un proceso suyo: se quita igual de la salida, pero no cambia el archivo, el recuento ni el estado. Bajo
+        // _candadoInforme.
+        private bool IsAceptada(byte tipo)
+        {
+            bool isAceptada;
+            switch (tipo)
+            {
+                case (byte)'A':
+                    isAceptada = !_isVistaA;
+                    _isVistaA = true;
+                    break;
+                case (byte)'F':
+                    isAceptada = _isVistaA && !_isVistaF;
+                    _isVistaF |= isAceptada;
+                    break;
+                default:
+                    isAceptada = !_isVistaA;
+                    break;
+            }
+
+            return isAceptada;
         }
 
         // El salto de línea que sigue a una marca; si el trozo se acaba antes, se salta al principio del siguiente.

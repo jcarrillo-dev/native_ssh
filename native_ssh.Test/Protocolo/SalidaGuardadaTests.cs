@@ -96,7 +96,7 @@ namespace NativeSsh.Test.Protocolo
             string marca = Marca("F_1_2_0").Replace("\n", "\r\n", StringComparison.Ordinal);
 
             // Act
-            filtro.Escribir(Encoding.UTF8.GetBytes("a" + marca[..^1]));
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca($"A_{B64("/x")}") + "a" + marca[..^1]));
             filtro.Escribir(Encoding.UTF8.GetBytes(marca[^1..] + "b"));
 
             // Assert
@@ -112,7 +112,7 @@ namespace NativeSsh.Test.Protocolo
             FiltroMarcasGuardado filtro = Filtro(out _);
 
             // Act
-            filtro.Escribir(Encoding.UTF8.GetBytes(Marca("F_-1_-1_0")));
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca($"A_{B64("/x")}") + Marca("F_-1_-1_0")));
 
             // Assert
             _ = (filtro.Informe.Lineas, filtro.Informe.Bytes, filtro.Informe.IsTerminado).Should().Be((null, null, true));
@@ -198,6 +198,43 @@ namespace NativeSsh.Test.Protocolo
             _ = veces.Should().Be(1);
         }
 
+        // Una marca con el nonce de la petición que no es la que toca (una segunda A, una E tras la A, una F antes de la A o una
+        // segunda F) la pudo imprimir el propio comando: se quita de la salida igual, pero no cambia el archivo, el recuento ni
+        // el estado.
+        [Fact]
+        public void Filtro_MarcaFueraDeOrden_SeQuitaSinCambiarElInforme()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out BufferSalida salida);
+            int veces = 0;
+            filtro.AlCrearArchivo = () => veces++;
+            string flujo = Marca("F_7_77_0") + "a" + Marca($"A_{B64("/tmp/b/s/i.out")}") + "b" + Marca($"A_{B64("/etc/passwd")}")
+                + Marca($"E_archivo_{B64("/p")}_0_0") + "c" + Marca("F_3_12_1") + Marca("F_9_99_0") + Marca($"A_{B64("/etc/shadow")}") + "d";
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(flujo));
+            filtro.Vaciar();
+
+            // Assert
+            _ = Texto(salida).Should().Be("abcd");
+            ComprobarInforme(filtro.Informe);
+            _ = veces.Should().Be(1);
+        }
+
+        // Una E antes de la A (la preparación falló) sí se aplica.
+        [Fact]
+        public void Filtro_ErrorAntesDeLaA_SeAplica()
+        {
+            // Arrange
+            FiltroMarcasGuardado filtro = Filtro(out _);
+
+            // Act
+            filtro.Escribir(Encoding.UTF8.GetBytes(Marca($"E_archivo_{B64("/p")}_0_0")));
+
+            // Assert
+            _ = filtro.Informe.Error.Should().Contain("'/p'");
+        }
+
         [Theory]
         [InlineData("/tmp/native_ssh-ana/S/I.out", true)]
         [InlineData("/tmp/native_ssh-a.b/S/I.out", true)]
@@ -256,7 +293,7 @@ namespace NativeSsh.Test.Protocolo
             string texto = SalidaGuardada.Envolver("echo 'a' \"b\"", Nonce, Guid.NewGuid(), "id", "/tmp/native_ssh");
 
             // Assert
-            _ = texto.Should().StartWith("__ns_gc='echo '\\''a'\\'' \"b\"'\n");
+            _ = texto.Should().StartWith("unset __ns_k __ns_b\n__ns_gc='echo '\\''a'\\'' \"b\"'\n");
             _ = texto.Should().NotContain($"__NSG_{Nonce:N}");
             string resumen = texto[texto.IndexOf("_F_", StringComparison.Ordinal)..];
             _ = resumen.Should().NotContain("base64").And.NotContain("head").And.Contain("printf '%d_%d_%d'");
