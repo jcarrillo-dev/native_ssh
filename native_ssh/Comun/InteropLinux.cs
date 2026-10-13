@@ -97,13 +97,13 @@ namespace NativeSsh.Comun
 
         // getaddrinfo de una sola familia. Valores de glibc en Linux (iguales en todas las arquitecturas).
         public const int SinDireccionesDeLaFamilia = -5; // EAI_NODATA: el nombre existe y no tiene direcciones de esa familia
-        private const int FamiliaIpv4 = 2; // AF_INET
-        private const int FamiliaIpv6 = 10; // AF_INET6
+        public const int FamiliaIpv4 = 2; // AF_INET
+        public const int FamiliaIpv6 = 10; // AF_INET6
         private const int Flujo = 1; // SOCK_STREAM
 
         // struct addrinfo de Linux: cuatro int, socklen_t (con el relleno de alineación antes del primer puntero) y tres punteros.
         [StructLayout(LayoutKind.Sequential)]
-        private struct InfoDireccion
+        internal struct InfoDireccion
         {
             public int Opciones;
             public int Familia;
@@ -115,33 +115,49 @@ namespace NativeSsh.Comun
             public IntPtr Siguiente;
         }
 
+        // getaddrinfo de una familia (AF_INET o AF_INET6): su código y, si es 0, la lista de struct addrinfo.
+        internal delegate int ObtenerDirecciones(string nombre, int familia, out IntPtr lista);
+
         // Las direcciones de 'nombre' de una sola familia (InterNetwork o InterNetworkV6) con getaddrinfo, sin AI_ADDRCONFIG
         // (la máquina no necesita tener esa familia configurada) ni nada mapeado a IPv6. Vacío si getaddrinfo dice que el
         // nombre no tiene direcciones de esa familia (EAI_NODATA); null con el código de getaddrinfo en 'codigo' si falla de
         // cualquier otra forma. Bloquea el hilo hasta que la resolución termina (no se puede cancelar).
-        public static unsafe IPAddress[]? ResolverFamilia(string nombre, AddressFamily familia, out int codigo)
+        public static IPAddress[]? ResolverFamilia(string nombre, AddressFamily familia, out int codigo) =>
+            ResolverFamilia(nombre, familia, ObtenerConLibc, LiberarConLibc, out codigo);
+
+        // Lo mismo con getaddrinfo y freeaddrinfo dados (las pruebas dan los suyos): la lista se libera siempre que se obtuvo.
+        internal static unsafe IPAddress[]? ResolverFamilia(string nombre, AddressFamily familia, ObtenerDirecciones obtener, Action<IntPtr> liberar, out int codigo)
         {
-            InfoDireccion pistas = default;
-            pistas.Familia = familia == AddressFamily.InterNetworkV6 ? FamiliaIpv6 : FamiliaIpv4;
-            pistas.TipoSocket = Flujo;
-            InfoDireccion* resultado = null;
-            codigo = GetAddrInfo(nombre, null, &pistas, &resultado);
+            codigo = obtener(nombre, familia == AddressFamily.InterNetworkV6 ? FamiliaIpv6 : FamiliaIpv4, out IntPtr lista);
             if (codigo != 0)
                 return codigo == SinDireccionesDeLaFamilia ? [] : null;
 
             try
             {
                 List<IPAddress> direcciones = [];
-                for (InfoDireccion* actual = resultado; actual != null; actual = (InfoDireccion*)actual->Siguiente)
+                for (InfoDireccion* actual = (InfoDireccion*)lista; actual != null; actual = (InfoDireccion*)actual->Siguiente)
                     if (Leer(actual) is { } direccion && !direcciones.Contains(direccion))
                         direcciones.Add(direccion);
                 return [.. direcciones];
             }
             finally
             {
-                FreeAddrInfo(resultado);
+                liberar(lista);
             }
         }
+
+        private static unsafe int ObtenerConLibc(string nombre, int familia, out IntPtr lista)
+        {
+            InfoDireccion pistas = default;
+            pistas.Familia = familia;
+            pistas.TipoSocket = Flujo;
+            InfoDireccion* resultado = null;
+            int codigo = GetAddrInfo(nombre, null, &pistas, &resultado);
+            lista = (IntPtr)resultado;
+            return codigo;
+        }
+
+        private static unsafe void LiberarConLibc(IntPtr lista) => FreeAddrInfo((InfoDireccion*)lista);
 
         // sockaddr_in: la dirección en el byte 4 (4 bytes); sockaddr_in6: en el byte 8 (16 bytes). La zona no se lee.
         private static unsafe IPAddress? Leer(InfoDireccion* info)
