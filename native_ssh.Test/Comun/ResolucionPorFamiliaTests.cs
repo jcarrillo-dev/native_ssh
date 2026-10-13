@@ -213,7 +213,7 @@ namespace NativeSsh.Test.Comun
 
         // El fichero se lee como bytes: si empieza por una marca de orden de bytes (UTF-8, UTF-16 o UTF-32) o tiene un NUL en
         // cualquier sitio, ninguna línea cuenta (glibc no lo lee como texto; File.ReadAllText quitaba la marca o lo
-        // decodificaba).
+        // decodificaba). Tampoco la segunda línea, sencilla: la marca no solo estropea la línea en que está.
         [Theory]
         [InlineData("utf8-bom")]
         [InlineData("utf16le")]
@@ -224,7 +224,7 @@ namespace NativeSsh.Test.Comun
         public void DireccionesEnHosts_FicheroConMarcaONul_NingunaLineaCuenta(string caso)
         {
             // Arrange
-            const string Texto = "10.0.0.5 prod.ejemplo\n";
+            const string Texto = "127.0.0.1 localhost\n10.0.0.5 prod.ejemplo\n";
             byte[] contenido = caso switch
             {
                 "utf8-bom" => [0xEF, 0xBB, 0xBF, .. Encoding.ASCII.GetBytes(Texto)],
