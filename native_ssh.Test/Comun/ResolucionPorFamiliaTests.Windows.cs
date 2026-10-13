@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using FluentAssertions;
 using NativeSsh.Comun;
 
@@ -21,11 +22,18 @@ namespace NativeSsh.Test.Comun
                 : [IPAddress.Parse("10.0.0.5")];
         };
 
-        private static Task<DireccionesPorFamilia> ResolverAsync(Func<string, AddressFamily, IPAddress[]> dns) =>
-            ResolucionPorFamilia.ResolverAsync("prod.ejemplo", (nombre, familia) => ResolucionPorFamilia.ResolverFamiliaWindows(nombre, familia, dns), CancellationToken.None);
+        // isSinDirecciones: lo que dice el DNS de Windows (DnsQuery_W) de una familia que Dns.GetHostAddresses no encontró
+        // (por defecto, que no es «sin direcciones»); apunta las familias preguntadas.
+        private static Task<DireccionesPorFamilia> ResolverAsync(Func<string, AddressFamily, IPAddress[]> dns, bool isSinDirecciones = false, List<AddressFamily>? preguntadas = null) =>
+            ResolucionPorFamilia.ResolverAsync("prod.ejemplo", (nombre, familia) => ResolucionPorFamilia.ResolverFamiliaWindows(nombre, familia, dns, (_, f) =>
+            {
+                lock (preguntadas ?? [])
+                    preguntadas?.Add(f);
+                return isSinDirecciones;
+            }), CancellationToken.None);
 
         // B1 fuera de Linux (prefusión-quater): cada familia por separado (nunca Unspecified); un fallo de la AAAA es un fallo
-        // de esa familia, no «sin direcciones».
+        // de esa familia, no «sin direcciones» (con HostNotFound, si el DNS de Windows no dice que lo sea).
         [Theory]
         [InlineData(SocketError.TryAgain)]
         [InlineData(SocketError.HostNotFound)]
@@ -67,14 +75,112 @@ namespace NativeSsh.Test.Comun
             static IPAddress[] Argumento(string nombre, AddressFamily familia) => throw new ArgumentException("prueba");
 
             // Act
-            IPAddress[] ipv4 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Mezcla);
-            IPAddress[] ipv6 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetworkV6, Mezcla);
-            Action argumento = () => ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Argumento);
+            IPAddress[] ipv4 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Mezcla, (_, _) => true);
+            IPAddress[] ipv6 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetworkV6, Mezcla, (_, _) => true);
+            Action argumento = () => ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Argumento, (_, _) => true);
 
             // Assert
             _ = ipv4.Should().Equal(IPAddress.Parse("10.0.0.5"));
             _ = ipv6.Should().Equal(IPAddress.Parse("fd00::5"));
             _ = argumento.Should().Throw<ArgumentException>();
+        }
+
+        // W1: en Windows, NODATA llega de Dns.GetHostAddresses como HostNotFound, igual que un nombre que no existe: solo
+        // entonces se pregunta al DNS de Windows (por esa familia), y si dice «sin direcciones», lo es; con otro error, no se
+        // le pregunta.
+        [Theory]
+        [InlineData(SocketError.HostNotFound, true, true)]
+        [InlineData(SocketError.HostNotFound, false, true)]
+        [InlineData(SocketError.TryAgain, true, false)]
+        [InlineData(SocketError.NoRecovery, true, false)]
+        public async Task HostNotFound_SinDireccionesSoloSiLoDiceElDnsDeWindows(SocketError errorIpv6, bool isSinDirecciones, bool isPreguntada)
+        {
+            // Arrange
+            List<AddressFamily> preguntadas = [];
+
+            // Act
+            DireccionesPorFamilia resultado = await ResolverAsync(DnsFalso(errorIpv6), isSinDirecciones, preguntadas);
+
+            // Assert
+            _ = resultado.Ipv4.Should().Equal(IPAddress.Parse("10.0.0.5"));
+            bool isVacia = isSinDirecciones && isPreguntada;
+            _ = (resultado.Ipv6 is []).Should().Be(isVacia);
+            _ = (resultado.Ipv6 is null).Should().Be(!isVacia);
+            _ = preguntadas.Should().Equal(isPreguntada ? [AddressFamily.InterNetworkV6] : []);
+        }
+
+        // Una lista de DNS_RECORD falsa en memoria no gestionada (cada nodo con su tipo), y su liberación.
+        private sealed class ListaFalsa : IDisposable
+        {
+            private readonly List<IntPtr> _nodos = [];
+
+            public IntPtr Inicio { get; }
+
+            public int Liberaciones { get; private set; }
+
+            public ListaFalsa(params ushort[] tipos)
+            {
+                IntPtr siguiente = IntPtr.Zero;
+                for (int i = tipos.Length - 1; i >= 0; i--)
+                {
+                    IntPtr nodo = Marshal.AllocHGlobal(Marshal.SizeOf<DnsWindows.RegistroDns>());
+                    Marshal.StructureToPtr(new DnsWindows.RegistroDns { Siguiente = siguiente, Nombre = IntPtr.Zero, Tipo = tipos[i] }, nodo, false);
+                    _nodos.Add(nodo);
+                    siguiente = nodo;
+                }
+
+                Inicio = siguiente;
+            }
+
+            public void Liberar(IntPtr lista)
+            {
+                _ = lista.Should().Be(Inicio);
+                Liberaciones++;
+            }
+
+            public void Dispose()
+            {
+                foreach (IntPtr nodo in _nodos)
+                    Marshal.FreeHGlobal(nodo);
+            }
+        }
+
+        private const ushort TipoCname = 5;
+
+        // Lo que DnsQuery_W dice de una familia: 9501 (DNS_INFO_NO_RECORDS) o una respuesta correcta sin registros de ese tipo
+        // (un CNAME a un nombre de la otra familia) es «sin direcciones»; 9003 (no existe), 9002 (fallo del servidor), una
+        // respuesta correcta sin lista o con registros de ese tipo, no. Pregunta el tipo de la familia y libera la lista
+        // una vez siempre que la hay.
+        [Theory]
+        [InlineData(9501, new ushort[0], AddressFamily.InterNetworkV6, true)]
+        [InlineData(9501, new ushort[] { 6 }, AddressFamily.InterNetwork, true)]
+        [InlineData(0, new ushort[] { TipoCname }, AddressFamily.InterNetwork, true)]
+        [InlineData(0, new ushort[] { TipoCname, 28 }, AddressFamily.InterNetwork, true)]
+        [InlineData(0, new ushort[] { TipoCname, 1 }, AddressFamily.InterNetwork, false)]
+        [InlineData(0, new ushort[] { 28 }, AddressFamily.InterNetworkV6, false)]
+        [InlineData(0, new ushort[0], AddressFamily.InterNetwork, false)]
+        [InlineData(9003, new ushort[0], AddressFamily.InterNetworkV6, false)]
+        [InlineData(9003, new ushort[] { 6 }, AddressFamily.InterNetworkV6, false)]
+        [InlineData(9002, new ushort[0], AddressFamily.InterNetwork, false)]
+        public void DnsDeWindows_SinDireccionesSoloConNoDataOSinRegistrosDelTipo(int codigo, ushort[] tipos, AddressFamily familia, bool isEsperado)
+        {
+            // Arrange
+            using ListaFalsa lista = new(tipos);
+            List<ushort> pedidos = [];
+            int Consultar(string nombre, ushort tipo, out IntPtr resultado)
+            {
+                pedidos.Add(tipo);
+                resultado = lista.Inicio;
+                return codigo;
+            }
+
+            // Act
+            bool isSinDirecciones = DnsWindows.IsSinDirecciones("prod.ejemplo", familia, Consultar, lista.Liberar);
+
+            // Assert
+            _ = isSinDirecciones.Should().Be(isEsperado);
+            _ = pedidos.Should().Equal(familia == AddressFamily.InterNetworkV6 ? DnsWindows.TipoAaaa : DnsWindows.TipoA);
+            _ = lista.Liberaciones.Should().Be(tipos.Length > 0 ? 1 : 0);
         }
 
         [Theory]
