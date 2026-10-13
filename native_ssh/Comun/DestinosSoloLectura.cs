@@ -386,19 +386,27 @@ namespace NativeSsh.Comun
         private static bool IsCoincideSinRed(Entrada entrada, string servidor, bool isServidorLoopback) =>
             entrada.Servidor == servidor || entrada.Escrito == servidor || IsMismaIpLiteral(entrada.Servidor, servidor) || (isServidorLoopback && IsLoopback(entrada.Servidor));
 
-        // El mensaje de rechazo de una herramienta de escritura, o null si la comprobación la permite.
-        public static string? MensajeRechazo(ComprobacionSoloLectura comprobacion, string clave, string herramienta) => comprobacion switch
+        // El mensaje de rechazo de una herramienta de escritura, o null si la comprobación la permite. isEnSesion: lo rechaza la
+        // sesión justo antes de enviar la escritura al shell (ComprobarConexionAsync), cuando ya se pudo enviar algo antes
+        // (abrir el shell, la lectura de ssh_replace_file_content): el mensaje dice que no se envió la escritura, no «nada».
+        public static string? MensajeRechazo(ComprobacionSoloLectura comprobacion, string clave, string herramienta, bool isEnSesion = false) => comprobacion switch
         {
-            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion),
-            { IsDireccionDesconocida: true } => MensajeNoComprobado(clave, herramienta, null),
-            { IsSoloLectura: true } => MensajeSoloLectura(clave, herramienta, comprobacion.DireccionConectada),
+            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion, isEnSesion),
+            { IsDireccionDesconocida: true } => MensajeNoComprobado(clave, herramienta, null, isEnSesion: isEnSesion),
+            { IsSoloLectura: true } => MensajeSoloLectura(clave, herramienta, comprobacion.DireccionConectada, isEnSesion),
             _ => null
         };
+
+        // Lo que no se hizo: antes de conectar o enviar nada (la comprobación de cada herramienta) o, en la sesión, la escritura.
+        private static string QueNoSeHizo(string herramienta, bool isEnSesion) =>
+            !isEnSesion ? $"{herramienta} no se ha ejecutado y no se ha enviado nada al servidor"
+            : herramienta == "ssh_exec" ? "el comando de ssh_exec no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarlo)"
+            : $"la escritura de {herramienta} no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarla)";
 
         // noResuelto: el nombre que no se resolvió (null: la sesión está conectada y no se sabe a qué dirección). isCupoLleno:
         // el nombre no se llegó a resolver (demasiadas resoluciones a la vez), no es que el DNS fallara. isErrorConfiguracion:
         // noResuelto es una entrada que ssh -G no pudo leer.
-        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false)
+        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false)
         {
             string causa = noResuelto is null ? "no se sabe a qué dirección está conectada su sesión"
                 : isErrorConfiguracion ? $"no se pudo leer la entrada {noResuelto} con la configuración de ssh (ssh -G)"
@@ -408,14 +416,14 @@ namespace NativeSsh.Comun
                 : isErrorConfiguracion ? "la comprobación se repite en cada llamada y pasará cuando ssh -G pueda leer esa entrada (quien configura native_ssh debe revisar su configuración de ssh)."
                 : isCupoLleno ? "vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada."
                 : "la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).";
-            return $"Rechazado: {clave}: no se pudo comprobar si es de solo lectura ({causa}); se rechaza por seguridad (configuración local de native_ssh, variable {Variable}), así que {herramienta} no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: {cuando}";
+            return $"Rechazado: {clave}: no se pudo comprobar si es de solo lectura ({causa}); se rechaza por seguridad (configuración local de native_ssh, variable {Variable}), así que {QueNoSeHizo(herramienta, isEnSesion)}. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: {cuando}";
         }
 
         // direccionConectada: es de solo lectura por la dirección a la que está conectada la sesión, no por el nombre.
-        public static string MensajeSoloLectura(string clave, string herramienta, IPAddress? direccionConectada = null)
+        public static string MensajeSoloLectura(string clave, string herramienta, IPAddress? direccionConectada = null, bool isEnSesion = false)
         {
             string motivo = direccionConectada is null ? $"{clave} está en modo solo lectura" : $"la sesión de {clave} está conectada a {direccionConectada}, que está en modo solo lectura";
-            return $"Rechazado: {motivo} (configuración local de native_ssh, variable {Variable}), así que {herramienta} no se ha ejecutado y no se ha enviado nada al servidor. Para ese destino están desactivadas ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content: usa ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd. No reintentes ni busques otra vía para modificar el servidor: este modo solo lo puede quitar quien configura native_ssh.";
+            return $"Rechazado: {motivo} (configuración local de native_ssh, variable {Variable}), así que {QueNoSeHizo(herramienta, isEnSesion)}. Para ese destino están desactivadas ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content: usa ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd. No reintentes ni busques otra vía para modificar el servidor: este modo solo lo puede quitar quien configura native_ssh.";
         }
 
         private static bool IsMismaIpLiteral(string a, string b) =>

@@ -740,7 +740,7 @@ namespace NativeSsh.Sesion
                 try
                 {
                     ComprobacionSoloLectura comprobacion = await _opciones.SoloLectura.ComprobarConexionAsync(peticion.Destino, new ExtremoConectado(conexionDelCanal.DireccionRemota), token).ConfigureAwait(false);
-                    rechazo = DestinosSoloLectura.MensajeRechazo(comprobacion, peticion.Destino.Clave, herramienta);
+                    rechazo = DestinosSoloLectura.MensajeRechazo(comprobacion, peticion.Destino.Clave, herramienta, isEnSesion: true);
                 }
                 catch (OperationCanceledException) when (!IsCerrando)
                 {

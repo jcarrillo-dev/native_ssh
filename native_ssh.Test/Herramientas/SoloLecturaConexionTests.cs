@@ -43,7 +43,17 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("| tail -n +", StringComparison.Ordinal) ? new("[Líneas 1-1 de 1]\nhola\n") :
             comando.Contains("pwd -P", StringComparison.Ordinal) ? MarcarDirectorio(comando) :
             comando == "pregunta" ? new("¿Seguro? ", 0, ComportamientoFalsoEnum.PideEntrada) :
+            comando.Contains("cat -- \"$ruta\" | base64", StringComparison.Ordinal) ? EnmarcarBase64(comando, "hola\n"u8.ToArray()) :
             new("ok\n");
+
+        // La lectura previa de ssh_replace_file_content, como el script real: el base64 entre los marcadores con el id de la
+        // petición y el tamaño del archivo.
+        private static RespuestaFalsa EnmarcarBase64(string comando, byte[] bytes)
+        {
+            int posicion = comando.IndexOf("INICIO ", StringComparison.Ordinal) + "INICIO ".Length;
+            string id = comando[posicion..(posicion + 32)];
+            return new($"__NS_B64_INICIO_{id}__\n{Convert.ToBase64String(bytes)}\n__NS_B64_FIN_{id}__ {bytes.Length}\n", 0);
+        }
 
         // Como el script de ssh_set_cwd: la ruta resuelta en base64 tras el marcador con el id de la petición.
         private static RespuestaFalsa MarcarDirectorio(string comando)
@@ -222,7 +232,8 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Error);
-            _ = resultado.Aviso.Should().Contain(DestinosSoloLectura.MensajeSoloLectura("ana@ventana.ejemplo:22", "ssh_exec", IPAddress.Parse("10.0.0.5")));
+            _ = resultado.Aviso.Should().Contain("Rechazado: la sesión de ana@ventana.ejemplo:22 está conectada a 10.0.0.5, que está en modo solo lectura (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que el comando de ssh_exec no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarlo).")
+                .And.NotContain("no se ha enviado nada", "la sesión ya se había abierto: algo sí se envió");
             _ = escritura.Message.Should().Contain("está conectada a 10.0.0.5");
             _ = ComandosEnviados("touch marca").Should().Be(0);
             _ = ComandosEnviados("b.txt").Should().Be(0);
@@ -242,8 +253,30 @@ namespace NativeSsh.Test.Herramientas
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync("ventana.ejemplo", "b.txt", "x", overwrite: true)).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Be($"La escritura en 'b.txt' no se hizo y 'b.txt' no se ha modificado. {DestinosSoloLectura.MensajeSoloLectura("ana@ventana.ejemplo:22", "ssh_write_file", IPAddress.Parse("10.0.0.5"))}");
+            _ = error.Message.Should().StartWith("La escritura en 'b.txt' no se hizo y 'b.txt' no se ha modificado. ")
+                .And.Contain("Rechazado: la sesión de ana@ventana.ejemplo:22 está conectada a 10.0.0.5, que está en modo solo lectura (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que la escritura de ssh_write_file no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarla).")
+                .And.NotContain("no se ha enviado nada");
             _ = ComandosEnviados("b.txt").Should().Be(0);
+        }
+
+        // ssh_replace_file_content ya leyó el archivo (con la conexión abierta después de su comprobación) cuando la sesión
+        // rechaza la escritura: el error dice que la escritura no se envió, no que no se envió nada.
+        [Fact]
+        public async Task ReemplazoConConexionHechaTrasLaComprobacion_ALaProtegida_DiceQueLaEscrituraNoSeEnvio()
+        {
+            // Arrange
+            _dns["ventana.ejemplo"] = IPAddress.Parse("10.0.0.9");
+            _fabrica.DireccionRemota = _ => IPAddress.Parse("10.0.0.5");
+            HerramientasSsh herramientas = Crear("10.0.0.5", isConConfiguracion: false);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => herramientas.ReemplazarContenidoArchivoAsync("ventana.ejemplo", "a.txt", "hola", "adios")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = ComandosEnviados("| base64").Should().Be(1, "la lectura sí se envió");
+            _ = error.Message.Should().StartWith("La escritura en 'a.txt' no se hizo y 'a.txt' no se ha modificado. ")
+                .And.Contain("así que la escritura de ssh_replace_file_content no se ha enviado al servidor (la sesión lo volvió a comprobar justo antes de enviarla).")
+                .And.NotContain("no se ha enviado nada");
         }
 
         // La entrada es un nombre que resuelve a la dirección conectada: la sesión sigue protegida aunque el destino apunte ya
