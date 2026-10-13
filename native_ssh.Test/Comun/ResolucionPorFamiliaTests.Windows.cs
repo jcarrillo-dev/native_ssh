@@ -147,10 +147,11 @@ namespace NativeSsh.Test.Comun
 
         private const ushort TipoCname = 5;
 
-        // Lo que DnsQuery_W dice de una familia: 9501 (DNS_INFO_NO_RECORDS) o una respuesta correcta sin registros de ese tipo
-        // (un CNAME a un nombre de la otra familia) es «sin direcciones»; 9003 (no existe), 9002 (fallo del servidor), una
-        // respuesta correcta sin lista o con registros de ese tipo, no. Pregunta el tipo de la familia y libera la lista
-        // una vez siempre que la hay.
+        // Lo que DnsQuery_W dice de una familia (las dos consultas dan lo mismo): 9501 (DNS_INFO_NO_RECORDS) o una respuesta
+        // correcta sin registros de ese tipo (un CNAME a un nombre de la otra familia) es «sin direcciones»; 9003 (no existe),
+        // 9002 (fallo del servidor), una respuesta correcta sin lista o con registros de ese tipo, no. Pregunta el tipo de la
+        // familia, primero con la consulta estándar y, solo si esa dice «sin direcciones», otra vez solo por TCP y sin caché;
+        // libera cada lista una vez siempre que la hay.
         [Theory]
         [InlineData(9501, new ushort[0], AddressFamily.InterNetworkV6, true)]
         [InlineData(9501, new ushort[] { 6 }, AddressFamily.InterNetwork, true)]
@@ -166,10 +167,10 @@ namespace NativeSsh.Test.Comun
         {
             // Arrange
             using ListaFalsa lista = new(tipos);
-            List<ushort> pedidos = [];
-            int Consultar(string nombre, ushort tipo, out IntPtr resultado)
+            List<(ushort Tipo, uint Opciones)> pedidos = [];
+            int Consultar(string nombre, ushort tipo, uint opciones, out IntPtr resultado)
             {
-                pedidos.Add(tipo);
+                pedidos.Add((tipo, opciones));
                 resultado = lista.Inicio;
                 return codigo;
             }
@@ -179,8 +180,48 @@ namespace NativeSsh.Test.Comun
 
             // Assert
             _ = isSinDirecciones.Should().Be(isEsperado);
-            _ = pedidos.Should().Equal(familia == AddressFamily.InterNetworkV6 ? DnsWindows.TipoAaaa : DnsWindows.TipoA);
-            _ = lista.Liberaciones.Should().Be(tipos.Length > 0 ? 1 : 0);
+            ushort tipoEsperado = familia == AddressFamily.InterNetworkV6 ? DnsWindows.TipoAaaa : DnsWindows.TipoA;
+            _ = pedidos.Should().Equal(isEsperado
+                ? [(tipoEsperado, DnsWindows.ConsultaEstandar), (tipoEsperado, DnsWindows.ConsultaSoloTcpSinCache)]
+                : [(tipoEsperado, DnsWindows.ConsultaEstandar)]);
+            _ = lista.Liberaciones.Should().Be(tipos.Length > 0 ? pedidos.Count : 0);
+        }
+
+        // WB1: la consulta estándar dice «sin direcciones» (9501), pero eso también lo da una respuesta truncada cuyo
+        // reintento por TCP falla: solo cuenta si la confirmación solo por TCP y sin caché (DNS_QUERY_USE_TCP_ONLY |
+        // DNS_QUERY_BYPASS_CACHE) también lo dice (9501, o una respuesta sin registros de ese tipo). Lo medido en Windows 11
+        // con el TCP/53 cerrado (10057), que cierra sin responder (9503) o que no responde (1460), y cualquier otro código o
+        // registros de ese tipo, falla cerrado.
+        [Theory]
+        [InlineData(9501, new ushort[0], true)]
+        [InlineData(0, new ushort[] { TipoCname }, true)]
+        [InlineData(10057, new ushort[0], false)]
+        [InlineData(9503, new ushort[0], false)]
+        [InlineData(1460, new ushort[0], false)]
+        [InlineData(9002, new ushort[0], false)]
+        [InlineData(9003, new ushort[0], false)]
+        [InlineData(0, new ushort[] { 28 }, false)]
+        [InlineData(0, new ushort[0], false)]
+        public void DnsDeWindows_SinDireccionesSoloSiLaConsultaPorTcpSinCacheLoConfirma(int codigoTcp, ushort[] tiposTcp, bool isEsperado)
+        {
+            // Arrange
+            using ListaFalsa listaTcp = new(tiposTcp);
+            List<uint> opcionesPedidas = [];
+            int Consultar(string nombre, ushort tipo, uint opciones, out IntPtr resultado)
+            {
+                opcionesPedidas.Add(opciones);
+                bool isTcp = opciones == DnsWindows.ConsultaSoloTcpSinCache;
+                resultado = isTcp ? listaTcp.Inicio : IntPtr.Zero;
+                return isTcp ? codigoTcp : DnsWindows.SinRegistros;
+            }
+
+            // Act
+            bool isSinDirecciones = DnsWindows.IsSinDirecciones("prod.ejemplo", AddressFamily.InterNetworkV6, Consultar, listaTcp.Liberar);
+
+            // Assert
+            _ = isSinDirecciones.Should().Be(isEsperado);
+            _ = opcionesPedidas.Should().Equal(DnsWindows.ConsultaEstandar, DnsWindows.ConsultaSoloTcpSinCache);
+            _ = listaTcp.Liberaciones.Should().Be(tiposTcp.Length > 0 ? 1 : 0);
         }
 
         [Theory]

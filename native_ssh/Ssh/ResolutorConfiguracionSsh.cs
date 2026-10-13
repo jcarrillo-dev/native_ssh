@@ -306,7 +306,7 @@ namespace NativeSsh.Ssh
 
         // Lo propio del sistema para el que se compila (sin fichero de ese sistema, nada): las opciones de ssh, delante de las
         // demás, y el fichero adonde ssh escribe sus mensajes en lugar de su salida de errores (registro; null si no hay); los
-        // mensajes de ese fichero, delante de los de la salida de errores; y borrar el fichero.
+        // mensajes de ese fichero, detrás de los de la salida de errores; y borrar el fichero.
         static partial void AnadirOpcionesDelSistema(List<string> argumentos, ref string? registro);
 
         static partial void LeerRegistroDelSistema(string? registro, ref string errores);

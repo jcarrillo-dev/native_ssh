@@ -189,13 +189,30 @@ namespace NativeSsh.Test.Comun
 
         // Los espacios al principio o al final nunca coincidirían (el servidor HTTP los recorta de la cabecera): se rechazan
         // con un mensaje claro en lugar de arrancar con un token inservible. Del fichero solo se quitan los saltos de línea.
+        // Las filas del fichero solo en Linux (modos Unix del fichero; fuera de Linux el fichero no se admite); las de la
+        // variable, en todos los sistemas.
+        public static TheoryData<string, string> TokensConEspacios
+        {
+            get
+            {
+                TheoryData<string, string> filas = new()
+                {
+                    { "variable", TokenValido + " " },
+                    { "variable", " " + TokenValido },
+                    { "variable", TokenValido + "\t" }
+                };
+                if (OperatingSystem.IsLinux())
+                {
+                    filas.Add("fichero", TokenValido + " \n");
+                    filas.Add("fichero", " " + TokenValido + "\n");
+                }
+
+                return filas;
+            }
+        }
+
         [Theory]
-        [InlineData("variable", TokenValido + " ")]
-        [InlineData("variable", " " + TokenValido)]
-        [InlineData("variable", TokenValido + "\t")]
-        [InlineData("fichero", TokenValido + " \n")]
-        [InlineData("fichero", " " + TokenValido + "\n")]
-        [Trait("Categoria", "SoloLinux")]
+        [MemberData(nameof(TokensConEspacios))]
         public void TokenConEspaciosAlPrincipioOAlFinal_SeRechaza(string fuente, string valor)
         {
             // Arrange
