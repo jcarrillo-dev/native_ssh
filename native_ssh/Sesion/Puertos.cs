@@ -60,5 +60,10 @@ namespace NativeSsh.Sesion
     public interface IResolutorDestino
     {
         DestinoSsh Resolver(DestinoSsh destino, bool isUsuarioExplicito, bool isPuertoExplicito);
+
+        // El HostName al que lleva una entrada de NATIVE_SSH_SOLO_LECTURA (DestinosSoloLectura.UsarConfiguracionSsh), con su
+        // usuario y su puerto si los lleva; null si la configuración no la cambia o no se usa configuración. Lanza
+        // NativeSshException si no se pudo leer.
+        string? HostNameDeEntrada(string? usuario, string servidor, int? puerto);
     }
 }

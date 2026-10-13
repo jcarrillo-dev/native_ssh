@@ -26,6 +26,10 @@ namespace NativeSsh.Sesion
 
         private readonly Dictionary<string, EntradaSesion> _sesiones = new(StringComparer.Ordinal);
         private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
+
+        // La configuración de ssh. Las entradas de NATIVE_SSH_SOLO_LECTURA que son alias suyos se comparan por su HostName,
+        // leído con ella igual que los destinos.
+        private readonly IResolutorDestino? _resolutor = UsarConfiguracionEnSoloLectura(opciones.SoloLectura, resolutor);
         private bool _isDispuesto;
 
         // herramientaEscritura: la herramienta de escritura que lo lanza (Peticion.HerramientaEscritura), o null.
@@ -250,7 +254,14 @@ namespace NativeSsh.Sesion
         public DestinoSsh ParsearDestino(string destinoTexto) =>
             !DestinoSsh.TryParse(destinoTexto, opciones.UsuarioPorDefecto, out DestinoSsh destino, out bool isUsuarioExplicito, out bool isPuertoExplicito)
                 ? throw new NativeSshException($"Destino '{destinoTexto}' no válido. Formato: usuario@servidor[:puerto], o [ipv6]:puerto.")
-                : resolutor?.Resolver(destino, isUsuarioExplicito, isPuertoExplicito) ?? destino;
+                : _resolutor?.Resolver(destino, isUsuarioExplicito, isPuertoExplicito) ?? destino;
+
+        private static IResolutorDestino? UsarConfiguracionEnSoloLectura(DestinosSoloLectura soloLectura, IResolutorDestino? resolutor)
+        {
+            if (!soloLectura.IsVacio && resolutor is not null)
+                soloLectura.UsarConfiguracionSsh(resolutor.HostNameDeEntrada);
+            return resolutor;
+        }
 
         public async ValueTask DisposeAsync()
         {

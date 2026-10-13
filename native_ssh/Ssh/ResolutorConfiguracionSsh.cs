@@ -61,18 +61,9 @@ namespace NativeSsh.Ssh
             if (!IsTextoValido(servidor, isServidor: true) || (isUsuarioExplicito && !IsTextoValido(destino.Usuario, isServidor: false)))
                 throw new NativeSshException($"Destino '{(isUsuarioExplicito ? $"{destino.Usuario}@" : "")}{servidor}' no válido para leerlo con la configuración de ssh: el servidor solo admite letras, números, '.', '_', '-' y ':' (sin empezar por '-'), y el usuario lo mismo salvo ':'.");
 
-            List<string> argumentos = ["-G"];
-            if (configuracion.Length > 0)
-                argumentos.AddRange(["-F", configuracion]);
-            if (isUsuarioExplicito)
-                argumentos.AddRange(["-l", destino.Usuario]);
-            if (isPuertoExplicito)
-                argumentos.AddRange(["-p", destino.Puerto.ToString(CultureInfo.InvariantCulture)]);
-            argumentos.AddRange(["--", servidor]);
-            if (!TryEjecutar(argumentos, servidor, out string? salida))
+            if (!TryLeerConfiguracion(configuracion, isUsuarioExplicito ? destino.Usuario : null, servidor, isPuertoExplicito ? destino.Puerto : null, out ConfiguracionLeida? leida))
                 return destino;
 
-            ConfiguracionLeida leida = Leer(salida);
             if (leida.Repetida is not null)
                 throw new NativeSshException($"'ssh -G' escribió '{leida.Repetida}' más de una vez al leer la configuración de ssh de '{servidor}' (ssh escribe cada opción una sola vez: ¿un Match exec que deja en segundo plano algo que escribe en su salida?): no se ha conectado. Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
             if (leida.Salto is not null)
@@ -90,6 +81,39 @@ namespace NativeSsh.Ssh
             DestinoSsh resuelto = DestinoSsh.Resuelto(usuario, real, puerto, identidades, alias);
             logger.DestinoResuelto(servidor, resuelto.Clave, identidades is null ? "claves de native_ssh" : string.Join(", ", identidades));
             return resuelto;
+        }
+
+        // Para NATIVE_SSH_SOLO_LECTURA: el HostName al que lleva la entrada (como ssh, con su usuario y su puerto si los lleva),
+        // o null si la configuración no la cambia, no se usa configuración o no está el programa ssh. Una entrada que no se
+        // puede pasar a ssh (caracteres que un destino tampoco admite con la configuración activa) no es ningún alias: null.
+        // ProxyJump y ProxyCommand no importan aquí (es la máquina a la que lleva el alias aunque no se conecte a ella).
+        // Lanza NativeSshException si ssh -G falla o no da el HostName.
+        public string? HostNameDeEntrada(string? usuario, string servidor, int? puerto)
+        {
+            bool isTextoValido = IsTextoValido(servidor, isServidor: true) && (usuario is null || IsTextoValido(usuario, isServidor: false));
+            return opciones.ConfiguracionSsh is not { } configuracion || _isSinPrograma || !isTextoValido || !TryLeerConfiguracion(configuracion, usuario, servidor, puerto, out ConfiguracionLeida? leida) ? null
+                : leida.Repetida is not null || leida.Servidor is not { Length: > 0 } real
+                    ? throw new NativeSshException($"'ssh -G' no devolvió un único HostName de la entrada '{servidor}' de NATIVE_SSH_SOLO_LECTURA.")
+                    : string.Equals(servidor, real, StringComparison.OrdinalIgnoreCase) ? null : real;
+        }
+
+        // ssh -G [-F configuración] [-l usuario] [-p puerto] -- servidor; false sin el programa ssh.
+        private bool TryLeerConfiguracion(string configuracion, string? usuario, string servidor, int? puerto, [NotNullWhen(true)] out ConfiguracionLeida? leida)
+        {
+            leida = null;
+            List<string> argumentos = ["-G"];
+            if (configuracion.Length > 0)
+                argumentos.AddRange(["-F", configuracion]);
+            if (usuario is not null)
+                argumentos.AddRange(["-l", usuario]);
+            if (puerto is { } conPuerto)
+                argumentos.AddRange(["-p", conPuerto.ToString(CultureInfo.InvariantCulture)]);
+            argumentos.AddRange(["--", servidor]);
+            if (!TryEjecutar(argumentos, servidor, out string? salida))
+                return false;
+
+            leida = Leer(salida);
+            return true;
         }
 
         // Letras y números ASCII, '.', '_', '-' (y ':' en el servidor), sin empezar por '-'.

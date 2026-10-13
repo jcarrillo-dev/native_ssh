@@ -16,15 +16,34 @@ namespace NativeSsh.Test.Comun
             return destino;
         }
 
-        // Resolución falsa: prod.ejemplo → 10.0.0.5, otro.ejemplo → 10.0.0.9, mi-portatil → 127.0.1.1; cualquier otro nombre no
-        // se resuelve.
+        // Resolución falsa: prod.ejemplo → 10.0.0.5, otro.ejemplo → 10.0.0.9, mi-portatil → 127.0.1.1; nadie.ejemplo da un fallo
+        // pasajero (TryAgain: el DNS no responde); cualquier otro nombre no existe (HostNotFound).
         private static Task<IPAddress[]> ResolverFalso(string nombre, CancellationToken _) => nombre switch
         {
             "prod.ejemplo" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") }),
             "otro.ejemplo" => Task.FromResult(new[] { IPAddress.Parse("10.0.0.9") }),
             "mi-portatil" => Task.FromResult(new[] { IPAddress.Parse("127.0.1.1") }),
+            "nadie.ejemplo" => Task.FromException<IPAddress[]>(new SocketException((int)SocketError.TryAgain)),
             _ => Task.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound))
         };
+
+        // Configuración de ssh falsa (el HostName de una entrada con ssh -G): prod → 10.0.0.5, interno → prod.ejemplo,
+        // fantasma → noexiste.ejemplo (no existe en el DNS), mal → ssh -G falla; cualquier otro nombre no es un alias (null).
+        private static string? HostNameFalso(string? usuario, string servidor, int? puerto) => servidor switch
+        {
+            "prod" => "10.0.0.5",
+            "interno" => "prod.ejemplo",
+            "fantasma" => "noexiste.ejemplo",
+            "mal" => throw new NativeSshException("'ssh -G' no terminó en 5 s"),
+            _ => null
+        };
+
+        private static DestinosSoloLectura ConConfiguracion(string configuracion, Func<string?, string, int?, string?>? hostName = null)
+        {
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
+            destinos.UsarConfiguracionSsh(hostName ?? HostNameFalso);
+            return destinos;
+        }
 
         private static async Task<bool> EsSoloLecturaAsync(string configuracion, string destino)
         {
@@ -419,6 +438,181 @@ namespace NativeSsh.Test.Comun
             _ = yaResuelto.Should().BeTrue();
             _ = resueltoDistinto.Should().BeNull("el destino se resuelve en cada llamada: no se recuerda");
             _ = destinos.Entradas.Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
+        }
+
+        // El DNS dice que el nombre de una entrada no existe (NXDOMAIN, o un nombre sin direcciones: en Linux los dos llegan
+        // como HostNotFound, medido): la entrada no es ninguna dirección, así que solo coincide como texto y no hace fallar a
+        // los demás destinos. Antes se rechazaba todo destino con su usuario y puerto («no se resolvió …»).
+        [Theory]
+        [InlineData("noexiste.ejemplo", "root@otro.ejemplo", false)]
+        [InlineData("noexiste.ejemplo", "root@10.0.0.5", false)]
+        [InlineData("noexiste.ejemplo", "root@NOEXISTE.ejemplo.", true)]
+        [InlineData("noexiste.ejemplo, prod.ejemplo", "root@10.0.0.5", true)]
+        [InlineData("noexiste.ejemplo, nadie.ejemplo", "root@10.0.0.5", true)]
+        public async Task EntradaQueNoExiste_SoloCoincideComoTexto(string configuracion, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.IsSoloLectura.Should().Be(isSoloLectura);
+            _ = comprobacion.NoResuelto.Should().Be(configuracion.Contains("nadie", StringComparison.Ordinal) ? "nadie.ejemplo" : null);
+        }
+
+        // Cualquier otro fallo del DNS sigue fallando cerrado: TryAgain (SERVFAIL, REFUSED, sin respuesta o sin servidor, medido
+        // en Linux), NoData (en Linux no llega: un nombre sin direcciones da HostNotFound; donde llegue, no consta que el
+        // nombre no exista), NoRecovery o un error genérico. No se sabe adónde apunta el nombre.
+        [Theory]
+        [InlineData(SocketError.TryAgain)]
+        [InlineData(SocketError.NoData)]
+        [InlineData(SocketError.NoRecovery)]
+        [InlineData(SocketError.SocketError)]
+        public async Task EntradaConFalloQueNoDiceQueNoExiste_FallaCerrado(SocketError codigo)
+        {
+            // Arrange
+            Task<IPAddress[]> Fallo(string nombre, CancellationToken _) => Task.FromException<IPAddress[]>(new SocketException((int)codigo));
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, Fallo).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino("root@10.0.0.9"), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+        }
+
+        // Que el nombre no exista no se recuerda: si se crea, la llamada siguiente ya lo compara por sus direcciones.
+        [Fact]
+        public async Task EntradaQueNoExiste_NoSeRecuerda()
+        {
+            // Arrange
+            int consultas = 0;
+            Task<IPAddress[]> Creado(string nombre, CancellationToken _) =>
+                Interlocked.Increment(ref consultas) == 1
+                    ? Task.FromException<IPAddress[]>(new SocketException((int)SocketError.HostNotFound))
+                    : Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") });
+
+            _ = DestinosSoloLectura.TryParsear("nuevo.ejemplo", out DestinosSoloLectura destinos, out _, Creado).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura antes = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+            ComprobacionSoloLectura despues = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+
+            // Assert
+            _ = antes.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = despues.Should().Be(new ComprobacionSoloLectura(true, null));
+        }
+
+        // Una entrada que es un alias de la configuración de ssh se compara por el HostName al que lleva (por texto y, si es un
+        // nombre, por sus direcciones), conservando el usuario y el puerto de la entrada (sin ellos, cualquiera); el alias
+        // como texto pedido sigue contando. El nombre del alias no se busca en el DNS: no es adonde conecta ssh.
+        [Theory]
+        [InlineData("prod", "root@10.0.0.5", true)]
+        [InlineData("prod", "deploy@10.0.0.5:2222", true)]
+        [InlineData("prod", "root@[::ffff:10.0.0.5]", true)]
+        [InlineData("prod", "root@10.0.0.9", false)]
+        [InlineData("prod", "root@otro.ejemplo", false)]
+        [InlineData("deploy@prod", "deploy@10.0.0.5", true)]
+        [InlineData("deploy@prod", "root@10.0.0.5", false)]
+        [InlineData("prod:2222", "root@10.0.0.5:2222", true)]
+        [InlineData("prod:2222", "root@10.0.0.5", false)]
+        [InlineData("interno", "root@prod.ejemplo", true)]
+        [InlineData("interno", "root@10.0.0.5", true)]
+        [InlineData("interno", "root@otro.ejemplo", false)]
+        [InlineData("fantasma", "root@otro.ejemplo", false)]
+        [InlineData("fantasma", "root@noexiste.ejemplo", true)]
+        [InlineData("*", "root@otro.ejemplo", true)]
+        public async Task EntradaQueEsAlias_SeComparaPorSuHostName(string configuracion, string destino, bool isSoloLectura)
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion(configuracion);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        // El alias como texto pedido cuenta aunque ahora resuelva a otra máquina; uno que no está en la lista, no.
+        [Theory]
+        [InlineData("prod", "prod", true)]
+        [InlineData("fantasma", "fantasma", true)]
+        [InlineData("prod", "web", false)]
+        public async Task EntradaQueEsAlias_ElTextoPedidoCuenta(string configuracion, string alias, bool isSoloLectura)
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion(configuracion);
+
+            // Act
+            ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(DestinoSsh.Resuelto("ana", "10.0.0.7", 22, null, alias), CancellationToken.None);
+
+            // Assert
+            _ = comprobacion.Should().Be(new ComprobacionSoloLectura(isSoloLectura, null));
+        }
+
+        // A ssh -G le llega la entrada como se escribió, con su usuario y su puerto si los lleva (como -l y -p); '*' no se
+        // resuelve.
+        [Fact]
+        public async Task EntradaQueEsAlias_SeResuelveConSuUsuarioYPuerto()
+        {
+            // Arrange
+            List<string> llamadas = [];
+            string? Registrar(string? usuario, string servidor, int? puerto)
+            {
+                lock (llamadas)
+                    llamadas.Add($"{usuario}|{servidor}|{puerto}");
+                return null;
+            }
+
+            DestinosSoloLectura destinos = ConConfiguracion("deploy@Prod:2222, web, *", Registrar);
+
+            // Act
+            _ = await destinos.ComprobarAsync(Destino("root@10.0.0.9"), CancellationToken.None);
+
+            // Assert
+            _ = llamadas.Should().BeEquivalentTo("deploy|Prod|2222", "|web|");
+        }
+
+        // Si ssh -G no puede leer una entrada (plazo, salida repetida...), no se sabe a qué máquina lleva: falla cerrado con un
+        // mensaje que lo dice, salvo que el destino coincida con otra entrada.
+        [Fact]
+        public async Task EntradaQueSshNoPuedeLeer_FallaCerrado()
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion("mal, prod");
+
+            // Act
+            ComprobacionSoloLectura otro = await destinos.ComprobarAsync(Destino("root@10.0.0.9"), CancellationToken.None);
+            ComprobacionSoloLectura laOtraEntrada = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
+            string mensaje = DestinosSoloLectura.MensajeRechazo(otro, "root@10.0.0.9:22", "ssh_exec")!;
+
+            // Assert
+            _ = otro.Should().Be(new ComprobacionSoloLectura(true, "mal", IsErrorConfiguracion: true));
+            _ = laOtraEntrada.Should().Be(new ComprobacionSoloLectura(true, null));
+            _ = mensaje.Should().Contain("no se pudo leer la entrada mal con la configuración de ssh (ssh -G)");
+        }
+
+        // La comprobación de la sesión justo antes de enviar (la dirección conectada) y ssh_status usan el mismo HostName.
+        [Fact]
+        public async Task EntradaQueEsAlias_ConexionYSinRed()
+        {
+            // Arrange
+            DestinosSoloLectura destinos = ConConfiguracion("prod");
+
+            // Act
+            ComprobacionSoloLectura conexion = await destinos.ComprobarConexionAsync(Destino("root@ventana.ejemplo"), new ExtremoConectado(IPAddress.Parse("10.0.0.5")), CancellationToken.None);
+            ComprobacionSoloLectura otraConexion = await destinos.ComprobarConexionAsync(Destino("root@ventana.ejemplo"), new ExtremoConectado(IPAddress.Parse("10.0.0.9")), CancellationToken.None);
+            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            bool? sinRedOtro = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.9"));
+
+            // Assert
+            _ = conexion.Should().Be(new ComprobacionSoloLectura(true, null, DireccionConectada: IPAddress.Parse("10.0.0.5")));
+            _ = otraConexion.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = sinRed.Should().BeTrue();
+            _ = sinRedOtro.Should().BeFalse();
         }
 
         // Con DNS real (/etc/hosts): localhost cubre 127.0.0.1.

@@ -28,7 +28,7 @@ namespace NativeSsh.Test.Herramientas
 
         public SoloLecturaConexionTests()
         {
-            File.WriteAllText(Path.Combine(_directorio, "config"), "Host prod\n  HostName 10.0.0.5\nHost web\n  HostName 10.0.0.7\nHost *\n  User ana\n");
+            File.WriteAllText(Path.Combine(_directorio, "config"), "Host prod\n  HostName 10.0.0.5\nHost web\n  HostName 10.0.0.7\nHost fantasma\n  HostName noexiste.ejemplo\nHost *\n  User ana\n");
             _fabrica.DireccionRemota = destino => IPAddress.TryParse(destino.Servidor, out IPAddress? ip) ? ip : _dns.GetValueOrDefault(destino.Servidor);
         }
 
@@ -92,6 +92,45 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = error.Message.Should().Be(HerramientasSsh.MensajeSoloLectura(destino.StartsWith("deploy@", StringComparison.Ordinal) ? "deploy@10.0.0.5:22" : "ana@10.0.0.5:22", "ssh_exec"));
             _ = _fabrica.Conexiones.Should().Be(0);
+        }
+
+        // La entrada es un alias de la configuración que no está en el DNS (el ejemplo del README): vale por su HostName, con
+        // cualquier usuario y puerto (la entrada no los lleva), y no hace fallar a los demás destinos. Antes «no se resolvió
+        // prod» rechazaba toda escritura con su usuario y puerto.
+        [Theory]
+        [InlineData("web", true)]
+        [InlineData("ana@10.0.0.7", true)]
+        [InlineData("ana@10.0.0.5", false)]
+        [InlineData("root@10.0.0.5:2222", false)]
+        public async Task EntradaConElAlias_ProtegeSuHostNameYNoHaceFallarALosDemas(string destino, bool isEscribe)
+        {
+            // Arrange
+            HerramientasSsh herramientas = Crear("prod");
+
+            // Act
+            Func<Task<ResultadoComando>> escribir = () => EjecutarHastaTerminar(herramientas, destino);
+
+            // Assert
+            if (isEscribe)
+                _ = (await escribir()).Estado.Should().Be(EstadoPeticionEnum.Completado);
+            else
+                _ = (await escribir.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Be(HerramientasSsh.MensajeSoloLectura(_gestor!.ParsearDestino(destino).Clave, "ssh_exec"));
+        }
+
+        // Un alias cuyo HostName no existe en el DNS protege solo su texto: las demás escrituras pasan.
+        [Fact]
+        public async Task EntradaConUnAliasCuyoHostNameNoExiste_SoloElTexto()
+        {
+            // Arrange
+            HerramientasSsh herramientas = Crear("fantasma");
+
+            // Act
+            ResultadoComando otro = await EjecutarHastaTerminar(herramientas, "web");
+            NativeSshException alias = (await FluentActions.Awaiting(() => herramientas.EjecutarAsync("fantasma", "touch marca")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = otro.Estado.Should().Be(EstadoPeticionEnum.Completado, otro.Aviso);
+            _ = alias.Message.Should().Be(HerramientasSsh.MensajeSoloLectura("ana@noexiste.ejemplo:22", "ssh_exec"));
         }
 
         // La entrada es el HostName: el alias que lo resuelve se rechaza (destino resuelto).
