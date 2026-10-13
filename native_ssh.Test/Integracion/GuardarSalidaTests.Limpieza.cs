@@ -166,5 +166,80 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(desconexion.Mensaje);
             _ = desconexion.Mensaje.Should().Contain("No se pudo comprobar").And.NotContain("No quedaba").And.NotContain("Se borraron");
         }
+
+        // ssh_reset_shell y ssh_disconnect a la vez: el borrado del reset se retiene justo antes de abrir su canal exec, con la
+        // lista ya vacía, y el disconnect llega entonces. El disconnect espera ese borrado y ve sus shells: como el directorio
+        // está en 500, dice que no se pudieron borrar, y el archivo sigue.
+        [Fact]
+        public async Task ResetYDisconnectALaVez_ElDisconnectVeElBorradoDelReset()
+        {
+            // Arrange
+            OpcionesNativeSsh opciones = _sshd.Sshd.Opciones() with { PrefijoGuardado = Prefijo };
+            using FabricaQueRetieneLimpieza fabrica = new(_sshd.Sshd.Fabrica(opciones));
+            _gestor = new GestorSesiones(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);
+            HerramientasSsh h = new(_gestor, opciones);
+            ResultadoComando uno = await GuardarAsync(h, "echo uno");
+            _ = await h.EjecutarAsync(Destino, $"chmod 500 -- '{Path.GetDirectoryName(uno.Archivo)}'", esperarSegundos: 30).ComoComando();
+
+            // Act
+            Task<ResultadoAccion> reinicio = Task.Run(() => h.ReiniciarShell(Destino));
+            _ = fabrica.Retenida.Wait(TimeSpan.FromSeconds(30)).Should().BeTrue();
+            Task<ResultadoAccion> desconexion = Task.Run(() => h.DesconectarAsync(Destino));
+            _ = await Task.WhenAny(desconexion, Task.Delay(1000));
+            fabrica.Soltar();
+            ResultadoAccion resultado = await desconexion;
+            _ = await reinicio;
+
+            // Assert
+            salida.WriteLine(resultado.Mensaje);
+            _ = File.Exists(uno.Archivo).Should().BeTrue();
+            _ = resultado.Mensaje.Should().Contain("NO se pudieron borrar 1 de los 1");
+        }
+
+        // Decorador de la fábrica real: el primer canal exec de la limpieza de guardarSalida se queda retenido (en el hilo que lo
+        // abre, antes de devolver su tarea) hasta Soltar.
+        private sealed class FabricaQueRetieneLimpieza(IFabricaConexion interna) : IFabricaConexion, IDisposable
+        {
+            private readonly ManualResetEventSlim _soltar = new();
+            private int _isUsada;
+
+            public ManualResetEventSlim Retenida { get; } = new();
+
+            public void Soltar() => _soltar.Set();
+
+            public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken) =>
+                new Conexion(await interna.ConectarAsync(destino, cancellationToken), this);
+
+            public void Dispose()
+            {
+                _soltar.Set();
+                _soltar.Dispose();
+                Retenida.Dispose();
+            }
+
+            private void RetenerSiEsLaPrimeraLimpieza(string comando)
+            {
+                if (!ScriptExec.Decodificar(comando).Contains("__ns_archivos", StringComparison.Ordinal) || Interlocked.Exchange(ref _isUsada, 1) != 0)
+                    return;
+
+                Retenida.Set();
+                _ = _soltar.Wait(TimeSpan.FromSeconds(30));
+            }
+
+            private sealed class Conexion(IConexionSsh interna, FabricaQueRetieneLimpieza fabrica) : IConexionSsh
+            {
+                public bool IsConectada => interna.IsConectada;
+
+                public ICanalShell AbrirShell() => interna.AbrirShell();
+
+                public Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
+                {
+                    fabrica.RetenerSiEsLaPrimeraLimpieza(comando);
+                    return interna.EjecutarExecAsync(comando, maxBytesSalida, alConfirmarseApertura, cancellationToken);
+                }
+
+                public void Dispose() => interna.Dispose();
+            }
+        }
     }
 }

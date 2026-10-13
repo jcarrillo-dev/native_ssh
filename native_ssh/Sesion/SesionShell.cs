@@ -166,7 +166,8 @@ namespace NativeSsh.Sesion
         private int? _archivosSinBorrarAnterior;
 
         // Los borrados de ssh_reset_shell en curso: el cierre los espera (acotado) antes de tomar la lista, para que un shell
-        // que vuelve a ella por un borrado fallido no llegue después de que el cierre la haya vaciado. Bajo _candadoGuardados.
+        // que vuelve a ella por un borrado fallido no llegue después de que el cierre la haya vaciado. Bajo _candadoGuardados,
+        // el mismo en que el reset vacía la lista y registra aquí su borrado (SolicitarResetConLimpieza).
         private Task _borradosEnCurso = Task.CompletedTask;
 
         // Plazo de la limpieza en el servidor; el local es algo mayor (MargenLimiteLocalExec) y acota también ssh_disconnect.
@@ -471,7 +472,10 @@ namespace NativeSsh.Sesion
         {
             _isResetSolicitado = true;
             _ = (_peticionActual?.SolicitarCancelacion());
-            // La lista y el aviso del borrado anterior, juntos: los shells de ese borrado están en lo que se toma.
+            // La lista, el aviso del borrado anterior y el borrado en curso, juntos: los shells de ese borrado están en lo que se
+            // toma, y el cierre (BorrarGuardadosAlCerrarAsync), que toma la lista bajo el mismo candado, o ve estos shells en ella
+            // o ve su borrado en curso y lo espera. El borrado se lanza en otro hilo (Task.Run): su parte síncrona llega hasta
+            // abrir el canal exec y no debe correr bajo el candado.
             KeyValuePair<Guid, int>[] shells;
             bool isAnteriorFallido;
             int? sinBorrarAnterior;
@@ -483,11 +487,13 @@ namespace NativeSsh.Sesion
                 sinBorrarAnterior = _archivosSinBorrarAnterior;
                 _isBorradoAnteriorFallido = false;
                 _archivosSinBorrarAnterior = null;
+                if (shells.Length > 0)
+                {
+                    Task borrado = Task.Run(() => BorrarGuardadosAsync(shells));
+                    _borradosEnCurso = _borradosEnCurso.IsCompleted ? borrado : Task.WhenAll(_borradosEnCurso, borrado);
+                }
             }
 
-            Task borrado = BorrarGuardadosAsync(shells);
-            lock (_candadoGuardados)
-                _borradosEnCurso = _borradosEnCurso.IsCompleted ? borrado : Task.WhenAll(_borradosEnCurso, borrado);
             return new LimpiezaGuardados(Sumar(shells), null, false) { IsAnteriorFallido = isAnteriorFallido, SinBorrarAnterior = sinBorrarAnterior };
         }
 
@@ -970,17 +976,6 @@ namespace NativeSsh.Sesion
                 return _shellsConGuardado.Count >= _opciones.MaxShellsConGuardado && !_shellsConGuardado.ContainsKey(canal.IdGuardado);
         }
 
-        // Saca de la lista todos los shells anotados y los devuelve con sus archivos.
-        private KeyValuePair<Guid, int>[] TomarShellsConGuardado()
-        {
-            lock (_candadoGuardados)
-            {
-                KeyValuePair<Guid, int>[] tomados = [.. _shellsConGuardado];
-                _shellsConGuardado.Clear();
-                return tomados;
-            }
-        }
-
         private void DevolverShellsConGuardado(KeyValuePair<Guid, int>[] shells)
         {
             lock (_candadoGuardados)
@@ -1073,12 +1068,7 @@ namespace NativeSsh.Sesion
         // cupo).
         private async Task BorrarGuardadosAlCerrarAsync()
         {
-            Task enCurso;
-            lock (_candadoGuardados)
-                enCurso = _borradosEnCurso;
-            _ = await Task.WhenAny(enCurso, Task.Delay(PlazoLimpiezaGuardados + MargenLimiteLocalExec)).ConfigureAwait(false);
-
-            KeyValuePair<Guid, int>[] shells = TomarShellsConGuardado();
+            KeyValuePair<Guid, int>[] shells = await TomarShellsTrasLosBorradosAsync().ConfigureAwait(false);
             int creados = Sumar(shells);
             LimpiezaAlCerrar = new LimpiezaGuardados(creados, null, false);
             if (shells.Length == 0)
@@ -1109,6 +1099,34 @@ namespace NativeSsh.Sesion
             {
                 _logger.LimpiezaGuardadosFallida(ex, Destino.Clave, shells.Length);
                 LimpiezaAlCerrar = new LimpiezaGuardados(creados, null, true);
+            }
+        }
+
+        // Espera (acotado) los borrados de ssh_reset_shell en curso y saca de la lista todos los shells anotados (con sus
+        // archivos) cuando no queda ninguno por esperar, bajo el mismo candado en que un ssh_reset_shell vacía la lista y
+        // registra su borrado: un reset que llegue mientras tanto (ya con la sesión cerrándose: su borrado devuelve los shells
+        // enseguida) también se espera.
+        private async Task<KeyValuePair<Guid, int>[]> TomarShellsTrasLosBorradosAsync()
+        {
+            Task tope = Task.Delay(PlazoLimpiezaGuardados + MargenLimiteLocalExec);
+            Task enCurso;
+            lock (_candadoGuardados)
+                enCurso = _borradosEnCurso;
+            while (true)
+            {
+                _ = await Task.WhenAny(enCurso, tope).ConfigureAwait(false);
+                lock (_candadoGuardados)
+                {
+                    bool isSinOtroBorrado = ReferenceEquals(enCurso, _borradosEnCurso) || _borradosEnCurso.IsCompleted;
+                    if (isSinOtroBorrado || tope.IsCompleted)
+                    {
+                        KeyValuePair<Guid, int>[] tomados = [.. _shellsConGuardado];
+                        _shellsConGuardado.Clear();
+                        return tomados;
+                    }
+
+                    enCurso = _borradosEnCurso;
+                }
             }
         }
 
