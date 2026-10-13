@@ -106,8 +106,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Con más shells con salidas guardadas en la sesión que el tope (aquí 2: cada caída abre otro), el comando no se ejecuta
-        // y el aviso dice cómo seguir; tras ssh_reset_shell (que los borra) vuelve a funcionar. Los archivos de los shells
-        // anteriores siguen ahí hasta entonces.
+        // (tampoco al repetirlo en el mismo shell) y el aviso dice cómo seguir; tras ssh_reset_shell (que los borra) vuelve a
+        // funcionar. Los archivos de los shells anteriores siguen ahí hasta entonces.
         [Fact]
         public async Task TopeDeShellsConGuardado_NoSeEjecutaHastaElReset()
         {
@@ -121,6 +121,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             ResultadoComando tres = await GuardarAsync(h, $"touch '{testigo}'; echo tres");
+            ResultadoComando otraVez = await GuardarAsync(h, $"touch '{testigo}'; echo otra");
             bool isSiguen = File.Exists(uno.Archivo) && File.Exists(dos.Archivo);
             _ = h.ReiniciarShell(Destino);
             ResultadoComando cuatro = await GuardarAsync(h, "echo cuatro");
@@ -130,6 +131,7 @@ namespace NativeSsh.Test.Integracion
             _ = (uno.Estado, dos.Estado).Should().Be((EstadoPeticionEnum.ShellPerdido, EstadoPeticionEnum.ShellPerdido));
             _ = (tres.Estado, tres.Archivo).Should().Be((EstadoPeticionEnum.Error, null));
             _ = tres.Aviso.Should().Contain("El comando NO se ejecutó").And.Contain("2 shells").And.Contain("ssh_reset_shell");
+            _ = (otraVez.Estado, otraVez.Archivo).Should().Be((EstadoPeticionEnum.Error, null), "el shell rechazado no entra en la lista");
             _ = File.Exists(testigo).Should().BeFalse();
             _ = isSiguen.Should().BeTrue();
             _ = cuatro.Estado.Should().Be(EstadoPeticionEnum.Completado, cuatro.Aviso);
