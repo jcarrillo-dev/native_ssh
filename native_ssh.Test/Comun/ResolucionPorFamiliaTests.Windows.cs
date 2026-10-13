@@ -108,5 +108,22 @@ namespace NativeSsh.Test.Comun
             _ = literal.Ipv4.Should().Equal(IPAddress.Loopback);
             _ = localhost.Ipv4.Should().NotBeNull().And.Contain(IPAddress.Loopback);
         }
+
+        // En Windows de verdad, con el DNS del sistema (necesita salida al DNS): ipv4only.arpa (RFC 7050) solo tiene A, así
+        // que su AAAA es NODATA y cuenta como «sin direcciones IPv6», no como un fallo; un nombre que no existe (.invalid,
+        // RFC 6761) falla en las dos familias.
+        [Fact]
+        public async Task ConElSistema_NombreSoloIpv4EsSinIpv6YUnoQueNoExisteFalla()
+        {
+            // Act
+            DireccionesPorFamilia soloIpv4 = await ResolucionPorFamilia.ResolverAsync("ipv4only.arpa", CancellationToken.None);
+            DireccionesPorFamilia noExiste = await ResolucionPorFamilia.ResolverAsync("no-existe.native-ssh.invalid", CancellationToken.None);
+
+            // Assert
+            _ = soloIpv4.Ipv4.Should().NotBeNullOrEmpty();
+            _ = soloIpv4.Ipv6.Should().NotBeNull().And.BeEmpty();
+            _ = noExiste.Ipv4.Should().BeNull();
+            _ = noExiste.Ipv6.Should().BeNull();
+        }
     }
 }
