@@ -513,6 +513,8 @@ namespace NativeSsh.Test.Comun
         [InlineData("prod", "deploy@10.0.0.5:2222", true)]
         [InlineData("prod", "root@[::ffff:10.0.0.5]", true)]
         [InlineData("prod", "root@10.0.0.9", false)]
+        // Un destino que se llama como la entrada y que la configuración no cambia (p. ej. un Match user): por su texto.
+        [InlineData("prod", "root@prod", true)]
         [InlineData("prod", "root@otro.ejemplo", false)]
         [InlineData("deploy@prod", "deploy@10.0.0.5", true)]
         [InlineData("deploy@prod", "root@10.0.0.5", false)]
