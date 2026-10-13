@@ -280,7 +280,7 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_exec", cancellationToken).ConfigureAwait(false);
-            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos));
+            Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos), "ssh_exec");
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return Resultado(peticion, 0);
         }
@@ -406,7 +406,9 @@ namespace NativeSsh.Herramientas
             foreach (SesionShell s in isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value))
             {
                 IReadOnlyList<string> alias = gestor.AliasDe(s);
-                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino) : null));
+                // Con un alias en el filtro, cuenta ese texto pedido; sin filtro, los alias con que se ha usado la sesión.
+                IReadOnlyCollection<string> textosPedidos = filtro?.Alias is { } aliasFiltro ? [aliasFiltro] : alias;
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias.Count == 0 ? null : alias, s.Destino.Identidades, hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(s.Destino, s.Extremo, textosPedidos) : null));
             }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
@@ -811,7 +813,7 @@ namespace NativeSsh.Herramientas
                     """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
 
-            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, cancellationToken).ConfigureAwait(false);
+            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, "ssh_write_file", cancellationToken).ConfigureAwait(false);
             return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
@@ -1900,7 +1902,7 @@ namespace NativeSsh.Herramientas
             string idEscritura = Guid.NewGuid().ToString("N");
             string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
 
-            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, cancellationToken).ConfigureAwait(false);
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, "ssh_replace_file_content", cancellationToken).ConfigureAwait(false);
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
@@ -2638,10 +2640,12 @@ namespace NativeSsh.Herramientas
         // el Ctrl+C (su trampa de salida restaura el original o conserva las copias) para que el error diga qué pasó con el
         // archivo según lo que el script anunció (InformeEscritura), con el id de la petición para ssh_output. Con el token
         // cancelado se lanza OperationCanceledException con ese mismo mensaje. Si terminan, quien llama mira el código.
-        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, CancellationToken cancellationToken)
+        // herramienta: la que escribe (Peticion.HerramientaEscritura); si la sesión la rechaza por el modo solo lectura, el
+        // error es ese rechazo.
+        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, string herramienta, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, herramienta);
             bool isSinTerminar = false;
             bool isCancelada = false;
             try
@@ -2668,6 +2672,9 @@ namespace NativeSsh.Herramientas
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado == EstadoPeticionEnum.Completado && !isCancelada)
                 return (peticion, informe);
+
+            if (peticion.IsRechazadaSoloLectura)
+                throw new NativeSshException($"La escritura en '{ruta}' no se hizo y '{ruta}' no se ha modificado. {peticion.Aviso}");
 
             if (IsNoEnviadaAlShell(peticion))
                 throw new NativeSshException($"La escritura en '{ruta}' no se hizo: {NoEnviadaAlShell} '{ruta}' no se ha modificado. {peticion.Aviso}");

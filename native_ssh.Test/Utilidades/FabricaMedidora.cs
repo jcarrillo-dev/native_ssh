@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Net;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
 
@@ -19,6 +20,8 @@ namespace NativeSsh.Test.Utilidades
         private sealed class ConexionMedida(IConexionSsh interna, ConcurrentQueue<(string, int)> exec) : IConexionSsh
         {
             public bool IsConectada => interna.IsConectada;
+
+            public IPAddress? DireccionRemota => interna.DireccionRemota;
 
             public ICanalShell AbrirShell() => interna.AbrirShell();
 

@@ -8,7 +8,14 @@ namespace NativeSsh.Comun
     // Resultado de comparar un destino con NATIVE_SSH_SOLO_LECTURA. NoResuelto: el nombre (de una entrada o del destino) que no
     // se pudo resolver; entonces IsSoloLectura es true aunque no conste que sea la misma máquina (ante la duda, se deniega).
     // IsCupoLleno: no se llegó a intentar resolverlo (demasiadas resoluciones en curso), no es que el DNS fallara.
-    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false);
+    // DireccionConectada: es de solo lectura por la dirección a la que está conectada la sesión (ExtremoConectado), aunque ni
+    // el texto pedido ni lo que resuelve ahora el nombre lo sean. IsDireccionDesconocida: la sesión está conectada y no se sabe
+    // a qué dirección (también se deniega).
+    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false, IPAddress? DireccionConectada = null, bool IsDireccionDesconocida = false);
+
+    // La conexión abierta de una sesión: Direccion es el extremo remoto de su socket (IConexionSsh.DireccionRemota), null si
+    // no se sabe.
+    public readonly record struct ExtremoConectado(IPAddress? Direccion);
 
     // Destinos en modo solo lectura (CI6): configuración local de native_ssh (variable NATIVE_SSH_SOLO_LECTURA), que ninguna
     // herramienta puede cambiar. Para ellos se rechazan ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content antes de
@@ -20,16 +27,24 @@ namespace NativeSsh.Comun
     // puerto para cualquier puerto. El servidor es una IP o un nombre (letras, dígitos, '.', '-' y '_', con al menos una letra
     // o un dígito): lo que nunca podría ser el destino de una conexión ('a@b@c', 'host:22:2222', '/', '*.dominio', '.', '-')
     // es un error. Se compara sin distinguir mayúsculas y sin el punto final de un nombre completo; localhost, 127.0.0.0/8,
-    // ::1, 0.0.0.0 y :: son la misma máquina (sin DNS). Si el texto no coincide, se comparan las direcciones de los dos (DNS o /etc/hosts, con un plazo de 3 s que se
-    // cumple aunque la resolución no se pueda cancelar): así 'prod.ejemplo.com' cubre también su IP. Si un nombre que haría
-    // falta comparar no se resuelve (fallo o plazo), el destino se trata como de solo lectura (falla cerrado). Solo se
-    // recuerdan, 5 minutos, las resoluciones correctas de las entradas; el destino se resuelve en cada comprobación (si su
-    // nombre pasa a apuntar a una entrada, la llamada siguiente ya lo ve). Ventana que queda: SSH.NET vuelve a resolver el
-    // nombre al conectar (normalmente poco después de esta comprobación) y una sesión ya abierta sigue conectada a la dirección
-    // de cuando se abrió, aunque el nombre apunte ahora a otra; solo quien controla el DNS del nombre puede aprovecharla
-    // (para cerrarla del todo, usa en los destinos la IP o el mismo texto que en la lista). La zona de una IPv6 ('%1',
-    // '%lo') no cuenta al comparar. Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso
-    // (las demás no se lanzan y el rechazo lo dice), para que un DNS colgado no acumule hilos bloqueados.
+    // ::1, 0.0.0.0 y :: son la misma máquina (sin DNS). Lo más restrictivo de tres cosas (con el usuario y el puerto ya
+    // resueltos): un destino es de solo lectura si coincide con una entrada
+    // - el texto pedido: el alias de la configuración de ssh (DestinoSsh.Alias), solo como texto (un alias no tiene por qué
+    //   ser un nombre del DNS);
+    // - el destino resuelto por ssh -G (HostName): por texto y, si no coincide, por sus direcciones (DNS o /etc/hosts, con
+    //   un plazo de 3 s que se cumple aunque la resolución no se pueda cancelar): así 'prod.ejemplo.com' cubre también su IP;
+    // - la dirección a la que está conectada de verdad la sesión, si ya lo está (ExtremoConectado: el extremo remoto del
+    //   socket; FabricaConexionSsh conecta a una dirección ya resuelta, así que es exactamente esa): una sesión abierta
+    //   cuando el nombre apuntaba a una máquina protegida sigue protegida aunque el nombre apunte ahora a otra.
+    // Si un nombre que haría falta comparar no se resuelve (fallo o plazo), o la sesión está conectada y no se sabe a qué
+    // dirección, el destino se trata como de solo lectura (falla cerrado). Solo se recuerdan, 5 minutos, las resoluciones
+    // correctas de las entradas; el destino se resuelve en cada comprobación. Además de la comprobación de cada herramienta
+    // (antes de conectar), la sesión vuelve a comparar la dirección de la conexión justo antes de enviar una escritura al
+    // shell (ComprobarConexionAsync): si la sesión se abre o se reabre después de la comprobación y el nombre resuelve
+    // entonces a una máquina protegida, la escritura tampoco se envía. Lo que queda: el nombre de una entrada que pase a
+    // apuntar a otra máquina se ve, como tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no cuenta al comparar.
+    // Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso (las demás no se lanzan y el
+    // rechazo lo dice), para que un DNS colgado no acumule hilos bloqueados.
     public sealed class DestinosSoloLectura
     {
         public const string Variable = "NATIVE_SSH_SOLO_LECTURA";
@@ -178,26 +193,45 @@ namespace NativeSsh.Comun
         public async Task<bool> IsSoloLecturaAsync(DestinoSsh destino, CancellationToken cancellationToken) =>
             (await ComprobarAsync(destino, cancellationToken).ConfigureAwait(false)).IsSoloLectura;
 
-        // Primero sin red (usuario, puerto, texto del servidor, IP literal y loopback); solo si alguna entrada casa en usuario y
-        // puerto pero no así, se comparan las direcciones de los nombres, todos a la vez (un nombre que no se resuelve puede
-        // tardar todo el plazo). Si alguno de los que hacía falta comparar no se resolvió y ninguna entrada coincide, se
-        // devuelve solo lectura con ese nombre.
-        public async Task<ComprobacionSoloLectura> ComprobarAsync(DestinoSsh destino, CancellationToken cancellationToken)
+        public Task<ComprobacionSoloLectura> ComprobarAsync(DestinoSsh destino, CancellationToken cancellationToken) =>
+            ComprobarAsync(destino, conectado: null, isResolverDestino: true, cancellationToken);
+
+        // Para las herramientas de escritura: el texto pedido, el destino resuelto y, si la sesión ya está conectada
+        // (conectado), la dirección de su conexión.
+        public Task<ComprobacionSoloLectura> ComprobarAsync(DestinoSsh destino, ExtremoConectado? conectado, CancellationToken cancellationToken) =>
+            ComprobarAsync(destino, conectado, isResolverDestino: true, cancellationToken);
+
+        // Para la sesión, justo antes de enviar una escritura por una conexión ya abierta: el texto pedido y la dirección de esa
+        // conexión, sin volver a resolver el nombre del destino (la conexión ya está hecha: lo que cuenta es adónde).
+        public Task<ComprobacionSoloLectura> ComprobarConexionAsync(DestinoSsh destino, ExtremoConectado conectado, CancellationToken cancellationToken) =>
+            ComprobarAsync(destino, conectado, isResolverDestino: false, cancellationToken);
+
+        // Primero sin red (usuario, puerto, texto del servidor y del alias, IP literal, loopback y la dirección conectada);
+        // solo si alguna entrada casa en usuario y puerto pero no así, se comparan las direcciones de los nombres, todos a la
+        // vez (un nombre que no se resuelve puede tardar todo el plazo). Si alguno de los que hacía falta comparar no se
+        // resolvió y ninguna entrada coincide, se devuelve solo lectura con ese nombre.
+        private async Task<ComprobacionSoloLectura> ComprobarAsync(DestinoSsh destino, ExtremoConectado? conectado, bool isResolverDestino, CancellationToken cancellationToken)
         {
             string servidor = Normalizar(destino.Servidor);
             List<Entrada> porResolver = Candidatas(destino, servidor, out bool isCoincideSinRed);
-            if (isCoincideSinRed)
+            if (isCoincideSinRed || IsAliasCoincidente(porResolver, destino.Alias))
                 return new ComprobacionSoloLectura(true, null);
 
             if (porResolver.Count == 0)
                 return new ComprobacionSoloLectura(false, null);
 
-            Task<Resolucion> delDestino = ResolverAsync(servidor, isDestino: true, cancellationToken);
+            IPAddress? conectada = conectado?.Direccion is { } direccion ? Unificar(direccion) : null;
+            if (conectada is not null && IsCoincideAlguna(porResolver, conectada.ToString()))
+                return new ComprobacionSoloLectura(true, null, DireccionConectada: conectada);
+            if (conectado is { Direccion: null })
+                return new ComprobacionSoloLectura(true, null, IsDireccionDesconocida: true);
+
+            Task<Resolucion>? delDestino = isResolverDestino ? ResolverAsync(servidor, isDestino: true, cancellationToken) : null;
             List<Task<Resolucion>> deLasEntradas = porResolver.ConvertAll(e => ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
-            Resolucion destinoResuelto = await delDestino.ConfigureAwait(false);
+            Resolucion destinoResuelto = delDestino is null ? default : await delDestino.ConfigureAwait(false);
             Resolucion[] resueltas = await Task.WhenAll(deLasEntradas).ConfigureAwait(false);
             HashSet<IPAddress>? direcciones = destinoResuelto.Direcciones;
-            string? noResuelto = direcciones is null ? servidor : null;
+            string? noResuelto = isResolverDestino && direcciones is null ? servidor : null;
             bool isCupoLleno = destinoResuelto.IsCupoLleno;
             for (int i = 0; i < resueltas.Length; i++)
             {
@@ -206,6 +240,8 @@ namespace NativeSsh.Comun
                     if (noResuelto is null)
                         (noResuelto, isCupoLleno) = (porResolver[i].Servidor, resueltas[i].IsCupoLleno);
                 }
+                else if (conectada is not null && deLaEntrada.Contains(conectada))
+                    return new ComprobacionSoloLectura(true, null, DireccionConectada: conectada);
                 else if (direcciones is not null && deLaEntrada.Overlaps(direcciones))
                     return new ComprobacionSoloLectura(true, null);
             }
@@ -213,25 +249,35 @@ namespace NativeSsh.Comun
             return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno);
         }
 
-        // Para ssh_status, sin esperar al DNS: true o false si ya se sabe (texto, IP, loopback o direcciones ya resueltas);
-        // null si depende de un nombre que aún no se ha resuelto.
-        public bool? IsSoloLecturaSinRed(DestinoSsh destino)
+        // Para ssh_status, sin esperar al DNS: true o false si ya se sabe (texto del destino o de los alias, IP, loopback,
+        // la dirección conectada o direcciones ya resueltas); null si depende de algo que aún no se sabe (un nombre sin
+        // resolver, o una sesión conectada sin dirección conocida). alias: los textos pedidos que cuentan (null: el alias
+        // del propio destino).
+        public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, IReadOnlyCollection<string>? alias = null)
         {
             string servidor = Normalizar(destino.Servidor);
             List<Entrada> porResolver = Candidatas(destino, servidor, out bool isCoincideSinRed);
             if (isCoincideSinRed)
                 return true;
 
+            foreach (string texto in alias ?? (destino.Alias is { } propio ? [propio] : []))
+                if (IsAliasCoincidente(porResolver, texto))
+                    return true;
+
             if (porResolver.Count == 0)
                 return false;
 
+            IPAddress? conectada = conectado?.Direccion is { } direccion ? Unificar(direccion) : null;
+            if (conectada is not null && IsCoincideAlguna(porResolver, conectada.ToString()))
+                return true;
+
             bool isDestinoConocido = TryDireccionesSinRed(servidor, isDestino: true, out HashSet<IPAddress>? direcciones);
-            bool isDesconocido = !isDestinoConocido;
+            bool isDesconocido = !isDestinoConocido || conectado is { Direccion: null };
             foreach (Entrada entrada in porResolver)
             {
                 if (!TryDireccionesSinRed(entrada.Servidor, isDestino: false, out HashSet<IPAddress>? deLaEntrada))
                     isDesconocido = true;
-                else if (isDestinoConocido && deLaEntrada!.Overlaps(direcciones!))
+                else if ((isDestinoConocido && deLaEntrada!.Overlaps(direcciones!)) || (conectada is not null && deLaEntrada!.Contains(conectada)))
                     return true;
             }
 
@@ -251,7 +297,7 @@ namespace NativeSsh.Comun
                 if (!isUsuarioYPuerto)
                     continue;
 
-                if (entrada.IsTodos || entrada.Servidor == servidor || IsMismaIpLiteral(entrada.Servidor, servidor) || (isDestinoLoopback && IsLoopback(entrada.Servidor)))
+                if (entrada.IsTodos || IsCoincideSinRed(entrada, servidor, isDestinoLoopback))
                 {
                     isCoincideSinRed = true;
                     return [];
@@ -261,6 +307,52 @@ namespace NativeSsh.Comun
             }
 
             return porResolver;
+        }
+
+        // El texto pedido (un alias), solo como texto: nunca se resuelve.
+        private static bool IsAliasCoincidente(List<Entrada> candidatas, string? alias) =>
+            alias is not null && IsCoincideAlguna(candidatas, Normalizar(alias));
+
+        private static bool IsCoincideAlguna(List<Entrada> candidatas, string servidor)
+        {
+            bool isServidorLoopback = IsLoopback(servidor);
+            foreach (Entrada entrada in candidatas)
+                if (IsCoincideSinRed(entrada, servidor, isServidorLoopback))
+                    return true;
+            return false;
+        }
+
+        // Por texto, como la misma IP literal o las dos de loopback (la misma máquina).
+        private static bool IsCoincideSinRed(Entrada entrada, string servidor, bool isServidorLoopback) =>
+            entrada.Servidor == servidor || IsMismaIpLiteral(entrada.Servidor, servidor) || (isServidorLoopback && IsLoopback(entrada.Servidor));
+
+        // El mensaje de rechazo de una herramienta de escritura, o null si la comprobación la permite.
+        public static string? MensajeRechazo(ComprobacionSoloLectura comprobacion, string clave, string herramienta) => comprobacion switch
+        {
+            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno),
+            { IsDireccionDesconocida: true } => MensajeNoComprobado(clave, herramienta, null),
+            { IsSoloLectura: true } => MensajeSoloLectura(clave, herramienta, comprobacion.DireccionConectada),
+            _ => null
+        };
+
+        // noResuelto: el nombre que no se resolvió (null: la sesión está conectada y no se sabe a qué dirección). isCupoLleno:
+        // el nombre no se llegó a resolver (demasiadas resoluciones a la vez), no es que el DNS fallara.
+        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false)
+        {
+            string causa = noResuelto is null ? "no se sabe a qué dirección está conectada su sesión"
+                : isCupoLleno ? $"no se llegó a resolver {noResuelto}: demasiadas resoluciones a la vez"
+                : $"no se resolvió {noResuelto}";
+            string cuando = noResuelto is null ? "la comprobación se repite en cada llamada."
+                : isCupoLleno ? "vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada."
+                : "la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).";
+            return $"Rechazado: {clave}: no se pudo comprobar si es de solo lectura ({causa}); se rechaza por seguridad (configuración local de native_ssh, variable {Variable}), así que {herramienta} no se ha ejecutado y no se ha enviado nada al servidor. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: {cuando}";
+        }
+
+        // direccionConectada: es de solo lectura por la dirección a la que está conectada la sesión, no por el nombre.
+        public static string MensajeSoloLectura(string clave, string herramienta, IPAddress? direccionConectada = null)
+        {
+            string motivo = direccionConectada is null ? $"{clave} está en modo solo lectura" : $"la sesión de {clave} está conectada a {direccionConectada}, que está en modo solo lectura";
+            return $"Rechazado: {motivo} (configuración local de native_ssh, variable {Variable}), así que {herramienta} no se ha ejecutado y no se ha enviado nada al servidor. Para ese destino están desactivadas ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content: usa ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd. No reintentes ni busques otra vía para modificar el servidor: este modo solo lo puede quitar quien configura native_ssh.";
         }
 
         private static bool IsMismaIpLiteral(string a, string b) =>

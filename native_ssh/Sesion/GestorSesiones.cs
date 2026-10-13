@@ -28,14 +28,15 @@ namespace NativeSsh.Sesion
         private readonly ILogger _logger = loggerFactory.CreateLogger("NativeSsh.Sesion");
         private bool _isDispuesto;
 
-        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout)
+        // herramientaEscritura: la herramienta de escritura que lo lanza (Peticion.HerramientaEscritura), o null.
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, string? herramientaEscritura = null)
         {
             if (string.IsNullOrWhiteSpace(comando))
                 throw new NativeSshException("El comando está vacío.");
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj);
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj) { HerramientaEscritura = herramientaEscritura };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;
@@ -68,6 +69,13 @@ namespace NativeSsh.Sesion
                 sesion = _sesiones.GetValueOrDefault(peticion.Destino.ClaveSesion)?.Sesion;
 
             return sesion is not null && sesion.EnviarEntrada(peticion, texto, isEnviarEnter, isSecreto);
+        }
+
+        // La conexión de la sesión que usaría el próximo comando con ese destino (sus claves actuales), si está conectada.
+        public ExtremoConectado? ExtremoDe(DestinoSsh destino)
+        {
+            lock (_candado)
+                return _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion.Extremo;
         }
 
         public IReadOnlyList<SesionShell> ListarSesiones()

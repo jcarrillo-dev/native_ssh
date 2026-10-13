@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Net;
+using System.Net.Sockets;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 using NativeSsh.Comun;
@@ -44,7 +46,41 @@ namespace NativeSsh.Ssh
             if (metodos.Count == 0)
                 throw new NativeSshException($"No hay credenciales para {destino.Clave}: ninguna clave de {origen} ({string.Join(", ", rutas)}) se pudo cargar y NATIVE_SSH_PASSWORD no está definida.{detalle}");
 
-            ConnectionInfo info = new(destino.Servidor, destino.Puerto, destino.Usuario, [.. metodos])
+            // El servidor se resuelve aquí y SSH.NET recibe la dirección ya resuelta (un literal, que no vuelve a preguntar al
+            // DNS): la dirección de cada intento es exactamente el extremo remoto del socket (IConexionSsh.DireccionRemota, que
+            // el modo solo lectura compara con sus entradas aunque el nombre pase después a apuntar a otra máquina). Se prueban
+            // en el orden del resolutor, como hacía SSH.NET con el nombre (DnsEndPoint): si una no acepta la conexión TCP
+            // (SocketException), la siguiente; cualquier otro fallo (clave del host, autenticación, plazo) termina ahí. El
+            // known_hosts se sigue comprobando por el nombre del destino.
+            IPAddress[] direcciones = await ResolverServidorAsync(destino.Servidor, cancellationToken).ConfigureAwait(false);
+            for (int i = 0; ; i++)
+            {
+                bool isUltima = i == direcciones.Length - 1;
+                try
+                {
+                    return await ConectarADireccionAsync(destino, direcciones[i], metodos, origen, detalle, cancellationToken).ConfigureAwait(false);
+                }
+                catch (SocketException) when (!isUltima)
+                {
+                    // Esa dirección no acepta la conexión: la siguiente.
+                }
+            }
+        }
+
+        // Un literal se usa tal cual (IPv6 con zona incluida); un nombre, con el resolutor del sistema (DNS o /etc/hosts), como
+        // lo resolvía SSH.NET: si no se resuelve, la SocketException de siempre.
+        private static async Task<IPAddress[]> ResolverServidorAsync(string servidor, CancellationToken cancellationToken)
+        {
+            if (IPAddress.TryParse(servidor, out IPAddress? literal))
+                return [literal];
+
+            IPAddress[] direcciones = await Dns.GetHostAddressesAsync(servidor, cancellationToken).ConfigureAwait(false);
+            return direcciones.Length > 0 ? direcciones : throw new SocketException((int)SocketError.HostNotFound);
+        }
+
+        private async Task<IConexionSsh> ConectarADireccionAsync(DestinoSsh destino, IPAddress direccion, List<AuthenticationMethod> metodos, string origen, string detalle, CancellationToken cancellationToken)
+        {
+            ConnectionInfo info = new(direccion.ToString(), destino.Puerto, destino.Usuario, [.. metodos])
             {
                 Timeout = opciones.TimeoutConexion,
                 RetryAttempts = 1
@@ -67,7 +103,7 @@ namespace NativeSsh.Ssh
             {
                 await cliente.ConnectAsync(cancellationToken).ConfigureAwait(false);
                 logger.Conectado(destino.Clave);
-                return new ConexionSshNet(cliente);
+                return new ConexionSshNet(cliente, direccion);
             }
             catch (Exception ex)
             {

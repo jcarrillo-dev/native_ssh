@@ -192,6 +192,9 @@ namespace NativeSsh.Sesion
 
         public DestinoSsh Destino { get; }
         public bool IsConectada => _conexion?.IsConectada ?? false;
+
+        // La conexión vigente, si está conectada, con la dirección a la que va su socket (modo solo lectura).
+        public ExtremoConectado? Extremo => _conexion is { IsConectada: true } conexion ? new ExtremoConectado(conexion.DireccionRemota) : null;
         public long ComandosEjecutados => Interlocked.Read(ref _comandosEjecutados);
         public int ConexionesAbiertas => Volatile.Read(ref _conexionesAbiertas);
         public int ComandosEnCola => Volatile.Read(ref _comandosEnCola);
@@ -727,6 +730,29 @@ namespace NativeSsh.Sesion
                 canal = _canal;
                 conexionDelCanal = _conexionDelCanal;
                 _salidaConCanalCerrado = null;
+            }
+
+            // Una escritura solo se envía si la conexión de este canal no va a un destino de solo lectura (la herramienta ya lo
+            // comprobó, pero el shell pudo abrirse o reabrirse después, con el nombre resolviendo a otra máquina).
+            if (peticion.HerramientaEscritura is { } herramienta && !_opciones.SoloLectura.IsVacio && conexionDelCanal is not null)
+            {
+                string? rechazo;
+                try
+                {
+                    ComprobacionSoloLectura comprobacion = await _opciones.SoloLectura.ComprobarConexionAsync(peticion.Destino, new ExtremoConectado(conexionDelCanal.DireccionRemota), token).ConfigureAwait(false);
+                    rechazo = DestinosSoloLectura.MensajeRechazo(comprobacion, peticion.Destino.Clave, herramienta);
+                }
+                catch (OperationCanceledException) when (!IsCerrando)
+                {
+                    FinalizarInterrumpida(peticion, limite.IsCancellationRequested, DetalleComandoNoEnviado, avisoShell);
+                    return;
+                }
+
+                if (rechazo is not null)
+                {
+                    _ = peticion.TryRechazarSoloLectura(Unir(avisoShell, rechazo));
+                    return;
+                }
             }
 
             bool isEnviado = canal is not null && TryEnviarComando(canal, peticion, espera);

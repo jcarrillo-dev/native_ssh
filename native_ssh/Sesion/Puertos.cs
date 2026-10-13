@@ -1,3 +1,4 @@
+using System.Net;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Sesion
@@ -18,6 +19,10 @@ namespace NativeSsh.Sesion
     public interface IConexionSsh : IDisposable
     {
         bool IsConectada { get; }
+
+        // Dirección a la que está conectado el socket (su extremo remoto), null si el adaptador no la sabe. El modo solo
+        // lectura (DestinosSoloLectura) la compara con sus entradas: así el DNS de ahora no decide por una sesión ya abierta.
+        IPAddress? DireccionRemota { get; }
 
         // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta.
         ICanalShell AbrirShell();

@@ -17,6 +17,7 @@ namespace NativeSsh.Sesion
         private long _finTimestamp;
         private volatile bool _isCancelacionSolicitada;
         private volatile bool _isComandoEnviado;
+        private volatile bool _isRechazadaSoloLectura;
         private volatile bool _isEnvioIniciado;
         private int _codigoSalida = -1;
         private string? _aviso;
@@ -38,6 +39,14 @@ namespace NativeSsh.Sesion
         public string IdTexto { get; }
         public DestinoSsh Destino { get; }
         public string Comando { get; }
+
+        // La herramienta de escritura que la lanzó (ssh_exec, ssh_write_file, ssh_replace_file_content), o null si no es una
+        // escritura (ssh_set_cwd, lecturas por el shell): antes de enviarla, la sesión comprueba el modo solo lectura con la
+        // dirección de la conexión (DestinosSoloLectura.ComprobarConexionAsync).
+        public string? HerramientaEscritura { get; init; }
+
+        // Terminó en Error sin enviarse porque la conexión de la sesión es de un destino de solo lectura (el aviso lo dice).
+        public bool IsRechazadaSoloLectura => _isRechazadaSoloLectura;
         public TimeSpan Timeout { get; }
         public BufferSalida Salida { get; }
         public long CreadoTimestamp { get; }
@@ -123,6 +132,13 @@ namespace NativeSsh.Sesion
 
             _ = _finalizacion.TrySetResult();
             return true;
+        }
+
+        // Sin enviarla: la sesión vio que su conexión va a un destino de solo lectura.
+        public bool TryRechazarSoloLectura(string? mensaje)
+        {
+            _isRechazadaSoloLectura = true;
+            return TryFinalizar(EstadoPeticionEnum.Error, -1, mensaje);
         }
 
         public bool SolicitarCancelacion()

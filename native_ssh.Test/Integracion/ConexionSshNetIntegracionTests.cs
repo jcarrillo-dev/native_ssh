@@ -27,7 +27,7 @@ namespace NativeSsh.Test.Integracion
             SshClient cliente = new(new Renci.SshNet.ConnectionInfo("127.0.0.1", sshd.Puerto, Environment.UserName, new PrivateKeyAuthenticationMethod(Environment.UserName, clave)));
             cliente.HostKeyReceived += (_, e) => e.CanTrust = true;
             await cliente.ConnectAsync(CancellationToken.None);
-            using ConexionSshNet conexion = new(cliente);
+            using ConexionSshNet conexion = new(cliente, System.Net.IPAddress.Loopback);
             bool isConectadaAntes = conexion.IsConectada;
 
             // Act
@@ -60,7 +60,7 @@ namespace NativeSsh.Test.Integracion
             SshClient cliente = new(new Renci.SshNet.ConnectionInfo("127.0.0.1", sshd.Puerto, Environment.UserName, new PrivateKeyAuthenticationMethod(Environment.UserName, clave)));
             cliente.HostKeyReceived += (_, e) => e.CanTrust = true;
             await cliente.ConnectAsync(CancellationToken.None);
-            using ConexionSshNet conexion = new(cliente);
+            using ConexionSshNet conexion = new(cliente, System.Net.IPAddress.Loopback);
             SenalarCaidaSinAvisar(cliente);
 
             // Act
