@@ -213,6 +213,20 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("Si cambió con la sesión abierta (otro HostName, User, Port o IdentityFile), una escritura con ese alias usa la sesión que corresponde a la configuración nueva y su resultado puede ser otro: vale lo que responda la herramienta de escritura, que lo comprueba en cada llamada.");
         }
 
+        // Y le dice al LLM qué hacer entonces (imperativo): no fiarse de isSoloLectura y atenerse a la herramienta de escritura.
+        [Fact]
+        public void DescripcionDeSshStatus_DiceQueHacerSiLaConfiguracionPudoCambiar()
+        {
+            // Arrange
+            System.Reflection.MethodInfo metodo = typeof(HerramientasSsh).GetMethod(nameof(HerramientasSsh.Estado))!;
+
+            // Act
+            string descripcion = ((System.ComponentModel.DescriptionAttribute)Attribute.GetCustomAttribute(metodo, typeof(System.ComponentModel.DescriptionAttribute))!).Description;
+
+            // Assert
+            _ = descripcion.Should().Contain("Si la configuración de ssh de ese alias pudo cambiar con la sesión abierta, NO te fíes de isSoloLectura para ese alias: atente a lo que responda la herramienta de escritura y, si la rechaza, no reintentes ni busques otra vía.");
+        }
+
         [Fact]
         public void Mensaje_DiceQueHacerYQueNoSePuedeCambiar() =>
             _ = Rechazo("ssh_exec").Should().Be("Rechazado: ana@prod:22 está en modo solo lectura (configuración local de native_ssh, variable NATIVE_SSH_SOLO_LECTURA), así que ssh_exec no se ha ejecutado y no se ha enviado nada al servidor. Para ese destino están desactivadas ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content: usa ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd. No reintentes ni busques otra vía para modificar el servidor: este modo solo lo puede quitar quien configura native_ssh.");
