@@ -23,6 +23,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "Se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class EntradaCaracteresDeControlTests(ITestOutputHelper salida) : IAsyncLifetime
     {
         private readonly SshdPropio _sshd = new(string.Empty);

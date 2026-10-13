@@ -12,6 +12,7 @@ namespace NativeSsh.Test.Protocolo
     // comportamiento lo que antes se comparaba con el texto de la cola: que lo tecleado no se ejecuta, que el recuento
     // viaja en el marcador del envío siguiente y se reinicia, el tope del recuento y que nada del usuario lo rompe. Lo que
     // depende del terminal (Ctrl+D, Ctrl+C) se prueba con un terminal real en EntradaPorAdelantadoTests.
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ColaCentinelaBashTests : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(60);

@@ -285,6 +285,7 @@ namespace NativeSsh.Test.Comun
         [InlineData("fichero", "\n" + TokenValido + "\n")]
         [InlineData("variable", TokenValido + "\nsegunda")]
         [InlineData("variable", TokenValido + "\rsegunda")]
+        [Trait("Categoria", "SoloLinux")]
         public void TokenDeVariasLineas_SeRechaza(string fuente, string valor)
         {
             // Arrange
@@ -301,9 +302,26 @@ namespace NativeSsh.Test.Comun
             _ = error.Should().Contain("más de una línea").And.NotContain(TokenValido);
         }
 
+        // Lo mismo con la variable, también fuera de Linux: la anterior es SoloLinux porque sus ficheros llevan modos Unix (y
+        // NATIVE_SSH_TOKEN_HTTP_FICHERO solo se admite en Linux), pero la variable es la fuente del token en los demás sistemas.
+        [Theory]
+        [InlineData(TokenValido + "\nsegunda")]
+        [InlineData(TokenValido + "\rsegunda")]
+        public void TokenDeVariasLineasEnLaVariable_SeRechazaEnCualquierSistema(string valor)
+        {
+            // Act
+            bool isCargado = TokenHttp.TryCargar(Entorno(token: valor), out TokenHttp? token, out string? error);
+
+            // Assert
+            _ = isCargado.Should().BeFalse();
+            _ = token.Should().BeNull();
+            _ = error.Should().Contain("más de una línea").And.NotContain(TokenValido);
+        }
+
         // Un fichero con solo saltos de línea está vacío; uno enorme (disperso: no ocupa disco) se rechaza por su tamaño sin
         // leerlo.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void SoloSaltosDeLineaOFicheroEnorme_SeRechazan()
         {
             // Arrange
@@ -344,6 +362,7 @@ namespace NativeSsh.Test.Comun
         // Y con el statx real: un fichero propio cuyo grupo es otro (un grupo suplementario del usuario) se acepta, y se
         // rechaza si el uid pedido es ese gid. Sin grupos suplementarios no hay cómo crearlo sin root: lo cubre la anterior.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroPropioDeOtroGrupo_ElDuenoEsElUid()
         {
             // Arrange
