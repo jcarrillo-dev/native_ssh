@@ -14,6 +14,7 @@ namespace NativeSsh.Test.Integracion
     // por prueba, las penalizaciones por origen de OpenSSH (PerSourcePenalties: authfail) no alcanzan al sshd compartido.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ConfiguracionSshClavesIntegracionTests : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(30);

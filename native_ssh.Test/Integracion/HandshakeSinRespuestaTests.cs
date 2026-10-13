@@ -18,6 +18,7 @@ namespace NativeSsh.Test.Integracion
     // en externo/SSH.NET ("Observe the cancellation token of ConnectAsync during the handshake"): cancelar cierra el socket.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class HandshakeSinRespuestaTests
     {
         private static readonly TimeSpan Cancelacion = TimeSpan.FromSeconds(1);

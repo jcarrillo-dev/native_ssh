@@ -73,6 +73,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void PuertoLibre_EsDelRangoManualDelBloqueDeLasPruebasYNoEsEfimero()
         {
             // Arrange: NATIVE_SSH_PUERTO_PRUEBAS (X022) fija el bloque de mil puertos de esta ejecución; los sshd manuales
@@ -90,6 +91,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void Parar_ConElMaestroQueNoAtiendeTerm_EsperaASuFinYDejaElPuertoLibre()
         {
             // Arrange: detenido con SIGSTOP, el sshd no atiende el TERM de 'parar' (como uno que tarda en salir).
@@ -120,6 +122,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task Parar_ConSesionesDetenidasConSigstop_NoLasDejaVivas()
         {
             // Arrange: una conexión con sus sshd-session detenidos, como los deja una prueba que muere antes de reanudarlos.
@@ -154,6 +157,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void Iniciar_DesdeUnProcesoConfinadoAUnaCpu_ElServidorPuedeUsarTodasLasCpu()
         {
             // Arrange: como las pruebas de estrés, que confinan su proceso y su carga con taskset; el sshd lo heredaría y,
@@ -181,6 +185,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void Restringido_SiSshdNoArranca_NoDejaSuGranjaDeBinarios()
         {
             // Arrange: el puerto ya está ocupado, así que sshd no puede escuchar en él.

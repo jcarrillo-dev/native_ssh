@@ -8,6 +8,7 @@ namespace NativeSsh.Test.Integracion
     // El login tarda más que el reenvío de la inicialización: bash -l (readline) y el bash nuevo ejecutan las dos líneas.
     [Collection(ColeccionSshdLoginLento.Nombre)]
     [Trait("Categoria", "Integracion")]
+    [Trait("Categoria", "SoloLinux")]
     public class SesionShellLoginLentoTests(SshdLocalLoginLento fixture)
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(40);

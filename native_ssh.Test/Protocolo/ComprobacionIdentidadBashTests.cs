@@ -14,6 +14,7 @@ namespace NativeSsh.Test.Protocolo
     // comportamiento, no el texto: un shell con el mismo $$ y $PPID pero sin el testigo (un gemelo en otra máquina, o el
     // programa que deja un exec) se detecta.
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class ComprobacionIdentidadBashTests : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(15);

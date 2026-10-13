@@ -14,6 +14,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class DireccionRemotaIntegracionTests(SshdLocal sshd) : IDisposable
     {
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_dir_rem_{Guid.NewGuid():N}")).FullName;

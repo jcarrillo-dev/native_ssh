@@ -267,6 +267,7 @@ namespace NativeSsh.Test.Ssh
 
         // Plazo: un Match exec que se cuelga no bloquea la llamada, y ssh y lo que lanzó mueren.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task SshQueNoTermina_ErrorTrasElPlazoYSinProcesosColgados()
         {
             // Arrange
@@ -327,6 +328,7 @@ namespace NativeSsh.Test.Ssh
         // Si lo que dejó en segundo plano salió del grupo (su propio setsid) y retiene la salida, el error dice que ssh sí
         // terminó y qué la retiene, no que no terminó.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task MatchExecQueSaleDelGrupoYRetieneLaSalida_ErrorQueDiceQueSshTermino()
         {
             // Arrange
@@ -349,6 +351,7 @@ namespace NativeSsh.Test.Ssh
 
         // El plazo por defecto es de 5 s: un Match exec colgado no retiene la llamada más que eso.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task PlazoPorDefecto_CincoSegundos()
         {
             // Arrange

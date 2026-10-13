@@ -21,6 +21,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "Se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class EntradaSecretaTests(ITestOutputHelper salida) : IAsyncLifetime
     {
         // Lee una línea con el eco del terminal reactivado y dice su longitud (que el programa la recibió entera).

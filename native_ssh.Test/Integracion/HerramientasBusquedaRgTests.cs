@@ -62,6 +62,7 @@ namespace NativeSsh.Test.Integracion
         // Un subdirectorio ilegible dentro del árbol: el motor de la máquina (rg o grep de GNU) lo calla y sale con 2; la
         // respuesta da lo que encontró y avisa de que pueden faltar coincidencias (A-undecies, AU3).
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task SubdirectorioIlegible_DaLosResultadosYAvisaDeQuePuedenFaltar()
         {
             // Arrange

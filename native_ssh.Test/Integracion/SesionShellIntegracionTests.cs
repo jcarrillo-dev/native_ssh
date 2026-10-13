@@ -11,6 +11,7 @@ namespace NativeSsh.Test.Integracion
 {
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
+    [Trait("Categoria", "SoloLinux")]
     public class SesionShellIntegracionTests(SshdLocal sshd)
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(30);

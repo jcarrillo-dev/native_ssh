@@ -75,6 +75,7 @@ namespace NativeSsh.Test.Ssh
 
         [Theory]
         [MemberData(nameof(Formatos))]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveCifradaConLaPassphraseDeLaVariable_SeCarga(string tipo, string formato)
         {
             // Arrange
@@ -92,6 +93,7 @@ namespace NativeSsh.Test.Ssh
         [Theory]
         [InlineData("\n")]
         [InlineData("")]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveCifradaConLaPassphraseDeUnFichero0600_SeCargaSinElSaltoFinal(string final)
         {
             // Arrange
@@ -109,6 +111,7 @@ namespace NativeSsh.Test.Ssh
         // Los espacios de los extremos son parte de la passphrase (al contrario que en el token HTTP): solo se quita el salto
         // de línea final del fichero.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void PassphraseConEspaciosEnLosExtremos_SeRespetan()
         {
             // Arrange
@@ -126,6 +129,7 @@ namespace NativeSsh.Test.Ssh
 
         [Theory]
         [MemberData(nameof(Formatos))]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveCifradaSinPassphrase_ElMotivoLoDiceYDiceDeDondeSale(string tipo, string formato)
         {
             // Arrange
@@ -145,6 +149,7 @@ namespace NativeSsh.Test.Ssh
 
         [Theory]
         [MemberData(nameof(Formatos))]
+        [Trait("Categoria", "SoloLinux")]
         public void PassphraseIncorrecta_ElMotivoLoDiceSinMostrarla(string tipo, string formato)
         {
             // Arrange
@@ -161,6 +166,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroDeLaPassphraseLegibleParaOtros_SeRechazaConElMismoCriterioQueElToken()
         {
             // Arrange
@@ -178,6 +184,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroDeLaPassphraseQueNoExiste_LoDice()
         {
             // Arrange
@@ -196,6 +203,7 @@ namespace NativeSsh.Test.Ssh
         [Theory]
         [InlineData("")]
         [InlineData("\n")]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroDeLaPassphraseVacio_ElMotivoDiceQueEstaVacio(string contenido)
         {
             // Arrange
@@ -215,6 +223,7 @@ namespace NativeSsh.Test.Ssh
         [Theory]
         [InlineData("\n")]
         [InlineData("\r\n")]
+        [Trait("Categoria", "SoloLinux")]
         public void FicheroDeLaPassphraseConVariasLineas_ElMotivoLoDice(string salto)
         {
             // Arrange
@@ -232,6 +241,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void VariableYFicheroALaVez_SeRechazan()
         {
             // Arrange
@@ -248,6 +258,7 @@ namespace NativeSsh.Test.Ssh
 
         // Una clave sin cifrar no necesita la passphrase: el fichero (aunque no valga) ni se lee.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveSinCifrar_NoLeeLaPassphrase()
         {
             // Arrange
@@ -265,6 +276,7 @@ namespace NativeSsh.Test.Ssh
         // Una clave que no se pudo abrir no se queda fuera para siempre: al arreglar la passphrase, la siguiente conexión la
         // carga sin reiniciar native_ssh.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveQueNoSePudoAbrir_SeReintentaEnLaSiguienteCarga()
         {
             // Arrange
@@ -291,6 +303,7 @@ namespace NativeSsh.Test.Ssh
         // Una clave que no se pudo abrir no se reintenta (abrirla cuesta: bcrypt) mientras no cambien ni ella ni el fichero de
         // la passphrase: el motivo se repite en cada conexión y el aviso del log sale una sola vez.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveQueNoAbre_SinCambios_NoSeReintentaYAvisaUnaVez()
         {
             // Arrange
@@ -312,6 +325,7 @@ namespace NativeSsh.Test.Ssh
 
         // Cambiar los permisos del fichero de la passphrase (chmod, sin tocar el contenido) también cuenta como un cambio.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveQueNoAbre_CambianLosPermisosDelFicheroDeLaPassphrase_SeReintenta()
         {
             // Arrange
@@ -331,6 +345,7 @@ namespace NativeSsh.Test.Ssh
 
         // Si cambia la clave (otro fichero en la misma ruta), se reintenta.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveQueNoAbre_CambiaLaClave_SeReintenta()
         {
             // Arrange
@@ -350,6 +365,7 @@ namespace NativeSsh.Test.Ssh
 
         // Abrir una clave cifrada (lento: bcrypt) no retiene la carga de otras claves en otras conexiones.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task AbrirUnaClaveLenta_NoRetieneLaCargaDeOtras()
         {
             // Arrange
@@ -377,6 +393,7 @@ namespace NativeSsh.Test.Ssh
 
         // Una clave abierta se guarda: la conexión siguiente no la reabre ni vuelve a leer la passphrase.
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public void ClaveAbierta_SeReutilizaSinVolverALeerLaPassphrase()
         {
             // Arrange
@@ -413,6 +430,7 @@ namespace NativeSsh.Test.Ssh
 
         // Sin ninguna clave utilizable, el error de la conexión lleva el motivo de cada clave (no la passphrase).
         [Fact]
+        [Trait("Categoria", "SoloLinux")]
         public async Task SinClavesUtilizables_ElErrorDeConexionLlevaElMotivoDeCadaClave()
         {
             // Arrange

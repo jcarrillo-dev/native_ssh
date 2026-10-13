@@ -12,6 +12,7 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
+    [Trait("Categoria", "SoloLinux")]
     public sealed class PassphraseIntegracionTests(SshdLocal sshd) : IDisposable
     {
         private const string Frase = "frase de prueba con espacios";

@@ -20,6 +20,14 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!-- Fuera de Linux (NativeSshSistema distinto de linux) no se ejecutan las pruebas de la categoría SoloLinux: las que
+       montan lo suyo con bash, /proc, /usr/bin, modos Unix de ficheros, cksum o un sshd local. En Linux se ejecutan todas.
+       Es el filtro por defecto de dotnet test: un filtro propio (opción filter) lo sustituye, así que hay que añadirle
+       &Categoria!=SoloLinux. -->
+  <PropertyGroup Condition="'$(NativeSshSistema)' != 'linux' and '$(VSTestTestCaseFilter)' == ''">
+    <VSTestTestCaseFilter>Categoria!=SoloLinux</VSTestTestCaseFilter>
+  </PropertyGroup>
+
   <ItemGroup>
     <!-- Lo de cada sistema solo para su sistema (NativeSshSistema, en Directory.Build.props) -->
     <Compile Remove="**/*.Linux.cs" Condition="'$(NativeSshSistema)' != 'linux'" />
