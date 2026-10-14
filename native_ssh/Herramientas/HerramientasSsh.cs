@@ -535,11 +535,7 @@ namespace NativeSsh.Herramientas
             {
                 0 when resuelto.Alias is { } alias => $"No había conexión con '{alias}' ({resuelto.Clave}).",
                 0 => "No había conexión con ese destino.",
-                1 when cerradasConLimpieza[0].IsSinConectar => $"Sesión sin conectar descartada: {DescribirCerradas(cerradas, isConDestino: true)}; no llegó a conectarse, así que no había conexión que cerrar.",
-                1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
-                // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
-                _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Length} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
-                _ => $"Se cerraron {cerradas.Length} conexiones: {DescribirCerradas(cerradas, isConDestino: true)}."
+                _ => DescribirDesconexion(cerradasConLimpieza)
             };
             // Las cerradas ya no están en el gestor: las pistas son de las que siguen abiertas.
             string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto), gestor);
@@ -563,6 +559,35 @@ namespace NativeSsh.Herramientas
             }
 
             return texto.ToString();
+        }
+
+        // ssh_disconnect con alguna sesión cerrada: las que estaban conectadas (conexiones cerradas) y las que no llegaron a
+        // conectarse (sesiones descartadas, sin conexión que cerrar), por separado. Varias del mismo usuario@servidor:puerto
+        // solo pueden diferir en las claves (son sesiones distintas): entonces se nombran solo sus claves.
+        private static string DescribirDesconexion(IReadOnlyList<SesionCerrada> cerradas)
+        {
+            List<DestinoSsh> conectadas = [];
+            List<DestinoSsh> sinConectar = [];
+            foreach (SesionCerrada cerrada in cerradas)
+                (cerrada.IsSinConectar ? sinConectar : conectadas).Add(cerrada.Destino);
+
+            DestinoSsh[] todas = [.. conectadas, .. sinConectar];
+            bool isMismoDestino = todas.Length > 1 && IsMismoDestino(todas);
+            string conDestino = isMismoDestino ? $" con {todas[0].Clave}" : string.Empty;
+            string porClaves = isMismoDestino ? ", una por cada juego de claves" : string.Empty;
+            string deConectadas = conectadas.Count switch
+            {
+                0 => string.Empty,
+                1 => $"Conexión cerrada{conDestino}: {DescribirCerradas(conectadas, isConDestino: !isMismoDestino)}.",
+                _ => $"Se cerraron {conectadas.Count} conexiones{conDestino}{porClaves}: {DescribirCerradas(conectadas, isConDestino: !isMismoDestino)}."
+            };
+            string deSinConectar = sinConectar.Count switch
+            {
+                0 => string.Empty,
+                1 => $"Sesión sin conectar descartada{conDestino}: {DescribirCerradas(sinConectar, isConDestino: !isMismoDestino)}; no llegó a conectarse, así que no había conexión que cerrar.",
+                _ => $"{sinConectar.Count} sesiones sin conectar descartadas{conDestino}: {DescribirCerradas(sinConectar, isConDestino: !isMismoDestino)}; no llegaron a conectarse, así que no había conexión que cerrar."
+            };
+            return deConectadas.Length > 0 && deSinConectar.Length > 0 ? $"{deConectadas} {deSinConectar}" : deConectadas + deSinConectar;
         }
 
         private static bool IsMismoDestino(DestinoSsh[] destinos)
@@ -783,21 +808,42 @@ namespace NativeSsh.Herramientas
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("true: el shell nuevo (y los que se reabran solos) se abre sin perfil, con una petición 'exec' de 'bash --noediting --norc --noprofile' en lugar del login: sin ~/.profile ni ~/.bashrc, con el PATH por defecto de sshd y sin las variables, alias ni funciones del perfil (ssh_status lo muestra con isSinPerfil). Dura hasta otro ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect. Si el servidor tiene un ForceCommand, este sustituye la petición y el shell es el de siempre. Por defecto false.")] bool sinPerfil = false)
         {
-            string clave = gestor.ParsearDestino(destino).Clave;
+            DestinoSsh resuelto = gestor.ParsearDestino(destino);
+            string clave = resuelto.Clave;
             LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil, out bool isSesionNueva);
             if (limpieza is null)
-                return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
+                return new ResultadoAccion(clave, false, $"{NoHabiaSesion(resuelto)}.");
 
             string borrado = limpieza.Creados == 0
                 ? ""
                 : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions) o el borrado falla, se dirá en el siguiente ssh_reset_shell y se volverán a intentar en él o con ssh_disconnect, que dice cuántos quedan.";
             // Sin sesión, sinPerfil la crea sin conectar (GestorSesiones.ReiniciarShellConLimpieza): no se descartó nada.
             string shell = isSesionNueva
-                ? "No había sesión con ese destino: no se ha descartado ningún shell. Se ha preparado una sin conectar (ssh_status la muestra con isConectada=false e isSinPerfil=true), que se conectará con el próximo comando y abrirá su shell SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                ? $"{NoHabiaSesion(resuelto)}: no se ha descartado ningún shell. Se ha preparado una sin conectar (ssh_status la muestra con isConectada=false e isSinPerfil=true), que se conectará con el próximo comando y abrirá su shell SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
                 : sinPerfil
                     ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
                     : "El próximo comando usará un shell nuevo.";
             return new ResultadoAccion(clave, true, $"{shell}{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
+        }
+
+        // ssh_reset_shell sin sesión con las claves del destino: «No había sesión con ese destino» y, si hay otras del mismo
+        // usuario@servidor:puerto con otras claves (otro alias con su IdentityFile, o las de native_ssh), cuáles: no se tocan.
+        private string NoHabiaSesion(DestinoSsh destino)
+        {
+            IReadOnlyList<SesionShell> otras = gestor.OtrasSesionesDelDestino(destino);
+            if (otras.Count == 0)
+                return "No había sesión con ese destino";
+
+            StringBuilder texto = new($"No había sesión con ese destino y esas claves ({DescribirCerradas([destino], isConDestino: false)}); ");
+            _ = texto.Append(otras.Count == 1 ? "hay otra de " : $"hay {otras.Count} más de ").Append(destino.Clave).Append(" con otras claves, que ").Append(otras.Count == 1 ? "no se toca: " : "no se tocan: ");
+            for (int i = 0; i < otras.Count; i++)
+            {
+                if (i > 0)
+                    _ = texto.Append("; ");
+                DescribirSesion(texto, otras[i], gestor);
+            }
+
+            return texto.ToString();
         }
 
         // ssh_reset_shell: el borrado del anterior (en segundo plano) no se completó; sus shells están entre los de este.

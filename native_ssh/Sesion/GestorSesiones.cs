@@ -255,6 +255,18 @@ namespace NativeSsh.Sesion
             return resultado;
         }
 
+        // Las sesiones del mismo usuario@servidor:puerto que el destino con otras claves (las que no usaría su próximo comando).
+        public IReadOnlyList<SesionShell> OtrasSesionesDelDestino(DestinoSsh destino)
+        {
+            List<SesionShell> otras = [];
+            lock (_candado)
+                foreach (EntradaSesion entrada in _sesiones.Values)
+                    if (string.Equals(entrada.Sesion.Destino.Clave, destino.Clave, StringComparison.Ordinal) && !string.Equals(entrada.Sesion.Destino.ClaveSesion, destino.ClaveSesion, StringComparison.Ordinal))
+                        otras.Add(entrada.Sesion);
+
+            return otras;
+        }
+
         public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto, isSinPerfil: false, out _) is not null;
 
         // Solo la sesión que usaría el próximo comando con ese destino (sus claves actuales). null si no había sesión; si no,
