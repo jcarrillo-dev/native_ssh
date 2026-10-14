@@ -98,9 +98,12 @@ namespace NativeSsh.Herramientas
         // imprimir y las opciones de enlaces (-L, -H, -P). Con cualquier otro predicado (fechas, dueño, permisos, -iname,
         // -path, -regex, -empty), acción (-exec, -delete, -printf, -ls) u operador (-o, -a, -not, !, paréntesis), no hay
         // herramienta que lo sustituya y no se avisa (el aviso disuadía de usar 'find -newer' o 'find -size' cuando no había alternativa).
+        // El tamaño solo con archivos: ssh_find rechaza tamanoMin y tamanoMax con tipo='dir', así que -size con -type d no avisa.
         private static bool IsFindQueHaceSshFind(OrdenSimple orden)
         {
             List<string> argumentos = orden.Argumentos;
+            bool hasTamano = false;
+            bool hasTipoDirectorio = false;
             for (int i = 0; i < argumentos.Count; i++)
             {
                 string argumento = argumentos[i];
@@ -116,11 +119,13 @@ namespace NativeSsh.Herramientas
                 if (!isAdmitido)
                     return false;
 
+                hasTamano |= argumento == "-size";
+                hasTipoDirectorio |= argumento == "-type" && valor == "d";
                 if (argumento is "-name" or "-maxdepth" or "-size" or "-type" or "-mindepth")
                     i++;
             }
 
-            return true;
+            return !(hasTamano && hasTipoDirectorio);
         }
 
         // cat: con heredoc o herestring y la salida a un archivo es una escritura (cat > f <<EOF); con archivos y la salida al
