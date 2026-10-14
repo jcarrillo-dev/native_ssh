@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Herramientas
 {
@@ -35,7 +37,7 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrWhiteSpace(comando))
                 return null;
 
-            List<string> avisos = [];
+            using PooledListRef<string> avisos = new();
             OrdenSimple? anterior = null;
             foreach (OrdenSimple orden in SepararOrdenes(comando))
             {
@@ -48,21 +50,21 @@ namespace NativeSsh.Herramientas
                 string? aviso = AvisoDeOrden(orden, productor);
                 if (aviso is not null && orden.IsRespaldo)
                     aviso = PrefijoRespaldo + aviso;
-                if (aviso is not null && !avisos.Contains(aviso))
+                if (aviso is not null && !avisos.Span.Contains(aviso))
                     avisos.Add(aviso);
                 anterior = orden;
             }
 
-            if (avisos.Count == 0)
+            if (avisos.Tamaño == 0)
                 return null;
 
             // Mismo orden que antes de C10 (grep, find, cd) y después los demás, en el orden en que aparecen.
-            List<string> ordenados = [];
+            using PooledListRef<string> ordenados = new();
             foreach (string primero in (string[])[AvisoGrepDisco, AvisoFindDisco, AvisoCdEncadenado])
                 if (avisos.Remove(primero))
                     ordenados.Add(primero);
-            ordenados.AddRange(avisos);
-            return string.Join(" ", ordenados);
+            ordenados.AddRange(avisos.Span);
+            return string.Join(" ", ordenados.Span);
         }
 
         private const string PrefijoRespaldo = "Solo si llegó a ejecutarse la rama de respaldo tras '||' (desde aquí no se sabe): ";
@@ -82,10 +84,10 @@ namespace NativeSsh.Herramientas
                 "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || RegexFlagsRecursivosGrep().IsMatch(orden.TextoArgumentos) ? AvisoGrepDisco : null,
                 "rg" or "ag" or "ack" or "ack-grep" => orden.IsTuberiaDeEntrada ? null : AvisoBusquedaRg(programa),
                 "ls" or "tree" or "exa" or "eza" => isSalidaAlLlm ? AvisoListado(programa) : null,
-                "stat" => isSalidaAlLlm && orden.Operandos.Count > 0 ? AvisoMetadatos : null,
+                "stat" => isSalidaAlLlm && orden.Operandos.Length > 0 ? AvisoMetadatos : null,
                 "cat" => AvisoCat(orden, isSalidaAlLlm),
                 "head" or "tail" => isSalidaAlLlm && IsLecturaHeadTail(orden) ? AvisoLecturaArchivo(programa) : null,
-                "less" or "more" or "most" => orden.Operandos.Count > 0 ? AvisoLecturaArchivo(programa) : null,
+                "less" or "more" or "most" => orden.Operandos.Length > 0 ? AvisoLecturaArchivo(programa) : null,
                 "sed" => AvisoSed(orden, isSalidaAlLlm),
                 "perl" => IsEdicionEnSitio(orden.Argumentos, PerlOpcionesConValor) ? AvisoEdicionEnSitio("perl -i") : null,
                 "tee" => IsEscrituraTee(orden, productor) ? AvisoEscrituraArchivo("tee") : null,
@@ -101,13 +103,13 @@ namespace NativeSsh.Herramientas
         // El tamaño solo con archivos: ssh_find rechaza tamanoMin y tamanoMax con tipo='dir', así que -size con -type d no avisa.
         private static bool IsFindQueHaceSshFind(OrdenSimple orden)
         {
-            List<string> argumentos = orden.Argumentos;
+            string[] argumentos = orden.Argumentos;
             bool hasTamano = false;
             bool hasTipoDirectorio = false;
-            for (int i = 0; i < argumentos.Count; i++)
+            for (int i = 0; i < argumentos.Length; i++)
             {
                 string argumento = argumentos[i];
-                string? valor = i + 1 < argumentos.Count ? argumentos[i + 1] : null;
+                string? valor = i + 1 < argumentos.Length ? argumentos[i + 1] : null;
                 bool isAdmitido = argumento switch
                 {
                     "-L" or "-H" or "-P" or "-xdev" or "-mount" or "-print" or "-print0" => true,
@@ -135,7 +137,7 @@ namespace NativeSsh.Herramientas
             if (orden.HasDocumentoEnLinea)
                 return orden.DestinoSalida is { } destino && !IsDestinoEspecial(destino) ? AvisoEscrituraArchivo("cat > archivo <<") : null;
 
-            bool hasArchivo = orden.Operandos.Exists(o => o != "-");
+            bool hasArchivo = Array.Exists(orden.Operandos, static o => o != "-");
             return isSalidaAlLlm && hasArchivo ? AvisoLecturaArchivo("cat") : null;
         }
 
@@ -144,7 +146,7 @@ namespace NativeSsh.Herramientas
         private static bool IsLecturaHeadTail(OrdenSimple orden)
         {
             bool hasArchivo = false;
-            for (int i = 0; i < orden.Argumentos.Count; i++)
+            for (int i = 0; i < orden.Argumentos.Length; i++)
             {
                 string argumento = orden.Argumentos[i];
                 bool isOpcionCorta = argumento.Length > 1 && argumento[0] == '-' && argumento[1] != '-';
@@ -164,21 +166,21 @@ namespace NativeSsh.Herramientas
         // archivo, con la salida al LLM, es una lectura. Cualquier otro script (s///…) es una transformación: nada.
         private static string? AvisoSed(OrdenSimple orden, bool isSalidaAlLlm)
         {
-            if (IsEdicionEnSitio(orden.Argumentos, 'e', 'f', 'l') || orden.Argumentos.Exists(a => a.StartsWith("--in-place", StringComparison.Ordinal)))
+            if (IsEdicionEnSitio(orden.Argumentos, 'e', 'f', 'l') || Array.Exists(orden.Argumentos, static a => a.StartsWith("--in-place", StringComparison.Ordinal)))
                 return AvisoEdicionEnSitio("sed -i");
 
             if (!isSalidaAlLlm)
                 return null;
 
             bool isSilencioso = false;
-            List<string> scripts = [];
-            List<string> archivos = [];
-            for (int i = 0; i < orden.Argumentos.Count; i++)
+            using PooledListRef<string> scripts = new();
+            bool hasArchivos = false;
+            for (int i = 0; i < orden.Argumentos.Length; i++)
             {
                 string argumento = orden.Argumentos[i];
                 if (argumento is "-n" or "--quiet" or "--silent")
                     isSilencioso = true;
-                else if (argumento is "-e" or "--expression" && i + 1 < orden.Argumentos.Count)
+                else if (argumento is "-e" or "--expression" && i + 1 < orden.Argumentos.Length)
                     scripts.Add(orden.Argumentos[++i]);
                 else if (argumento is "-f" or "--file" or "-l" or "--line-length")
                     return null;
@@ -190,14 +192,25 @@ namespace NativeSsh.Herramientas
                     isSilencioso |= argumento.Contains('n', StringComparison.Ordinal);
                 }
                 else if (!argumento.StartsWith('-'))
-                    if (scripts.Count == 0)
+                    if (scripts.Tamaño == 0)
                         scripts.Add(argumento);
                     else
-                        archivos.Add(argumento);
+                        hasArchivos = true;
             }
 
-            bool isSoloImpresionPorLineas = scripts.Count > 0 && scripts.TrueForAll(s => Array.TrueForAll(s.Split(';', StringSplitOptions.RemoveEmptyEntries), p => RegexImpresionPorLineas().IsMatch(p)));
-            return isSilencioso && isSoloImpresionPorLineas && archivos.Count > 0 ? AvisoLecturaArchivo("sed -n") : null;
+            bool isSoloImpresionPorLineas = scripts.Tamaño > 0 && IsSoloImpresionPorLineas(scripts.Span);
+            return isSilencioso && isSoloImpresionPorLineas && hasArchivos ? AvisoLecturaArchivo("sed -n") : null;
+        }
+
+        // Cada script de sed (con sus órdenes separadas por ';') solo imprime líneas por su número.
+        private static bool IsSoloImpresionPorLineas(ReadOnlySpan<string> scripts)
+        {
+            foreach (string script in scripts)
+                foreach (string parte in script.Split(';', StringSplitOptions.RemoveEmptyEntries))
+                    if (!RegexImpresionPorLineas().IsMatch(parte))
+                        return false;
+
+            return true;
         }
 
         // Opciones de perl con el valor pegado detrás: el código (-e, -E), un módulo (-M, -m: '-Mstrict' no es -i), un
@@ -206,7 +219,7 @@ namespace NativeSsh.Herramientas
 
         // Opción -i en un grupo de opciones cortas (-i, -pi, -i.bak, -Ei): al llegar a una de 'conValor' (su valor va
         // detrás, p. ej. el código de perl -e) o a un carácter que no es una letra (el sufijo de -i.bak) se deja de mirar.
-        private static bool IsEdicionEnSitio(List<string> argumentos, params char[] conValor)
+        private static bool IsEdicionEnSitio(string[] argumentos, params char[] conValor)
         {
             foreach (string argumento in argumentos)
             {
@@ -230,7 +243,7 @@ namespace NativeSsh.Herramientas
         // productor (npm run build | tee build.log) es un registro de la salida: nada. /dev/null, /dev/std*, /dev/fd/* y los
         // archivos de /proc, /sys y /dev no son archivos que ssh_write_file pueda o deba escribir.
         private static bool IsEscrituraTee(OrdenSimple orden, OrdenSimple? productor) =>
-            productor?.Programa is "echo" or "printf" or "cat" && orden.Operandos.Exists(o => !IsDestinoEspecial(o));
+            productor?.Programa is "echo" or "printf" or "cat" && Array.Exists(orden.Operandos, static o => !IsDestinoEspecial(o));
 
         private static bool IsDestinoEspecial(string ruta) =>
             ruta.StartsWith("/dev/", StringComparison.Ordinal) || ruta.StartsWith("/proc/", StringComparison.Ordinal) || ruta.StartsWith("/sys/", StringComparison.Ordinal);
@@ -240,8 +253,8 @@ namespace NativeSsh.Herramientas
         private sealed class OrdenSimple
         {
             public string? Programa { get; set; }
-            public List<string> Argumentos { get; } = [];
-            public List<string> Operandos { get; } = [];
+            public string[] Argumentos { get; set; } = [];
+            public string[] Operandos { get; set; } = [];
             public string TextoArgumentos { get; set; } = string.Empty;
             public string? DestinoSalida { get; set; }
             public bool HasDocumentoEnLinea { get; set; }
@@ -261,6 +274,8 @@ namespace NativeSsh.Herramientas
         // Analizador léxico mínimo de bash para los avisos: comillas simples y dobles, barra invertida, $(…) y `…` opacos
         // (su contenido no cuenta como órdenes), comentarios, continuación de línea, redirecciones y heredocs (su cuerpo se
         // salta hasta la línea del delimitador). No pretende ser bash: ante algo que no entiende, no avisa.
+        // Las órdenes, las palabras y los heredocs pendientes van en List: las funciones locales CerrarPalabra y CerrarOrden
+        // los capturan, y una lista rentada (ref struct) no se puede capturar.
         private static List<OrdenSimple> SepararOrdenes(string comando)
         {
             List<OrdenSimple> ordenes = [];
@@ -295,7 +310,7 @@ namespace NativeSsh.Herramientas
             {
                 CerrarPalabra();
                 if (palabras.Count > 0)
-                    ordenes.Add(ConstruirOrden(palabras, separadorPrevio, separador));
+                    ordenes.Add(ConstruirOrden(CollectionsMarshal.AsSpan(palabras), separadorPrevio, separador));
                 palabras.Clear();
                 separadorPrevio = separador;
             }
@@ -379,7 +394,7 @@ namespace NativeSsh.Herramientas
                     i += c == '\r' && siguiente == '\n' ? 2 : 1;
                     if (heredocsPendientes.Count > 0)
                     {
-                        i = SaltarCuerpos(comando, i, heredocsPendientes);
+                        i = SaltarCuerpos(comando, i, CollectionsMarshal.AsSpan(heredocsPendientes));
                         heredocsPendientes.Clear();
                     }
 
@@ -525,7 +540,7 @@ namespace NativeSsh.Herramientas
 
         // Salta los cuerpos de los heredocs de la línea anterior, en orden: cada uno hasta la línea igual a su delimitador
         // (con <<- se le quitan antes los tabuladores iniciales). Sin delimitador de cierre, hasta el final.
-        private static int SaltarCuerpos(string comando, int inicio, List<(string Delimitador, bool IsQuitarTabuladores)> heredocs)
+        private static int SaltarCuerpos(string comando, int inicio, ReadOnlySpan<(string Delimitador, bool IsQuitarTabuladores)> heredocs)
         {
             int i = inicio;
             foreach ((string delimitador, bool isQuitarTabuladores) in heredocs)
@@ -551,18 +566,20 @@ namespace NativeSsh.Herramientas
 
         // Prefijos que ejecutan otra orden (con sus opciones): la orden es la palabra que sigue. Las sustituciones de procesos
         // no cuentan como argumentos (cat <(…) no lee un archivo; tee >(…) no lo escribe).
-        private static OrdenSimple ConstruirOrden(List<Palabra> palabras, string separadorPrevio, string separadorSiguiente)
+        private static OrdenSimple ConstruirOrden(ReadOnlySpan<Palabra> palabras, string separadorPrevio, string separadorSiguiente)
         {
             OrdenSimple orden = new() { SeparadorPrevio = separadorPrevio, SeparadorSiguiente = separadorSiguiente };
+            using PooledListRef<string> argumentos = new();
+            using PooledListRef<string> operandos = new();
             StringBuilder texto = new();
             bool isEnPrefijo = true;
             string? prefijo = null;
-            for (int i = 0; i < palabras.Count; i++)
+            for (int i = 0; i < palabras.Length; i++)
             {
                 Palabra palabra = palabras[i];
                 if (palabra.IsRedireccion)
                 {
-                    string objetivo = i + 1 < palabras.Count && !palabras[i + 1].IsRedireccion ? palabras[++i].Texto : string.Empty;
+                    string objetivo = i + 1 < palabras.Length && !palabras[i + 1].IsRedireccion ? palabras[++i].Texto : string.Empty;
                     AnotarRedireccion(orden, palabra.Texto, objetivo);
                     continue;
                 }
@@ -603,14 +620,16 @@ namespace NativeSsh.Herramientas
                 if (valor == MarcaSustitucionProcesos)
                     continue;
 
-                orden.Argumentos.Add(valor);
+                argumentos.Add(valor);
                 if (valor is "--help" or "--version")
                     orden.HasAyuda = true;
                 if (!valor.StartsWith('-') || valor == "-")
-                    orden.Operandos.Add(valor);
+                    operandos.Add(valor);
                 _ = texto.Append(' ').Append(valor);
             }
 
+            orden.Argumentos = argumentos.Span.ToArray();
+            orden.Operandos = operandos.Span.ToArray();
             orden.TextoArgumentos = texto.ToString();
             return orden;
         }
