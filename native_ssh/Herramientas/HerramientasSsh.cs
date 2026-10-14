@@ -989,7 +989,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_write_file", Destructive = true)]
-        [Description("Va por el shell persistente de ssh_exec, en su cola: espera a los comandos en curso y necesita que el login de ese shell termine (si el perfil está roto, ssh_reset_shell con sinPerfil=true). Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
+        [Description("Va por el shell persistente de ssh_exec, en su cola: espera a los comandos en curso y necesita que el login de ese shell termine (si el perfil está roto, ssh_reset_shell con sinPerfil=true). Escribe o anexa contenido en un archivo remoto mediante Base64 (inmune a problemas de escaping de bash). Por defecto no sobrescribe: la creación es exclusiva y, si el archivo existe o aparece mientras se escribe, falla sin tocarlo; el archivo nuevo se crea completo de una vez con los permisos por defecto (umask). overwrite=true: si la ruta es un enlace simbólico escribe en su destino y conserva el enlace; escribe un temporal en el mismo directorio, le copia todos los atributos del original (modo con los bits setuid y setgid, ACL, propietario, grupo, atributos extendidos y contexto SELinux, con cp de GNU coreutils; la fecha de modificación es la de la escritura) y, si comprueba que coinciden (stat; ACL y atributos extendidos, security.capability incluida, con getfattr; sin getfattr, las ACL con getfacl y ls, y de los demás atributos extendidos responde cp), lo renombra encima (atómico; si entretanto el destino se ha convertido en un directorio, falla sin meter nada dentro). Sobrescribe también los archivos de solo lectura propios (p. ej. 0444), y con sudo=true los de cualquier usuario, conservando su modo: la protección de solo lectura no impide la escritura, salvo si hay que escribir en el sitio (ver abajo): entonces, sin sudo, falla sin tocarlo. Si no puede copiar o comprobar todos los atributos (p. ej. archivo de otro usuario sin sudo, cp que no es de GNU coreutils, contexto SELinux que no se puede asignar), el archivo tiene enlaces duros o su directorio no tiene permiso de escritura (el temporal va entonces a $TMPDIR o /tmp), lo sobrescribe en el sitio (NO atómico; conserva inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux; al escribir, el núcleo quita las capacidades, security.capability, y, salvo si escribe root (sudo=true), los bits setuid y setgid: se le devuelven y se comprueban, las capacidades solo con sudo=true y setfattr o setcap; lo que no se pueda devolver o comprobar lo dice la respuesta, con el valor original de las capacidades; sin getfattr ni getcap en el servidor no se puede saber si el archivo tenía capacidades y la respuesta lo avisa) tras hacer una copia de seguridad del original (en su directorio o en $TMPDIR o /tmp; sin ella no escribe): si la escritura falla o se interrumpe, restaura el original; la copia solo se borra cuando el archivo ha quedado escrito por completo o restaurado, y si no se puede restaurar se conservan la copia y el contenido nuevo y el error da sus rutas. Lo indica en la respuesta (isAtomica=false). append=true anexa al final con '>>' (no atómico). Antes de colocar el archivo o de anexar, el script comprueba que lo que le llegó tiene el tamaño y el sha256 enviados (sin sha256sum, el cksum; sin ninguno, solo el tamaño, y la respuesta lo dice); si no, falla sin tocar el archivo. Si el destino (resuelto) existe y no es un archivo regular (FIFO, socket o dispositivo), falla sin tocarlo, también con append. Si la escritura no termina (tiempo agotado, cancelación, ssh_disconnect o conexión perdida) o el script muere a mitad (p. ej. por SIGKILL), el error dice qué pasó con el archivo (no se llegó a modificar, se restauró, ya tiene el contenido nuevo o puede haber quedado a medias, con las rutas de la copia del original y del contenido nuevo) y el id de la petición para ver su salida con ssh_output; interrumpida la escritura en el sitio, el script restaura el original por su cuenta aunque ya no pueda confirmarlo. Mientras una escritura, un anexado o un reemplazo siguen en marcha sobre un archivo (también la restauración tras una interrupción), tienen tomado su candado (flock sobre el archivo, con flock, python3 o perl del servidor; sin ellos, con un flock sin -E como el de busybox si antes se comprueba que funciona) y las escrituras, anexados y reemplazos nuevos sobre él fallan al momento sin tocarlo: reintenta cuando termine (también fallan si otro programa tiene un flock sobre el archivo); el candado se toma también si el archivo tiene permiso de escritura pero no de lectura (se abre para anexar, sin truncarlo); sin ninguna de esas herramientas, o si el archivo no se puede abrir ni para leer ni para anexar, se escribe sin exclusión y la respuesta lo avisa, y si no se puede comprobar que el candado quedó sobre el archivo que está en la ruta (sin /proc en el servidor ni stat de GNU coreutils, python3 o perl, o si no se puede consultar la ruta), también. Devuelve ruta, bytes escritos, isAtomica y mensaje.")]
         public async Task<ResultadoEscritura> EscribirArchivoAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta del archivo remoto (absoluta o relativa a __NS_CWD).")] string ruta,
@@ -1019,13 +1019,20 @@ namespace NativeSsh.Herramientas
             string rutaEscapada = Escapar(ruta);
             string idMarcas = Guid.NewGuid().ToString("N");
 
-            // Anexar: el archivo se abre (y se crea si no existía) antes de anunciar que se anexa, para que un fallo normal al
-            // abrirlo (permiso denegado) no se describa como una muerte a mitad del anexado.
+            // Anexar: el fragmento se decodifica en un temporal propio y se verifica (verificar_contenido) antes de abrir el
+            // archivo, que se crea si no existía: con el contenido desviado no se toca ni se crea. Se verifica el fragmento, no
+            // el archivo tras anexarlo (otro proceso puede estar anexando a la vez y el candado no lo impide si no lo toma). El
+            // archivo se abre antes de anunciar que se anexa, para que un fallo normal al abrirlo (permiso denegado) no se
+            // describa como una muerte a mitad del anexado.
             string comando = append
                 ? EnvolverEnBash(PlantillaBash.Crear($$"""
                     ruta=$1
+                    tam_esperado=$2
+                    sha_esperado=$3
+                    cksum_esperado=$4
                     marca={{idMarcas}}
                     {{DefinicionAnunciar}}
+                    {{DefinicionVerificarContenido}}
                     if [ -d "$ruta" ]; then
                       printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                       exit 1
@@ -1033,22 +1040,32 @@ namespace NativeSsh.Herramientas
                     if [ -e "$ruta" ] && [ ! -f "$ruta" ]; then
                       {{ErrorNoRegular}}
                     fi
+                    fragmento=$(command mktemp -- "${TMPDIR:-/tmp}/.ns_anexo.XXXXXX" 2>/dev/null) || {
+                      printf 'Error: no se pudo crear el archivo temporal del fragmento en %s. No se ha anexado nada.\n' "${TMPDIR:-/tmp}" >&2
+                      exit 1
+                    }
+                    trap 'command rm -f -- "$fragmento"' EXIT
+                    base64 -d > "$fragmento" || exit 1
+                    verificar_contenido "$fragmento" || exit {{CodigoContenidoNoIntegro}}
+                    anunciar verificacion "$verificacion"
                     {{DefinicionCandado}}
                     destino=$ruta
                     anexar=si
                     tomar_candado -x || exit 1
                     anunciar candado "$estado_candado"
                     anunciar fase anexando
-                    base64 -d >&"$candado" || exit 1
+                    command cat -- "$fragmento" >&"$candado" || exit 1
                     anunciar fase anexado
-                    """), sudo, rutaEscapada, payloadBase64)
-                : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
+                    """), sudo, $"{rutaEscapada} {HuellaContenido(bytesUtf8)}", payloadBase64)
+                : ConstruirComandoEscritura(rutaEscapada, bytesUtf8, sudo, overwrite, idMarcas);
 
             (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, "ssh_write_file", DescribirHerramienta("ssh_write_file", ruta), Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
-            return peticion.CodigoSalida != 0
+            return peticion.CodigoSalida == CodigoContenidoNoIntegro
+                ? throw new NativeSshException(MensajeContenidoNoIntegro(ruta, bytesUtf8.Length, append))
+                : peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
-                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}")
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}{informe.AvisoVerificacion()}")
                     : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
         }
 
@@ -2200,12 +2217,14 @@ namespace NativeSsh.Herramientas
                 ? AplicarEdiciones(textoOriginal, ediciones!, separador, ruta)
                 : AplicarReemplazo(textoOriginal, targetContent!, replacementContent!, separador, lineaInicio, lineaFin, allowMultiple, ruta);
             byte[] bytesModificados = Encoding.UTF8.GetBytes(textoModificado);
-            string payloadBase64 = Convert.ToBase64String(bytesModificados);
 
             string idEscritura = Guid.NewGuid().ToString("N");
-            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
+            string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, bytesModificados, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
 
             (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, "ssh_replace_file_content", DescribirHerramienta("ssh_replace_file_content", ruta, "escritura"), grupo, cancellationToken).ConfigureAwait(false);
+            if (peticionEscritura.CodigoSalida == CodigoContenidoNoIntegro)
+                throw new NativeSshException(MensajeContenidoNoIntegro(ruta, bytesModificados.Length, isAnexar: false));
+
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
@@ -2326,7 +2345,7 @@ namespace NativeSsh.Herramientas
         // - archivo nuevo: permisos por la umask del usuario ($2); sin sobrescribir, creación exclusiva con ln (o noclobber);
         // - anuncia (InformeEscritura, con idMarcas) las rutas del temporal y de la copia de seguridad en cuanto las crea y
         //   cada fase de la colocación, para que un error por tiempo agotado o cancelación diga qué pasó con el archivo.
-        private static string ConstruirComandoEscritura(string rutaEscapada, string payloadBase64, bool sudo, bool isSobrescribir, string idMarcas, byte[]? contenidoLeido = null)
+        private static string ConstruirComandoEscritura(string rutaEscapada, byte[] contenido, bool sudo, bool isSobrescribir, string idMarcas, byte[]? contenidoLeido = null)
         {
             const string ErrorYaExiste = """printf 'Error: el archivo ya existe: %s. Especifica overwrite=true para sobrescribirlo o append=true para anexar.\n' "$ruta" >&2; exit 1""";
 
@@ -2401,8 +2420,12 @@ namespace NativeSsh.Herramientas
                 modo_nuevo=$2
                 sha_leido=$3
                 cksum_leido=$4
+                tam_esperado=$5
+                sha_esperado=$6
+                cksum_esperado=$7
                 marca={{idMarcas}}
                 {{DefinicionAnunciar}}
+                {{DefinicionVerificarContenido}}
                 if [ -d "$ruta" ]; then
                   printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
                   exit 1
@@ -2443,6 +2466,8 @@ namespace NativeSsh.Herramientas
                 fi
                 anunciar_ruta tmp "$tmp"
                 base64 -d > "$tmp" || exit 1
+                verificar_contenido "$tmp" || exit {{CodigoContenidoNoIntegro}}
+                anunciar verificacion "$verificacion"
                 {{colocar}}
                 """);
             // La umask se toma del shell del usuario: bajo sudo sería la unión con la de sudoers.
@@ -2450,7 +2475,7 @@ namespace NativeSsh.Herramientas
             string huella = contenidoLeido is null
                 ? "'' ''"
                 : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
-            return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella}", payloadBase64);
+            return EnvolverEnBash(script, sudo, $"{rutaEscapada} {ModoPorUmask} {huella} {HuellaContenido(contenido)}", Convert.ToBase64String(contenido));
         }
 
         // acortar_nombre: deja en 'corto' el nombre del destino ('base') recortado a 242 bytes, para que el temporal
@@ -2511,6 +2536,44 @@ namespace NativeSsh.Herramientas
         // siendo ese archivo: se compara el sha256sum de su contenido (o, si no hay sha256sum, la salida de cksum: suma y
         // bytes); si cambió o ya no existe, no se escribe. Sin huella (ssh_write_file) no compara nada; sin ninguna de las
         // dos herramientas, no se puede comprobar y no se escribe.
+        // verificar_contenido ARCHIVO: que lo decodificado en ARCHIVO sea lo que mandó native_ssh, antes de colocarlo o
+        // anexarlo: el tamaño ($tam_esperado, con wc) y, con lo que haya en el servidor, el sha256 ($sha_esperado) o, sin
+        // sha256sum, el cksum POSIX ($cksum_esperado: "suma bytes"); sin ninguno de los dos, solo el tamaño. Deja en
+        // 'verificacion' cuál se comprobó (sha256, cksum o tamano) y devuelve 1 si no coincide. El contenido llega al script
+        // por la tubería de EnvolverEnBash desde el shell PTY, donde una función o un alias del usuario (p. ej. printf) puede
+        // desviarlo: sin esto, un archivo vacío se daba por escrito.
+        internal static readonly string DefinicionVerificarContenido = """
+            verificar_contenido() {
+              local tam suma
+              verificacion=
+              tam=$(command wc -c < "$1") || return 1
+              [ "$(( tam ))" = "$tam_esperado" ] || return 1
+              if command -v sha256sum >/dev/null 2>&1; then
+                suma=$(command sha256sum < "$1") || return 1
+                [ "${suma%% *}" = "$sha_esperado" ] || return 1
+                verificacion=sha256
+              elif command -v cksum >/dev/null 2>&1; then
+                suma=$(command cksum < "$1") || return 1
+                [ "$suma" = "$cksum_esperado" ] || return 1
+                verificacion=cksum
+              else
+                verificacion=tamano
+              fi
+              return 0
+            }
+            """.ReplaceLineEndings("\n");
+
+        // Código con el que salen las escrituras cuando lo decodificado no es lo que se mandó (verificar_contenido).
+        internal const int CodigoContenidoNoIntegro = 90;
+
+        // La huella de lo que se manda, para verificar_contenido: "<bytes> <sha256> '<cksum> <bytes>'".
+        private static string HuellaContenido(byte[] contenido) =>
+            $"{contenido.Length.ToString(CultureInfo.InvariantCulture)} {Convert.ToHexStringLower(SHA256.HashData(contenido))} '{CksumPosix.Calcular(contenido).ToString(CultureInfo.InvariantCulture)} {contenido.Length.ToString(CultureInfo.InvariantCulture)}'";
+
+        // El error de una escritura cuyo contenido no llegó íntegro al script: no se tocó el archivo.
+        internal static string MensajeContenidoNoIntegro(string ruta, int bytes, bool isAnexar) =>
+            $"Error: el contenido no llegó íntegro al script de escritura en el servidor (no tenía los {bytes} bytes enviados, o su sha256 no coincidía): algo en el shell de la sesión, como una función o un alias (p. ej. de printf o de command), alteró lo que se le pasó. {(isAnexar ? $"No se ha anexado nada a '{ruta}'." : $"No se ha modificado '{ruta}'.")} Revisa las funciones y alias del shell (p. ej. con ssh_reset_shell, o con sinPerfil=true si vienen del perfil) y vuelve a intentarlo.";
+
         private static readonly string DefinicionSinCambios = """
             sin_cambios() {
               [ -z "$sha_leido" ] && return 0

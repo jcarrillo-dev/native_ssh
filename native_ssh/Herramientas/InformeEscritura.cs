@@ -83,6 +83,10 @@ namespace NativeSsh.Herramientas
         // Ver el anuncio "candado".
         public CandadoEscrituraEnum Candado { get; init; }
 
+        // Lo que comprobó el script de lo que le llegó antes de colocarlo o anexarlo (anuncio "verificacion",
+        // HerramientasSsh.DefinicionVerificarContenido): sha256, cksum o tamano (solo el tamaño); null si no lo anunció.
+        public string? Verificacion { get; init; }
+
         public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
             string marca = $"{PrefijoMarca}{idMarcas}__ ";
@@ -93,6 +97,7 @@ namespace NativeSsh.Herramientas
             string? copia = null;
             string? capacidad = null;
             CandadoEscrituraEnum candado = CandadoEscrituraEnum.SinAnuncio;
+            string? verificacion = null;
             LimpiezaEscrituraEnum limpieza = LimpiezaEscrituraEnum.Desconocida;
             foreach (string linea in salida.Split('\n'))
             {
@@ -124,6 +129,9 @@ namespace NativeSsh.Herramientas
                     case "candado" when hasValor:
                         candado = LeerCandado(partes[1]);
                         break;
+                    case "verificacion" when hasValor:
+                        verificacion = partes[1];
+                        break;
                     case "fase" when hasValor:
                         fase = partes[1];
                         perdidos = partes.Length > 2 && partes[2] != "-" ? partes[2].Split(',') : [];
@@ -142,7 +150,7 @@ namespace NativeSsh.Herramientas
                 }
             }
 
-            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta, Candado = candado };
+            return new InformeEscritura(fase, perdidos, temporal, copia, capacidad, limpieza, texto.ToString().Trim()) { IsSalidaIncompleta = !isSalidaCompleta, Candado = candado, Verificacion = verificacion };
         }
 
         // Aviso que el bash del script ("ns", su $0) escribe en su stderr al recoger un hijo que murió por una señal: «ns: línea
@@ -171,7 +179,12 @@ namespace NativeSsh.Herramientas
         public bool IsAtomica => Fase == "colocado";
 
         // Lo que se añade al mensaje de una escritura terminada con éxito.
-        public string AvisoExito() => (IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase()) + AvisoSinCandado();
+        public string AvisoExito() => (IsSalidaIncompleta ? $"{AvisoExitoSegunFase()} {AvisoSalidaIncompleta}" : AvisoExitoSegunFase()) + AvisoSinCandado() + AvisoVerificacion();
+
+        // Lo que se añade al éxito si del contenido que llegó al servidor solo se pudo comprobar el tamaño.
+        public string AvisoVerificacion() => Verificacion == "tamano"
+            ? " Del contenido que llegó al servidor solo se comprobó el tamaño (el servidor no tiene sha256sum ni cksum): no se pudo comprobar que los bytes sean los enviados."
+            : string.Empty;
 
         private string AvisoExitoSegunFase() => Fase switch
         {

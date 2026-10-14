@@ -1493,8 +1493,10 @@ namespace NativeSsh.Test.Herramientas
             string sha = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(leidos));
             string[] escrituras = [.. _fabrica.Ultima!.Comandos.Where(c => c.Contains("base64 -d > \"$tmp\"", StringComparison.Ordinal))];
             _ = escrituras.Should().HaveCount(2);
-            _ = escrituras[0].Should().Contain($" {sha} '{CksumPosix.Calcular(leidos)} {leidos.Length}'\n)");
-            _ = escrituras[1].Should().Contain(" '' ''\n)");
+            byte[] x = "x"u8.ToArray();
+            string huellaX = $"1 {Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(x))} '{CksumPosix.Calcular(x)} 1'";
+            _ = escrituras[0].Should().Contain($" {sha} '{CksumPosix.Calcular(leidos)} {leidos.Length}' ");
+            _ = escrituras[1].Should().Contain($" '' '' {huellaX}\n)");
             _ = escrituras[0].Should().Contain("sin_cambios || exit 1");
         }
 
