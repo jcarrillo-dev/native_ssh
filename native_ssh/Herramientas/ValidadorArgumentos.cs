@@ -43,7 +43,7 @@ namespace NativeSsh.Herramientas
 
             foreach (string obligatorio in Obligatorios(esquema))
                 if (argumentos is null || !argumentos.ContainsKey(obligatorio))
-                    problemas.Add($"falta '{obligatorio}', que es obligatorio");
+                    problemas.Add($"falta '{obligatorio}', que es obligatorio{PistaFalta(herramienta, obligatorio)}");
 
             if (desconocidos.Count == 0 && problemas.Count == 0)
                 return null;
@@ -57,6 +57,16 @@ namespace NativeSsh.Herramientas
             DescribirAdmitidos(texto, esquema, propiedades);
             return texto.Append('.').ToString();
         }
+
+        // Para los textos cuyo valor vacío tiene un efecto propio (y cuyo null rechaza la herramienta diciéndolo), lo mismo
+        // cuando faltan: cómo pedir ese efecto a propósito.
+        private static string PistaFalta(string herramienta, string obligatorio) => (herramienta, obligatorio) switch
+        {
+            ("ssh_set_cwd", "ruta") => " (para restablecer el directorio de trabajo a $HOME a propósito, pasa ruta: \"\")",
+            ("ssh_write_file", "contenido") => " (para un archivo vacío, pasa contenido: \"\")",
+            ("ssh_input", "texto") => " (para enviar un Enter a secas, pasa texto: \"\" con enter: true)",
+            _ => string.Empty
+        };
 
         private static void ValidarValor(string ruta, JsonElement esquema, JsonElement valor, List<string> problemas)
         {

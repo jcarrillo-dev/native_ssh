@@ -221,7 +221,7 @@ namespace NativeSsh.Test.Integracion
             _ = isErrorFijar.Should().BeFalse(fijar);
             _ = (isErrorNull, isErrorSin).Should().Be((true, true));
             _ = conNull.Should().Contain("'ruta' llegó como null").And.Contain("ruta: \"\"");
-            _ = sinRuta.Should().Contain("ruta");
+            _ = sinRuta.Should().Contain("Falta 'ruta'").And.Contain("ruta: \"\"");
             _ = pwd.Should().Contain(_directorio);
             _ = isErrorVacia.Should().BeFalse(vacia);
             _ = vacia.Should().Contain("restablecido a $HOME");
