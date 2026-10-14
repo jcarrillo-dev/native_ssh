@@ -118,10 +118,10 @@ namespace NativeSsh.Test.Herramientas
             // Act
             string herramienta = Descripcion(Find);
             string parametro = Find.GetParameters().Single(p => p.Name == "cruzarMontajes").GetCustomAttribute<DescriptionAttribute>()!.Description;
-            bool porDefecto = (bool)Find.GetParameters().Single(p => p.Name == "cruzarMontajes").DefaultValue!;
+            bool isPorDefecto = (bool)Find.GetParameters().Single(p => p.Name == "cruzarMontajes").DefaultValue!;
 
             // Assert
-            _ = porDefecto.Should().BeTrue();
+            _ = isPorDefecto.Should().BeTrue();
             _ = herramienta.Should().Contain("Herramienta canónica y obligatoria")
                 .And.Contain("Nunca entra en los sistemas de ficheros virtuales del kernel")
                 .And.Contain("cruzarMontajes=false no sale del sistema de ficheros de la ruta")

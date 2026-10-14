@@ -40,10 +40,10 @@ namespace NativeSsh.Test.Integracion
             if (isSudoPrimera)
                 await SimularSudoAsync(herramientas);
             Task<ResultadoEscritura> primera = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: isSudoPrimera);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
             _ = await herramientas.DesconectarAsync(Destino);
             NativeSshException errorPrimera = (await FluentActions.Awaiting(() => primera).Should().ThrowAsync<NativeSshException>()).Which;
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
             if (operacion == "atomica")
                 File.Delete(Path.Combine(carpeta, "f2.txt"));
             // El shell es nuevo (sin el PATH del cat falso); el sudo simulado vuelve a poner su carpeta en el PATH.
@@ -59,9 +59,9 @@ namespace NativeSsh.Test.Integracion
                 "anexado" => herramientas.EscribirArchivoAsync(Destino, archivo, "SEGUNDA\n", append: true, sudo: isSudoSegunda),
                 _ => herramientas.EscribirArchivoAsync(Destino, archivo, "SEGUNDA\n", overwrite: true, sudo: isSudoSegunda)
             });
-            bool isRestaurandoTodavia = HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig.");
+            bool isRestaurandoTodavia = HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig.");
             string[] entradasTrasSegunda = Directory.GetFileSystemEntries(carpeta);
-            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(30));
+            await EsperasPrueba.EsperarHastaAsync(() => !HasProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(30));
             await EsperasPrueba.EsperarHastaAsync(() => IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
             string[] entradasTrasRestaurar = Directory.GetFileSystemEntries(carpeta);
             string trasRestaurar = await File.ReadAllTextAsync(archivo);
@@ -104,7 +104,7 @@ namespace NativeSsh.Test.Integracion
                 await SimularSudoAsync(herramientas);
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: isSudo);
             string catVivo = $"{Ruta("bin/cat")} -- {carpeta}/.f.txt.{(isRestaurando ? "orig" : "tmp")}.";
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos(catVivo), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos(catVivo), TimeSpan.FromSeconds(20));
             string cat = ProcesosFalsos(catVivo)[0];
             string script = Bash($"ps -o ppid= -p {cat}");
             bool isCandadoTomado = !IsCandadoLibre(archivo);
@@ -320,10 +320,10 @@ namespace NativeSsh.Test.Integracion
             await SustituirComandoAsync(herramientas, "cat", CatConRestauracionLenta(6));
             await SimularSudoAsync(herramientas);
             Task<ResultadoEscritura> primera = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: true);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
             _ = await herramientas.DesconectarAsync(Destino);
             _ = await Record.ExceptionAsync(() => primera);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
             File.Delete(Ruta("bin/cat"));
             if (isSudoAnexado)
                 await SimularSudoAsync(herramientas);
@@ -331,9 +331,9 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Exception? error = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADO\n", append: true, sudo: isSudoAnexado));
-            bool isRestaurandoTodavia = HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig.");
+            bool isRestaurandoTodavia = HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig.");
             string[] entradasTrasAnexado = Directory.GetFileSystemEntries(carpeta);
-            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(30));
+            await EsperasPrueba.EsperarHastaAsync(() => !HasProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(30));
             await EsperasPrueba.EsperarHastaAsync(() => IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
             ResultadoEscritura libre = await herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADO\n", append: true, sudo: isSudoAnexado);
             _ = Bash($"chmod 0600 '{archivo}'");

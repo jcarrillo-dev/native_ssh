@@ -46,7 +46,7 @@ namespace NativeSsh.Test.Comun
             return destinos;
         }
 
-        private static async Task<bool> EsSoloLecturaAsync(string configuracion, string destino)
+        private static async Task<bool> IsSoloLecturaAsync(string configuracion, string destino)
         {
             _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out string? error, ResolverFalso).Should().BeTrue(error);
             return await destinos.IsSoloLecturaAsync(Destino(destino), CancellationToken.None);
@@ -85,7 +85,7 @@ namespace NativeSsh.Test.Comun
         [InlineData("localhost:2222", "ana@127.0.0.1", false)]
         [InlineData("localhost", "ana@10.0.0.5", false)]
         public async Task Comparacion_PorUsuarioPuertoYServidor(string configuracion, string destino, bool isSoloLectura) =>
-            _ = (await EsSoloLecturaAsync(configuracion, destino)).Should().Be(isSoloLectura);
+            _ = (await IsSoloLecturaAsync(configuracion, destino)).Should().Be(isSoloLectura);
 
         // Un literal IPv6 con zona ('%1', '%lo') es la misma dirección para conectar: la zona no cuenta al comparar (ni para
         // el loopback), tampoco en ssh_status. Antes IPAddress.Equals/IsLoopback comparaban también el ScopeId y el destino
@@ -109,11 +109,11 @@ namespace NativeSsh.Test.Comun
 
             // Act
             ComprobacionSoloLectura comprobacion = await destinos.ComprobarAsync(Destino(destino), CancellationToken.None);
-            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino(destino));
+            bool? isSinRed = destinos.IsSoloLecturaSinRed(Destino(destino));
 
             // Assert
             _ = comprobacion.Should().Be(new ComprobacionSoloLectura(true, null), $"{destino} es la misma dirección que '{configuracion}'");
-            _ = sinRed.Should().BeTrue("ssh_status no debe decir que es escribible ni que no se sabe");
+            _ = isSinRed.Should().BeTrue("ssh_status no debe decir que es escribible ni que no se sabe");
         }
 
         [Theory]
@@ -184,12 +184,12 @@ namespace NativeSsh.Test.Comun
             _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, Contador).Should().BeTrue();
 
             // Act
-            bool primera = await destinos.IsSoloLecturaAsync(Destino("ana@otro.ejemplo"), CancellationToken.None);
-            bool segunda = await destinos.IsSoloLecturaAsync(Destino("ana@otro.ejemplo"), CancellationToken.None);
+            bool isPrimera = await destinos.IsSoloLecturaAsync(Destino("ana@otro.ejemplo"), CancellationToken.None);
+            bool isSegunda = await destinos.IsSoloLecturaAsync(Destino("ana@otro.ejemplo"), CancellationToken.None);
 
             // Assert
-            _ = primera.Should().BeFalse();
-            _ = segunda.Should().BeFalse();
+            _ = isPrimera.Should().BeFalse();
+            _ = isSegunda.Should().BeFalse();
             _ = consultas.Should().BeEquivalentTo(new Dictionary<string, int> { ["prod.ejemplo"] = 1, ["otro.ejemplo"] = 2 });
         }
 
@@ -208,12 +208,12 @@ namespace NativeSsh.Test.Comun
 
             // Act
             ComprobacionSoloLectura antes = await destinos.ComprobarAsync(Destino("root@cambia.ejemplo"), CancellationToken.None);
-            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@cambia.ejemplo"));
+            bool? isSinRed = destinos.IsSoloLecturaSinRed(Destino("root@cambia.ejemplo"));
             ComprobacionSoloLectura despues = await destinos.ComprobarAsync(Destino("root@cambia.ejemplo"), CancellationToken.None);
 
             // Assert
             _ = antes.Should().Be(new ComprobacionSoloLectura(false, null));
-            _ = sinRed.Should().BeNull("lo resuelto del destino no se recuerda: ssh_status no puede saberlo sin red");
+            _ = isSinRed.Should().BeNull("lo resuelto del destino no se recuerda: ssh_status no puede saberlo sin red");
             _ = despues.Should().Be(new ComprobacionSoloLectura(true, null));
         }
 
@@ -274,12 +274,12 @@ namespace NativeSsh.Test.Comun
 
             // Act
             ComprobacionSoloLectura primera = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
-            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            bool? isSinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
             ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
 
             // Assert
             _ = primera.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
-            _ = sinRed.Should().BeNull("no se recordó nada");
+            _ = isSinRed.Should().BeNull("no se recordó nada");
             _ = segunda.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = consultas.Should().Be(2, "se vuelve a resolver");
         }
@@ -537,22 +537,22 @@ namespace NativeSsh.Test.Comun
             _ = DestinosSoloLectura.TryParsear("prod.ejemplo, deploy@10.0.0.7:2222, localhost", out DestinosSoloLectura destinos, out _, ResolverFalso).Should().BeTrue();
 
             // Act
-            bool? porTexto = destinos.IsSoloLecturaSinRed(Destino("root@PROD.ejemplo"));
-            bool? otroUsuario = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.7:2222"));
-            bool? loopback = destinos.IsSoloLecturaSinRed(Destino("root@127.0.0.1"));
-            bool? sinResolver = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            bool? isPorTexto = destinos.IsSoloLecturaSinRed(Destino("root@PROD.ejemplo"));
+            bool? isOtroUsuario = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.7:2222"));
+            bool? isLoopback = destinos.IsSoloLecturaSinRed(Destino("root@127.0.0.1"));
+            bool? isSinResolver = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
             _ = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None);
-            bool? yaResuelto = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            bool? isYaResuelto = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
             _ = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None);
-            bool? resueltoDistinto = destinos.IsSoloLecturaSinRed(Destino("root@otro.ejemplo"));
+            bool? isResueltoDistinto = destinos.IsSoloLecturaSinRed(Destino("root@otro.ejemplo"));
 
             // Assert
-            _ = porTexto.Should().BeTrue();
-            _ = loopback.Should().BeTrue();
-            _ = sinResolver.Should().BeNull();
-            _ = otroUsuario.Should().BeNull("prod.ejemplo aún no se ha resuelto");
-            _ = yaResuelto.Should().BeTrue();
-            _ = resueltoDistinto.Should().BeNull("el destino se resuelve en cada llamada: no se recuerda");
+            _ = isPorTexto.Should().BeTrue();
+            _ = isLoopback.Should().BeTrue();
+            _ = isSinResolver.Should().BeNull();
+            _ = isOtroUsuario.Should().BeNull("prod.ejemplo aún no se ha resuelto");
+            _ = isYaResuelto.Should().BeTrue();
+            _ = isResueltoDistinto.Should().BeNull("el destino se resuelve en cada llamada: no se recuerda");
             _ = destinos.Entradas.ToArray().Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
         }
 
@@ -765,14 +765,14 @@ namespace NativeSsh.Test.Comun
             // Act
             ComprobacionSoloLectura conexion = await destinos.ComprobarConexionAsync(Destino("root@ventana.ejemplo"), new ExtremoConectado(IPAddress.Parse("10.0.0.5")), CancellationToken.None);
             ComprobacionSoloLectura otraConexion = await destinos.ComprobarConexionAsync(Destino("root@ventana.ejemplo"), new ExtremoConectado(IPAddress.Parse("10.0.0.9")), CancellationToken.None);
-            bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
-            bool? sinRedOtro = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.9"));
+            bool? isSinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.5"));
+            bool? isSinRedOtro = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.9"));
 
             // Assert
             _ = conexion.Should().Be(new ComprobacionSoloLectura(true, null, DireccionConectada: IPAddress.Parse("10.0.0.5")));
             _ = otraConexion.Should().Be(new ComprobacionSoloLectura(false, null));
-            _ = sinRed.Should().BeTrue();
-            _ = sinRedOtro.Should().BeFalse();
+            _ = isSinRed.Should().BeTrue();
+            _ = isSinRedOtro.Should().BeFalse();
         }
 
         // Entrada prod.ejemplo resuelta por familia con 'porFamilia' (y, si se da, un /etc/hosts con 'hosts'); el destino es una
@@ -924,13 +924,13 @@ namespace NativeSsh.Test.Comun
             {
                 // Act
                 ComprobacionSoloLectura primera = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
-                bool? sinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.6"));
+                bool? isSinRed = destinos.IsSoloLecturaSinRed(Destino("root@10.0.0.6"));
                 ComprobacionSoloLectura segunda = await destinos.ComprobarAsync(Destino("root@10.0.0.6"), CancellationToken.None);
 
                 // Assert
                 _ = primera.Should().Be(new ComprobacionSoloLectura(false, null));
                 _ = segunda.Should().Be(primera);
-                _ = sinRed.Should().Be(isFalloIpv6 ? null : false);
+                _ = isSinRed.Should().Be(isFalloIpv6 ? null : false);
                 _ = consultas.Should().Be(consultasEsperadas);
             }
             finally

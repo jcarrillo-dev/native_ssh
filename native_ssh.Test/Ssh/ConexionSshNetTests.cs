@@ -29,10 +29,10 @@ namespace NativeSsh.Test.Ssh
         public void IsCaidaDeConexion_SoloLosErroresDeSshNetQueSignificanQueLaConexionCayo(string caso, bool isCaida)
         {
             // Act
-            bool resultado = ConexionSshNet.IsCaidaDeConexion(Error(caso));
+            bool isDetectada = ConexionSshNet.IsCaidaDeConexion(Error(caso));
 
             // Assert
-            _ = resultado.Should().Be(isCaida);
+            _ = isDetectada.Should().Be(isCaida);
         }
     }
 }

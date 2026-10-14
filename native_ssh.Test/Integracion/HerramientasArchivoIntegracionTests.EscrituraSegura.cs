@@ -286,7 +286,7 @@ namespace NativeSsh.Test.Integracion
         // Comandos falsos vivos cuya línea de órdenes contiene 'texto' (el primero, el que arrancó antes).
         private string[] ProcesosFalsos(string texto) => _falsos.Vivos(o => o.Contains(texto, StringComparison.Ordinal));
 
-        private bool HayProcesos(string texto) => ProcesosFalsos(texto).Length > 0;
+        private bool HasProcesos(string texto) => ProcesosFalsos(texto).Length > 0;
 
         [GeneratedRegex("petición ([0-9a-f]{32})", RegexOptions.CultureInvariant)]
         private static partial Regex RegexIdPeticion();
@@ -418,7 +418,7 @@ namespace NativeSsh.Test.Integracion
                     ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original completo", "nuevo contenido")
                     : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
+            await EsperasPrueba.EsperarHastaAsync(() => !HasProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
             ResumenPeticion salida = EstadoDe(herramientas, IdDelError(error.Message));
             ResultadoComando siguiente = await herramientas.EjecutarAsync(Destino, "echo vivo", esperarSegundos: 10).ComoComando();
 
@@ -449,7 +449,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Exception? error = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, cancellationToken: cancelacion.Token));
-            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
+            await EsperasPrueba.EsperarHastaAsync(() => !HasProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
 
             // Assert
             _ = error.Should().BeAssignableTo(isPorToken ? typeof(OperationCanceledException) : typeof(NativeSshException));

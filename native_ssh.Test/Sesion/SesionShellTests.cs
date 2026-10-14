@@ -1027,13 +1027,13 @@ namespace NativeSsh.Test.Sesion
             Peticion primera = await EjecutarAsync(sesion, "hola");
 
             // Act
-            bool enviada = sesion.EnviarEntrada(primera, "entrada_tardia", isEnviarEnter: true);
+            bool isEnviada = sesion.EnviarEntrada(primera, "entrada_tardia", isEnviarEnter: true);
             Peticion segunda = Nueva("pregunta");
             sesion.Encolar(segunda);
             await EsperasPrueba.EsperarHastaAsync(() => Texto(segunda).Contains("¿Nombre?"));
 
             // Assert
-            _ = enviada.Should().BeFalse();
+            _ = isEnviada.Should().BeFalse();
             _ = segunda.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
             _ = Texto(segunda).Should().NotContain("entrada_tardia");
 

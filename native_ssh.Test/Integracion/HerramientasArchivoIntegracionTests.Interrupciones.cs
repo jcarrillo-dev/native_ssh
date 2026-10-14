@@ -41,7 +41,7 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: isSudo);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
             if (interrupcion == "desconexion")
                 _ = await herramientas.DesconectarAsync(Destino);
             else if (interrupcion == "caida")
@@ -85,10 +85,10 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
             string script = Bash($"ps -o ppid= -p {ProcesosFalsos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.")[0]}");
             _ = Bash($"kill -INT -- -\"$(ps -o pgid= -p {script} | tr -d ' ')\"");
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
             _ = Bash($"pkill -{senal} -P {script}; kill -{senal} {script}");
             NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
 
@@ -148,7 +148,7 @@ namespace NativeSsh.Test.Integracion
             Task<ResultadoEscritura> escritura = isReplace
                 ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original completo", "nuevo contenido")
                 : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
+            await EsperasPrueba.EsperarHastaAsync(() => HasProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
             string cat = ProcesosFalsos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.")[0];
             _ = Bash($"kill -KILL \"$(ps -o ppid= -p {cat})\"");
             NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
@@ -195,7 +195,7 @@ namespace NativeSsh.Test.Integracion
             else if (isToken)
                 await cancelacion.CancelAsync();
             Exception? error = await Record.ExceptionAsync(() => reemplazo);
-            await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/base64")), TimeSpan.FromSeconds(25));
+            await EsperasPrueba.EsperarHastaAsync(() => !HasProcesos(Ruta("bin/base64")), TimeSpan.FromSeconds(25));
 
             // Assert
             _ = error.Should().BeAssignableTo(isToken ? typeof(OperationCanceledException) : typeof(NativeSshException));
