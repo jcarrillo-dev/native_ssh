@@ -104,15 +104,17 @@ namespace NativeSsh.Protocolo
 
         private const string Final = $"native_ssh necesita bash y {MarcaMensaje}. No se ejecutó nada.";
 
-        // Shell PTY (petición 'shell') que mostró la línea enviada sin ejecutarla (IsEcoSinEjecutar); 'evidencia', la cabecera o
-        // el indicador de cmd o PowerShell si los escribió.
+        // Shell PTY (petición 'shell') cuyo terminal devolvió la línea enviada sin ejecutarla (IsEcoSinEjecutar); 'evidencia', la
+        // cabecera o el indicador de cmd o PowerShell si salieron. No se afirma qué shell de login es: lo normal es cmd o
+        // PowerShell, pero el mismo eco sale con Git Bash si su perfil pasa la entrada a un lector nativo de la consola (medido:
+        // 'cmd //c "set /p X="', 'Read-Host' de PowerShell). Lo observado basta: no se ejecutó nada y no está soportado.
         public static string DescribirShell(string destino, string evidencia) => evidencia.Length == 0
-            ? $"El shell de login del servidor {destino} es cmd/PowerShell (Windows: no ejecutó la línea enviada, la mostró sin ejecutarla); {Final}"
-            : $"El shell de login del servidor {destino} es cmd/PowerShell (Windows; respondió: «{evidencia}» y no ejecutó la línea enviada); {Final}";
+            ? $"El servidor {destino} es Windows (OpenSSH for Windows) y su terminal devolvió la línea de inicialización de native_ssh sin ejecutarla; {Final}"
+            : $"El servidor {destino} es Windows (OpenSSH for Windows) y su terminal devolvió la línea de inicialización de native_ssh sin ejecutarla (escribió «{evidencia}»); {Final}";
 
-        // Canal exec que contestó el shell de login de Windows sin arrancar bash.
+        // Canal exec en el que el programa no llegó a arrancar y respondió el shell de login de Windows (con CRLF).
         public static string DescribirExec(string destino, string linea) =>
-            $"El shell de login del servidor {destino} es cmd/PowerShell (Windows): no arrancó el bash del comando de native_ssh y respondió «{linea}»; {Final}";
+            $"El servidor {destino} es Windows (OpenSSH for Windows) y su shell de login no arrancó el bash del comando de native_ssh: respondió «{linea}»; {Final}";
 
         // Petición exec rechazada por el sshd de Windows con un comando de más de MaxCaracteresLineaOrdenesWindows (SesionShell).
         public static string DescribirPeticionRechazada(string destino, int longitud) =>

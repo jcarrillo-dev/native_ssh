@@ -629,7 +629,7 @@ namespace NativeSsh.Sesion
                 if (resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash)
                     throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: false));
 
-                // WS1: en un servidor Windows, cmd o PowerShell como shell de login rechazan el comando sin arrancar bash.
+                // WS1: en un servidor Windows, el shell de login (cmd o PowerShell) rechaza el comando sin arrancar bash.
                 return conexion.IsServidorWindows && RespuestaWindows.IsRespuestaExec(resultado.CodigoSalida, resultado.Salida.Span, resultado.Errores.Span)
                     ? throw new NativeSshException(RespuestaWindows.DescribirExec(Destino.Clave, RespuestaWindows.LineaRespuesta(Encoding.UTF8.GetString(resultado.Errores.Span))))
                     : resultado;

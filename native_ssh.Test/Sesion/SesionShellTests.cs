@@ -552,12 +552,14 @@ namespace NativeSsh.Test.Sesion
 
         // WS1: con cmd o PowerShell como shell de login, nada de lo enviado se ejecuta (bajo ConPTY un '\n' no es Intro) y antes
         // se esperaba el plazo de inicialización (15 s) para acabar culpando al perfil. Ahora falla en cuanto el terminal lo
-        // delata, con una sola conexión, sin proponer sinPerfil y diciendo que no se ejecutó nada.
+        // delata, con una sola conexión, sin proponer sinPerfil y diciendo que no se ejecutó nada. El mensaje dice lo que se
+        // observa y no nombra el shell de login: el mismo eco sale con Git Bash si su perfil pasa la entrada a un lector nativo
+        // de la consola ('cmd //c "set /p X="', 'Read-Host' de PowerShell).
         [Theory]
         [InlineData(TerminalCmd, "Microsoft Windows [Version 10.0.26100.1742]")]
         [InlineData(TerminalPowerShell, "Windows PowerShell")]
         [InlineData(TerminalIndicador, "PS C:\\Users\\nsws>")]
-        public async Task ServidorWindowsConCmdOPowerShell_ShellDeLogin_FallaEnSeguidaYDiceQueNoEsBash(string terminal, string evidencia)
+        public async Task ServidorWindowsConCmdOPowerShell_ShellDeLogin_FallaEnSeguidaYDiceLoQueSeObserva(string terminal, string evidencia)
         {
             // Arrange
             FabricaFalsa fabrica = new(Guion) { IsServidorWindows = true, RespuestaConPty = terminal };
@@ -573,7 +575,8 @@ namespace NativeSsh.Test.Sesion
             _ = primero.Estado.Should().Be(EstadoPeticionEnum.Error);
             _ = primero.IsComandoEnviado.Should().BeFalse();
             _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(2));
-            _ = primero.Aviso.Should().Contain("cmd/PowerShell").And.Contain($"«{evidencia}»").And.Contain("No se ejecutó nada")
+            _ = primero.Aviso.Should().Contain("es Windows (OpenSSH for Windows)").And.Contain("devolvió la línea de inicialización de native_ssh sin ejecutarla")
+                .And.Contain($"«{evidencia}»").And.Contain("No se ejecutó nada").And.NotContain("cmd/PowerShell").And.NotContain("shell de login")
                 .And.NotContain("perfil").And.NotContain("sinPerfil");
             _ = RespuestaWindows.IsMensajeWindows(primero.Aviso).Should().BeTrue();
             _ = segundo.Aviso.Should().Be(primero.Aviso);
@@ -647,7 +650,8 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
-            _ = peticion.Aviso.Should().Contain("cmd/PowerShell").And.Contain("no ejecutó la línea enviada").And.Contain("No se ejecutó nada");
+            _ = peticion.Aviso.Should().Contain("es Windows (OpenSSH for Windows)").And.Contain("devolvió la línea de inicialización de native_ssh sin ejecutarla")
+                .And.Contain("No se ejecutó nada").And.NotContain("cmd/PowerShell").And.NotContain("shell de login");
         }
 
         // Un terminal de Windows que no muestra nada tras el prefijo de ConPTY: se espera el plazo como antes, pero el error
@@ -689,7 +693,7 @@ namespace NativeSsh.Test.Sesion
         [InlineData("3>& was unexpected at this time.\r\n", "3>& was unexpected at this time.")]
         [InlineData("La línea de comandos es demasiado larga.\r\n", "La línea de comandos es demasiado larga.")]
         [InlineData("At line:1 char:693\r\n+ ... </dev/nul ...\r\nThe '<' operator is reserved for future use.\r\n    + FullyQualifiedErrorId : RedirectionNotSupported\r\n", "FullyQualifiedErrorId : RedirectionNotSupported")]
-        public async Task ServidorWindows_CanalExecSinArrancarBash_ElErrorDiceQueEsCmdOPowerShell(string errores, string linea)
+        public async Task ServidorWindows_CanalExecSinArrancarBash_ElErrorDiceLoQueRespondioSinNombrarElShell(string errores, string linea)
         {
             // Arrange
             FabricaFalsa fabrica = new(c => c.EndsWith("\nleer", StringComparison.Ordinal) ? new("", 1, BytesErrores: Encoding.UTF8.GetBytes(errores)) : Guion(c)) { IsServidorWindows = true };
@@ -700,7 +704,8 @@ namespace NativeSsh.Test.Sesion
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain("cmd/PowerShell").And.Contain($"«{linea}»").And.Contain("No se ejecutó nada");
+            _ = error.Message.Should().Contain("es Windows (OpenSSH for Windows)").And.Contain("no arrancó el bash del comando de native_ssh").And.Contain($"«{linea}»")
+                .And.Contain("No se ejecutó nada").And.NotContain("cmd/PowerShell");
             _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().BeTrue();
         }
 
