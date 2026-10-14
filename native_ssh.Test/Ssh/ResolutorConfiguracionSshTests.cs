@@ -524,4 +524,73 @@ namespace NativeSsh.Test.Ssh
             _ = log.Entradas.Should().NotContain(e => e.Mensaje.Contains(Canario, StringComparison.Ordinal));
         }
     }
+
+    // Ocupa el grupo de hilos del proceso entero: sin paralelismo con otras pruebas.
+    [CollectionDefinition(Nombre, DisableParallelization = true)]
+    public sealed class ColeccionGrupoDeHilos
+    {
+        public const string Nombre = "grupo de hilos ocupado";
+    }
+
+    // Con el grupo de hilos ocupado (muchas llamadas a la vez en una máquina cargada), 'ssh -G' termina enseguida y su salida
+    // se lee igual: la lectura no espera turno en el grupo. Antes, la lectura de un ssh ya terminado esperaba más que el plazo
+    // de lectura y la resolución fallaba con «no se pudo leer entera» (en Linux y en Windows con esta prueba; en la suite de
+    // Windows, sin ocupar el grupo a propósito). Con el ssh del sistema, en los dos.
+    [Collection(ColeccionGrupoDeHilos.Nombre)]
+    public sealed class ResolutorConfiguracionSshGrupoDeHilosTests : IDisposable
+    {
+        private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfg_hilos_{Guid.NewGuid():N}")).FullName;
+        private readonly LoggerPrueba _log = new();
+
+        public void Dispose()
+        {
+            _log.Dispose();
+            Directory.Delete(_directorio, recursive: true);
+        }
+
+        [Fact]
+        public void GrupoDeHilosOcupado_LeeLaConfiguracionATiempo()
+        {
+            // Arrange
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, "Host web\n  HostName 127.0.0.1\n  User deploy\n  Port 2222\n");
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh
+            {
+                UsuarioPorDefecto = Environment.UserName,
+                ConfiguracionSsh = configuracion,
+                BinarioSsh = "ssh",
+                TimeoutConfiguracionSsh = TimeSpan.FromSeconds(5)
+            }, new LoggerDe<ResolutorConfiguracionSsh>(_log));
+            _ = DestinoSsh.TryParse("web", Environment.UserName, out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
+            // Sin Dispose: los trabajos que el grupo aún no haya empezado esperan en él después de la prueba (ya liberado).
+            ManualResetEventSlim liberar = new();
+            // Más trabajos bloqueados que hilos tiene el grupo, con cola de sobra para que los que añada al verse sin hilos
+            // (unos pocos por segundo) no lleguen a lo que se encole detrás durante la prueba.
+            int bloqueos = ThreadPool.ThreadCount + 512;
+            for (int i = 0; i < bloqueos; i++)
+                _ = ThreadPool.UnsafeQueueUserWorkItem(static evento => evento.Wait(), liberar, preferLocal: false);
+            Stopwatch reloj = Stopwatch.StartNew();
+            string? clave = null;
+            Exception? error = null;
+
+            // Act
+            try
+            {
+                clave = resolutor.Resolver(destino, isUsuario, isPuerto).Clave;
+            }
+            catch (NativeSshException ex)
+            {
+                error = ex;
+            }
+            finally
+            {
+                liberar.Set();
+            }
+
+            // Assert
+            _ = error.Should().BeNull();
+            _ = clave.Should().Be("deploy@127.0.0.1:2222");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+        }
+    }
 }

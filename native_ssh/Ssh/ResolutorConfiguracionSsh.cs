@@ -369,8 +369,8 @@ namespace NativeSsh.Ssh
 
             using Process ejecucion = proceso ?? throw new NativeSshException($"No se pudo ejecutar '{opciones.BinarioSsh}' para leer la configuración de ssh de '{servidor}'.");
             ejecucion.StandardInput.Close();
-            Task<string> lectura = ejecucion.StandardOutput.ReadToEndAsync();
-            Task<string> errores = ejecucion.StandardError.ReadToEndAsync();
+            Task<string> lectura = Leer(ejecucion.StandardOutput);
+            Task<string> errores = Leer(ejecucion.StandardError);
             bool isTerminado = ejecucion.WaitForExit(opciones.TimeoutConfiguracionSsh);
             if (!isTerminado)
                 Matar(ejecucion, isGrupoPropio);
@@ -402,6 +402,15 @@ namespace NativeSsh.Ssh
             salida = lectura.Result;
             return true;
         }
+
+        // Cada salida se lee en un hilo propio, no en el grupo de hilos: quien llama espera bloqueado (WaitForExit y WaitAll),
+        // y con ReadToEndAsync la lectura dependía de que el grupo le diera turno. En Windows las tuberías de Process son
+        // síncronas y cada lectura es un trabajo del grupo; en una suite cargada, la de un ssh ya terminado no se hacía hasta
+        // que el hilo que esperaba (del grupo) dejaba de esperar, y la resolución fallaba con «no se pudo leer entera» aunque
+        // nada retuviera la salida. Con el grupo ocupado pasa lo mismo en Linux. Si algo que lanzó ssh retiene la salida más
+        // allá de Matar, el hilo sigue bloqueado hasta que la cierre (antes, en Windows, era un hilo del grupo).
+        private static Task<string> Leer(StreamReader lector) =>
+            Task.Factory.StartNew(lector.ReadToEnd, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
         private void MarcarSinPrograma()
         {
