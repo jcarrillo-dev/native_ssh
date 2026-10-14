@@ -72,6 +72,26 @@ namespace NativeSsh.Test.Integracion
             _ = puerto.Should().Be(esperado);
         }
 
+        // El sshd en español (antes en X+400, dentro del rango X400–X999 del que PuertosPruebas.Libre() elige los sshd
+        // manuales: una prueba que eligiera ese puerto mientras la colección lo usaba no arrancaba su sshd, «Address already
+        // in use») queda fuera de ese rango y no coincide con el de ningún otro sshd de colección ni con el HTTP de los humos.
+        [Theory]
+        [InlineData(22022)]
+        [InlineData(26072)]
+        public void PuertoIdioma_FueraDelRangoManualYDeLosDemasPuertosDerivados(int puertoPruebas)
+        {
+            // Arrange
+            int bloque = puertoPruebas / 1000 * 1000;
+            int[] otros = [puertoPruebas, puertoPruebas + 100, puertoPruebas + PuertosPruebas.DesplazamientoLento, puertoPruebas + PuertosPruebas.DesplazamientoRestringido];
+
+            // Act
+            int puerto = int.Parse(SshdLocalIdioma.Puerto(null, puertoPruebas), CultureInfo.InvariantCulture);
+
+            // Assert
+            _ = puerto.Should().BeInRange(bloque, bloque + 399);
+            _ = otros.Should().NotContain(puerto);
+        }
+
         [Fact]
         [Trait("Categoria", "SoloLinux")]
         public void PuertoLibre_EsDelRangoManualDelBloqueDeLasPruebasYNoEsEfimero()

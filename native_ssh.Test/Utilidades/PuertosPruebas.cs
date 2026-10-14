@@ -13,10 +13,12 @@ namespace NativeSsh.Test.Utilidades
     {
         public const int PuertoPruebasPorDefecto = 22022;
 
-        // Los sshd de las colecciones con login lento y restringido, si no se fijan con su variable, escuchan en X222 y
-        // X322 del bloque de la ejecución: fuera del rango manual y del X122 del HTTP de los humos y de las sondas.
+        // Los sshd de las colecciones con login lento, restringido y en español, si no se fijan con su variable, escuchan en
+        // X222, X322 y X072 del bloque de la ejecución: fuera del rango manual y del X122 del HTTP de los humos y de las
+        // sondas. El de español estuvo en X422, dentro del rango manual: chocaba con el puerto que Libre() daba a otra prueba.
         public const int DesplazamientoLento = 200;
         public const int DesplazamientoRestringido = 300;
+        public const int DesplazamientoIdioma = 50;
 
         private const int InicioManuales = 400;
         private const int FinManuales = 999;

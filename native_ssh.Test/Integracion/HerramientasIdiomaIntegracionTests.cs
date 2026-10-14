@@ -1,5 +1,4 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Globalization;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
@@ -11,15 +10,17 @@ namespace NativeSsh.Test.Integracion
 {
     // sshd cuyas sesiones (el shell y también los canales exec) tienen el servidor en español (SetEnv): los mensajes de
     // stat y de las demás órdenes salen traducidos y 'sort' ordena con las reglas del español. Puerto: el de
-    // NATIVE_SSH_PUERTO_PRUEBAS (22022 por defecto) más 400.
+    // NATIVE_SSH_PUERTO_PRUEBAS_IDIOMA o, sin ella, el de NATIVE_SSH_PUERTO_PRUEBAS (22022 por defecto) más 50, fuera del
+    // rango de los sshd manuales (PuertosPruebas).
     public sealed class SshdLocalIdioma : IDisposable
     {
         public SshdLocal Sshd { get; } = new(Puerto(), ".estado-idioma", null, "SetEnv LANG=es_ES.UTF-8 LANGUAGE=es_ES:es");
 
         public void Dispose() => Sshd.Dispose();
 
-        private static string Puerto() =>
-            (int.Parse(Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS") ?? "22022", CultureInfo.InvariantCulture) + 400).ToString(CultureInfo.InvariantCulture);
+        private static string Puerto() => Puerto(Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_PRUEBAS_IDIOMA"), PuertosPruebas.PuertoPruebas);
+
+        internal static string Puerto(string? variable, int puertoPruebas) => PuertosPruebas.PuertoColeccion(variable, puertoPruebas, PuertosPruebas.DesplazamientoIdioma);
     }
 
     [CollectionDefinition(Nombre)]
