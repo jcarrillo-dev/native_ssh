@@ -4,6 +4,7 @@ using System.Linq;
 using System.Runtime.Versioning;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Protocol;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
@@ -133,7 +134,7 @@ namespace NativeSsh.Test.Integracion
             Task operacion;
             string id;
             string entrada;
-            ResultadoComando cancelado;
+            CallToolResult cancelado;
             bool isDesconectado;
             TimeSpan duracionDesconexion;
 
@@ -147,7 +148,7 @@ namespace NativeSsh.Test.Integracion
                 await EsperasPrueba.EsperarHastaAsync(() => sesion.SegundosEnEscritura >= SesionShell.UmbralAvisoEscrituraBloqueada.TotalSeconds, TimeSpan.FromSeconds(15));
                 id = sesion.PeticionActual!.IdTexto;
                 entrada = await MensajeDeFalloAsync(herramientas.EnviarEntradaAsync(id, "x", esperarSegundos: 0).ComoComando().WaitAsync(EsperaMaximaCongelado));
-                cancelado = await herramientas.CancelarAsync(id).ComoComando().WaitAsync(EsperaMaximaCongelado);
+                cancelado = await herramientas.CancelarAsync(id).WaitAsync(EsperaMaximaCongelado);
                 Stopwatch reloj = Stopwatch.StartNew();
                 Task<ResultadoAccion> desconexion = herramientas.DesconectarAsync(destino);
                 isDesconectado = await Task.WhenAny(desconexion, Task.Delay(EsperaMaximaCongelado)) == desconexion;
@@ -164,8 +165,17 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = entrada.Should().Contain("no se envió").And.Contain("ssh_disconnect");
-            _ = cancelado.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
-            _ = cancelado.Aviso.Should().Contain("ssh_cancel no puede interrumpir").And.Contain("ssh_disconnect");
+            // La escritura de ssh_write_file es una petición interna: ssh_cancel la cancela y da su aviso, sin su salida.
+            if (isEscrituraArchivo)
+                _ = string.Concat(cancelado.Content.OfType<TextContentBlock>().Select(b => b.Text)).Should().Contain("interna de ssh_write_file").And.Contain("estado: Ejecutando")
+                    .And.Contain("ssh_cancel no puede interrumpir").And.Contain("ssh_disconnect");
+            else
+            {
+                ResultadoComando comando = ResultadoDosBloques.Decodificar(cancelado);
+                _ = comando.Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
+                _ = comando.Aviso.Should().Contain("ssh_cancel no puede interrumpir").And.Contain("ssh_disconnect");
+            }
+
             _ = isDesconectado.Should().BeTrue();
             _ = duracionDesconexion.Should().BeLessThan(TimeSpan.FromSeconds(8));
             _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Cancelado);

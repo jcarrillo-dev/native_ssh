@@ -33,18 +33,18 @@ namespace NativeSsh.Sesion
         private readonly IResolutorDestino? _resolutor = UsarConfiguracionEnSoloLectura(opciones.SoloLectura, resolutor);
         private bool _isDispuesto;
 
-        // isHerramienta: la petición de una herramienta de archivo o de ssh_set_cwd (Peticion.IsHerramienta).
+        // herramienta: la herramienta de archivo o ssh_set_cwd que la lanza por el shell (Peticion.Herramienta), o null.
         // isGuardarSalida: ssh_exec con guardarSalida=true (Peticion.MarcaGuardado, SalidaGuardada).
         // herramientaEscritura: la herramienta de escritura que lo lanza (Peticion.HerramientaEscritura), o null.
         // descripcion y grupo: lo que se muestra de la petición y la llamada a la que pertenece (Peticion.Descripcion, Grupo).
-        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, bool isHerramienta = false, bool isGuardarSalida = false, string? herramientaEscritura = null, string? descripcion = null, Guid? grupo = null)
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, string? herramienta = null, bool isGuardarSalida = false, string? herramientaEscritura = null, string? descripcion = null, Guid? grupo = null)
         {
             if (string.IsNullOrWhiteSpace(comando))
                 throw new NativeSshException("El comando está vacío.");
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj, isGuardarSalida ? IdentidadShell.NuevoTestigo() : null) { IsHerramienta = isHerramienta, HerramientaEscritura = herramientaEscritura, Descripcion = descripcion ?? comando, Grupo = grupo };
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj, isGuardarSalida ? IdentidadShell.NuevoTestigo() : null) { Herramienta = herramienta, HerramientaEscritura = herramientaEscritura, Descripcion = descripcion ?? comando, Grupo = grupo };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;

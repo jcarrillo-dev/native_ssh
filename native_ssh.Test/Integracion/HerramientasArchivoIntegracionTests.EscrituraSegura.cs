@@ -299,6 +299,9 @@ namespace NativeSsh.Test.Integracion
         // Id de la petición que nombra el error de una escritura interrumpida.
         private static string IdDelError(string mensaje) => RegexIdPeticion().Match(mensaje).Groups[1].Value;
 
+        // La petición interna de la escritura en ssh_status (ssh_output no da la de una petición interna).
+        private static ResumenPeticion EstadoDe(HerramientasSsh herramientas, string id) => herramientas.Estado().Peticiones.Single(p => p.Id == id);
+
         // La escritura en el sitio trunca el destino: si falla a mitad, el original se restaura desde la copia de seguridad
         // hecha antes (mktemp 0600 en su directorio) y no queda ninguna de las dos copias.
         [Theory]
@@ -379,7 +382,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Interrumpida a mitad (Ctrl+C al vencer el timeout), la trampa de salida restaura el original desde la copia y lo
-        // dice el error, con el id de la petición para ssh_output.
+        // dice el error, con el id de la petición.
         [Fact]
         public async Task EscrituraEnElSitio_InterrumpidaAMitadPorElTimeout_RestauraElOriginalYLoDice()
         {
@@ -391,7 +394,7 @@ namespace NativeSsh.Test.Integracion
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando();
+            ResumenPeticion salida = EstadoDe(herramientas, IdDelError(error.Message));
 
             // Assert: el script restaura y limpia al salir, tras el Ctrl+C.
             _ = error.Message.Should().Contain("TiempoAgotado").And.Contain($"Se restauró el contenido original de '{archivo}'").And.NotContain("__NS_");
@@ -421,7 +424,7 @@ namespace NativeSsh.Test.Integracion
                     : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true))
                 .Should().ThrowAsync<NativeSshException>()).Which;
             await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/cat")), TimeSpan.FromSeconds(15));
-            ResultadoComando salida = await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando();
+            ResumenPeticion salida = EstadoDe(herramientas, IdDelError(error.Message));
             ResultadoComando siguiente = await herramientas.EjecutarAsync(Destino, "echo vivo", esperarSegundos: 10).ComoComando();
 
             // Assert
@@ -458,7 +461,7 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
             _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
             _ = error!.Message.Should().Contain(isPorToken ? "Cancelado" : "TiempoAgotado").And.Contain("no se pudo restaurar").And.Contain($"'{copia}'").And.Contain($"'{nuevo}'").And.NotContain("__NS_");
-            _ = (await herramientas.LeerSalidaAsync(IdDelError(error.Message)).ComoComando()).Estado.Should().Be(isPorToken ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
+            _ = EstadoDe(herramientas, IdDelError(error.Message)).Estado.Should().Be(isPorToken ? EstadoPeticionEnum.Cancelado : EstadoPeticionEnum.TiempoAgotado);
         }
 
         // Al escribir en un archivo, el núcleo le quita los bits setuid y setgid (este, si el grupo tiene ejecución): la

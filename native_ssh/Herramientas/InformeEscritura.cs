@@ -70,7 +70,7 @@ namespace NativeSsh.Herramientas
     {
         internal const string PrefijoMarca = "__NS_W_";
 
-        // Lo que se incluye de la salida del script en un error que ya da el id de la petición (la completa, con ssh_output).
+        // Lo que se incluye de la salida del script en un error (ninguna herramienta da la de una petición interna).
         private const int MaxCaracteresSalidaEnError = 2000;
 
         // Si la salida se descartó en parte, se conserva su final: el anuncio final del script, si llegó, sigue ahí.
@@ -193,7 +193,7 @@ namespace NativeSsh.Herramientas
                 return (Texto.Length == 0 ? porDefecto : Texto) + (Fase == "restaurado" ? AvisoPerdidos : string.Empty);
 
             string final = IsFinalRecibido ? "; el script anunció que terminó, pero se descartó el principio de su salida" : " sin que el script confirmara cómo terminó";
-            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)}{final} (petición {idPeticion}, su salida completa con ssh_output). ");
+            StringBuilder mensaje = new($"La escritura en '{ruta}' terminó con el código {codigo}{DescribirSenal(codigo)}{final} (petición {idPeticion}). ");
             _ = mensaje.Append(DescribirArchivo(ruta, isScriptTerminado: true)).Append(Restos);
             if (IsSalidaIncompleta)
                 _ = mensaje.Append(' ').Append(AvisoSalidaIncompleta);
@@ -215,7 +215,7 @@ namespace NativeSsh.Herramientas
         // y terminó sin enviarse, en la cola o mientras se abría el shell; ver HerramientasSsh.IsInterrumpidaSinEnviar).
         public string MensajeInterrupcion(string ruta, EstadoPeticionEnum estado, string idPeticion, string? aviso, bool isEjecutada)
         {
-            StringBuilder mensaje = new($"La escritura en '{ruta}' no terminó (estado: {estado}; petición {idPeticion}, su salida completa con ssh_output). ");
+            StringBuilder mensaje = new($"La escritura en '{ruta}' no terminó (estado: {estado}; petición {idPeticion}). ");
             if (!isEjecutada)
                 _ = mensaje.Append($"No se llegó a ejecutar: '{ruta}' no se ha modificado.");
             else

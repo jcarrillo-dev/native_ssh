@@ -137,7 +137,7 @@ namespace NativeSsh.Test.Herramientas
             string mensaje = InformeEscritura.Leer(salida, Id).MensajeInterrupcion("/srv/app/f.txt", EstadoPeticionEnum.TiempoAgotado, Id, null, isEjecutada: true);
 
             // Assert
-            _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}, su salida completa con ssh_output). {esperado}");
+            _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' no terminó (estado: TiempoAgotado; petición {Id}). {esperado}");
         }
 
         // Si la salida superó el máximo por petición y se descartó su principio, pueden faltar anuncios: no se afirma que no se
@@ -166,7 +166,7 @@ namespace NativeSsh.Test.Herramientas
             if (isFinal)
             {
                 _ = interrupcion.Should().NotContain("no confirmó");
-                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición {Id}, su salida completa con ssh_output). Se restauró el contenido original de 'f.txt'. {descartada}");
+                _ = error.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1; el script anunció que terminó, pero se descartó el principio de su salida (petición {Id}). Se restauró el contenido original de 'f.txt'. {descartada}");
             }
             else
             {
@@ -258,7 +258,7 @@ namespace NativeSsh.Test.Herramientas
             string mensaje = InformeEscritura.Leer(salida, Id).MensajeError("Fallo al escribir (código 137).", "/srv/app/f.txt", 137, Id);
 
             // Assert
-            _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' terminó con el código 137 (SIGKILL: p. ej. el OOM killer o un kill -9) sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). {esperado}");
+            _ = mensaje.Should().Be($"La escritura en '/srv/app/f.txt' terminó con el código 137 (SIGKILL: p. ej. el OOM killer o un kill -9) sin que el script confirmara cómo terminó (petición {Id}). {esperado}");
         }
 
         // Lo que el script llegó a escribir en su salida (sin los anuncios) se añade al final.
@@ -269,7 +269,7 @@ namespace NativeSsh.Test.Herramientas
             string mensaje = InformeEscritura.Leer(RutasCreadas + Anuncios("fase escribiendo") + "cat: error de escritura\n", Id).MensajeError("x", "f.txt", 1, Id);
 
             // Assert
-            _ = mensaje.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}, su salida completa con ssh_output). 'f.txt' puede haber quedado a medio escribir").And.EndWith(" Salida del script: cat: error de escritura");
+            _ = mensaje.Should().StartWith($"La escritura en 'f.txt' terminó con el código 1 sin que el script confirmara cómo terminó (petición {Id}). 'f.txt' puede haber quedado a medio escribir").And.EndWith(" Salida del script: cat: error de escritura");
         }
 
         // Interrumpida escribiendo o restaurando en el sitio, el script sigue en marcha: con el candado tomado, el error dice

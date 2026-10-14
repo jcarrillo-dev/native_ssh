@@ -420,7 +420,7 @@ namespace NativeSsh.Test.Herramientas
             Peticion export = _gestor.ListarPeticiones().Single(p => p.Comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal));
 
             // Act
-            _ = await _herramientas.CancelarAsync(export.IdTexto).ComoComando();
+            _ = await _herramientas.CancelarAsync(export.IdTexto);
             NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
