@@ -248,6 +248,7 @@ namespace NativeSsh.Test.Integracion
         [InlineData("ssh_exec")]
         [InlineData("ssh_exec siguiente")]
         [InlineData("ssh_exec tras ssh_reset_shell")]
+        [InlineData("ssh_exec sin perfil")]
         [InlineData("ssh_write_file")]
         [InlineData("ssh_replace_file_content")]
         [InlineData("ssh_set_cwd")]
@@ -281,6 +282,12 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine($"{herramienta}: {mensaje}");
             _ = mensaje.Should().MatchRegex(MensajeSinBash(), "el LLM debe saber que el servidor no tiene bash y que native_ssh lo necesita");
             _ = mensaje.Should().NotContain("ssh_stat").And.NotContain("ssh_read_file", "sin bash esas herramientas tampoco funcionan");
+            // Quién respondió: el shell de login (petición 'shell') o el del usuario con -c (canal exec de las lecturas y shell
+            // sin perfil, que es una petición 'exec': ash -c, sin login).
+            bool isPorElLogin = herramienta is "ssh_exec" or "ssh_exec siguiente" or "ssh_exec tras ssh_reset_shell" or "ssh_write_file" or "ssh_replace_file_content" or "ssh_set_cwd";
+            _ = isPorElLogin
+                ? mensaje.Should().Contain("el shell de login respondió")
+                : mensaje.Should().Contain("con -c y sin login").And.NotContain("shell de login");
         }
 
         // El texto que recibe el LLM de cada herramienta: el aviso de un comando en Error o el mensaje de la excepción.
@@ -297,6 +304,9 @@ namespace NativeSsh.Test.Integracion
                     _ = await herramientas.EjecutarAsync(Destino, "echo primero").ComoComando();
                     _ = herramientas.ReiniciarShell(Destino);
                     return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo tras_reinicio").ComoComando());
+                case "ssh_exec sin perfil":
+                    _ = herramientas.ReiniciarShell(Destino, sinPerfil: true);
+                    return await TextoAsync(() => herramientas.EjecutarAsync(Destino, "echo sin_perfil").ComoComando());
                 case "ssh_write_file":
                     return await TextoAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo\n", overwrite: true));
                 case "ssh_replace_file_content":
