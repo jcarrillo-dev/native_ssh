@@ -68,8 +68,10 @@ namespace NativeSsh.Comun
     // Linux cada resolución va en un proceso hijo que se mata al vencer el plazo (ResolutorEnProceso: no queda ningún hilo
     // bloqueado; los hijos que no mueren con SIGKILL se cuentan contra un tope y se muestran en ssh_status); en Windows,
     // en hilos del grupo, y una familia que sigue en curso se espera en lugar de lanzarla otra vez (FamiliasEnCurso):
-    // DnsQuery_W se rinde solo (medido con el TCP/53 colgado, 20 entradas y 30 llamadas: hilos de 18 a 42-50, y el nombre
-    // vuelve a resolverse de 11 a 14 s después de que el DNS responda).
+    // DnsQuery_W se rinde solo (medido en Windows 11 con el TCP/53 colgado, 20 entradas y 10 llamadas: hilos hasta 59, y la
+    // primera llamada sin rechazo 8,6 s después de que el DNS responda, con una llamada cada 5 s). Medido en Linux con un
+    // TCP/53 que no cierra nunca: la primera llamada tras recuperarse el DNS resuelve (0,1 s), sin hijos vivos tras cada
+    // llamada y con 68 hilos como mucho.
     public sealed class DestinosSoloLectura
     {
         public const string Variable = "NATIVE_SSH_SOLO_LECTURA";

@@ -285,7 +285,7 @@ namespace NativeSsh.Comun
     // lanzara la familia otra vez, los hilos bloqueados crecerían con cada reintento (medido sin esto en Windows: unos 135
     // con 20 entradas y 30 llamadas). Mientras una siga sin terminar, la misma familia del mismo nombre espera esa en lugar
     // de lanzar otra: como mucho un hilo bloqueado por nombre y familia, aunque se reintente. Al terminar deja de estar en
-    // curso y la siguiente se lanza (en Windows, medido con el TCP/53 colgado: el nombre vuelve a resolverse de 11 a 14 s
+    // curso y la siguiente se lanza (en Windows, medido con el TCP/53 colgado: la primera llamada sin rechazo llega 8,6 s
     // después de que el DNS responda). Con un resolver que no se rindiera nunca (getaddrinfo de glibc con un TCP/53 que no
     // cierra) el nombre no volvería a resolverse: por eso Linux no lo usa.
     internal sealed class FamiliasEnCurso
