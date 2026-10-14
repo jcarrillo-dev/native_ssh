@@ -316,13 +316,19 @@ namespace NativeSsh.Herramientas
         [Description("Envía texto a la entrada estándar del comando en ejecución (respuesta a una pregunta, contraseña de sudo, 'y/n'...). Devuelve la salida producida desde el envío. Para contraseñas, tokens y cualquier otro secreto usa SIEMPRE secreto=true. Envía la entrada SOLO cuando el comando la esté pidiendo (mira su salida con ssh_output) y UNA línea por llamada. Lo que el comando no lea (líneas de más, Ctrl+D, o texto enviado antes de que lo pida o cuando ya no lee) NUNCA se ejecuta como orden: se DESCARTA entero y la respuesta del SIGUIENTE ssh_exec de este shell dice exactamente cuántas líneas se descartaron. Esa entrada se pierde: si el comando la necesitaba, vuelve a lanzarlo y envíala cuando la pida. NUNCA envíes Ctrl+C ('\\u0003'), Ctrl+\\ ('\\u001c') ni Ctrl+Z ('\\u001a'): se rechazan sin enviar nada; para interrumpir el comando usa SIEMPRE ssh_cancel.")]
         public async Task<CallToolResult> EnviarEntradaAsync(
             [Description("Id del comando en ejecución.")] string id,
-            [Description("Texto a enviar.")] string texto,
+            [Description("Texto a enviar. Obligatorio: para un Enter a secas, \"\" con enter=true.")] string texto,
             [Description("Añadir un salto de línea al final.")] bool enter = true,
             [Description("Cuánto esperar a que termine después de enviar. Entre 0 y 120.")] int esperarSegundos = 2,
             [Description("Pon true SIEMPRE que el texto sea una contraseña, un token o cualquier otro secreto: native_ssh no lo escribe en sus logs y, si aparece en la salida del comando (eco del terminal o un programa que lo imprime tal cual), lo sustituye por asteriscos en esta respuesta y en ssh_output. Solo reconoce el texto exacto: un eco transformado (p. ej. un programa que lo reescribe o lo recodifica) no se oculta, y si el programa intercala secuencias de control dentro del eco del secreto (colores o movimientos ANSI, BEL, retornos de carro), esas secuencias se quitan de la respuesta y el secreto puede llegar entero y limpio: no le pidas a un programa que muestre un secreto. Con secreto=true el texto debe ser UNA sola línea de caracteres imprimibles, SIN NINGÚN carácter de control (ni '\\n' o '\\r' en medio, ni tabulador, Escape, Ctrl+C, Ctrl+D...): si no, se rechaza sin enviar nada.")] bool secreto = false,
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            // El SDK enlaza un null tal cual (ValidadorArgumentos.IsDelTipo) y enviar "nada" con enter=true es un Enter a secas,
+            // que acepta el valor por defecto de una pregunta como «[S/n]»: un null no responde nada, hay que pedirlo con "".
+            // Antes que nada más (con secreto=true, el texto se codifica para registrarlo).
+            if (texto is null)
+                throw new NativeSshException("'texto' llegó como null: no se ha enviado nada y el comando sigue esperando. Para enviar un Enter a secas (p. ej. aceptar el valor por defecto de una pregunta), pasa texto: \"\" con enter: true.");
+
             // Un secreto con caracteres de control: lo que el comando no lea se descarta sin ejecutarse
             // (ConstructorComando.EscribirCola), pero un programa que lee línea a línea podría tomar una segunda línea como otra
             // respuesta y mostrarla o registrarla fuera del enmascarado, y un control que el terminal interpreta (Ctrl+C, Ctrl+U,

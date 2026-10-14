@@ -173,6 +173,32 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("importante\n");
         }
 
+        // 'texto' null en ssh_input: el SDK lo enlazaba y se enviaba un Enter a secas, que acepta el valor por defecto de una
+        // pregunta como «[S/n]». Se rechaza sin enviar nada (el comando sigue esperando); un Enter a secas a propósito es
+        // texto "" con enter=true (medido aquí: llega como una respuesta vacía).
+        [Fact]
+        public async Task TextoNullEnInput_SeRechazaSinEnviarNada()
+        {
+            // Arrange
+            const string Pregunta = "read -r -p 'Borrar todo? [S/n] ' r; echo \"respuesta=[$r]\"";
+            (_, string exec) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = Pregunta, ["esperarSegundos"] = 1 });
+            string id = JsonNode.Parse(exec[..(exec.IndexOf('}', StringComparison.Ordinal) + 1)])!["id"]!.GetValue<string>();
+
+            // Act
+            (bool isErrorNull, string conNull) = await _cliente.LlamarAsync("ssh_input", new JsonObject { ["id"] = id, ["texto"] = null, ["esperarSegundos"] = 1 });
+            (bool isErrorNullEnter, string conNullEnter) = await _cliente.LlamarAsync("ssh_input", new JsonObject { ["id"] = id, ["texto"] = null, ["enter"] = true, ["esperarSegundos"] = 1 });
+            (_, string salida) = await _cliente.LlamarAsync("ssh_output", new JsonObject { ["id"] = id });
+            (bool isErrorVacio, string vacio) = await _cliente.LlamarAsync("ssh_input", new JsonObject { ["id"] = id, ["texto"] = "", ["enter"] = true, ["esperarSegundos"] = 2 });
+
+            // Assert
+            _ = (isErrorNull, isErrorNullEnter).Should().Be((true, true));
+            _ = conNull.Should().Contain("'texto' llegó como null").And.Contain("texto: \"\"").And.Contain("enter: true");
+            _ = conNullEnter.Should().Contain("'texto' llegó como null");
+            _ = salida.Should().Contain("\"estado\":\"Ejecutando\"").And.NotContain("respuesta=");
+            _ = isErrorVacio.Should().BeFalse(vacio);
+            _ = vacio.Should().Contain("respuesta=[]");
+        }
+
         [Fact]
         public async Task NullEnUnTextoObligatorio_LoDecideLaHerramienta()
         {
