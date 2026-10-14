@@ -4,9 +4,10 @@ using System.Text.RegularExpressions;
 namespace NativeSsh.Protocolo
 {
     // Reconoce la respuesta de un servidor sin bash: lo que escribe el shell de login (o, sin perfil, el del usuario con -c)
-    // al fallar el 'exec bash' de la inicialización del shell de ssh_exec (busybox ash: "-ash: exec: line 1: bash: not found"; dash: "sh: 1: exec: bash:
-    // not found"; zsh: "zsh: command not found: bash") o el stderr de un canal exec cuyo 'bash -c' no se encuentra ("ash:
-    // bash: not found", o el 'timeout' de coreutils: "timeout: failed to run command 'bash': No such file or directory").
+    // al fallar el 'exec bash' de la inicialización del shell de ssh_exec (busybox ash: "-ash: exec: line 1: bash: not
+    // found"; dash: "sh: 1: exec: bash: not found"; zsh: "zsh: command not found: bash") o el stderr de un canal exec cuyo
+    // 'bash -c' no se encuentra ("ash: bash: not found", o el 'timeout' de coreutils: "timeout: failed to run command
+    // 'bash': No such file or directory").
     // No se guarda en ninguna caché: cada fallo se reconoce por lo que respondió el servidor esa vez.
     public static partial class RespuestaSinBash
     {
