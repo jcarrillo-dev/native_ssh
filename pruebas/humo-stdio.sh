@@ -163,7 +163,7 @@ def principal():
     _, texto_pwd = llamar("ssh_exec", {"destino": destino, "comando": "pwd"})
     comprobar(leer_json(texto_pwd, "ssh_exec")["salida"].strip() == directorio, f"ssh_exec en el cwd fijado: {texto_pwd}")
 
-    es_error, texto_cwd_reset = llamar("ssh_set_cwd", {"destino": destino, "ruta": None})
+    es_error, texto_cwd_reset = llamar("ssh_set_cwd", {"destino": destino, "ruta": ""})
     datos_cwd_reset = leer_json(texto_cwd_reset, "ssh_set_cwd")
     comprobar(not es_error and "directorio" not in datos_cwd_reset and "restablecido" in datos_cwd_reset["mensaje"], f"ssh_set_cwd reset: {texto_cwd_reset}")
 
