@@ -222,7 +222,7 @@ namespace NativeSsh.Protocolo
         public const int CodigoLimpiezaParcial = 1;
         public const int CodigoLimpiezaSinComprobar = 2;
 
-        public static string ScriptLimpieza(IEnumerable<Guid> idsShell, string prefijo)
+        public static string ScriptLimpieza(ReadOnlySpan<Guid> idsShell, string prefijo)
         {
             StringBuilder ids = new();
             foreach (Guid id in idsShell)

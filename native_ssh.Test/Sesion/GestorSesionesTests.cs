@@ -60,7 +60,7 @@ namespace NativeSsh.Test.Sesion
             await Task.WhenAll(a.Finalizacion, b.Finalizacion).WaitAsync(Limite);
 
             // Assert
-            _ = gestor.ListarSesiones().Count.Should().Be(2);
+            _ = gestor.ListarSesiones().Length.Should().Be(2);
             _ = fabrica.Conexiones.Should().Be(2);
         }
 

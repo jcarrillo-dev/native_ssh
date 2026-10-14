@@ -1,4 +1,5 @@
 using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using NativeSsh.Comun;
 using NativeSsh.Protocolo;
 
@@ -89,19 +90,20 @@ namespace NativeSsh.Sesion
                 return _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion.Extremo;
         }
 
-        public IReadOnlyList<SesionShell> ListarSesiones()
+        public SesionShell[] ListarSesiones()
         {
             lock (_candado)
             {
-                List<SesionShell> sesiones = new(_sesiones.Count);
+                SesionShell[] sesiones = new SesionShell[_sesiones.Count];
+                int i = 0;
                 foreach (EntradaSesion entrada in _sesiones.Values)
-                    sesiones.Add(entrada.Sesion);
+                    sesiones[i++] = entrada.Sesion;
                 return sesiones;
             }
         }
 
         // Alias con los que se abrió o usó la sesión (vacío si solo se usó con el servidor real).
-        public IReadOnlyList<string> AliasDe(SesionShell sesion)
+        public string[] AliasDe(SesionShell sesion)
         {
             lock (_candado)
                 return _sesiones.TryGetValue(sesion.Destino.ClaveSesion, out EntradaSesion? entrada) && ReferenceEquals(entrada.Sesion, sesion) ? [.. entrada.Alias] : [];
@@ -114,15 +116,15 @@ namespace NativeSsh.Sesion
         //   que nunca se usó (root@prod, prod:2223) alcance la sesión de otro (deploy@prod);
         // - el servidor real (usuario@servidor:puerto, o un nombre que la configuración no cambia): todas las de ese
         //   usuario@servidor:puerto, sean de las claves que sean.
-        public IReadOnlyList<SesionShell> Seleccionar(DestinoSsh destino)
+        public SesionShell[] Seleccionar(DestinoSsh destino)
         {
             lock (_candado)
             {
-                List<SesionShell> sesiones = [];
+                using PooledListRef<SesionShell> sesiones = new();
                 foreach (EntradaSesion entrada in _sesiones.Values)
                     if (IsSeleccionada(destino, entrada))
                         sesiones.Add(entrada.Sesion);
-                return sesiones;
+                return sesiones.Span.ToArray();
             }
         }
 
@@ -134,7 +136,7 @@ namespace NativeSsh.Sesion
         // ese alias para otro usuario o puerto (su User o Port cambió con la sesión viva, o se pidió otro), una pista por
         // usuario y puerto, y las que llegaron al tope de alias sin guardar este, una por usuario@servidor:puerto. Cada pista
         // lleva lo que cerraría de verdad cada destino con que se podría cerrar (EvaluarCandidato). Vacía si no es un alias.
-        public IReadOnlyList<PistaAlias> BuscarPistasAlias(DestinoSsh destino)
+        public PistaAlias[] BuscarPistasAlias(DestinoSsh destino)
         {
             if (destino.Alias is not { } alias)
                 return [];
@@ -155,20 +157,28 @@ namespace NativeSsh.Sesion
                         Agrupar(enElTope, entrada.Sesion, v => string.Equals(v.Destino.Clave, deLaSesion.Clave, StringComparison.Ordinal));
                 }
 
-            // Fuera del candado: cada candidato pasa por ParsearDestino (ssh -G, hasta su plazo).
-            List<PistaAlias> pistas = new(otros.Count + enElTope.Count);
+            // Fuera del candado: cada candidato pasa por ParsearDestino (ssh -G, hasta su plazo). Los grupos (List, porque
+            // crecen a la vez y una lista rentada no puede ir dentro de otra) pasan a arrays al guardarse en su pista.
+            PistaAlias[] pistas = new PistaAlias[otros.Count + enElTope.Count];
+            int i = 0;
             string servidorAlias = ConCorchetes(alias);
-            foreach (List<SesionShell> viejas in otros)
+            foreach (List<SesionShell> grupo in otros)
             {
+                SesionShell[] viejas = [.. grupo];
                 DestinoSsh primera = viejas[0].Destino;
-                List<CandidatoCierre> candidatos = [EvaluarCandidato($"{primera.Usuario}@{servidorAlias}:{primera.Puerto}", viejas)];
-                if (viejas.TrueForAll(v => string.Equals(v.Destino.Clave, primera.Clave, StringComparison.Ordinal)))
-                    candidatos.Add(EvaluarCandidato(TextoServidorReal(primera), viejas));
-                pistas.Add(new PistaAlias(IsEnElTope: false, viejas, candidatos));
+                CandidatoCierre porAlias = EvaluarCandidato($"{primera.Usuario}@{servidorAlias}:{primera.Puerto}", viejas);
+                CandidatoCierre[] candidatos = grupo.TrueForAll(v => string.Equals(v.Destino.Clave, primera.Clave, StringComparison.Ordinal))
+                    ? [porAlias, EvaluarCandidato(TextoServidorReal(primera), viejas)]
+                    : [porAlias];
+                pistas[i++] = new PistaAlias(IsEnElTope: false, viejas, candidatos);
             }
 
-            foreach (List<SesionShell> viejas in enElTope)
-                pistas.Add(new PistaAlias(IsEnElTope: true, viejas, [EvaluarCandidato(TextoServidorReal(viejas[0].Destino), viejas)]));
+            foreach (List<SesionShell> grupo in enElTope)
+            {
+                SesionShell[] viejas = [.. grupo];
+                pistas[i++] = new PistaAlias(IsEnElTope: true, viejas, [EvaluarCandidato(TextoServidorReal(viejas[0].Destino), viejas)]);
+            }
+
             return pistas;
         }
 
@@ -191,7 +201,7 @@ namespace NativeSsh.Sesion
 
         // Lo que cerraría ssh_disconnect con ese texto, con su mismo criterio (ParsearDestino y Seleccionar): si alcanza todas
         // las viejas y qué más cierra; Error si el destino se rechaza (p. ej. un User de la configuración con '@' o '+').
-        private CandidatoCierre EvaluarCandidato(string texto, List<SesionShell> viejas)
+        private CandidatoCierre EvaluarCandidato(string texto, SesionShell[] viejas)
         {
             DestinoSsh candidato;
             try
@@ -203,40 +213,45 @@ namespace NativeSsh.Sesion
                 return new CandidatoCierre(texto, ex.Message, IsAlcanzaTodas: false, []);
             }
 
-            List<SesionShell> cerraria = [.. Seleccionar(candidato)];
-            List<SesionShell> ademas = [];
+            SesionShell[] cerraria = Seleccionar(candidato);
+            using PooledListRef<SesionShell> ademas = new();
             foreach (SesionShell sesion in cerraria)
-                if (!viejas.Contains(sesion))
+                if (Array.IndexOf(viejas, sesion) < 0)
                     ademas.Add(sesion);
-            bool isAlcanzaTodas = viejas.TrueForAll(cerraria.Contains);
-            return new CandidatoCierre(texto, null, isAlcanzaTodas, ademas);
+            bool isAlcanzaTodas = Array.TrueForAll(viejas, v => Array.IndexOf(cerraria, v) >= 0);
+            return new CandidatoCierre(texto, null, isAlcanzaTodas, ademas.Span.ToArray());
         }
 
-        public IReadOnlyList<Peticion> ListarPeticiones() => registro.ListarRecientes();
+        public Peticion[] ListarPeticiones() => registro.ListarRecientes();
 
         // Cierra las sesiones a las que se refiere el destino (criterio de Seleccionar) y devuelve los destinos que cerró.
-        public Task<IReadOnlyList<DestinoSsh>> DesconectarAsync(string destinoTexto) => DesconectarAsync(ParsearDestino(destinoTexto));
+        public Task<DestinoSsh[]> DesconectarAsync(string destinoTexto) => DesconectarAsync(ParsearDestino(destinoTexto));
 
-        public async Task<IReadOnlyList<DestinoSsh>> DesconectarAsync(DestinoSsh destino)
+        public async Task<DestinoSsh[]> DesconectarAsync(DestinoSsh destino)
         {
-            IReadOnlyList<SesionCerrada> cerradas = await DesconectarConLimpiezaAsync(destino).ConfigureAwait(false);
-            List<DestinoSsh> destinos = new(cerradas.Count);
-            foreach (SesionCerrada cerrada in cerradas)
-                destinos.Add(cerrada.Destino);
+            SesionCerrada[] cerradas = await DesconectarConLimpiezaAsync(destino).ConfigureAwait(false);
+            DestinoSsh[] destinos = new DestinoSsh[cerradas.Length];
+            for (int i = 0; i < cerradas.Length; i++)
+                destinos[i] = cerradas[i].Destino;
 
             return destinos;
         }
 
         // Como DesconectarAsync, y de cada sesión cerrada, los archivos de guardarSalida creados en ella, los que contó el
         // servidor al borrarlos y si la limpieza falló.
-        public async Task<IReadOnlyList<SesionCerrada>> DesconectarConLimpiezaAsync(DestinoSsh destino)
+        public async Task<SesionCerrada[]> DesconectarConLimpiezaAsync(DestinoSsh destino)
         {
-            List<SesionShell> cerradas = [];
+            // Las elegidas se reúnen en una lista rentada bajo el candado y pasan a un array antes del primer await.
+            SesionShell[] cerradas;
             lock (_candado)
             {
-                foreach (EntradaSesion entrada in _sesiones.Values)
-                    if (IsSeleccionada(destino, entrada))
-                        cerradas.Add(entrada.Sesion);
+                using (PooledListRef<SesionShell> elegidas = new())
+                {
+                    foreach (EntradaSesion entrada in _sesiones.Values)
+                        if (IsSeleccionada(destino, entrada))
+                            elegidas.Add(entrada.Sesion);
+                    cerradas = elegidas.Span.ToArray();
+                }
 
                 foreach (SesionShell sesion in cerradas)
                 {
@@ -245,26 +260,27 @@ namespace NativeSsh.Sesion
                 }
             }
 
-            List<SesionCerrada> resultado = new(cerradas.Count);
-            foreach (SesionShell sesion in cerradas)
+            SesionCerrada[] resultado = new SesionCerrada[cerradas.Length];
+            for (int i = 0; i < cerradas.Length; i++)
             {
+                SesionShell sesion = cerradas[i];
                 await sesion.DisposeAsync().ConfigureAwait(false);
-                resultado.Add(new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado));
+                resultado[i] = new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado);
             }
 
             return resultado;
         }
 
         // Las sesiones del mismo usuario@servidor:puerto que el destino con otras claves (las que no usaría su próximo comando).
-        public IReadOnlyList<SesionShell> OtrasSesionesDelDestino(DestinoSsh destino)
+        public SesionShell[] OtrasSesionesDelDestino(DestinoSsh destino)
         {
-            List<SesionShell> otras = [];
+            using PooledListRef<SesionShell> otras = new();
             lock (_candado)
                 foreach (EntradaSesion entrada in _sesiones.Values)
                     if (string.Equals(entrada.Sesion.Destino.Clave, destino.Clave, StringComparison.Ordinal) && !string.Equals(entrada.Sesion.Destino.ClaveSesion, destino.ClaveSesion, StringComparison.Ordinal))
                         otras.Add(entrada.Sesion);
 
-            return otras;
+            return otras.Span.ToArray();
         }
 
         public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto, isSinPerfil: false, out _) is not null;
@@ -410,7 +426,7 @@ namespace NativeSsh.Sesion
 
     // Ver GestorSesiones.BuscarPistasAlias. Viejas: las sesiones del alias que la pista nombra (no vacía); IsEnElTope: las
     // de una sesión llena que no guardó el alias (si no, abiertas con él para otro usuario o puerto).
-    public sealed record PistaAlias(bool IsEnElTope, IReadOnlyList<SesionShell> Viejas, IReadOnlyList<CandidatoCierre> Candidatos)
+    public sealed record PistaAlias(bool IsEnElTope, SesionShell[] Viejas, CandidatoCierre[] Candidatos)
     {
         // El primer candidato que cierra justo las viejas, si hay alguno.
         public CandidatoCierre? Exacto
@@ -428,8 +444,8 @@ namespace NativeSsh.Sesion
 
     // Un destino con que cerrar las sesiones viejas de una pista: Error (rechazado por ParsearDestino) o, si no, si alcanza
     // todas y qué más cerraría (Ademas).
-    public sealed record CandidatoCierre(string Texto, string? Error, bool IsAlcanzaTodas, IReadOnlyList<SesionShell> Ademas)
+    public sealed record CandidatoCierre(string Texto, string? Error, bool IsAlcanzaTodas, SesionShell[] Ademas)
     {
-        public bool IsExacto => IsAlcanzaTodas && Ademas.Count == 0;
+        public bool IsExacto => IsAlcanzaTodas && Ademas.Length == 0;
     }
 }

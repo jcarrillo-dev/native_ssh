@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Comun
 {
@@ -29,7 +30,7 @@ namespace NativeSsh.Comun
                 ? ResolverDestinoConNetAsync(nombre, plazo)
                 : ResolutorEnProceso.DelSistema.ResolverAsync(nombre, AddressFamily.Unspecified, plazo);
 
-        static partial void AnadirSinTerminarDelSistema(List<string> sinTerminar) => ResolutorEnProceso.DelSistema.AnadirSinTerminar(sinTerminar);
+        static partial void AnadirSinTerminarDelSistema(scoped ref PooledListRef<string> sinTerminar) => ResolutorEnProceso.DelSistema.AnadirSinTerminar(ref sinTerminar);
 
         static partial void EjecutarModoInternoDelSistema(string[] args, ref int codigo, ref bool isHecho)
         {

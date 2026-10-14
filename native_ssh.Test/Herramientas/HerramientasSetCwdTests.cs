@@ -245,7 +245,7 @@ namespace NativeSsh.Test.Herramientas
             // Act
             _ = await _herramientas.DesconectarAsync("servidor");
             NativeSshException error = (await FluentActions.Awaiting(() => fijar).Should().ThrowAsync<NativeSshException>()).Which;
-            bool hasSesionTrasElError = _gestor.ListarSesiones().Count > 0;
+            bool hasSesionTrasElError = _gestor.ListarSesiones().Length > 0;
             _ = await _herramientas.EjecutarAsync("servidor", "hola").ComoComando();
 
             // Assert

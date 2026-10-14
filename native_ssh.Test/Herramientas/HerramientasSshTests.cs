@@ -594,8 +594,8 @@ namespace NativeSsh.Test.Herramientas
             ResultadoEstado filtrado = _herramientas.Estado("dos");
 
             // Assert
-            _ = todo.Sesiones.Count.Should().Be(2);
-            _ = todo.Peticiones.Count.Should().Be(2);
+            _ = todo.Sesiones.Length.Should().Be(2);
+            _ = todo.Peticiones.Length.Should().Be(2);
             _ = filtrado.Sesiones.Should().ContainSingle().Subject.Destino.Should().Be("ana@dos:22");
             _ = filtrado.Peticiones.Should().ContainSingle().Subject.Comando.Should().Be("b");
         }
@@ -613,9 +613,9 @@ namespace NativeSsh.Test.Herramientas
             ResultadoEstado filtrado = _herramientas.Estado("uno");
 
             // Assert
-            _ = todo.Peticiones.Count.Should().Be(20);
+            _ = todo.Peticiones.Length.Should().Be(20);
             _ = todo.Peticiones[0].Comando.Should().Be("otro");
-            _ = filtrado.Peticiones.Count.Should().Be(20);
+            _ = filtrado.Peticiones.Length.Should().Be(20);
             _ = filtrado.Peticiones[0].Comando.Should().Be("cmd24");
             _ = filtrado.Peticiones[^1].Comando.Should().Be("cmd5");
         }
@@ -673,7 +673,7 @@ namespace NativeSsh.Test.Herramientas
             ResultadoEstado estado = _herramientas.Estado();
 
             // Assert
-            _ = estado.Peticiones.Count.Should().Be(15);
+            _ = estado.Peticiones.Length.Should().Be(15);
             _ = estado.Peticiones.Select(p => p.Comando).TakeLast(5).Should().Equal("cmd4", "cmd3", "cmd2", "cmd1", "cmd0");
         }
 

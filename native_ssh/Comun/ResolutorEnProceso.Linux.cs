@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Comun
 {
@@ -127,7 +128,7 @@ namespace NativeSsh.Comun
         }
 
         // Los hijos que no se pudieron terminar y siguen vivos, para ssh_status (los que ya terminaron se quitan).
-        public void AnadirSinTerminar(List<string> textos)
+        public void AnadirSinTerminar(scoped ref PooledListRef<string> textos)
         {
             lock (_candado)
             {

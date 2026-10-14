@@ -16,14 +16,14 @@ namespace NativeSsh.Comun
 
         public bool IsHttp => Modo != ModoTransporteEnum.Stdio;
 
-        public static bool TryParsear(IReadOnlyList<string> args, string? puertoEntorno, out OpcionesArranque opciones, out string? error)
+        public static bool TryParsear(ReadOnlySpan<string> args, string? puertoEntorno, out OpcionesArranque opciones, out string? error)
         {
             ModoTransporteEnum modo = ModoTransporteEnum.Stdio;
             string? puertoTexto = puertoEntorno is { Length: > 0 } ? puertoEntorno : null;
             opciones = default;
             error = null;
 
-            for (int i = 0; i < args.Count; i++)
+            for (int i = 0; i < args.Length; i++)
             {
                 switch (args[i])
                 {
@@ -36,7 +36,7 @@ namespace NativeSsh.Comun
                     case "--http" or "--http-unsecure":
                         error = "Usa solo uno de --http o --http-unsecure.";
                         return false;
-                    case "--puerto" when i + 1 < args.Count:
+                    case "--puerto" when i + 1 < args.Length:
                         puertoTexto = args[++i];
                         break;
                     default:

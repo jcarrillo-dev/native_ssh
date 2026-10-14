@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 namespace NativeSsh.Comun
 {
@@ -24,7 +25,7 @@ namespace NativeSsh.Comun
 
     // Una sesión que ssh_status quiere marcar (DestinosSoloLectura.IsSoloLecturaSinRed): su destino, su conexión y los textos
     // pedidos que cuentan (null: el alias del propio destino).
-    public readonly record struct ConsultaSinRed(DestinoSsh Destino, ExtremoConectado? Conectado, IReadOnlyCollection<string>? Alias);
+    public readonly record struct ConsultaSinRed(DestinoSsh Destino, ExtremoConectado? Conectado, string[]? Alias);
 
     // Destinos en modo solo lectura (CI6): configuración local de native_ssh (variable NATIVE_SSH_SOLO_LECTURA), que ninguna
     // herramienta puede cambiar. Para ellos se rechazan ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content antes de
@@ -98,7 +99,7 @@ namespace NativeSsh.Comun
         private readonly Entrada[] _entradas;
         private readonly Func<string, CancellationToken, Task<ResultadoResolucion>> _resolverDestino;
         private readonly Func<string, CancellationToken, Task<DireccionesPorFamilia>> _resolverEntrada;
-        private readonly Func<IReadOnlyList<string>> _sinTerminar;
+        private readonly Func<string[]> _sinTerminar;
         private readonly string? _rutaHosts;
         private volatile Func<string?, string, int?, string?>? _hostNameDeEntrada;
 
@@ -108,25 +109,27 @@ namespace NativeSsh.Comun
         // entradas; sin resolvers propios, el del sistema (/etc/hosts; en Windows, %SystemRoot%\System32\drivers\etc\hosts).
         // resolverDestino y sinTerminar: los de resolver con incidencias (las pruebas que simulan un proceso de resolución que
         // no se pudo terminar); sin ellos, los del sistema (ResolucionPorFamilia).
-        private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver, Func<string, CancellationToken, Task<DireccionesPorFamilia>>? resolverEntrada, string? rutaHosts, Func<string, CancellationToken, Task<ResultadoResolucion>>? resolverDestino = null, Func<IReadOnlyList<string>>? sinTerminar = null)
+        private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver, Func<string, CancellationToken, Task<DireccionesPorFamilia>>? resolverEntrada, string? rutaHosts, Func<string, CancellationToken, Task<ResultadoResolucion>>? resolverDestino = null, Func<string[]>? sinTerminar = null)
         {
             _entradas = entradas;
             _resolverDestino = resolverDestino ?? (resolver is null ? ResolucionPorFamilia.ResolverDestinoAsync : async (nombre, token) => new ResultadoResolucion(await resolver(nombre, token).ConfigureAwait(false)));
             _resolverEntrada = resolverEntrada ?? (resolver is null ? ResolucionPorFamilia.ResolverAsync : (nombre, token) => RepartirAsync(resolver, nombre, token));
             _rutaHosts = rutaHosts ?? (resolver is null && resolverEntrada is null && resolverDestino is null ? ResolucionPorFamilia.RutaHostsDelSistema : null);
             _sinTerminar = sinTerminar ?? ResolucionPorFamilia.ResolucionesSinTerminar;
-            Entradas = Array.ConvertAll(entradas, e => e.Texto);
+            _textosEntradas = Array.ConvertAll(entradas, e => e.Texto);
         }
 
         public static DestinosSoloLectura Ninguno { get; } = new([], null, null, null);
 
         // Las resoluciones que no se pudieron terminar y siguen vivas (ssh_status); vacía si no hay.
-        public IReadOnlyList<string> ResolucionesSinTerminar() => _sinTerminar();
+        public string[] ResolucionesSinTerminar() => _sinTerminar();
 
         public bool IsVacio => _entradas.Length == 0;
 
-        // Las entradas tal como se configuraron (ssh_status las muestra).
-        public IReadOnlyList<string> Entradas { get; }
+        // Las entradas tal como se configuraron (ssh_status las muestra). De solo lectura: nadie de fuera cambia el array.
+        public ReadOnlySpan<string> Entradas => _textosEntradas;
+
+        private readonly string[] _textosEntradas;
 
         private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno, string? Incidencia = null);
 
@@ -171,7 +174,7 @@ namespace NativeSsh.Comun
 
         // Para las pruebas: con resolvers que dan incidencias (destino y entradas) y las resoluciones sin terminar que
         // mostraría ssh_status.
-        internal static DestinosSoloLectura ConResolutores(string texto, Func<string, CancellationToken, Task<ResultadoResolucion>> resolverDestino, Func<string, CancellationToken, Task<DireccionesPorFamilia>> resolverEntrada, Func<IReadOnlyList<string>> sinTerminar)
+        internal static DestinosSoloLectura ConResolutores(string texto, Func<string, CancellationToken, Task<ResultadoResolucion>> resolverDestino, Func<string, CancellationToken, Task<DireccionesPorFamilia>> resolverEntrada, Func<string[]> sinTerminar)
         {
             _ = TryParsear(texto, out DestinosSoloLectura leidos, out string? error);
             return error is null ? new DestinosSoloLectura(leidos._entradas, null, resolverEntrada, null, resolverDestino, sinTerminar) : throw new ArgumentException(error, nameof(texto));
@@ -360,25 +363,25 @@ namespace NativeSsh.Comun
         // la dirección conectada o direcciones ya resueltas); null si depende de algo que aún no se sabe (un nombre sin
         // resolver, o una sesión conectada sin dirección conocida). alias: los textos pedidos que cuentan (null: el alias
         // del propio destino).
-        public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, IReadOnlyCollection<string>? alias = null) =>
+        public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, string[]? alias = null) =>
             IsSoloLecturaSinRed(EntradasConConfiguracion(), destino, conectado, alias);
 
         // Lo mismo para varias sesiones (ssh_status) con una sola lectura de las entradas con la configuración de ssh, todas a
         // la vez: una entrada con un ssh -G lento (hasta su plazo de 5 s) cuesta ese tiempo una vez por llamada, no una vez
         // por sesión. Sin sesiones no se lee nada.
-        public bool?[] IsSoloLecturaSinRed(IReadOnlyList<ConsultaSinRed> consultas)
+        public bool?[] IsSoloLecturaSinRed(ReadOnlySpan<ConsultaSinRed> consultas)
         {
-            bool?[] resultados = new bool?[consultas.Count];
-            if (consultas.Count == 0)
+            bool?[] resultados = new bool?[consultas.Length];
+            if (consultas.Length == 0)
                 return resultados;
 
             Entrada[] entradas = EntradasConConfiguracion();
-            for (int i = 0; i < consultas.Count; i++)
+            for (int i = 0; i < consultas.Length; i++)
                 resultados[i] = IsSoloLecturaSinRed(entradas, consultas[i].Destino, consultas[i].Conectado, consultas[i].Alias);
             return resultados;
         }
 
-        private bool? IsSoloLecturaSinRed(Entrada[] entradas, DestinoSsh destino, ExtremoConectado? conectado, IReadOnlyCollection<string>? alias)
+        private bool? IsSoloLecturaSinRed(Entrada[] entradas, DestinoSsh destino, ExtremoConectado? conectado, string[]? alias)
         {
             string servidor = Normalizar(destino.Servidor);
             List<Entrada> porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
@@ -684,13 +687,14 @@ namespace NativeSsh.Comun
             HashSet<IPAddress> direcciones = [];
             Anadir(direcciones, porFamilia.Ipv4);
             Anadir(direcciones, porFamilia.Ipv6);
-            Anadir(direcciones, enHosts);
+            Anadir(direcciones, CollectionsMarshal.AsSpan(enHosts));
             return (direcciones.Count > 0 ? direcciones : null, porFamilia.HasFallo, direcciones.Count > 0 ? null : porFamilia.Incidencia);
         }
 
-        private static void Anadir(HashSet<IPAddress> conjunto, IEnumerable<IPAddress>? direcciones)
+        // Un array nulo llega como un span vacío.
+        private static void Anadir(HashSet<IPAddress> conjunto, ReadOnlySpan<IPAddress> direcciones)
         {
-            foreach (IPAddress direccion in direcciones ?? [])
+            foreach (IPAddress direccion in direcciones)
                 _ = conjunto.Add(Unificar(direccion));
         }
 

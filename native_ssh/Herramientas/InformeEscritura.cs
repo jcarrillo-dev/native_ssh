@@ -66,7 +66,7 @@ namespace NativeSsh.Herramientas
     // muertos por una señal. Si la salida superó el máximo por petición y se descartó su principio (IsSalidaIncompleta),
     // pueden faltar anuncios: nada se da por confirmado y los mensajes lo dicen; como lo que se conserva es el final, si
     // el anuncio final llegó dicen que el script anunció que terminó (no que no lo confirmó).
-    internal sealed partial record InformeEscritura(string? Fase, IReadOnlyList<string> Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
+    internal sealed partial record InformeEscritura(string? Fase, string[] Perdidos, string? Temporal, string? Copia, string? Capacidad, LimpiezaEscrituraEnum Limpieza, string Texto)
     {
         internal const string PrefijoMarca = "__NS_W_";
 
@@ -193,7 +193,7 @@ namespace NativeSsh.Herramientas
         private string AvisoExitoSegunFase() => Fase switch
         {
             "colocado" => string.Empty,
-            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Count == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo (los bits, salvo si escribe root), se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid (salvo si escribe root) y las capacidades (security.capability); lo que el archivo tenía se le devolvió y se comprobó, con estas excepciones.")}{AvisoPerdidos}",
+            "escrito" => $" Escritura no atómica: el archivo tiene enlaces duros, su directorio no admite escritura o no se pudieron copiar y comprobar en un temporal todos sus atributos (propietario, grupo, modo, ACL, atributos extendidos, contexto SELinux), así que se sobrescribió en el sitio {CopiaDeSeguridadTrasExito} conservando inodo, enlaces duros, propietario, grupo, ACL, atributos extendidos y contexto SELinux. {(Perdidos.Length == 0 ? "El modo con sus bits setuid y setgid y las capacidades (security.capability), que el núcleo quita al escribir en un archivo (los bits, salvo si escribe root), se devolvieron y se comprobaron." : "El núcleo quita al escribir en un archivo los bits setuid y setgid (salvo si escribe root) y las capacidades (security.capability); lo que el archivo tenía se le devolvió y se comprobó, con estas excepciones.")}{AvisoPerdidos}",
             "creado" => " Escritura no atómica: el sistema de archivos no admite enlaces duros, así que el archivo nuevo se creó copiando el contenido.",
             _ => " No se recibió del servidor la confirmación de cómo se colocó el contenido: no se puede asegurar que la escritura fuera atómica."
         };
@@ -339,7 +339,7 @@ namespace NativeSsh.Herramientas
         {
             get
             {
-                if (Perdidos.Count == 0)
+                if (Perdidos.Length == 0)
                     return string.Empty;
 
                 StringBuilder aviso = new(" ATENCIÓN:");

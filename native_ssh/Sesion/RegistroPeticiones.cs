@@ -17,10 +17,10 @@ namespace NativeSsh.Sesion
 
         public Peticion? Buscar(string idTexto) => _peticiones.TryGetValue(idTexto, out Peticion? peticion) ? peticion : null;
 
-        public IReadOnlyList<Peticion> ListarRecientes()
+        public Peticion[] ListarRecientes()
         {
-            List<Peticion> peticiones = [.. _peticiones.Values];
-            peticiones.Sort(static (a, b) => b.CreadoTimestamp.CompareTo(a.CreadoTimestamp));
+            Peticion[] peticiones = [.. _peticiones.Values];
+            Array.Sort(peticiones, static (a, b) => b.CreadoTimestamp.CompareTo(a.CreadoTimestamp));
             return peticiones;
         }
 

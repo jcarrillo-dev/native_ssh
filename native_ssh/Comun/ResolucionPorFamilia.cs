@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Comun
 {
@@ -41,11 +42,18 @@ namespace NativeSsh.Comun
 
         // Las resoluciones del sistema que no se pudieron terminar y siguen vivas (ssh_status), una por texto; vacía si no hay
         // o el sistema no las tiene (solo Linux resuelve en otro proceso).
-        public static IReadOnlyList<string> ResolucionesSinTerminar()
+        public static string[] ResolucionesSinTerminar()
         {
-            List<string> sinTerminar = [];
-            AnadirSinTerminarDelSistema(sinTerminar);
-            return sinTerminar;
+            PooledListRef<string> sinTerminar = new();
+            try
+            {
+                AnadirSinTerminarDelSistema(ref sinTerminar);
+                return sinTerminar.Span.ToArray();
+            }
+            finally
+            {
+                sinTerminar.Dispose();
+            }
         }
 
         // El modo interno del binario (Linux: el proceso hijo que resuelve un nombre, ResolutorEnProceso): si 'args' lo pide y
@@ -67,7 +75,7 @@ namespace NativeSsh.Comun
 
         private static partial Task<ResultadoResolucion> ResolverDestinoDelSistemaAsync(string nombre, CancellationToken plazo);
 
-        static partial void AnadirSinTerminarDelSistema(List<string> sinTerminar);
+        static partial void AnadirSinTerminarDelSistema(scoped ref PooledListRef<string> sinTerminar);
 
         static partial void EjecutarModoInternoDelSistema(string[] args, ref int codigo, ref bool isHecho);
 

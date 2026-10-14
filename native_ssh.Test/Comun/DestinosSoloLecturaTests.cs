@@ -553,7 +553,7 @@ namespace NativeSsh.Test.Comun
             _ = otroUsuario.Should().BeNull("prod.ejemplo aún no se ha resuelto");
             _ = yaResuelto.Should().BeTrue();
             _ = resueltoDistinto.Should().BeNull("el destino se resuelve en cada llamada: no se recuerda");
-            _ = destinos.Entradas.Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
+            _ = destinos.Entradas.ToArray().Should().Equal("prod.ejemplo", "deploy@10.0.0.7:2222", "localhost");
         }
 
         // Que el DNS diga que el nombre de una entrada no existe (HostNotFound) no la deja solo como texto: falla cerrado como

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using FluentAssertions;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using Microsoft.Extensions.Logging.Abstractions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
@@ -58,19 +59,33 @@ namespace NativeSsh.Test.Comun
 
         // Los que siguen sin terminar, cuando queden 'esperados' (.NET recoge al hijo muerto en segundo plano: con carga,
         // un momento después de que desaparezca de /proc), o los que haya a los 10 s.
-        private static async Task<List<string>> SinTerminarCuandoQuedenAsync(ResolutorEnProceso resolutor, int esperados)
+        private static async Task<string[]> SinTerminarCuandoQuedenAsync(ResolutorEnProceso resolutor, int esperados)
         {
-            List<string> textos = [];
+            string[] textos = [];
             for (int i = 0; i < 200; i++)
             {
-                textos.Clear();
-                resolutor.AnadirSinTerminar(textos);
-                if (textos.Count == esperados)
+                textos = SinTerminar(resolutor);
+                if (textos.Length == esperados)
                     break;
                 await Task.Delay(50);
             }
 
             return textos;
+        }
+
+        // Lo que ssh_status mostraría ahora del resolutor.
+        private static string[] SinTerminar(ResolutorEnProceso resolutor)
+        {
+            PooledListRef<string> textos = new();
+            try
+            {
+                resolutor.AnadirSinTerminar(ref textos);
+                return textos.Span.ToArray();
+            }
+            finally
+            {
+                textos.Dispose();
+            }
         }
 
         [Fact]
@@ -131,10 +146,9 @@ namespace NativeSsh.Test.Comun
 
                 using CancellationTokenSource otroPlazo = new(TimeSpan.FromMilliseconds(100));
                 ResultadoResolucion conTope = await resolutor.ResolverAsync("otro.ejemplo", AddressFamily.InterNetwork, otroPlazo.Token);
-                List<string> enEstado = [];
-                resolutor.AnadirSinTerminar(enEstado);
+                string[] enEstado = SinTerminar(resolutor);
                 MatarDeVerdad(hijos[..1]);
-                List<string> trasMorirUno = await SinTerminarCuandoQuedenAsync(resolutor, ResolutorEnProceso.MaxSinTerminar - 1);
+                string[] trasMorirUno = await SinTerminarCuandoQuedenAsync(resolutor, ResolutorEnProceso.MaxSinTerminar - 1);
 
                 // Assert
                 for (int i = 0; i < sinTerminar.Length; i++)
@@ -167,14 +181,9 @@ namespace NativeSsh.Test.Comun
             }
 
             ResolutorEnProceso resolutor = new(Lanzar, _ => { }, (_, _) => Task.FromResult(false));
-            List<string> SinTerminar()
-            {
-                List<string> textos = [];
-                resolutor.AnadirSinTerminar(textos);
-                return textos;
-            }
+            string[] SinTerminarDelResolutor() => SinTerminar(resolutor);
 
-            DestinosSoloLectura soloLectura = DestinosSoloLectura.ConResolutores("10.0.0.5", (nombre, plazo) => resolutor.ResolverAsync(nombre, AddressFamily.Unspecified, plazo), (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, resolutor.ResolverAsync, plazo), SinTerminar);
+            DestinosSoloLectura soloLectura = DestinosSoloLectura.ConResolutores("10.0.0.5", (nombre, plazo) => resolutor.ResolverAsync(nombre, AddressFamily.Unspecified, plazo), (nombre, plazo) => ResolucionPorFamilia.ResolverAsync(nombre, resolutor.ResolverAsync, plazo), SinTerminarDelResolutor);
             OpcionesNativeSsh opciones = new() { UsuarioPorDefecto = "ana", SoloLectura = soloLectura };
             FabricaFalsa fabrica = new(_ => new RespuestaFalsa("ok\n"));
             await using GestorSesiones gestor = new(fabrica, new LimitadorConexiones(opciones, TimeProvider.System), new RegistroPeticiones(opciones, TimeProvider.System), opciones, TimeProvider.System, NullLoggerFactory.Instance);

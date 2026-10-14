@@ -55,8 +55,8 @@ namespace NativeSsh.Herramientas
         int ComandosEnCola,
         string? PeticionActual,
         int CanalesExecActivos,
-        IReadOnlyList<string>? Alias = null,
-        IReadOnlyList<string>? IdentityFile = null,
+        string[]? Alias = null,
+        string[]? IdentityFile = null,
         bool? IsSoloLectura = null,
         bool? IsSinPerfil = null);
 
@@ -73,7 +73,7 @@ namespace NativeSsh.Herramientas
     // (null si no hay). En cada sesión, IsSoloLectura es true o false si ya se sabe sin esperar al DNS y null si aún no (o
     // si no hay modo solo lectura). ResolucionesSinTerminar: los procesos de resolución de nombres de esa comprobación que no
     // murieron con SIGKILL y siguen vivos (Linux: ResolutorEnProceso; null si no hay).
-    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, string? Aviso = null, IReadOnlyList<string>? SoloLectura = null, IReadOnlyList<string>? ResolucionesSinTerminar = null);
+    public sealed record ResultadoEstado(EstadoSesion[] Sesiones, ResumenPeticion[] Peticiones, string? Aviso = null, string[]? SoloLectura = null, string[]? ResolucionesSinTerminar = null);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
 

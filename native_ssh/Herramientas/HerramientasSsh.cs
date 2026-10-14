@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Unicode;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
@@ -487,38 +488,42 @@ namespace NativeSsh.Herramientas
             bool isSinFiltro = filtro is null;
             DestinosSoloLectura soloLectura = opciones.SoloLectura;
             bool hasSoloLectura = !soloLectura.IsVacio;
-            IReadOnlyList<SesionShell> seleccionadas = isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value);
-            IReadOnlyList<string>[] alias = new IReadOnlyList<string>[seleccionadas.Count];
-            List<ConsultaSinRed> consultas = new(seleccionadas.Count);
-            for (int i = 0; i < seleccionadas.Count; i++)
+            SesionShell[] seleccionadas = isSinFiltro ? gestor.ListarSesiones() : gestor.Seleccionar(filtro!.Value);
+            string[][] alias = new string[seleccionadas.Length][];
+            bool?[] isSoloLectura;
+            using (PooledListRef<ConsultaSinRed> consultas = new())
             {
-                SesionShell s = seleccionadas[i];
-                alias[i] = gestor.AliasDe(s);
-                // Como una escritura con el texto del filtro: con un alias, cuenta ese texto pedido; con usuario@servidor:puerto,
-                // ninguno (no los alias con que se ha usado la sesión). Sin filtro, los alias con que se ha usado la sesión.
-                IReadOnlyCollection<string> textosPedidos = isSinFiltro ? alias[i] : filtro!.Value.Alias is { } aliasFiltro ? [aliasFiltro] : [];
-                consultas.Add(new ConsultaSinRed(s.Destino, s.Extremo, textosPedidos));
+                for (int i = 0; i < seleccionadas.Length; i++)
+                {
+                    SesionShell s = seleccionadas[i];
+                    alias[i] = gestor.AliasDe(s);
+                    // Como una escritura con el texto del filtro: con un alias, cuenta ese texto pedido; con usuario@servidor:puerto,
+                    // ninguno (no los alias con que se ha usado la sesión). Sin filtro, los alias con que se ha usado la sesión.
+                    string[] textosPedidos = isSinFiltro ? alias[i] : filtro!.Value.Alias is { } aliasFiltro ? [aliasFiltro] : [];
+                    consultas.Add(new ConsultaSinRed(s.Destino, s.Extremo, textosPedidos));
+                }
+
+                // Las entradas se leen con la configuración de ssh una vez para todas las sesiones.
+                isSoloLectura = hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(consultas.Span) : new bool?[seleccionadas.Length];
             }
 
-            // Las entradas se leen con la configuración de ssh una vez para todas las sesiones.
-            bool?[] isSoloLectura = hasSoloLectura ? soloLectura.IsSoloLecturaSinRed(consultas) : new bool?[seleccionadas.Count];
-            List<EstadoSesion> sesiones = new(seleccionadas.Count);
-            for (int i = 0; i < seleccionadas.Count; i++)
+            EstadoSesion[] sesiones = new EstadoSesion[seleccionadas.Length];
+            for (int i = 0; i < seleccionadas.Length; i++)
             {
                 SesionShell s = seleccionadas[i];
                 // Con usuario@servidor:puerto se listan las sesiones de ese destino con cualquier lista de claves, pero una
                 // escritura con ese texto solo usa la de sus claves (ClaveSesion): las demás van sin isSoloLectura.
                 bool isOtrasClaves = filtro is { Alias: null } porServidor && !string.Equals(s.Destino.ClaveSesion, porServidor.ClaveSesion, StringComparison.Ordinal);
-                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Count == 0 ? null : alias[i], s.Destino.Identidades, isOtrasClaves ? null : isSoloLectura[i], s.IsSinPerfil ? true : null));
+                sesiones[i] = new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Length == 0 ? null : alias[i], s.Destino.Identidades, isOtrasClaves ? null : isSoloLectura[i], s.IsSinPerfil ? true : null);
             }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador. De las peticiones de una misma
             // llamada a una herramienta (Peticion.Grupo) sale solo la más reciente, con su estado: una entrada por llamada.
-            List<ResumenPeticion> peticiones = [];
+            using PooledListRef<ResumenPeticion> peticiones = new();
             HashSet<Guid> grupos = [];
             foreach (Peticion p in gestor.ListarPeticiones())
             {
-                if (peticiones.Count == MaxPeticionesEnEstado)
+                if (peticiones.Tamaño == MaxPeticionesEnEstado)
                     break;
 
                 bool isDelFiltro = isSinFiltro || GestorSesiones.IsDelDestino(p, filtro!.Value);
@@ -527,8 +532,8 @@ namespace NativeSsh.Herramientas
             }
 
             string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias), gestor) : null;
-            IReadOnlyList<string> sinTerminar = hasSoloLectura ? soloLectura.ResolucionesSinTerminar() : [];
-            return new ResultadoEstado(sesiones, peticiones, aviso, hasSoloLectura ? soloLectura.Entradas : null, sinTerminar.Count > 0 ? sinTerminar : null);
+            string[] sinTerminar = hasSoloLectura ? soloLectura.ResolucionesSinTerminar() : [];
+            return new ResultadoEstado(sesiones, peticiones.Span.ToArray(), aviso, hasSoloLectura ? soloLectura.Entradas.ToArray() : null, sinTerminar.Length > 0 ? sinTerminar : null);
         }
 
         [McpServerTool(Name = "ssh_disconnect", Destructive = true, Idempotent = true)]
@@ -537,8 +542,8 @@ namespace NativeSsh.Herramientas
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
         {
             DestinoSsh resuelto = gestor.ParsearDestino(destino);
-            IReadOnlyList<SesionCerrada> cerradasConLimpieza = await gestor.DesconectarConLimpiezaAsync(resuelto).ConfigureAwait(false);
-            DestinoSsh[] cerradas = new DestinoSsh[cerradasConLimpieza.Count];
+            SesionCerrada[] cerradasConLimpieza = await gestor.DesconectarConLimpiezaAsync(resuelto).ConfigureAwait(false);
+            DestinoSsh[] cerradas = new DestinoSsh[cerradasConLimpieza.Length];
             for (int i = 0; i < cerradas.Length; i++)
                 cerradas[i] = cerradasConLimpieza[i].Destino;
             string mensaje = cerradas.Length switch
@@ -555,9 +560,9 @@ namespace NativeSsh.Herramientas
 
         // ssh_disconnect: con una sesión cerrada, lo que pasó con sus archivos de guardarSalida; con varias, lo de cada una
         // que tenía algo que decir, precedido de cuál es.
-        private static string DescribirBorradoAlDesconectar(IReadOnlyList<SesionCerrada> cerradas)
+        private static string DescribirBorradoAlDesconectar(ReadOnlySpan<SesionCerrada> cerradas)
         {
-            if (cerradas.Count == 1)
+            if (cerradas.Length == 1)
                 return DescribirBorradoAlDesconectar(cerradas[0].Limpieza);
 
             StringBuilder texto = new();
@@ -574,28 +579,31 @@ namespace NativeSsh.Herramientas
         // ssh_disconnect con alguna sesión cerrada: las que estaban conectadas (conexiones cerradas) y las que no llegaron a
         // conectarse (sesiones descartadas, sin conexión que cerrar), por separado. Varias del mismo usuario@servidor:puerto
         // solo pueden diferir en las claves (son sesiones distintas): entonces se nombran solo sus claves.
-        private static string DescribirDesconexion(IReadOnlyList<SesionCerrada> cerradas)
+        private static string DescribirDesconexion(ReadOnlySpan<SesionCerrada> cerradas)
         {
-            List<DestinoSsh> conectadas = [];
-            List<DestinoSsh> sinConectar = [];
+            using PooledListRef<DestinoSsh> conectadas = new();
+            using PooledListRef<DestinoSsh> sinConectar = new();
             foreach (SesionCerrada cerrada in cerradas)
-                (cerrada.IsSinConectar ? sinConectar : conectadas).Add(cerrada.Destino);
+                if (cerrada.IsSinConectar)
+                    sinConectar.Add(cerrada.Destino);
+                else
+                    conectadas.Add(cerrada.Destino);
 
-            DestinoSsh[] todas = [.. conectadas, .. sinConectar];
+            DestinoSsh[] todas = [.. conectadas.Span, .. sinConectar.Span];
             bool isMismoDestino = todas.Length > 1 && IsMismoDestino(todas);
             string conDestino = isMismoDestino ? $" con {todas[0].Clave}" : string.Empty;
             string porClaves = isMismoDestino ? ", una por cada juego de claves" : string.Empty;
-            string deConectadas = conectadas.Count switch
+            string deConectadas = conectadas.Tamaño switch
             {
                 0 => string.Empty,
-                1 => $"Conexión cerrada{conDestino}: {DescribirCerradas(conectadas, isConDestino: !isMismoDestino)}.",
-                _ => $"Se cerraron {conectadas.Count} conexiones{conDestino}{porClaves}: {DescribirCerradas(conectadas, isConDestino: !isMismoDestino)}."
+                1 => $"Conexión cerrada{conDestino}: {DescribirCerradas(conectadas.Span, isConDestino: !isMismoDestino)}.",
+                _ => $"Se cerraron {conectadas.Tamaño} conexiones{conDestino}{porClaves}: {DescribirCerradas(conectadas.Span, isConDestino: !isMismoDestino)}."
             };
-            string deSinConectar = sinConectar.Count switch
+            string deSinConectar = sinConectar.Tamaño switch
             {
                 0 => string.Empty,
-                1 => $"Sesión sin conectar descartada{conDestino}: {DescribirCerradas(sinConectar, isConDestino: !isMismoDestino)}; no llegó a conectarse, así que no había conexión que cerrar.",
-                _ => $"{sinConectar.Count} sesiones sin conectar descartadas{conDestino}: {DescribirCerradas(sinConectar, isConDestino: !isMismoDestino)}; no llegaron a conectarse, así que no había conexión que cerrar."
+                1 => $"Sesión sin conectar descartada{conDestino}: {DescribirCerradas(sinConectar.Span, isConDestino: !isMismoDestino)}; no llegó a conectarse, así que no había conexión que cerrar.",
+                _ => $"{sinConectar.Tamaño} sesiones sin conectar descartadas{conDestino}: {DescribirCerradas(sinConectar.Span, isConDestino: !isMismoDestino)}; no llegaron a conectarse, así que no había conexión que cerrar."
             };
             return deConectadas.Length > 0 && deSinConectar.Length > 0 ? $"{deConectadas} {deSinConectar}" : deConectadas + deSinConectar;
         }
@@ -610,7 +618,7 @@ namespace NativeSsh.Herramientas
         }
 
         // «usuario@servidor:puerto (claves)» o solo las claves de cada una, separadas por '; '.
-        private static string DescribirCerradas(IReadOnlyList<DestinoSsh> destinos, bool isConDestino)
+        private static string DescribirCerradas(ReadOnlySpan<DestinoSsh> destinos, bool isConDestino)
         {
             StringBuilder texto = new();
             foreach (DestinoSsh destino in destinos)
@@ -631,9 +639,9 @@ namespace NativeSsh.Herramientas
         // otro usuario o puerto y las que llegaron al tope de alias sin guardar este. Para cada grupo, el destino que las
         // cierra solas si lo hay; si no, lo que cerraría además cada destino posible (GestorSesiones.BuscarPistasAlias lo
         // calcula con el criterio de ssh_disconnect), o que ninguno las cierra y por qué. Nunca sugiere un destino que se rechazaría.
-        private static string? TextoPistas(DestinoSsh resuelto, IReadOnlyList<PistaAlias> pistas, GestorSesiones gestor)
+        private static string? TextoPistas(DestinoSsh resuelto, ReadOnlySpan<PistaAlias> pistas, GestorSesiones gestor)
         {
-            if (resuelto.Alias is not { } alias || pistas.Count == 0)
+            if (resuelto.Alias is not { } alias || pistas.Length == 0)
                 return null;
 
             StringBuilder texto = new();
@@ -690,10 +698,10 @@ namespace NativeSsh.Herramientas
             {
                 // Solo de los candidatos se sabe: «no hay destino» sería falso si otro alias que la sesión recuerda la alcanza.
                 _ = texto.Append(": no se cierra con ");
-                for (int i = 0; i < pista.Candidatos.Count; i++)
+                for (int i = 0; i < pista.Candidatos.Length; i++)
                     _ = texto.Append(i == 0 ? "" : " ni con ").Append(pista.Candidatos[i].Texto);
                 _ = texto.Append(" (");
-                for (int i = 0; i < pista.Candidatos.Count; i++)
+                for (int i = 0; i < pista.Candidatos.Length; i++)
                 {
                     CandidatoCierre candidato = pista.Candidatos[i];
                     _ = texto.Append(i == 0 ? "" : "; ").Append(candidato.Texto).Append(candidato.Error is { } error ? $" se rechaza: {error.TrimEnd('.')}" : " no la alcanza");
@@ -705,13 +713,13 @@ namespace NativeSsh.Herramientas
                 return;
             }
 
-            bool isUnCandidato = pista.Candidatos.Count == 1;
+            bool isUnCandidato = pista.Candidatos.Length == 1;
             if (isUnCandidato)
                 _ = texto.Append(": ").Append(pista.Candidatos[0].Texto).Append(" no la cierra sola: ");
             else
             {
                 _ = texto.Append(": ni ");
-                for (int i = 0; i < pista.Candidatos.Count; i++)
+                for (int i = 0; i < pista.Candidatos.Length; i++)
                     _ = texto.Append(i == 0 ? "" : " ni ").Append(pista.Candidatos[i].Texto);
                 _ = texto.Append(" la cierran sola: ");
             }
@@ -723,7 +731,7 @@ namespace NativeSsh.Herramientas
                 return;
             }
 
-            for (int c = 0; c < pista.Candidatos.Count; c++)
+            for (int c = 0; c < pista.Candidatos.Length; c++)
             {
                 CandidatoCierre candidato = pista.Candidatos[c];
                 _ = texto.Append(c == 0 ? "" : "; ");
@@ -738,12 +746,12 @@ namespace NativeSsh.Herramientas
             }
         }
 
-        private static bool IsMismoCierre(IReadOnlyList<CandidatoCierre> candidatos)
+        private static bool IsMismoCierre(ReadOnlySpan<CandidatoCierre> candidatos)
         {
-            IReadOnlyList<SesionShell> primero = candidatos[0].Ademas;
+            SesionShell[] primero = candidatos[0].Ademas;
             foreach (CandidatoCierre candidato in candidatos)
             {
-                if (!candidato.IsAlcanzaTodas || candidato.Ademas.Count != primero.Count)
+                if (!candidato.IsAlcanzaTodas || candidato.Ademas.Length != primero.Length)
                     return false;
 
                 foreach (SesionShell sesion in candidato.Ademas)
@@ -754,7 +762,7 @@ namespace NativeSsh.Herramientas
             return true;
         }
 
-        private static bool IsIncluida(IReadOnlyList<SesionShell> sesiones, SesionShell sesion)
+        private static bool IsIncluida(ReadOnlySpan<SesionShell> sesiones, SesionShell sesion)
         {
             foreach (SesionShell otra in sesiones)
                 if (ReferenceEquals(otra, sesion))
@@ -765,19 +773,19 @@ namespace NativeSsh.Herramientas
 
         private static void DescribirAdemas(StringBuilder texto, CandidatoCierre candidato, GestorSesiones gestor)
         {
-            for (int i = 0; i < candidato.Ademas.Count; i++)
+            for (int i = 0; i < candidato.Ademas.Length; i++)
                 DescribirSesion(texto.Append(i == 0 ? "" : ", "), candidato.Ademas[i], gestor);
         }
 
         // Los usuario@servidor:puerto de las sesiones viejas, cada uno una vez, con sus comandos en curso.
-        private static void DescribirViejas(StringBuilder texto, IReadOnlyList<SesionShell> viejas)
+        private static void DescribirViejas(StringBuilder texto, ReadOnlySpan<SesionShell> viejas)
         {
-            List<string> claves = [];
+            using PooledListRef<string> claves = new();
             foreach (SesionShell sesion in viejas)
-                if (!claves.Contains(sesion.Destino.Clave))
+                if (claves.IndexOf(sesion.Destino.Clave) < 0)
                     claves.Add(sesion.Destino.Clave);
 
-            for (int i = 0; i < claves.Count; i++)
+            for (int i = 0; i < claves.Tamaño; i++)
             {
                 _ = texto.Append(i == 0 ? "" : ", ").Append(claves[i]);
                 StringBuilder enCurso = new();
@@ -795,8 +803,8 @@ namespace NativeSsh.Herramientas
             DestinoSsh destino = sesion.Destino;
             _ = texto.Append(destino.Clave).Append(" (");
             _ = destino.Identidades is null ? texto.Append("las claves de native_ssh") : texto.Append("IdentityFile ").AppendJoin(", ", destino.Identidades);
-            IReadOnlyList<string> alias = gestor.AliasDe(sesion);
-            if (alias.Count > 0)
+            string[] alias = gestor.AliasDe(sesion);
+            if (alias.Length > 0)
                 _ = texto.Append("; alias ").AppendJoin(", ", alias);
             StringBuilder enCurso = new();
             DescribirEnCurso(enCurso, sesion);
@@ -840,13 +848,13 @@ namespace NativeSsh.Herramientas
         // usuario@servidor:puerto con otras claves (otro alias con su IdentityFile, o las de native_ssh), cuáles: no se tocan.
         private string NoHabiaSesion(DestinoSsh destino)
         {
-            IReadOnlyList<SesionShell> otras = gestor.OtrasSesionesDelDestino(destino);
-            if (otras.Count == 0)
+            SesionShell[] otras = gestor.OtrasSesionesDelDestino(destino);
+            if (otras.Length == 0)
                 return "No había sesión con ese destino";
 
             StringBuilder texto = new($"No había sesión con ese destino y esas claves ({DescribirCerradas([destino], isConDestino: false)}); ");
-            _ = texto.Append(otras.Count == 1 ? "hay otra de " : $"hay {otras.Count} más de ").Append(destino.Clave).Append(" con otras claves, que ").Append(otras.Count == 1 ? "no se toca: " : "no se tocan: ");
-            for (int i = 0; i < otras.Count; i++)
+            _ = texto.Append(otras.Length == 1 ? "hay otra de " : $"hay {otras.Length} más de ").Append(destino.Clave).Append(" con otras claves, que ").Append(otras.Length == 1 ? "no se toca: " : "no se tocan: ");
+            for (int i = 0; i < otras.Length; i++)
             {
                 if (i > 0)
                     _ = texto.Append("; ");
