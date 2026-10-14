@@ -22,15 +22,17 @@ namespace NativeSsh.Test.Integracion
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
-    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync.")]
+    [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor y los procesos anotados se liberan en IAsyncLifetime.DisposeAsync.")]
     [Trait("Categoria", "SoloLinux")]
     public sealed class ShellAnidadoIntegracionTests : IAsyncLifetime
     {
-        // Nombres únicos para poder matar los procesos de la prueba sin tocar otros de la máquina.
+        // Nombres propios para reconocer los procesos de la prueba entre los que cuelgan del sshd.
         private const string NombreAnidado = "ns_anidado_eo2";
         private const string Proceso = "sleep 119.41";
         private const string Cancelado = "Cancelado: se envió Ctrl+C al proceso.";
 
+        // Los shells anidados que se esperan muertos se anotan al lanzarlos: si quedaran huérfanos, ya no colgarían del sshd.
+        private readonly ProcesosAnotados _anidados = new();
         private readonly SshdLocal _sshd;
         private readonly GestorSesiones _gestor;
         private readonly HerramientasSsh _herramientas;
@@ -50,7 +52,9 @@ namespace NativeSsh.Test.Integracion
         public async Task DisposeAsync()
         {
             await _gestor.DisposeAsync();
-            _ = BashLocal.Ejecutar($"pkill -f '^({NombreAnidado}|{Proceso})' || true");
+            _sshd.MatarDescendientes(o => o == Proceso || o.StartsWith(NombreAnidado, StringComparison.Ordinal));
+            _anidados.Matar("TERM");
+            _anidados.Dispose();
         }
 
         private async Task EsperarSalidaAsync(string id, string texto)
@@ -65,7 +69,7 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
-        private static int ProcesosAnidados() => int.Parse(BashLocal.Ejecutar($"pgrep -fc '^{NombreAnidado}' || true").Trim(), System.Globalization.CultureInfo.InvariantCulture);
+        private int ProcesosAnidados() => _anidados.Vivos(o => o.StartsWith(NombreAnidado, StringComparison.Ordinal)).Length;
 
         // isRcEnganoso: el rc del shell anidado redefine '[' y 'test' como funciones que siempre dan verdadero (la comprobación
         // no puede depender de ellos).
@@ -80,7 +84,7 @@ namespace NativeSsh.Test.Integracion
             await File.WriteAllTextAsync(rc, "[ () { return 0; }\ntest () { return 0; }\n");
             string opciones = isRcEnganoso ? $"--noprofile --rcfile {rc}" : "--norc --noprofile";
             ResultadoComando enLaSesion = await _herramientas.EjecutarAsync(Destino, "export NS_EO2=si; echo PADRE=$(ps -o comm= -p $PPID)", esperarSegundos: 20).ComoComando();
-            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'exec -a {NombreAnidado} bash {opciones} -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0).ComoComando();
+            ResultadoComando comando = await _herramientas.EjecutarAsync(Destino, $"env -i PS1='anidado$ ' TERM=dumb bash -c 'echo p $$ >> \"{_anidados.Fichero}\"; exec -a {NombreAnidado} bash {opciones} -i'", timeoutSegundos: isPlazo ? 5 : 300, esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => ProcesosAnidados() == 1, TimeSpan.FromSeconds(10));
             await Task.Delay(500);
 

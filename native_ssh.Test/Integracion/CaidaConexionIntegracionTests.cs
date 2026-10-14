@@ -94,8 +94,9 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             long sleep = 640_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
             string[] antes = _sshd.ProcesosDeConexion();
-            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, $"sleep {sleep}; echo fin", esperarSegundos: 0).ComoComando();
+            ResultadoComando largo = await _herramientas.EjecutarAsync(Destino, $"{anotados.Ejecutar($"sleep {sleep}")}; echo fin", esperarSegundos: 0).ComoComando();
             await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep).Length > 0);
             string[] propios = [.. _sshd.ProcesosDeConexion().Except(antes)];
             int aceptadas = _sshd.ConexionesAceptadas();
@@ -124,7 +125,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
             }
         }
     }

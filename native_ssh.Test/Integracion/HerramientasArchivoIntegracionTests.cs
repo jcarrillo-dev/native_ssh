@@ -24,6 +24,11 @@ namespace NativeSsh.Test.Integracion
         private readonly GestorSesiones _gestor;
         private readonly FabricaMedidora _fabrica;
 
+        // Los comandos falsos (SustituirComandoAsync) anotan aquí su pid al arrancar: las pruebas los localizan por él, no
+        // buscándolos por su línea de órdenes en toda la máquina. No se matan al terminar: solo se leen. El fichero va fuera
+        // del directorio de la prueba, cuyo contenido comprueban las pruebas.
+        private readonly ProcesosAnotados _falsos = new();
+
         public HerramientasArchivoIntegracionTests(SshdLocal sshd)
         {
             _sshd = sshd;
@@ -46,6 +51,7 @@ namespace NativeSsh.Test.Integracion
         public async Task DisposeAsync()
         {
             await _gestor.DisposeAsync();
+            File.Delete(_falsos.Fichero);
             if (!Directory.Exists(_directorio))
                 return;
 
@@ -367,7 +373,7 @@ namespace NativeSsh.Test.Integracion
             string bin = Ruta("bin");
             _ = Directory.CreateDirectory(bin);
             string ruta = Path.Combine(bin, nombre);
-            await File.WriteAllTextAsync(ruta, "#!/bin/bash\n" + script + "\n");
+            await File.WriteAllTextAsync(ruta, $"#!/bin/bash\n{{ echo p $$ >> '{_falsos.Fichero}'; }} 2>/dev/null\n{script}\n");
             _ = Bash($"chmod 700 '{ruta}'");
             ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export PATH='{bin}':\"$PATH\"", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);

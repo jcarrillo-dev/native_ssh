@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Linq;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -56,13 +57,14 @@ namespace NativeSsh.Test.Integracion
                 Directory.Delete(_directorio, recursive: true);
         }
 
-        // Bucles ocupados acotados con 'timeout', marcados con una etiqueta única para poder matarlos.
+        // Bucles ocupados acotados con 'timeout', hijos del bash de la carga: se paran por su padre, sin buscarlos por nombre.
         private static Process IniciarCarga(string etiqueta, int procesos, int segundos) =>
             Process.Start(new ProcessStartInfo("bash", ["-c", $"for i in $(seq 1 {procesos}); do timeout {segundos} sh -c 'while :; do :; done' {etiqueta} & done; wait"]))!;
 
-        private static void PararCarga(Process carga, string etiqueta)
+        private static void PararCarga(Process carga)
         {
-            using Process pkill = Process.Start(new ProcessStartInfo("pkill", ["-f", etiqueta]))!;
+            // Cada 'timeout' reenvía la TERM a su bucle y sale; después 'wait' vuelve y sale el bash de la carga.
+            using Process pkill = Process.Start(new ProcessStartInfo("pkill", ["-P", carga.Id.ToString(CultureInfo.InvariantCulture)]))!;
             pkill.WaitForExit();
             _ = carga.WaitForExit(TimeSpan.FromSeconds(10));
             carga.Dispose();
@@ -145,7 +147,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                PararCarga(carga, etiqueta);
+                PararCarga(carga);
             }
 
             reloj.Stop();

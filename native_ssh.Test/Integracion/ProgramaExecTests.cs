@@ -94,7 +94,8 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             long hijo = 600_000 + Random.Shared.Next(100_000);
             long principal = hijo + 100_000;
-            string comando = ConstructorComandoExec.Construir($"sleep {hijo} & trap '' TERM; sleep {principal}; wait", null, TimeSpan.FromSeconds(1));
+            using ProcesosAnotados anotados = new();
+            string comando = ConstructorComandoExec.Construir($"{anotados.AnotarGrupo}sleep {hijo} & trap '' TERM; sleep {principal}; wait", null, TimeSpan.FromSeconds(1));
 
             try
             {
@@ -109,7 +110,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(hijo, principal);
+                anotados.Matar();
             }
         }
 
@@ -134,25 +135,19 @@ namespace NativeSsh.Test.Integracion
         [Fact]
         public async Task SinTimeout_UnScriptRapidoNoDejaElWatchdogVivo()
         {
-            // Arrange: el plazo (único) es lo que duerme el watchdog.
+            // Arrange: el plazo (único) es lo que duerme el watchdog. Si sobreviviera (la prueba fallaría), termina solo al
+            // vencer: el watchdog no lo lanza el script de la prueba y no hay pid propio que anotar para matarlo.
             int plazo = 5_000 + Random.Shared.Next(1_000);
 
-            try
-            {
-                // Act
-                (int codigo, string salida, _, TimeSpan duracion) = Ejecutar(ConstructorComandoExec.Construir("echo rapido", null, TimeSpan.FromSeconds(plazo)), _sinTimeout, TimeSpan.FromSeconds(20));
-                string vivos = await CanalesExecIntegracionTests.EsperarSinProcesosSleepAsync(plazo, plazo);
+            // Act
+            (int codigo, string salida, _, TimeSpan duracion) = Ejecutar(ConstructorComandoExec.Construir("echo rapido", null, TimeSpan.FromSeconds(plazo)), _sinTimeout, TimeSpan.FromSeconds(20));
+            string vivos = await CanalesExecIntegracionTests.EsperarSinProcesosSleepAsync(plazo, plazo);
 
-                // Assert
-                _ = codigo.Should().Be(0);
-                _ = salida.Should().Be("rapido\n");
-                _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(5));
-                _ = vivos.Should().BeEmpty();
-            }
-            finally
-            {
-                CanalesExecIntegracionTests.MatarProcesosSleep(plazo, plazo);
-            }
+            // Assert
+            _ = codigo.Should().Be(0);
+            _ = salida.Should().Be("rapido\n");
+            _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(5));
+            _ = vivos.Should().BeEmpty();
         }
     }
 }

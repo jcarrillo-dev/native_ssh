@@ -20,7 +20,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "SoloLinux")]
     public sealed class ShellsAbandonadosMaxSessionsTests
     {
-        // Duración única para poder matar el proceso de la prueba sin tocar otros 'sleep' de la máquina.
+        // Duración propia para reconocer el proceso de la prueba entre los que cuelgan de su sshd.
         private const string Proceso = "sleep 119.37";
 
         private static readonly TimeSpan EsperaMaxima = TimeSpan.FromSeconds(30);
@@ -84,7 +84,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = BashLocal.Ejecutar($"pkill -f '^{Proceso}$' || true");
+                sshd.Sshd.MatarDescendientes(o => o == Proceso);
             }
 
             // Assert: el último abandono llena el MaxSessions y el shell nuevo se rechaza sin ninguna lectura en curso.

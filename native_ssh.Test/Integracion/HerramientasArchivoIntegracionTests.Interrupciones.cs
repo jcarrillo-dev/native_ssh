@@ -86,7 +86,7 @@ namespace NativeSsh.Test.Integracion
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
             await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
-            string script = Bash($"ps -o ppid= -p \"$(pgrep -f -- '{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.' | head -n 1)\"");
+            string script = Bash($"ps -o ppid= -p {ProcesosFalsos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.")[0]}");
             _ = Bash($"kill -INT -- -\"$(ps -o pgid= -p {script} | tr -d ' ')\"");
             await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.orig."), TimeSpan.FromSeconds(10));
             _ = Bash($"pkill -{senal} -P {script}; kill -{senal} {script}");
@@ -118,7 +118,7 @@ namespace NativeSsh.Test.Integracion
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
             await EsperasPrueba.EsperarHastaAsync(() => File.Exists(marca), TimeSpan.FromSeconds(20));
-            string script = Bash($"ps -o ppid= -p \"$(pgrep -f -- '{Ruta("bin/rm")} -f -- ' | head -n 1)\"");
+            string script = Bash($"ps -o ppid= -p {ProcesosFalsos($"{Ruta("bin/rm")} -f -- ")[0]}");
             _ = Bash($"pkill -{senal} -P {script}; kill -{senal} {script}");
             ResultadoEscritura resultado = await escritura;
 
@@ -149,7 +149,7 @@ namespace NativeSsh.Test.Integracion
                 ? herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original completo", "nuevo contenido")
                 : herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true);
             await EsperasPrueba.EsperarHastaAsync(() => HayProcesos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp."), TimeSpan.FromSeconds(20));
-            string cat = Bash($"pgrep -f -- '{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.' | head -n 1");
+            string cat = ProcesosFalsos($"{Ruta("bin/cat")} -- {carpeta}/.f.txt.tmp.")[0];
             _ = Bash($"kill -KILL \"$(ps -o ppid= -p {cat})\"");
             NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
             _ = Bash($"kill -INT {cat} 2>/dev/null; true");

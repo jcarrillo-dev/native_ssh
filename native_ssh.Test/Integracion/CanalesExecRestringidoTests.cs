@@ -83,11 +83,12 @@ namespace NativeSsh.Test.Integracion
             string sinTimeout = await ExecAsync("command -v timeout || echo sin-timeout");
             long hijo = 500_000 + Random.Shared.Next(100_000);
             long principal = hijo + 100_000;
+            using ProcesosAnotados anotados = new();
 
             try
             {
                 // Act
-                ResultadoCanalExec ejecucion = await _gestor.EjecutarExecAsync(Destino, $"sleep {hijo} & trap '' TERM; sleep {principal}; wait", TimeSpan.FromSeconds(2), CancellationToken.None);
+                ResultadoCanalExec ejecucion = await _gestor.EjecutarExecAsync(Destino, $"{anotados.AnotarGrupo}sleep {hijo} & trap '' TERM; sleep {principal}; wait", TimeSpan.FromSeconds(2), CancellationToken.None);
                 string vivos = await CanalesExecIntegracionTests.EsperarSinProcesosSleepAsync(hijo, principal);
 
                 // Assert
@@ -97,7 +98,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(hijo, principal);
+                anotados.Matar();
             }
         }
 

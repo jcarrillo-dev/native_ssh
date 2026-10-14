@@ -1,5 +1,6 @@
 using FluentAssertions;
 using NativeSsh.Herramientas;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
@@ -92,8 +93,8 @@ namespace NativeSsh.Test.Integracion
             string marca = Ruta("sustituido");
             await SinProcAsync(herramientas);
             await DejarSoloComparadorDeInodosAsync(herramientas, herramienta);
-            SleepPropio dormido = SleepPropio.Crear("21.5");
-            await SustituirComandoAsync(herramientas, "flock", $"if [ ! -e '{marca}' ]; then\n: > '{marca}'\nprintf 'nuevo\\n' > '{archivo}.otro'\nmv -f '{archivo}.otro' '{archivo}'\n( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep {dormido.Duracion} ) </dev/null >/dev/null 2>&1 &\nsleep 0.5\nfi\nexec /usr/bin/flock \"$@\"");
+            using ProcesosAnotados ocupante = new();
+            await SustituirComandoAsync(herramientas, "flock", $"if [ ! -e '{marca}' ]; then\n: > '{marca}'\nprintf 'nuevo\\n' > '{archivo}.otro'\nmv -f '{archivo}.otro' '{archivo}'\n( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep 21.5 ) </dev/null >/dev/null 2>&1 &\n{ocupante.AnotarUltimo}\nsleep 0.5\nfi\nexec /usr/bin/flock \"$@\"");
 
             try
             {
@@ -116,7 +117,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
+                ocupante.MatarHijos();
             }
         }
 

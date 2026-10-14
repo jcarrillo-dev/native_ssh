@@ -73,6 +73,40 @@ namespace NativeSsh.Test.Integracion
             BashLocal.Ejecutar($"desc() {{ for c in $(pgrep -P $1); do case \"$(ps -o comm= -p $c)\" in sshd*) echo $c; desc $c;; esac; done; }}; desc {PidMaestro}")
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
+        // Todos los procesos que cuelgan ahora del maestro (los sshd de cada conexión, los shells y lo que ejecutan), con su
+        // padre y su línea de órdenes. Lo que ya quedó huérfano no está: su padre es otro.
+        public IReadOnlyList<(int Pid, int Padre, string Orden)> Descendientes()
+        {
+            List<(int, int, string)> procesos = [];
+            string salida = BashLocal.Ejecutar($"desc() {{ for c in $(pgrep -P $1); do ps -o pid=,ppid=,args= -p $c; desc $c; done; }}; desc {PidMaestro}");
+            foreach (string linea in salida.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] campos = linea.Trim().Split((char[]?)null, 3, StringSplitOptions.RemoveEmptyEntries);
+                if (campos.Length >= 2)
+                    procesos.Add((int.Parse(campos[0], CultureInfo.InvariantCulture), int.Parse(campos[1], CultureInfo.InvariantCulture), campos.Length == 3 ? campos[2].Trim() : string.Empty));
+            }
+
+            return procesos;
+        }
+
+        // Manda la señal a los descendientes del maestro cuya línea de órdenes cumple la condición (y, con isConPadre, también
+        // a su padre): mata por pid lo que lanzaron las pruebas en este sshd, sin buscarlo en toda la máquina.
+        public void MatarDescendientes(Func<string, bool> isElegido, string senal = "TERM", bool isConPadre = false)
+        {
+            List<int> objetivos = [];
+            foreach ((int pid, int padre, string orden) in Descendientes())
+            {
+                if (!isElegido(orden))
+                    continue;
+                if (isConPadre)
+                    objetivos.Add(padre);
+                objetivos.Add(pid);
+            }
+
+            if (objetivos.Count > 0)
+                _ = BashLocal.Ejecutar($"kill -{senal} {string.Join(' ', objetivos)} 2>/dev/null; true");
+        }
+
         public int ContarLineasLog(params string[] textos)
         {
             int total = 0;

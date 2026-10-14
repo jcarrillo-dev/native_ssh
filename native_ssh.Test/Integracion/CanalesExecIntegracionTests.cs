@@ -147,16 +147,14 @@ namespace NativeSsh.Test.Integracion
             return vivos;
         }
 
-        internal static void MatarProcesosSleep(long primero, long segundo) =>
-            _ = Bash($"pkill -KILL -f 'sleep ({primero}|{segundo})$' || true");
-
         [Fact]
         public async Task ExecConTiempoAgotado_MataElProcesoRemotoYSusHijosAunqueIgnorenTerm()
         {
             // Arrange: un hijo en segundo plano y un proceso principal que ignora TERM (su 'sleep' hereda la señal ignorada).
             long hijo = 700_000 + Random.Shared.Next(100_000);
             long principal = hijo + 100_000;
-            string script = $"sleep {hijo} & trap '' TERM; sleep {principal}; wait";
+            using ProcesosAnotados anotados = new();
+            string script = $"{anotados.AnotarGrupo}sleep {hijo} & trap '' TERM; sleep {principal}; wait";
             string resultado;
 
             // Act
@@ -180,7 +178,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                MatarProcesosSleep(hijo, principal);
+                anotados.Matar();
             }
         }
 

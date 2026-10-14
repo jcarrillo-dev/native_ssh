@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
@@ -106,7 +105,7 @@ namespace NativeSsh.Test.Integracion
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(Destino, archivo, "nuevo contenido\n", overwrite: true, sudo: isSudo);
             string catVivo = $"{Ruta("bin/cat")} -- {carpeta}/.f.txt.{(isRestaurando ? "orig" : "tmp")}.";
             await EsperasPrueba.EsperarHastaAsync(() => HayProcesos(catVivo), TimeSpan.FromSeconds(20));
-            string cat = Bash($"pgrep -f -- '{catVivo}' | head -n 1");
+            string cat = ProcesosFalsos(catVivo)[0];
             string script = Bash($"ps -o ppid= -p {cat}");
             bool isCandadoTomado = !IsCandadoLibre(archivo);
 
@@ -215,8 +214,7 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando export = await herramientas.EjecutarAsync(Destino, $"export TMPDIR='{temporales}'", esperarSegundos: 10).ComoComando();
             _ = export.CodigoSalida.Should().Be(0);
             string[] entradas = Directory.GetFileSystemEntries(carpeta);
-            SleepPropio dormido = SleepPropio.Crear("37.5");
-            using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", dormido.Duracion]);
+            using Process ajeno = Process.Start("flock", ["-n", archivo, "sleep", "37.5"]);
             await EsperasPrueba.EsperarHastaAsync(() => !IsCandadoLibre(archivo), TimeSpan.FromSeconds(10));
 
             try
@@ -227,7 +225,7 @@ namespace NativeSsh.Test.Integracion
                 Exception? anexado = await Record.ExceptionAsync(() => herramientas.EscribirArchivoAsync(Destino, archivo, "ANEXADA\n", append: true, sudo: isSudo));
                 Exception? reemplazo = await Record.ExceptionAsync(() => herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "ESCRITA", "REEMPLAZADA", sudo: isSudo));
                 string[] entradasConCandado = Directory.GetFileSystemEntries(carpeta);
-                SoltarCandadoAjeno(ajeno, dormido);
+                SoltarCandadoAjeno(ajeno);
                 ResultadoEscritura libre = await herramientas.EscribirArchivoAsync(Destino, archivo, "LIBRE\n", overwrite: true, sudo: isSudo);
                 ResultadoEscritura libreAnexado = await herramientas.EscribirArchivoAsync(Destino, archivo, "MAS\n", append: true, sudo: isSudo);
 
@@ -258,7 +256,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                SoltarCandadoAjeno(ajeno, dormido);
+                SoltarCandadoAjeno(ajeno);
             }
         }
 
@@ -276,8 +274,8 @@ namespace NativeSsh.Test.Integracion
             string archivo = Ruta("f.txt");
             await File.WriteAllTextAsync(archivo, "viejo\n");
             string marca = Ruta("sustituido");
-            SleepPropio dormido = SleepPropio.Crear("21.5");
-            string ocupar = isNuevoOcupado ? $"( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep {dormido.Duracion} ) </dev/null >/dev/null 2>&1 &\nsleep 0.5\n" : string.Empty;
+            using ProcesosAnotados ocupante = new();
+            string ocupar = isNuevoOcupado ? $"( eval \"exec $5<&-\"; exec /usr/bin/flock -n '{archivo}' sleep 21.5 ) </dev/null >/dev/null 2>&1 &\n{ocupante.AnotarUltimo}\nsleep 0.5\n" : string.Empty;
             await SustituirComandoAsync(herramientas, "flock", $"if [ ! -e '{marca}' ]; then\n: > '{marca}'\nprintf 'nuevo\\n' > '{archivo}.otro'\nmv -f '{archivo}.otro' '{archivo}'\n{ocupar}fi\nexec /usr/bin/flock \"$@\"");
 
             try
@@ -301,7 +299,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
+                ocupante.MatarHijos();
             }
         }
 
@@ -361,11 +359,11 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh herramientas = Herramientas(timeout: TimeSpan.FromSeconds(40));
             string archivo = Ruta("compartido.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
-            SleepPropio dormido = SleepPropio.Crear("38.5");
-            using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", dormido.Duracion]);
-            await EsperasPrueba.EsperarHastaAsync(() => HayProcesos(dormido.Patron), TimeSpan.FromSeconds(10));
+            using Process lector = Process.Start("flock", ["-s", "-n", archivo, "sleep", "38.5"]);
+            await EsperasPrueba.EsperarHastaAsync(() => Bash($"pgrep -P {lector.Id}").Length > 0, TimeSpan.FromSeconds(10));
             string soltado = Ruta("lector_soltado");
-            await SustituirComandoAsync(herramientas, "base64", $"if [ $# = 0 ] && pkill -f -- '{dormido.Patron}'; then\n  while pgrep -f -- '{dormido.PatronConSuFlock}' >/dev/null; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
+            // Mata el 'sleep' del lector (el hijo de su 'flock') y espera a que el 'flock' termine (un zombi ya no tiene el candado).
+            await SustituirComandoAsync(herramientas, "base64", $"if [ $# = 0 ] && pkill -P {lector.Id}; then\n  while ps -o stat= -p {lector.Id} | grep -qv '^Z'; do sleep 0.05; done\n  : > '{soltado}'\nfi\nexec /usr/bin/base64 \"$@\"");
 
             try
             {
@@ -379,31 +377,17 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
+                _ = Bash($"pkill -P {lector.Id}; true");
                 lector.WaitForExit();
             }
         }
 
-        // 'flock ARCHIVO sleep 37.5…' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor.
-        private static void SoltarCandadoAjeno(Process ajeno, SleepPropio dormido)
+        // 'flock ARCHIVO sleep 37.5' de la prueba: el candado lo tiene también el 'sleep', que hereda el descriptor. Se mata
+        // el hijo del 'flock' que lanzó la prueba (y el 'flock' termina con él).
+        private static void SoltarCandadoAjeno(Process ajeno)
         {
-            _ = Bash($"pkill -f -- '{dormido.Patron}'; true");
+            _ = Bash($"pkill -P {ajeno.Id}; true");
             ajeno.WaitForExit();
-        }
-
-        // Un 'sleep' que solo lanza esta prueba: la duración base con seis decimales al azar detrás. Los pkill y pgrep que
-        // lo buscan por sus argumentos no alcanzan así a los de otra copia de la suite que corra a la vez en la máquina.
-        private readonly record struct SleepPropio(string Duracion)
-        {
-            public static SleepPropio Crear(string baseSegundos) => new($"{baseSegundos}{Random.Shared.Next(100_000, 1_000_000).ToString(CultureInfo.InvariantCulture)}");
-
-            // El 'sleep' (pkill/pgrep -f).
-            public string Patron => $"^sleep {DuracionEscapada}$";
-
-            // El 'sleep' y el 'flock … sleep' que lo lanza.
-            public string PatronConSuFlock => $"^(flock .* )?sleep {DuracionEscapada}$";
-
-            private string DuracionEscapada => Duracion.Replace(".", "[.]", StringComparison.Ordinal);
         }
 
         // Nadie tiene el flock del archivo. Las pruebas leen el archivo después: .NET toma un flock compartido al abrirlo

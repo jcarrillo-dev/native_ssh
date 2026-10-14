@@ -27,7 +27,7 @@ namespace NativeSsh.Test.Integracion
     [Trait("Categoria", "SoloLinux")]
     public sealed class EntradaAtascadaTests : IAsyncLifetime
     {
-        // Duración única para poder matar el proceso de la prueba sin tocar otros 'sleep' de la máquina.
+        // Duración propia para reconocer el proceso de la prueba entre los que cuelgan de su sshd.
         private const string Proceso = "sleep 119.25";
 
         private static readonly TimeSpan EsperaMaxima = TimeSpan.FromSeconds(30);
@@ -38,7 +38,7 @@ namespace NativeSsh.Test.Integracion
 
         public Task DisposeAsync()
         {
-            _ = BashLocal.Ejecutar($"pkill -f '^{Proceso}$' || true");
+            _sshd.Sshd.MatarDescendientes(o => o == Proceso);
             _sshd.Dispose();
             return Task.CompletedTask;
         }
@@ -208,7 +208,7 @@ namespace NativeSsh.Test.Integracion
             // Act: mueren el proceso y el shell de la sesión, y el servidor cierra el canal.
             try
             {
-                _ = BashLocal.Ejecutar($"for p in $(pgrep -f '^{ProcesoQueNoLee}$'); do kill -9 $(ps -o ppid= -p $p) $p; done");
+                _sshd.Sshd.MatarDescendientes(o => o == ProcesoQueNoLee, "KILL", isConPadre: true);
                 Stopwatch reloj = Stopwatch.StartNew();
                 Task terminada = await Task.WhenAny(entrada, Task.Delay(EsperaMaxima));
                 TimeSpan duracion = reloj.Elapsed;
@@ -224,7 +224,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = BashLocal.Ejecutar($"pkill -f '^{ProcesoQueNoLee}$' || true");
+                _sshd.Sshd.MatarDescendientes(o => o == ProcesoQueNoLee);
             }
         }
 

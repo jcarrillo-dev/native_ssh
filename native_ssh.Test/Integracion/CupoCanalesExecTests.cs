@@ -64,12 +64,13 @@ namespace NativeSsh.Test.Integracion
             SesionShell sesion = gestor.ListarSesiones().Single();
             int aceptadas = _sshd.Sshd.ConexionesAceptadas();
             long sleep = 660_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
 
             try
             {
                 // Act: cuatro lecturas mudas con plazo remoto de 6 s, canceladas a 0,5 s; enseguida, cuatro más.
                 using CancellationTokenSource cancelacion = new(TimeSpan.FromMilliseconds(500));
-                string[] canceladas = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, $"sleep {sleep}", TimeSpan.FromSeconds(6), cancelacion.Token))));
+                string[] canceladas = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, $"{anotados.AnotarGrupo}sleep {sleep}", TimeSpan.FromSeconds(6), cancelacion.Token))));
                 string[] durante = await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "echo d", TimeSpan.FromSeconds(1), CancellationToken.None))));
                 string vivosDurante = CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep);
                 int activosDurante = sesion.CanalesExecActivos;
@@ -90,7 +91,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
             }
         }
 
@@ -160,18 +161,19 @@ namespace NativeSsh.Test.Integracion
         private static async Task<string> MensajeConCupoOcupadoAsync(GestorSesiones gestor, string destino)
         {
             long sleep = 670_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
             try
             {
-                Task<string>[] ocupantes = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, $"sleep {sleep}", TimeSpan.FromSeconds(20), CancellationToken.None)))];
+                Task<string>[] ocupantes = [.. Enumerable.Range(0, SesionShell.MaxCanalesExecSimultaneos).Select(_ => MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, $"{anotados.AnotarGrupo}sleep {sleep}", TimeSpan.FromSeconds(20), CancellationToken.None)))];
                 await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep).Split('\n', StringSplitOptions.RemoveEmptyEntries).Length == SesionShell.MaxCanalesExecSimultaneos, TimeSpan.FromSeconds(10));
                 string mensaje = await MensajeDeFalloAsync(gestor.EjecutarExecAsync(destino, "echo q", TimeSpan.FromSeconds(1), CancellationToken.None));
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
                 _ = await Task.WhenAll(ocupantes);
                 return mensaje;
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
             }
         }
     }

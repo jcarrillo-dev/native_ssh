@@ -272,7 +272,8 @@ namespace NativeSsh.Test.Ssh
         {
             // Arrange
             string marca = $"37.{Random.Shared.Next(100000, 999999)}";
-            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match exec \"sleep {marca}\"\n  Port 9\n"), plazo: TimeSpan.FromSeconds(1));
+            using ProcesosAnotados anotados = new();
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match exec \"sh -c '{anotados.ScriptSh($"sleep {marca}")}'\"\n  Port 9\n"), plazo: TimeSpan.FromSeconds(1));
             Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
@@ -281,7 +282,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó en 1 s");
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
-            await EsperasPruebaSinProceso(marca);
+            await EsperasPruebaSinProceso(anotados, $"sleep {marca}");
         }
 
         // Un Match exec que deja un proceso en segundo plano con la salida de ssh abierta: ssh termina al momento con toda su
@@ -293,7 +294,8 @@ namespace NativeSsh.Test.Ssh
         {
             // Arrange
             string marca = $"39.{Random.Shared.Next(100000, 999999)}";
-            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(sleep {marca} &) ; true\"\n  Port 9\n"));
+            using ProcesosAnotados anotados = new();
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(sh -c '{anotados.ScriptSh($"sleep {marca}")}' &) ; true\"\n  Port 9\n"));
             Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
@@ -302,7 +304,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = destino.Puerto.Should().Be(9);
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(4));
-            await EsperasPruebaSinProceso(marca);
+            await EsperasPruebaSinProceso(anotados, $"sleep {marca}");
         }
 
         // Un Match exec que deja en segundo plano algo que escribe en la salida de ssh después de que ssh termine (un segundo
@@ -335,7 +337,8 @@ namespace NativeSsh.Test.Ssh
         {
             // Arrange
             string marca = $"40.{Random.Shared.Next(100000, 999999)}";
-            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(setsid sleep {marca} &) ; true\"\n  Port 9\n"));
+            using ProcesosAnotados anotados = new();
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion($"Match originalhost fondo exec \"(setsid sh -c '{anotados.ScriptSh($"sleep {marca}")}' &) ; true\"\n  Port 9\n"));
 
             // Act
             Func<Task> resolver = () => Task.Run(() => Resolver(resolutor, "fondo")).WaitAsync(TimeSpan.FromSeconds(20));
@@ -347,7 +350,7 @@ namespace NativeSsh.Test.Ssh
             }
             finally
             {
-                _ = BashLocal.Ejecutar($"pkill -f '[s]leep {marca}' || true");
+                anotados.Matar();
             }
         }
 
@@ -358,7 +361,8 @@ namespace NativeSsh.Test.Ssh
         {
             // Arrange
             string marca = $"38.{Random.Shared.Next(100000, 999999)}";
-            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh { ConfiguracionSsh = Configuracion($"Match exec \"sleep {marca}\"\n  Port 9\n") }, NullLogger<ResolutorConfiguracionSsh>.Instance);
+            using ProcesosAnotados anotados = new();
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh { ConfiguracionSsh = Configuracion($"Match exec \"sh -c '{anotados.ScriptSh($"sleep {marca}")}'\"\n  Port 9\n") }, NullLogger<ResolutorConfiguracionSsh>.Instance);
             _ = DestinoSsh.TryParse("web", "ana", out DestinoSsh destino);
             Stopwatch reloj = Stopwatch.StartNew();
 
@@ -369,16 +373,15 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = (await esperar.Should().ThrowAsync<NativeSshException>()).Which.Message.Should().Contain("no terminó en 5 s");
             _ = reloj.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(4.5)).And.BeLessThan(TimeSpan.FromSeconds(9));
-            await EsperasPruebaSinProceso(marca);
+            await EsperasPruebaSinProceso(anotados, $"sleep {marca}");
         }
 
-        // '[s]leep': el patrón no coincide con la línea de órdenes del propio bash que ejecuta pgrep.
-        private static async Task EsperasPruebaSinProceso(string marca)
+        // El 'sleep' que anotó el propio Match exec (su pid es el del 'sh -c', que se sustituye por él) ya no vive.
+        private static async Task EsperasPruebaSinProceso(ProcesosAnotados anotados, string orden)
         {
-            string orden = $"pgrep -f '[s]leep {marca}' || true";
-            for (int i = 0; i < 50 && BashLocal.Ejecutar(orden).Length > 0; i++)
+            for (int i = 0; i < 50 && anotados.Vivos(o => o == orden).Length > 0; i++)
                 await Task.Delay(100);
-            _ = BashLocal.Ejecutar(orden).Should().BeEmpty();
+            _ = anotados.Vivos(o => o == orden).Should().BeEmpty();
         }
 
         [Fact]

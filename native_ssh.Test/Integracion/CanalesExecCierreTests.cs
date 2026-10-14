@@ -50,6 +50,7 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             long sleep = 610_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
             _ = await _herramientas.EjecutarAsync(Destino, "export NS_VIVA=si").ComoComando();
             int aceptadas = _sshd.ConexionesAceptadas();
             int senales = _sshd.ContarLineasLog(SshdLocal.LineasSenalODesconexion);
@@ -60,9 +61,9 @@ namespace NativeSsh.Test.Integracion
                 // escapa del plazo remoto y mantiene abierta la salida, así que solo actúa el plazo local (1 s + 3 s).
                 ResultadoCanalExec tope = await ExecAsync("yes", 20);
                 using CancellationTokenSource cancelacion = new(TimeSpan.FromSeconds(1));
-                Func<Task> cancelada = () => ExecAsync($"sleep {sleep}", 30, cancelacion.Token);
+                Func<Task> cancelada = () => ExecAsync($"{anotados.AnotarGrupo}sleep {sleep}", 30, cancelacion.Token);
                 _ = await cancelada.Should().ThrowAsync<OperationCanceledException>();
-                NativeSshException plazoLocal = (await FluentActions.Awaiting(() => ExecAsync($"setsid sleep {sleep + 1} & wait", 1))
+                NativeSshException plazoLocal = (await FluentActions.Awaiting(() => ExecAsync($"{anotados.AnotarGrupo}setsid sleep {sleep + 1} & {anotados.AnotarUltimo}; wait", 1))
                     .Should().ThrowAsync<NativeSshException>()).Which;
                 ResultadoComando viva = await _herramientas.EjecutarAsync(Destino, "echo \"$NS_VIVA\"").ComoComando();
                 int conexiones = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas;
@@ -70,7 +71,7 @@ namespace NativeSsh.Test.Integracion
 
                 // La lectura cancelada conserva su canal (y su cupo) mientras su 'sleep' remoto vive: se espera al proceso
                 // de la que sigue en vuelo, no al contador.
-                Task<ResultadoCanalExec> enVuelo = ExecAsync($"sleep {sleep + 2}", 30);
+                Task<ResultadoCanalExec> enVuelo = ExecAsync($"{anotados.AnotarGrupo}sleep {sleep + 2}", 30);
                 await EsperasPrueba.EsperarHastaAsync(() => CanalesExecIntegracionTests.ProcesosSleepVivos(sleep + 2, sleep + 2).Length > 0);
                 await Task.Delay(300);
                 _ = await _gestor.DesconectarAsync(Destino);
@@ -89,8 +90,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep + 1);
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep + 2, sleep + 2);
+                anotados.Matar();
             }
         }
 
@@ -142,18 +142,19 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange: 'yes' no termina solo; su plazo remoto (30 s) es mucho mayor que lo que debe tardar todo.
             string marca = $"ns_tope_{Guid.NewGuid():N}";
+            using ProcesosAnotados anotados = new();
             Stopwatch reloj = Stopwatch.StartNew();
 
             try
             {
                 // Act
-                ResultadoCanalExec resultado = await ExecAsync($"yes {marca}", 30);
+                ResultadoCanalExec resultado = await ExecAsync($"{anotados.AnotarGrupo}yes {marca}", 30);
                 TimeSpan duracion = reloj.Elapsed;
-                string vivos = BashLocal.Ejecutar($"pgrep -f '^yes {marca}$' || true");
+                string[] vivos = anotados.Vivos(o => o == $"yes {marca}");
                 for (int i = 0; i < 50 && vivos.Length > 0; i++)
                 {
                     await Task.Delay(100);
-                    vivos = BashLocal.Ejecutar($"pgrep -f '^yes {marca}$' || true");
+                    vivos = anotados.Vivos(o => o == $"yes {marca}");
                 }
 
                 // Assert: al superar el tope se cierra el canal, así que 'yes' muere al escribir y la lectura no espera a su
@@ -164,7 +165,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                _ = BashLocal.Ejecutar($"pkill -KILL -f '^yes {marca}$' || true");
+                anotados.Matar();
             }
         }
 
@@ -174,8 +175,9 @@ namespace NativeSsh.Test.Integracion
             // Arrange: lectura muda con plazo remoto de 3 s; su canal no termina de cerrarse hasta que el servidor mata el
             // proceso, y quien cancela no debe esperar a eso (el cierre nunca va en el callback del token).
             long sleep = 630_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
             using CancellationTokenSource cancelacion = new();
-            Task<ResultadoCanalExec> lectura = ExecAsync($"sleep {sleep}", 3, cancelacion.Token);
+            Task<ResultadoCanalExec> lectura = ExecAsync($"{anotados.AnotarGrupo}sleep {sleep}", 3, cancelacion.Token);
 
             try
             {
@@ -192,7 +194,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
             }
         }
 
@@ -201,13 +203,14 @@ namespace NativeSsh.Test.Integracion
         {
             // Arrange
             long sleep = 620_000 + Random.Shared.Next(10_000);
+            using ProcesosAnotados anotados = new();
             using CancellationTokenSource cancelacion = new(TimeSpan.FromSeconds(1));
             Stopwatch reloj = Stopwatch.StartNew();
 
             try
             {
                 // Act: se cancela a 1 s; el plazo remoto (3 s) es lo único que mata el proceso.
-                Func<Task> cancelada = () => ExecAsync($"sleep {sleep}", 3, cancelacion.Token);
+                Func<Task> cancelada = () => ExecAsync($"{anotados.AnotarGrupo}sleep {sleep}", 3, cancelacion.Token);
                 _ = await cancelada.Should().ThrowAsync<OperationCanceledException>();
                 string vivosTrasCancelar = CanalesExecIntegracionTests.ProcesosSleepVivos(sleep, sleep);
                 string vivos = await CanalesExecIntegracionTests.EsperarSinProcesosSleepAsync(sleep, sleep);
@@ -219,7 +222,7 @@ namespace NativeSsh.Test.Integracion
             }
             finally
             {
-                CanalesExecIntegracionTests.MatarProcesosSleep(sleep, sleep);
+                anotados.Matar();
             }
         }
     }

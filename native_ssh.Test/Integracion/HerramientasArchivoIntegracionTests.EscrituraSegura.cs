@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
@@ -273,7 +272,7 @@ namespace NativeSsh.Test.Integracion
             "esac\nexec /usr/bin/cat \"$@\"";
 
         // Acción del 'cat' falso que se queda esperando hasta 'segundos' (un 'read' de bash sobre una FIFO sin escritor, en
-        // el propio proceso del falso, que así se puede localizar con pgrep) y después falla: solo termina antes si una
+        // el propio proceso del falso, que así se puede localizar por su pid anotado) y después falla: solo termina antes si una
         // señal lo mata (no si la hereda ignorada, como en la trampa de salida), y nunca da por buena una copia a medias.
         private string EsperaInterrumpible(int segundos = 20)
         {
@@ -283,15 +282,10 @@ namespace NativeSsh.Test.Integracion
             return $"read -t {segundos} -r _ <> '{fifo}'; exit 1";
         }
 
-        // Procesos cuya línea de órdenes contiene 'texto' (sin pasar por un shell, que también lo contendría).
-        private static bool HayProcesos(string texto)
-        {
-            ProcessStartInfo inicio = new("pgrep", ["-f", "--", texto]) { RedirectStandardOutput = true };
-            using Process proceso = Process.Start(inicio)!;
-            string salida = proceso.StandardOutput.ReadToEnd();
-            proceso.WaitForExit();
-            return salida.Trim().Length > 0;
-        }
+        // Comandos falsos vivos cuya línea de órdenes contiene 'texto' (el primero, el que arrancó antes).
+        private string[] ProcesosFalsos(string texto) => _falsos.Vivos(o => o.Contains(texto, StringComparison.Ordinal));
+
+        private bool HayProcesos(string texto) => ProcesosFalsos(texto).Length > 0;
 
         [GeneratedRegex("petición ([0-9a-f]{32})", RegexOptions.CultureInvariant)]
         private static partial Regex RegexIdPeticion();
