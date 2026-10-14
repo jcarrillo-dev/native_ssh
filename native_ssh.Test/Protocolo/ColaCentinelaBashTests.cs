@@ -369,6 +369,62 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
+        // WS2 en el shell PTY. Un terminal que trunca las líneas largas (el de Linux, en modo canónico, tira lo que pasa de 4095
+        // bytes y conserva el salto) no puede cortar un envío: ninguna de sus líneas llega a ese tamaño, por largo que sea el
+        // comando (el base64 va en líneas de MaxBase64PorLinea).
+        [Fact]
+        public void EnvioLargo_NingunaLineaLlegaAlLimiteDelTerminal()
+        {
+            // Arrange
+            string comando = string.Concat(Enumerable.Repeat("echo 'línea con € y ñ'; ", 4000));
+            ArrayBufferWriter<byte> envio = new();
+
+            // Act
+            ConstructorComando.EscribirComando(comando, Guid.NewGuid(), _centinela, envio);
+
+            // Assert
+            int maxima = Encoding.UTF8.GetString(envio.WrittenSpan).Split('\n').Max(Encoding.UTF8.GetByteCount);
+            _ = maxima.Should().BeLessThan(4095);
+        }
+
+        // Si aun así una línea del base64 llegara cortada (perdiendo su final, también la comilla de cierre), no se ejecuta
+        // nada del comando: sin la comilla, bash sigue leyendo el valor en las líneas siguientes y el envío no llega a
+        // evaluarse (el shell queda esperando la comilla: el comando agotaría su plazo); con ella, la longitud no cuadra (997).
+        [Theory]
+        [InlineData(0, 1)]
+        [InlineData(0, 2)]
+        [InlineData(0, 1000)]
+        [InlineData(1, 1)]
+        [InlineData(1, 4)]
+        [InlineData(1, 1001)]
+        [InlineData(2, 1)]
+        [InlineData(2, 33)]
+        public async Task LineaDelBase64Truncada_NoSeEjecutaNadaDelComando(int indiceLinea, int perdidos)
+        {
+            // Arrange: tres líneas de base64; la primera línea del comando deja el efecto.
+            string testigo = Testigo("truncada");
+            ArrayBufferWriter<byte> envio = new();
+            ConstructorComando.EscribirComando($"touch {testigo}\n: '{new string('x', ConstructorComando.BytesPorLinea * 2)}'\necho HECHO", Guid.NewGuid(), _centinela, envio);
+            List<string> lineas = [.. Encoding.UTF8.GetString(envio.WrittenSpan).Split('\n')];
+            List<int> base64 = [.. lineas.Select((l, i) => (l, i)).Where(p => p.l.StartsWith("__ns_b", StringComparison.Ordinal)).Select(p => p.i)];
+            _ = base64.Should().HaveCount(3);
+            string linea = lineas[base64[indiceLinea]];
+            lineas[base64[indiceLinea]] = linea[..Math.Max(0, linea.Length - perdidos)];
+            string fichero = Path.Combine(_directorio, "entrada");
+            await File.WriteAllTextAsync(fichero, string.Join('\n', lineas) + "echo DESPUES\n");
+            ProcessStartInfo inicio = new("bash", ["--norc", "--noprofile", "-c", "exec bash --norc --noprofile -s < \"$1\"", "ns", fichero]) { RedirectStandardOutput = true, RedirectStandardError = true };
+
+            // Act
+            using Process bash = Process.Start(inicio)!;
+            Task<string> errores = bash.StandardError.ReadToEndAsync();
+            string salida = await bash.StandardOutput.ReadToEndAsync().WaitAsync(Limite);
+            await bash.WaitForExitAsync().WaitAsync(Limite);
+
+            // Assert
+            _ = File.Exists(testigo).Should().BeFalse(await errores);
+            _ = salida.Should().NotContain("HECHO");
+        }
+
         // El base64 llega con la longitud esperada pero su final no es el del envío: otro lector se comió caracteres y bash
         // completó el valor con texto que venía detrás (la línea siguiente, si se come el salto). Lo único que un lector
         // puede hacer es quitar bytes, y lo que bash añade solo puede venir después, así que el final cambia siempre: el

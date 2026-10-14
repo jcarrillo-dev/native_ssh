@@ -611,6 +611,14 @@ namespace NativeSsh.Sesion
                 apertura = new AperturaExec(this);
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, apertura.Confirmar, token);
                 ResultadoCanalExec resultado = await ejecucion.WaitAsync(token).ConfigureAwait(false);
+                // El programa arrancó con todos sus argumentos (ConstructorComandoExec): su marca no es del script.
+                if (ConstructorComandoExec.TryQuitarMarcaInicio(resultado.Errores, out ReadOnlyMemory<byte> errores))
+                    return resultado with { Errores = errores };
+
+                // WS2: el servidor truncó la línea de órdenes; el programa lo vio antes de ejecutar nada.
+                if (ConstructorComandoExec.IsTruncado(resultado.CodigoSalida, resultado.Salida.Span, resultado.Errores.Span))
+                    throw new NativeSshException(DescribirComandoTruncado(comando.Length));
+
                 // Sin bash en el servidor, el shell del usuario (con -c, sin login) no encuentra el 'bash' del comando: 127,
                 // nada en stdout y su error en stderr. Se dice la causa en lugar de devolver ese stderr crudo.
                 return resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash
@@ -647,6 +655,9 @@ namespace NativeSsh.Sesion
                 }
             }
         }
+
+        private string DescribirComandoTruncado(int longitud) =>
+            $"El servidor {Destino.Clave} truncó el comando de native_ssh ({longitud} caracteres): su línea de órdenes tiene un límite de longitud (el sshd de Windows, por ejemplo, la corta hacia los 8191 caracteres) y no llegaron todos sus argumentos. native_ssh lo comprueba antes de ejecutar nada. No se ejecutó nada.";
 
         private string DescribirTiempoAgotadoExec(EtapaExecEnum etapa, TimeSpan timeout)
         {

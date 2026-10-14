@@ -539,6 +539,49 @@ namespace NativeSsh.Test.Sesion
             _ = otro.CodigoSalida.Should().Be(127, "otro programa que falta no es falta de bash");
         }
 
+        // WS2: el programa del canal exec sale con CodigoComandoTruncado y su marca si no le llegaron todos los argumentos (el
+        // servidor cortó la línea de órdenes): no se ejecutó nada y el error lo dice, sin devolver el código como del script.
+        [Fact]
+        public async Task CanalExec_ComandoTruncadoPorElServidor_ElErrorLoDiceYQueNoSeEjecutoNada()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(c => c.EndsWith("\ntruncado", StringComparison.Ordinal) ? new(ConstructorComandoExec.MarcaTruncado, ConstructorComandoExec.CodigoComandoTruncado)
+                : c.EndsWith("\notro-97", StringComparison.Ordinal) ? new("Error: otra cosa", ConstructorComandoExec.CodigoComandoTruncado)
+                : Guion(c));
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("truncado", TimeSpan.FromSeconds(10), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoCanalExec otro = await sesion.EjecutarExecAsync("otro-97", TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            // Assert
+            _ = error.Message.Should().Contain("truncó el comando").And.Contain("No se ejecutó nada").And.Contain(" caracteres");
+            _ = otro.CodigoSalida.Should().Be(ConstructorComandoExec.CodigoComandoTruncado, "el código sin la marca es del script");
+        }
+
+        // La marca de inicio del programa (en stderr, antes que nada del script) no llega a quien lee el resultado, también
+        // con algo que el shell de login escribiera antes.
+        [Fact]
+        public async Task CanalExec_QuitaLaMarcaDeInicioDeLosErrores()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(c => c.EndsWith("\ncon-marca", StringComparison.Ordinal) ? new($"{ConstructorComandoExec.MarcaInicio}\nhola\nError: uno", 3)
+                : c.EndsWith("\ncon-ruido", StringComparison.Ordinal) ? new($"Error: ruido del login\n{ConstructorComandoExec.MarcaInicio}\nError: dos", 0)
+                : Guion(c));
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            ResultadoCanalExec conMarca = await sesion.EjecutarExecAsync("con-marca", TimeSpan.FromSeconds(10), CancellationToken.None);
+            ResultadoCanalExec conRuido = await sesion.EjecutarExecAsync("con-ruido", TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            // Assert
+            _ = Encoding.UTF8.GetString(conMarca.Errores.Span).Should().Be("Error: uno\n");
+            _ = Encoding.UTF8.GetString(conMarca.Salida.Span).Should().Be("hola");
+            _ = conMarca.CodigoSalida.Should().Be(3);
+            _ = Encoding.UTF8.GetString(conRuido.Errores.Span).Should().Be("Error: ruido del login\nError: dos\n");
+        }
+
         // IsShellInicializado (la causa del rechazo de una entrada, HerramientasSsh.MensajeEntradaNoEnviada): falso sin shell y
         // con un shell que no terminó de inicializarse; verdadero en cuanto la inicialización termina.
         [Fact]
