@@ -99,7 +99,7 @@ namespace NativeSsh.Test.Integracion
             _ = soloLectura.Estado.Should().Be(EstadoPeticionEnum.Completado, soloLectura.Aviso);
 
             // Act
-            Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, null));
+            Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, ""));
             string pwd = await PwdDelShellAsync(herramientas, destino);
 
             // Assert

@@ -154,7 +154,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", null))
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", ""))
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
@@ -262,7 +262,7 @@ namespace NativeSsh.Test.Herramientas
             // Arrange
             _respuestaVolverAHome = new(string.Empty, 0, ComportamientoFalsoEnum.Colgado);
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
-            Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", null);
+            Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "");
             await EsperarEjecutandoAsync("unset __NS_CWD");
 
             // Act
@@ -286,7 +286,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", null))
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.FijarDirectorioAsync("servidor", ""))
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert

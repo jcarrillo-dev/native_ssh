@@ -1080,7 +1080,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
             _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
             string conDirectorio = ScriptExec.Decodificar(_fabrica.Ultima!.ComandosExec.Last());
-            _ = await _herramientas.FijarDirectorioAsync("servidor", null);
+            _ = await _herramientas.FijarDirectorioAsync("servidor", "");
             _ = await _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3);
             string sinDirectorio = ScriptExec.Decodificar(_fabrica.Ultima!.ComandosExec.Last());
 
@@ -1925,13 +1925,11 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("readlink --", StringComparison.Ordinal));
         }
 
-        [Theory]
-        [InlineData(null)]
-        [InlineData("")]
-        public async Task SetCwd_RutaVaciaONull_RestableceHome(string? ruta)
+        [Fact]
+        public async Task SetCwd_RutaVacia_RestableceHome()
         {
             // Act
-            ResultadoDirectorioTrabajo resultado = await _herramientas.FijarDirectorioAsync("servidor", ruta);
+            ResultadoDirectorioTrabajo resultado = await _herramientas.FijarDirectorioAsync("servidor", "");
 
             // Assert
             _ = resultado.Should().Be(new ResultadoDirectorioTrabajo("ana@servidor:22", null, "Directorio de trabajo persistente restablecido a $HOME (~)."));

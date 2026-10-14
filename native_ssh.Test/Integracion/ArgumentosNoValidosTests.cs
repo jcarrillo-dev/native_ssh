@@ -199,6 +199,32 @@ namespace NativeSsh.Test.Integracion
             _ = vacio.Should().Contain("respuesta=[]");
         }
 
+        // 'ruta' null (o sin 'ruta') en ssh_set_cwd: el SDK lo enlazaba y el directorio de trabajo volvía a $HOME. Se rechaza
+        // sin cambiarlo (un null no activa una acción con efecto); volver a $HOME a propósito es ruta "" (medido aquí).
+        [Fact]
+        public async Task RutaNullEnSetCwd_SeRechazaSinCambiarDeDirectorio()
+        {
+            // Arrange
+            (bool isErrorFijar, string fijar) = await _cliente!.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = _directorio });
+
+            // Act
+            (bool isErrorNull, string conNull) = await _cliente.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = null });
+            (bool isErrorSin, string sinRuta) = await _cliente.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino });
+            (_, string pwd) = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "pwd" });
+            (bool isErrorVacia, string vacia) = await _cliente.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = "" });
+            (_, string pwdHome) = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "pwd" });
+
+            // Assert
+            _ = isErrorFijar.Should().BeFalse(fijar);
+            _ = (isErrorNull, isErrorSin).Should().Be((true, true));
+            _ = conNull.Should().Contain("'ruta' llegó como null").And.Contain("ruta: \"\"");
+            _ = sinRuta.Should().Contain("ruta");
+            _ = pwd.Should().Contain(_directorio);
+            _ = isErrorVacia.Should().BeFalse(vacia);
+            _ = vacia.Should().Contain("restablecido a $HOME");
+            _ = pwdHome.Should().Contain(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)).And.NotContain(_directorio);
+        }
+
         [Fact]
         public async Task NullEnUnTextoObligatorio_LoDecideLaHerramienta()
         {

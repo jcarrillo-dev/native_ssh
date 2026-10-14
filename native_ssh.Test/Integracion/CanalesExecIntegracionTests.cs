@@ -273,7 +273,7 @@ namespace NativeSsh.Test.Integracion
             string lectura = await _herramientas.LeerArchivoAsync(Destino, "relativo.txt");
             _ = _herramientas.ReiniciarShell(Destino);
             ResultadoComando pwd = await _herramientas.EjecutarAsync(Destino, "pwd; echo \"$__NS_CWD\"").ComoComando();
-            _ = await _herramientas.FijarDirectorioAsync(Destino, null);
+            _ = await _herramientas.FijarDirectorioAsync(Destino, "");
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync(Destino, "relativo.txt"))
                 .Should().ThrowAsync<NativeSshException>()).Which;
 

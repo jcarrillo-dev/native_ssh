@@ -819,7 +819,7 @@ namespace NativeSsh.Test.Integracion
                 _ = pwd1.Salida.Trim().Should().Be(dirTemporal);
 
                 // Act 2: Restablecer a HOME con null
-                ResultadoDirectorioTrabajo resReset = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, null);
+                ResultadoDirectorioTrabajo resReset = await herramientas.FijarDirectorioAsync(sshd.Destino.Clave, "");
 
                 // Assert 2: Mensaje de confirmación y pwd devuelve HOME
                 _ = resReset.Directorio.Should().BeNull();

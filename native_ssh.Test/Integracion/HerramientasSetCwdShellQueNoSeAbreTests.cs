@@ -66,7 +66,7 @@ namespace NativeSsh.Test.Integracion
             _ = herramientas.ReiniciarShell(destino);
 
             // Act
-            Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, isConRuta ? otro : null));
+            Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, isConRuta ? otro : ""));
             string lectura = await herramientas.LeerArchivoAsync(destino, "marca.txt");
 
             // Assert

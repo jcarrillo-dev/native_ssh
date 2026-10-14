@@ -1899,15 +1899,20 @@ namespace NativeSsh.Herramientas
         [Description("Herramienta canónica y obligatoria para anclar el espacio de trabajo persistente (__NS_CWD) al inicio de la inspección de un repositorio. Valida en remoto que la ruta exista y sea un directorio, y posiciona automáticamente todos los comandos siguientes (ssh_exec y las rutas relativas de las demás herramientas) sin necesidad de encadenar 'cd dir &&'. Se mantiene aunque el shell se recree (ssh_reset_shell, shell perdido) hasta ssh_disconnect. Pasa vacío/null para volver a $HOME.")]
         public async Task<ResultadoDirectorioTrabajo> FijarDirectorioAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
-            [Description("Ruta remota a establecer como espacio de trabajo persistente. Si es null o vacía, restablece a $HOME (~).")] string? ruta = null,
+            [Description("Ruta remota a establecer como espacio de trabajo persistente. Obligatoria: para restablecer a $HOME (~), pásala vacía (\"\").")] string ruta,
             CancellationToken cancellationToken = default)
         {
             DestinoSsh resuelto = gestor.ParsearDestino(destino);
             string clave = resuelto.Clave;
             string claveSesion = resuelto.ClaveSesion;
+            // El SDK enlaza un null tal cual (ValidadorArgumentos.IsDelTipo): un null no restablece el directorio, hay que
+            // pedirlo con "".
+            if (ruta is null)
+                throw new NativeSshException("'ruta' llegó como null: no se ha cambiado el directorio de trabajo. Para restablecerlo a $HOME (~) a propósito, pasa ruta: \"\".");
+
             SesionShell? sesionInicial = SesionDe(claveSesion);
             string? guardado = sesionInicial?.DirectorioTrabajo;
-            if (string.IsNullOrEmpty(ruta))
+            if (ruta.Length == 0)
             {
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).

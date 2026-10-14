@@ -233,7 +233,7 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             (bool isErrorFijar, string fijar) = await _cliente!.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = _directorio });
             string idFijar = await IdEnEstadoAsync("ssh_set_cwd");
-            (bool isErrorHome, string home) = await _cliente.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino });
+            (bool isErrorHome, string home) = await _cliente.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = "" });
             string idHome = await IdEnEstadoAsync("ssh_set_cwd");
 
             // Act y Assert
