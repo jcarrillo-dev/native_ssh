@@ -101,6 +101,8 @@ namespace NativeSsh.Comun
             try
             {
                 proceso.StandardInput.Close();
+                // La salida de errores se lee y se descarta: si se llenara su tubería, el hijo se quedaría bloqueado.
+                _ = proceso.StandardError.BaseStream.CopyToAsync(Stream.Null, CancellationToken.None);
                 string salida = await proceso.StandardOutput.ReadToEndAsync(plazo).ConfigureAwait(false);
                 await proceso.WaitForExitAsync(plazo).ConfigureAwait(false);
                 return new ResultadoResolucion(Interpretar(salida, proceso.ExitCode));
@@ -192,7 +194,9 @@ namespace NativeSsh.Comun
         private static string NombreFamilia(string codigo) => codigo switch { "4" => "A", "6" => "AAAA", _ => "A y AAAA" };
 
         // Lo que escribe el hijo: "ok" y una dirección por línea, "nodata" (sin direcciones de esa familia) o "fallo <código>".
-        // Cualquier otra cosa, o un código de salida distinto de 0, es un fallo.
+        // Cualquier otra cosa, o un código de salida distinto de 0, es un fallo. Cada dirección, solo escrita como la escribe
+        // el hijo (IPAddress.ToString: IPv4 con sus 4 números, IPv6 en su forma canónica, sin zona): una salida cortada o
+        // ajena ('10.0.0', que se leería como 10.0.0.0) es un fallo.
         internal static IPAddress[]? Interpretar(string salida, int codigoSalida)
         {
             string[] lineas = salida.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -207,8 +211,13 @@ namespace NativeSsh.Comun
 
             IPAddress[] direcciones = new IPAddress[lineas.Length - 1];
             for (int i = 1; i < lineas.Length; i++)
-                if (!IPAddress.TryParse(lineas[i], out direcciones[i - 1]!))
+            {
+                bool isCanonica = IPAddress.TryParse(lineas[i], out IPAddress? direccion) && direccion.ToString() == lineas[i] && !lineas[i].Contains('%', StringComparison.Ordinal);
+                if (!isCanonica)
                     return null;
+                direcciones[i - 1] = direccion!;
+            }
+
             return direcciones;
         }
 

@@ -185,6 +185,30 @@ namespace NativeSsh.Test.Comun
             }
         }
 
+        // Un hijo que escribe mucho por su salida de errores (más que lo que cabe en la tubería) no se queda bloqueado: se lee
+        // y se descarta, y su resultado vale.
+        [Fact]
+        public async Task HijoQueEscribeMuchoPorErrores_NoSeBloquea()
+        {
+            // Arrange
+            static Process? Lanzar(string nombre, string familia)
+            {
+                ProcessStartInfo inicio = new("sh") { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                inicio.ArgumentList.Add("-c");
+                inicio.ArgumentList.Add("head -c 1000000 /dev/zero >&2; printf 'ok\\n10.0.0.5\\n'");
+                return Process.Start(inicio);
+            }
+
+            ResolutorEnProceso resolutor = new(Lanzar, ResolutorEnProceso.Matar, ResolutorEnProceso.RecogerAsync);
+            using CancellationTokenSource plazo = new(TimeSpan.FromSeconds(3));
+
+            // Act
+            ResultadoResolucion resultado = await resolutor.ResolverAsync("prod.ejemplo", AddressFamily.InterNetwork, plazo.Token);
+
+            // Assert
+            _ = resultado.Direcciones.Should().Equal(IPAddress.Parse("10.0.0.5"));
+        }
+
         [Theory]
         [InlineData("ok\n127.0.0.1\n::1\n", 0, new[] { "127.0.0.1", "::1" })]
         [InlineData("nodata\n", 0, new string[0])]
@@ -198,6 +222,11 @@ namespace NativeSsh.Test.Comun
         [InlineData("ok\n127.0.0.1\n", 1)]
         [InlineData("", 0)]
         [InlineData("cualquier cosa", 0)]
+        [InlineData("ok\n10.0.0\n", 0)]
+        [InlineData("ok\n010.0.0.1\n", 0)]
+        [InlineData("ok\n0:0::1\n", 0)]
+        [InlineData("ok\nfe80::1%2\n", 0)]
+        [InlineData("ok\n 10.0.0.1\n", 0)]
         public void Interpretar_LoDemasEsFallo(string salida, int codigo) =>
             _ = ResolutorEnProceso.Interpretar(salida, codigo).Should().BeNull();
 
