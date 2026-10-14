@@ -472,13 +472,14 @@ namespace NativeSsh.Test.Herramientas
         {
             // Arrange
             using SemaphoreSlim bloqueo = new(0);
-            if (fase == "conexion")
+            bool isConexion = fase == "conexion";
+            if (isConexion)
                 _fabrica.BloqueoConexion = bloqueo;
             else
                 _fabrica.BloqueoAperturaShell = bloqueo;
             ResultadoComando comando = await _herramientas.EjecutarAsync("servidor", "pregunta", esperarSegundos: 0).ComoComando();
             Peticion peticion = _gestor.BuscarPeticion(comando.Id);
-            await EsperasPrueba.EsperarHastaAsync(() => fase == "conexion" ? _fabrica.ConexionesRetenidas == 1 : _fabrica.Ultima?.AperturasShellRetenidas == 1);
+            await EsperasPrueba.EsperarHastaAsync(() => isConexion ? _fabrica.ConexionesRetenidas == 1 : _fabrica.Ultima?.AperturasShellRetenidas == 1);
 
             // Act
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0).ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;

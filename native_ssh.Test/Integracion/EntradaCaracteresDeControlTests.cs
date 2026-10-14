@@ -116,7 +116,8 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine($"  (1) fin {fin.Estado} {fin.CodigoSalida} '{fin.Salida}' aviso '{fin.Aviso}'");
             _ = fin.Estado.Should().Be(EstadoPeticionEnum.Completado);
             _ = fin.CodigoSalida.Should().Be(Math.Max(codigoEnMedio, 0));
-            _ = await SiguienteAsync(h, destino, lento.Id, codigoEnMedio < 0 ? 0 : descartadasEnMedio, "uno");
+            bool isEnMedioRechazado = codigoEnMedio < 0;
+            _ = await SiguienteAsync(h, destino, lento.Id, isEnMedioRechazado ? 0 : descartadasEnMedio, "uno");
             _ = (File.Exists(uno) || File.Exists(dos)).Should().BeFalse("nada de lo tecleado se ejecuta como orden");
 
             // (2): al final de lo tecleado (enter=false), lo siguiente que llega es el envío del comando siguiente.
@@ -132,7 +133,7 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando lector = await h.EjecutarAsync(destino, "head -n 1 | od -An -tx1 | tr -d ' \\n'", esperarSegundos: 0).ComoComando();
             await Task.Delay(400);
             await EnviarOEsperarRechazoAsync(h, lector.Id, $"a{caracter}b", enter: true, codigoEnMedio);
-            if (codigoEnMedio < 0)
+            if (isEnMedioRechazado)
                 _ = await h.EnviarEntradaAsync(lector.Id, "b", esperarSegundos: 15).ComoComando();
             fin = await h.LeerSalidaAsync(lector.Id, esperarSegundos: 15).ComoComando();
             salida.WriteLine($"  (3) fin {fin.Estado} {fin.CodigoSalida} '{fin.Salida}' aviso '{fin.Aviso}'");

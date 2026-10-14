@@ -38,7 +38,8 @@ namespace NativeSsh.Test.Integracion
             string fifo = Path.Combine(carpeta, "fifo");
             _ = Bash($"mkfifo '{fifo}'");
             string ruta = Path.Combine(carpeta, destino);
-            if (destino == "enlace_fifo")
+            bool isEnlaceFifo = destino == "enlace_fifo";
+            if (isEnlaceFifo)
                 _ = File.CreateSymbolicLink(ruta, "fifo");
             else if (destino == "enlace_dev_null")
                 _ = File.CreateSymbolicLink(ruta, "/dev/null");
@@ -61,7 +62,7 @@ namespace NativeSsh.Test.Integracion
             _ = Bash($"[ -p '{fifo}' ] && echo fifo").Should().Be("fifo");
             _ = Directory.GetFileSystemEntries(carpeta).Should().BeEquivalentTo(entradas);
             if (destino != "fifo")
-                _ = new FileInfo(ruta).LinkTarget.Should().Be(destino == "enlace_fifo" ? "fifo" : "/dev/null");
+                _ = new FileInfo(ruta).LinkTarget.Should().Be(isEnlaceFifo ? "fifo" : "/dev/null");
         }
 
         // PATH del shell remoto con todo /usr/bin salvo las herramientas indicadas.
@@ -629,10 +630,11 @@ namespace NativeSsh.Test.Integracion
             string carpeta = Ruta("datos");
             _ = Directory.CreateDirectory(carpeta);
             string archivo = Path.Combine(carpeta, "f.txt");
-            if (caso == "sobrescribir_existente")
+            bool isSobrescribirExistente = caso == "sobrescribir_existente";
+            if (isSobrescribirExistente)
                 await File.WriteAllTextAsync(archivo, "antes\n");
             HerramientasSsh herramientas = Herramientas();
-            if (caso == "sobrescribir_existente")
+            if (isSobrescribirExistente)
                 await SustituirComandoAsync(herramientas, "mv", $"case \" $* \" in *' --help '*) exec /usr/bin/mv \"$@\" ;; esac\nrm -f -- '{archivo}'; mkdir -- '{archivo}'\nexec /usr/bin/mv \"$@\"");
             else
                 await SustituirComandoAsync(herramientas, "chmod", $"[ -e '{archivo}' ] || mkdir -- '{archivo}'\nexec /usr/bin/chmod \"$@\"");
@@ -783,7 +785,8 @@ namespace NativeSsh.Test.Integracion
                 await QuitarDelPathAsync(herramientas, excluidas);
             if (isSudo)
                 await SimularSudoAsync(herramientas);
-            string accion = cambio == "modificado" ? $"printf 'concurrente\\n' >> '{archivo}'" : $"rm -f -- '{archivo}'";
+            bool isModificado = cambio == "modificado";
+            string accion = isModificado ? $"printf 'concurrente\\n' >> '{archivo}'" : $"rm -f -- '{archivo}'";
             string marca = Ruta("marca");
             await SustituirComandoAsync(herramientas, "mktemp", $"[ -e '{marca}' ] || {{ {accion}; : > '{marca}'; }}\nexec /usr/bin/mktemp \"$@\"");
 
@@ -794,11 +797,11 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = error.Message.Should().Contain("cambió desde la lectura").And.Contain("No se ha modificado");
             _ = File.Exists(marca).Should().BeTrue();
-            if (cambio == "modificado")
+            if (isModificado)
                 _ = (await File.ReadAllTextAsync(archivo)).Should().Be("objetivo\nsegunda\nconcurrente\n");
             else
                 _ = File.Exists(archivo).Should().BeFalse();
-            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(cambio == "modificado" ? 1 : 0);
+            _ = Directory.GetFileSystemEntries(carpeta).Should().HaveCount(isModificado ? 1 : 0);
         }
 
         // Sin sha256sum, la comprobación con cksum deja pasar el archivo que no cambió.

@@ -105,12 +105,13 @@ namespace NativeSsh.Test.Integracion
             string archivo = Path.Combine(_directorio, $"especial_{modo}.txt");
             await File.WriteAllTextAsync(archivo, Original);
             await ExecAsync("set() { builtin set \"$@\"; }; export -f set; true");
-            JsonObject argumentos = modo == "reemplazar"
+            bool isReemplazo = modo == "reemplazar";
+            JsonObject argumentos = isReemplazo
                 ? new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["targetContent"] = "objetivo", ["replacementContent"] = "x" }
                 : new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = modo == "sobrescribir", ["append"] = modo == "anexar" };
 
             // Act
-            (bool isError, string respuesta) = await _cliente!.LlamarAsync(modo == "reemplazar" ? "ssh_replace_file_content" : "ssh_write_file", argumentos);
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync(isReemplazo ? "ssh_replace_file_content" : "ssh_write_file", argumentos);
             await ExecAsync("unset -f set; export -n set; true");
 
             // Assert

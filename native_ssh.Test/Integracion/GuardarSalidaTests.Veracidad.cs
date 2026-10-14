@@ -23,7 +23,8 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             ResultadoComando uno = await GuardarAsync(h, "echo uno");
             ResultadoComando dos = await GuardarAsync(h, "echo dos");
-            string rm = borrados == 1 ? $"rm -- '{uno.Archivo}'" : $"rm -- '{uno.Archivo}' '{dos.Archivo}'";
+            bool isUnoBorrado = borrados == 1;
+            string rm = isUnoBorrado ? $"rm -- '{uno.Archivo}'" : $"rm -- '{uno.Archivo}' '{dos.Archivo}'";
             _ = await h.EjecutarAsync(Destino, rm, esperarSegundos: 30).ComoComando();
 
             // Act
@@ -33,7 +34,7 @@ namespace NativeSsh.Test.Integracion
             salida.WriteLine(desconexion.Mensaje);
             _ = File.Exists(dos.Archivo).Should().BeFalse();
             _ = desconexion.Mensaje.Should().NotContain("2 archivo(s)");
-            string esperado = borrados == 1 ? "Se borraron del servidor los 1 archivo(s)" : "No quedaba";
+            string esperado = isUnoBorrado ? "Se borraron del servidor los 1 archivo(s)" : "No quedaba";
             _ = desconexion.Mensaje.Should().Contain(esperado);
         }
 

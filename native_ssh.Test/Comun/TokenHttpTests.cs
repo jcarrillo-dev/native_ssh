@@ -133,8 +133,9 @@ namespace NativeSsh.Test.Comun
         {
             // Arrange
             string ruta = Path.Combine(_directorio, tipo);
-            _ = tipo == "fifo" ? BashLocal.Ejecutar($"mkfifo -m 600 '{ruta}'") : Directory.CreateDirectory(ruta).FullName;
-            File.SetUnixFileMode(ruta, UnixFileMode.UserRead | UnixFileMode.UserWrite | (tipo == "fifo" ? UnixFileMode.None : UnixFileMode.UserExecute));
+            bool isFifo = tipo == "fifo";
+            _ = isFifo ? BashLocal.Ejecutar($"mkfifo -m 600 '{ruta}'") : Directory.CreateDirectory(ruta).FullName;
+            File.SetUnixFileMode(ruta, UnixFileMode.UserRead | UnixFileMode.UserWrite | (isFifo ? UnixFileMode.None : UnixFileMode.UserExecute));
 
             // Act
             (bool isCargado, string? error) = await CargarConPlazoAsync(Entorno(fichero: ruta));

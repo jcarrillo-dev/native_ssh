@@ -189,15 +189,16 @@ namespace NativeSsh.Test.Integracion
             // Act
             Task<ResultadoEscritura> reemplazo = herramientas.ReemplazarContenidoArchivoAsync(Destino, archivo, "original", "cambiado", cancellationToken: cancelacion.Token);
             await EsperasPrueba.EsperarHastaAsync(() => File.Exists(marca), TimeSpan.FromSeconds(20));
+            bool isToken = interrupcion == "token";
             if (interrupcion == "desconexion")
                 _ = await herramientas.DesconectarAsync(Destino);
-            else if (interrupcion == "token")
+            else if (isToken)
                 await cancelacion.CancelAsync();
             Exception? error = await Record.ExceptionAsync(() => reemplazo);
             await EsperasPrueba.EsperarHastaAsync(() => !HayProcesos(Ruta("bin/base64")), TimeSpan.FromSeconds(25));
 
             // Assert
-            _ = error.Should().BeAssignableTo(interrupcion == "token" ? typeof(OperationCanceledException) : typeof(NativeSshException));
+            _ = error.Should().BeAssignableTo(isToken ? typeof(OperationCanceledException) : typeof(NativeSshException));
             _ = error!.Message.Should().MatchRegex("petición [0-9a-f]{32}").And.EndWith($"No se ha modificado '{archivo}'.");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("original\n");
         }

@@ -65,7 +65,8 @@ namespace NativeSsh.Test.Integracion
             const string ContrasenaOtro = "otro-de-prueba";
             _ = entorno.Root("id \"$2\" >/dev/null 2>&1 || useradd -m \"$2\"; printf '%s:%s\\n' \"$2\" \"$3\" | chpasswd; cp /usr/bin/setpriv \"$1\" && setcap cap_setuid,cap_setgid+ep \"$1\"", programa, Otro, ContrasenaOtro);
             ResultadoComando enLaSesion = await herramientas.EjecutarAsync(entorno.Destino, "export NS_VIVO=si; echo \"$(id -un) $$ $PPID\"", esperarSegundos: 10).ComoComando();
-            string comando = via == "setpriv"
+            bool isSetpriv = via == "setpriv";
+            string comando = isSetpriv
                 ? $"exec {programa} --reuid={Otro} --regid={Otro} --clear-groups env -i PS1='{Otro}$ ' TERM=dumb bash --norc --noprofile -i"
                 : $"exec su - {Otro}";
             ResultadoComando conExec = await herramientas.EjecutarAsync(entorno.Destino, comando, timeoutSegundos: isPlazo ? 8 : 300, esperarSegundos: 2).ComoComando();
@@ -87,7 +88,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             string[] sesion = enLaSesion.Salida.Trim().Split(' ');
             _ = dentro.Salida.Should().Contain($"DENTRO {Otro} ");
-            if (via == "setpriv")
+            if (isSetpriv)
                 _ = dentro.Salida.Should().Contain($"DENTRO {Otro} {sesion[1]} {sesion[2]}", "setpriv no crea otro proceso: mismo $$ y $PPID");
             _ = interrumpido.Estado.Should().Be(isPlazo ? EstadoPeticionEnum.TiempoAgotado : EstadoPeticionEnum.Cancelado);
             _ = interrumpido.Aviso.Should().Contain("sustituyó al de la sesión con exec").And.Contain("se cerró el canal del shell");

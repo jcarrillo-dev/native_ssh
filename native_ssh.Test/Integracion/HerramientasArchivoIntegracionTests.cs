@@ -753,7 +753,8 @@ namespace NativeSsh.Test.Integracion
             // Arrange
             string archivo = Ruta("con_atributos.txt");
             await File.WriteAllTextAsync(archivo, "antes\n");
-            _ = Bash(tipo == "acl"
+            bool isAcl = tipo == "acl";
+            _ = Bash(isAcl
                 ? $"chmod 640 '{archivo}' && setfacl -m u:nobody:r '{archivo}'"
                 : $"setfattr -n user.marca -v valor '{archivo}'");
             string atributos = AclYAtributos(archivo);
@@ -766,7 +767,7 @@ namespace NativeSsh.Test.Integracion
                 : await herramientas.EscribirArchivoAsync(Destino, archivo, "despues\n", overwrite: true);
 
             // Assert: modo y grupo iguales; el inodo es el del temporal.
-            _ = atributos.Should().Contain(tipo == "acl" ? "user:nobody:r--" : "user.marca=\"valor\"");
+            _ = atributos.Should().Contain(isAcl ? "user:nobody:r--" : "user.marca=\"valor\"");
             _ = resultado.IsAtomica.Should().BeTrue();
             _ = resultado.Mensaje.Should().NotContain("no atómica");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("despues\n");

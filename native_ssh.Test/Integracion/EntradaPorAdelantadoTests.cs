@@ -616,7 +616,8 @@ namespace NativeSsh.Test.Integracion
             ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0).ComoComando();
             await Task.Delay(300);
             _ = await h.EnviarEntradaAsync(lento.Id, "descartada", esperarSegundos: 3).ComoComando();
-            string lectura = lineas == 1 ? "read -r x" : "read -r x; read -r x";
+            bool isUnaLinea = lineas == 1;
+            string lectura = isUnaLinea ? "read -r x" : "read -r x; read -r x";
             ResultadoComando hijo = await h.EjecutarAsync(destino, $"({lectura}; echo \"hijo:${{#x}}\") </dev/tty & sleep 0.3", esperarSegundos: 10).ComoComando();
 
             // Act
@@ -642,7 +643,7 @@ namespace NativeSsh.Test.Integracion
             }
 
             _ = (comandos[^1].Resultado.Estado, comandos[^1].Resultado.Salida).Should().Be((EstadoPeticionEnum.Completado, "comando2\n"));
-            if (lineas == 1)
+            if (isUnaLinea)
                 _ = (comandos[0].Resultado.Estado, comandos[0].Resultado.Salida.Contains("comando0\n", StringComparison.Ordinal)).Should().Be((EstadoPeticionEnum.Completado, true));
         }
 
