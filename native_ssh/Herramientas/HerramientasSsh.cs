@@ -323,9 +323,6 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
-            if (peticion.Herramienta is { } herramienta)
-                throw new NativeSshException(MensajePeticionInterna(peticion, herramienta, "no se envió la entrada (ssh_input es para los comandos de ssh_exec); para interrumpirla, ssh_cancel con este id"));
-
             // Un secreto con caracteres de control: lo que el comando no lea se descarta sin ejecutarse
             // (ConstructorComando.EscribirCola), pero un programa que lee línea a línea podría tomar una segunda línea como otra
             // respuesta y mostrarla o registrarla fuera del enmascarado, y un control que el terminal interpreta (Ctrl+C, Ctrl+U,
@@ -360,6 +357,11 @@ namespace NativeSsh.Herramientas
             }
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
+            // A una petición interna (p. ej. la contraseña que pide sudo en una escritura con sudo=true) la entrada se le envía,
+            // pero la respuesta no lleva su salida (MensajePeticionInterna).
+            if (peticion.Herramienta is { } herramienta)
+                return new CallToolResult { Content = [new TextContentBlock { Text = MensajePeticionInterna(peticion, herramienta, $"entrada enviada{(secreto ? " como secreto" : string.Empty)} (estado: {peticion.Estado}), pero su salida no se muestra") }] };
+
             ResultadoComando resultado = Resultado(peticion, desde);
             return DosBloques(secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado);
         }
@@ -461,7 +463,8 @@ namespace NativeSsh.Herramientas
         }
 
         // ssh_output, ssh_input y ssh_cancel sobre el id de una petición interna de una herramienta (Peticion.Herramienta): de
-        // qué herramienta es y que su resultado lo da ella, nunca su salida (Bloque ST); el aviso de la petición sí (p. ej. el
+        // qué herramienta es y que su resultado lo da ella, nunca su salida (Bloque ST). ssh_input y ssh_cancel actúan igual
+        // que con un comando (entrada, p. ej. la contraseña de sudo de una escritura con sudo=true; cancelación); el aviso de la petición sí (p. ej. el
         // de una escritura atascada en un servidor que no lee: solo ssh_disconnect la corta), que no lleva nada del archivo.
         internal static string MensajePeticionInterna(Peticion peticion, string herramienta, string accion) =>
             $"La petición {peticion.IdTexto} es interna de {herramienta} («{Recortar(peticion.Descripcion)}»): {accion}. Su resultado lo da la respuesta de {herramienta} (lo que hizo o, si falló, su error), no esta herramienta.{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}";

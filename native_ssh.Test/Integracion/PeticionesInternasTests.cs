@@ -50,8 +50,9 @@ namespace NativeSsh.Test.Integracion
                 .First(p => p.GetProperty("comando").GetString()!.StartsWith($"[{herramienta}]", StringComparison.Ordinal)).GetProperty("id").GetString()!;
         }
 
-        // ssh_output, ssh_input y ssh_cancel sobre el id: ninguna da la salida (ni el contenido ni su base64) y las tres dicen de
-        // qué herramienta es y que su resultado lo da ella.
+        // ssh_output, ssh_input y ssh_cancel sobre el id: ninguna da la salida (ni el contenido ni su base64); ssh_output y
+        // ssh_cancel dicen de qué herramienta es y que su resultado lo da ella (ssh_input, con la petición ya terminada, que no
+        // se envió nada).
         private async Task ComprobarSinSalidaAsync(string id, string herramienta)
         {
             (bool isErrorSalida, string salida) = await _cliente!.LlamarAsync("ssh_output", new JsonObject { ["id"] = id });
@@ -59,10 +60,12 @@ namespace NativeSsh.Test.Integracion
             (_, string cancelacion) = await _cliente.LlamarAsync("ssh_cancel", new JsonObject { ["id"] = id });
 
             _ = (isErrorSalida, isErrorEntrada).Should().Be((true, true));
+            _ = entrada.Should().Contain("No se envió la entrada");
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Contenido));
             foreach (string respuesta in new[] { salida, entrada, cancelacion })
-                _ = respuesta.Should().Contain($"interna de {herramienta}").And.Contain($"Su resultado lo da la respuesta de {herramienta}")
-                    .And.NotContain("CLAVE").And.NotContain(base64[..12]).And.NotContain("__NS_");
+                _ = respuesta.Should().NotContain("CLAVE").And.NotContain(base64[..12]).And.NotContain("__NS_");
+            foreach (string respuesta in new[] { salida, cancelacion })
+                _ = respuesta.Should().Contain($"interna de {herramienta}").And.Contain($"Su resultado lo da la respuesta de {herramienta}");
         }
 
         [Fact]
