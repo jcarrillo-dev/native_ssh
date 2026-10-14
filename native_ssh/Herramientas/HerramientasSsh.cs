@@ -2137,10 +2137,7 @@ namespace NativeSsh.Herramientas
             ExigirCompletada(peticionLectura, _ => sinModificar, isConSalida: false);
 
             if (peticionLectura.CodigoSalida != 0)
-            {
-                string salidaError = ReconstruirSalida(peticionLectura, out _).Trim();
-                throw new NativeSshException(string.IsNullOrWhiteSpace(salidaError) ? $"Error al leer el archivo para reemplazo (código {peticionLectura.CodigoSalida})." : salidaError);
-            }
+                throw new NativeSshException(MensajeErrorLecturaReplace(ReconstruirSalida(peticionLectura, out _), peticionLectura.CodigoSalida, ruta));
 
             string salidaLectura = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.");
             byte[] bytesLeidos = ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta);
@@ -2779,6 +2776,31 @@ namespace NativeSsh.Herramientas
                 : bytes;
         }
 
+        // El error de la lectura previa de ssh_replace_file_content que terminó con un código distinto de 0. Su salida es el
+        // archivo en base64 a partir del marcador de inicio, así que nunca se da entera: si aparece alguno de sus marcadores
+        // (el de inicio o el final: "__NS_B64_", que el base64 no contiene), solo lo anterior al primero, con el código; si no,
+        // el error que escribió el script (p. ej. «Error: el archivo no existe: ...») o el código. En los dos casos sin las
+        // líneas de 20 caracteres o más que son solo del alfabeto del base64: un 'printf' redefinido en el shell que no
+        // imprima los marcadores dejaría el base64 sin ellos.
+        internal static string MensajeErrorLecturaReplace(string salida, int codigo, string ruta)
+        {
+            int marcador = salida.IndexOf(PrefijoMarcaBase64, StringComparison.Ordinal);
+            bool isConMarcador = marcador >= 0;
+            StringBuilder texto = new();
+            foreach (string linea in (isConMarcador ? salida[..marcador] : salida).Split('\n'))
+            {
+                string limpia = linea.Trim();
+                bool isBase64 = limpia.Length >= 20 && !limpia.AsSpan().ContainsAnyExcept(CaracteresBase64);
+                if (limpia.Length > 0 && !isBase64)
+                    _ = texto.Append(texto.Length == 0 ? string.Empty : "\n").Append(limpia);
+            }
+
+            string sinModificar = $"No se ha modificado '{ruta}'.";
+            return isConMarcador
+                ? $"La lectura de '{ruta}' para el reemplazo terminó con código {codigo} después de empezar a dar el archivo; no se muestra su salida desde ahí (es el archivo en base64).{(texto.Length == 0 ? string.Empty : $" Antes escribió: {texto}")} {sinModificar}"
+                : texto.Length == 0 ? $"Error al leer el archivo para reemplazo (código {codigo})." : texto.ToString();
+        }
+
         // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
         private static string DecodificarArchivoUtf8(byte[] bytes, string ruta)
         {
@@ -3149,7 +3171,8 @@ namespace NativeSsh.Herramientas
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
         // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id (el de ssh_status) y, con isConSalida, lo
         // que escribió el script (sin las líneas de sus marcadores), ya que ssh_output no da la salida de una petición interna.
-        // isConSalida=false en la lectura previa de ssh_replace_file_content: su salida es el archivo en base64.
+        // isConSalida=false en la lectura previa de ssh_replace_file_content: su salida es el archivo en base64 (si termina con
+        // un código distinto de 0, el error lo da MensajeErrorLecturaReplace).
         // 'consecuencia' solo se calcula si la petición no se completó.
         private void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null, bool isConSalida = true)
         {

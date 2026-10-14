@@ -11,8 +11,8 @@ namespace NativeSsh.Test.Integracion
 {
     // Las peticiones internas de las herramientas que van por el shell (lectura y escritura de ssh_replace_file_content,
     // escritura de ssh_write_file, validación, export y vuelta a $HOME de ssh_set_cwd) salen en ssh_status con su id (para
-    // ssh_cancel), pero ninguna herramienta devuelve su salida: la lectura de replace es el archivo entero en base64, que el
-    // modelo puede no haber leído nunca. ssh_output, ssh_input y ssh_cancel sobre ese id dicen de qué herramienta es y que su
+    // ssh_cancel), pero ninguna otra herramienta devuelve su salida (ni la propia, en su error, la de la lectura): la lectura
+    // de replace es el archivo entero en base64, que el modelo puede no haber leído nunca. ssh_output, ssh_input y ssh_cancel sobre ese id dicen de qué herramienta es y que su
     // resultado lo da esa herramienta. Por el binario, con el sshd local.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
@@ -89,6 +89,42 @@ namespace NativeSsh.Test.Integracion
             _ = isErrorReplace.Should().BeTrue();
             _ = error.Should().NotContain("CLAVE");
             await ComprobarSinSalidaAsync(id, "ssh_replace_file_content");
+        }
+
+        // La lectura previa de replace termina con un código distinto de 0 después de imprimir el base64 (o parte): el error
+        // dice el código y, como mucho, lo que el script escribió antes del marcador de inicio; nunca el archivo. Un 'printf'
+        // exportado como función en el shell persistente (el 'bash -c' del script la importa) provoca el fallo: devolviendo 1
+        // en el marcador final, matando el script con SIGTERM en él o, además, sin imprimir ninguno de los dos marcadores.
+        [Theory]
+        [InlineData("*FIN*) return 1;;", "código 1")]
+        [InlineData("*FIN*) kill -TERM $$;;", "código 143")]
+        [InlineData("*INICIO*|*FIN*) return 1;;", "código 1")]
+        public async Task LecturaDeReplace_CodigoDistintoDeCeroTrasElBase64_NoDevuelveElArchivo(string caso, string codigo)
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, "secreto.env");
+            await File.WriteAllTextAsync(archivo, Contenido + "objetivo\n");
+            string funcion = caso.StartsWith("*INICIO*", StringComparison.Ordinal)
+                ? $"printf() {{ case \"$*\" in {caso} esac; builtin printf \"$@\"; }}"
+                : $"printf() {{ builtin printf \"$@\"; local r=$?; case \"$*\" in {caso} esac; return $r; }}";
+            (bool isErrorExec, string exec) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = $"{funcion}; export -f printf; echo listo" });
+
+            // Act
+            (bool isError, string error) = await _cliente.LlamarAsync("ssh_replace_file_content", new JsonObject
+            {
+                ["destino"] = Destino,
+                ["ruta"] = archivo,
+                ["targetContent"] = "objetivo",
+                ["replacementContent"] = "cambiado"
+            });
+            _ = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "unset -f printf; export -n printf" });
+
+            // Assert
+            string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Contenido + "objetivo\n"));
+            _ = isErrorExec.Should().BeFalse(exec);
+            _ = isError.Should().BeTrue(error);
+            _ = error.Should().Contain(codigo).And.NotContain(base64[..12]).And.NotContain(base64[^12..]).And.NotContain("__NS_B64_").And.NotContain("CLAVE");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Contenido + "objetivo\n");
         }
 
         [Fact]
