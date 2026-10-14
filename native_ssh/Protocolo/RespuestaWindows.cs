@@ -24,7 +24,30 @@ namespace NativeSsh.Protocolo
         // La versión del servidor de OpenSSH for Windows (el port de Microsoft, el de Windows Server y Windows 10/11).
         public const string MarcaVersionServidor = "OpenSSH_for_Windows";
 
-        public static bool IsVersionWindows(string? versionServidor) => versionServidor?.Contains(MarcaVersionServidor, StringComparison.Ordinal) == true;
+        // Solo el campo de versión del software de la identificación del protocolo ("SSH-<protocolo>-<software> <comentarios>",
+        // RFC 4253 4.2): ni un comentario ni el VersionAddendum de otro sshd cuentan.
+        public static bool IsVersionWindows(string? versionServidor)
+        {
+            if (versionServidor is null || !versionServidor.StartsWith("SSH-", StringComparison.Ordinal))
+                return false;
+
+            int guion = versionServidor.IndexOf('-', 4);
+            return guion > 0 && versionServidor.AsSpan(guion + 1).StartsWith(MarcaVersionServidor, StringComparison.Ordinal);
+        }
+
+        // La línea con que se abre el shell (ConstructorComando.EscribirInicializacion: el 'exec bash' y, en la línea siguiente,
+        // la que empieza por "PS1=") escrita como eco SIN el salto entre las dos: bajo ConPTY un '\n' no es Intro, así que cmd
+        // y PowerShell la muestran sin ejecutarla y pegada a la siguiente (medido, en cmd y en PowerShell 5.1, también en
+        // francés). Un bash, también el de Git Bash, termina la línea en su salto, la ejecuta y contesta al protocolo: ningún
+        // perfil suyo hace que la escriba así (la cabecera o el indicador de cmd sí pueden salir de un perfil: un PS1 con
+        // 'cygpath -w', un 'cmd //c ver'). Es la señal que decide; la cabecera o el indicador solo se citan.
+        private const string EcoSinEjecutar = "exec bash --noediting --norc --noprofilePS1=";
+
+        public static bool IsEcoSinEjecutar(string salida) => QuitarSecuencias(salida).Contains(EcoSinEjecutar, StringComparison.Ordinal);
+
+        // OpenSSH for Windows 9.5 rechaza la petición exec de un comando de más de 32 703–32 731 caracteres, según la ruta del
+        // shell de login (medido); por encima de esto se puede afirmar que no cabe en la línea de órdenes de Windows.
+        public const int MaxCaracteresLineaOrdenesWindows = 32_700;
 
         // Modo de entrada win32 y avisos de foco: lo que envía ConPTY al empezar.
         private static ReadOnlySpan<byte> PrefijoConPty => "\e[?9001h\e[?1004h"u8;
@@ -81,16 +104,17 @@ namespace NativeSsh.Protocolo
 
         private const string Final = $"native_ssh necesita bash y {MarcaMensaje}. No se ejecutó nada.";
 
-        // Shell PTY (petición 'shell') en el que se vio cmd o PowerShell.
-        public static string DescribirShell(string destino, string evidencia) =>
-            $"El shell de login del servidor {destino} es cmd/PowerShell (Windows; respondió: «{evidencia}»); {Final}";
+        // Shell PTY (petición 'shell') que mostró la línea enviada sin ejecutarla (IsEcoSinEjecutar); 'evidencia', la cabecera o
+        // el indicador de cmd o PowerShell si los escribió.
+        public static string DescribirShell(string destino, string evidencia) => evidencia.Length == 0
+            ? $"El shell de login del servidor {destino} es cmd/PowerShell (Windows: no ejecutó la línea enviada, la mostró sin ejecutarla); {Final}"
+            : $"El shell de login del servidor {destino} es cmd/PowerShell (Windows; respondió: «{evidencia}» y no ejecutó la línea enviada); {Final}";
 
         // Canal exec que contestó el shell de login de Windows sin arrancar bash.
         public static string DescribirExec(string destino, string linea) =>
             $"El shell de login del servidor {destino} es cmd/PowerShell (Windows): no arrancó el bash del comando de native_ssh y respondió «{linea}»; {Final}";
 
-        // Petición exec rechazada por el sshd de Windows (SesionShell): lo hace con un comando que no cabe en la línea de
-        // órdenes de Windows.
+        // Petición exec rechazada por el sshd de Windows con un comando de más de MaxCaracteresLineaOrdenesWindows (SesionShell).
         public static string DescribirPeticionRechazada(string destino, int longitud) =>
             $"El servidor {destino} es Windows (OpenSSH for Windows) y rechazó la petición exec del comando de native_ssh ({longitud} caracteres) sin ejecutarlo: lo hace con un comando que no cabe en la línea de órdenes de Windows (unos 32 700 caracteres); {Final}";
 

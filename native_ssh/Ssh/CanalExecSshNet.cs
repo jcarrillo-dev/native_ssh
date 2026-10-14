@@ -50,15 +50,12 @@ namespace NativeSsh.Ssh
     //   lo ejecuta como trabajo en otro grupo (set -m). La barrera real es el plazo remoto del propio script ('timeout
     //   -k' o el watchdog, ConstructorComandoExec): tras abortar, el proceso remoto vive hasta ese plazo.
     // - Con el token de ExecuteAsync SSH.NET llamaría a CancelAsync (señal y espera síncrona de 500 ms): no se usa.
-    // - Si el servidor rechaza abrir el canal (MaxSessions de sshd), Open lanza un SshException genérico ("Failed to
-    //   open a channel after N attempts.") con la conexión intacta: se lanza CanalRechazadoException y SesionShell lo
-    //   explica con lo que sabe de las sesiones ocupadas.
+    // - Si el servidor rechaza abrir el canal (MaxSessions de sshd), Open lanza SshChannelOpenRejectedException
+    //   (externo/SSH.NET) con la conexión intacta: se lanza CanalRechazadoException y SesionShell lo explica con lo que
+    //   sabe de las sesiones ocupadas. Si rechaza la petición exec, SshExecRequestRejectedException al momento.
     internal static class CanalExecSshNet
     {
         private const int TamanoBloque = 16 * 1024;
-
-        // Mensaje de externo/SSH.NET (SshCommand.ExecuteAsync) cuando el servidor responde a la petición exec con un fallo.
-        private const string PrefijoPeticionExecRechazada = "The request to execute the command was not accepted by the server";
 
         public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
@@ -70,12 +67,12 @@ namespace NativeSsh.Ssh
                 {
                     ejecucion = await Task.Factory.StartNew(() => orden.ExecuteAsync(CancellationToken.None), cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).ConfigureAwait(false);
                 }
-                catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoPeticionExecRechazada, StringComparison.Ordinal))
+                catch (SshExecRequestRejectedException ex)
                 {
                     // El canal se abrió, pero el servidor no aceptó ejecutar el comando (externo/SSH.NET lo dice al momento).
                     throw new PeticionExecRechazadaException("El servidor rechazó la petición exec.", ex);
                 }
-                catch (SshException ex) when (ex.GetType() == typeof(SshException) && IsConectado(cliente))
+                catch (SshChannelOpenRejectedException ex) when (IsConectado(cliente))
                 {
                     throw new CanalRechazadoException("El servidor rechazó abrir el canal exec.", ex);
                 }

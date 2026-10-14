@@ -671,7 +671,7 @@ namespace NativeSsh.Sesion
 
         // El servidor no aceptó ejecutar el comando (PeticionExecRechazadaException). En Windows la causa medida es la longitud:
         // OpenSSH for Windows 9.5 rechaza un comando de más de 32 703–32 731 caracteres (según la ruta del shell de login).
-        private string DescribirPeticionExecRechazada(int longitud, bool isServidorWindows) => isServidorWindows
+        private string DescribirPeticionExecRechazada(int longitud, bool isServidorWindows) => isServidorWindows && longitud > RespuestaWindows.MaxCaracteresLineaOrdenesWindows
             ? RespuestaWindows.DescribirPeticionRechazada(Destino.Clave, longitud)
             : $"El servidor {Destino.Clave} rechazó la petición exec del comando de native_ssh ({longitud} caracteres) sin ejecutarlo (el registro de su sshd dice por qué). No se ejecutó nada.";
 
@@ -1695,7 +1695,7 @@ namespace NativeSsh.Sesion
             {
                 string evidencia = TerminarInicializacion(canal);
                 CerrarCanal(canal);
-                throw new NativeSshException(evidencia.Length == 0
+                throw new NativeSshException(isSinPerfil
                     ? RespuestaWindows.DescribirConPty(Destino.Clave, "native_ssh no puede abrir en él un shell sin perfil (ni con Git Bash como shell de login: ese shell se cierra sin arrancar bash)")
                     : RespuestaWindows.DescribirShell(Destino.Clave, evidencia));
             }
@@ -2313,8 +2313,10 @@ namespace NativeSsh.Sesion
 
             // Solo durante la inicialización, en un servidor Windows y hasta el primer marcador: true si lo que ha escrito el
             // terminal delata un shell de Windows que no es bash (WS1). En el shell sin perfil basta el prefijo de ConPTY: en
-            // Windows no arranca ni con Git Bash (medido) y PowerShell tarda casi 3 s en contestar; en la petición 'shell' hace
-            // falta además la cabecera o el indicador de cmd o de PowerShell (con Git Bash llega el mismo prefijo y funciona).
+            // Windows no arranca ni con Git Bash (medido) y PowerShell tarda casi 3 s en contestar. En la petición 'shell'
+            // decide el eco de la línea enviada sin ejecutar (RespuestaWindows.IsEcoSinEjecutar), que un bash no produce: la
+            // cabecera o el indicador de cmd o PowerShell pueden salir del perfil de Git Bash, que sí contesta al protocolo, y
+            // solo se citan. No hay un plazo que lo decida: medido con Git Bash y la VM saturada, el marcador tardó 12–19 s.
             // Con _candadoProceso tomado.
             // 'datos' (lo que acaba de llegar) se mira también entero: la cola solo guarda los últimos MaxBytesColaInicializacion.
             public bool DetectarShellWindows(ReadOnlySpan<byte> datos)
@@ -2328,8 +2330,18 @@ namespace NativeSsh.Sesion
                 if (!HasConPty)
                     return false;
 
-                _evidenciaWindows = IsSinPerfil ? "" : RespuestaWindows.BuscarShell(Encoding.UTF8.GetString(anotado));
-                return _evidenciaWindows is not null;
+                if (IsSinPerfil)
+                {
+                    _evidenciaWindows = "";
+                    return true;
+                }
+
+                string texto = Encoding.UTF8.GetString(anotado);
+                if (!RespuestaWindows.IsEcoSinEjecutar(texto))
+                    return false;
+
+                _evidenciaWindows = RespuestaWindows.BuscarShell(texto) ?? "";
+                return true;
             }
 
             // Llegó un marcador (o ya se decidió): desde aquí la salida es de bash. Con _candadoProceso tomado.

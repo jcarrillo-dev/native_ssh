@@ -118,6 +118,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string? RespuestaConPty { get; set; }
         public bool IsCierraTrasConPty { get; set; }
         public bool IsBashTrasConPty { get; set; }
+        public bool IsMudoTrasConPty { get; set; }
 
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
@@ -157,7 +158,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 MaxCaracteresComandoExec = MaxCaracteresComandoExec,
                 RespuestaConPty = RespuestaConPty,
                 IsCierraTrasConPty = IsCierraTrasConPty,
-                IsBashTrasConPty = IsBashTrasConPty
+                IsBashTrasConPty = IsBashTrasConPty,
+                IsMudoTrasConPty = IsMudoTrasConPty
             };
             Ultima = conexion;
             return conexion;
@@ -230,6 +232,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string? RespuestaConPty { get; init; }
         public bool IsCierraTrasConPty { get; init; }
         public bool IsBashTrasConPty { get; init; }
+        public bool IsMudoTrasConPty { get; init; }
         public CanalFalso? CanalActual { get; private set; }
 
         // Desde ahora el servidor rechaza abrir canales (el del shell y los exec) con la conexión intacta: como OpenSSH al
@@ -353,7 +356,8 @@ namespace NativeSsh.Test.Sesion.Falsos
                 RespuestaSinBash = RespuestaSinBash,
                 RespuestaConPty = RespuestaConPty,
                 IsCierraTrasConPty = IsCierraTrasConPty,
-                IsBashTrasConPty = IsBashTrasConPty
+                IsBashTrasConPty = IsBashTrasConPty,
+                IsMudoTrasConPty = IsMudoTrasConPty
             };
             return CanalActual;
         }
@@ -480,6 +484,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string? RespuestaConPty { get; init; }
         public bool IsCierraTrasConPty { get; init; }
         public bool IsBashTrasConPty { get; init; }
+
+        // Sin eco de lo recibido (un terminal de Windows que no muestra nada más).
+        public bool IsMudoTrasConPty { get; init; }
         private int _isConPtyEmitido;
 
         // Lo que imprimiría "$$ $PPID ${__NS_TESTIGO-}" en el shell que ejecuta ahora las líneas: el del canal (con el
@@ -580,8 +587,17 @@ namespace NativeSsh.Test.Sesion.Falsos
                         Cerrar();
                 }
 
-                if (!IsBashTrasConPty)
+                if (IsBashTrasConPty)
+                {
+                    // Lo que escriba el perfil de un bash bajo ConPTY no cambia cómo trata las líneas.
+                }
+                else
+                {
+                    // cmd o PowerShell bajo ConPTY: eco de lo recibido sin ejecutarlo; un '\n' no es Intro.
+                    if (!IsCierraTrasConPty && !IsMudoTrasConPty)
+                        Emitir(Encoding.UTF8.GetString(datos).Replace("\n", "", StringComparison.Ordinal));
                     return;
+                }
             }
 
             lock (_candado)

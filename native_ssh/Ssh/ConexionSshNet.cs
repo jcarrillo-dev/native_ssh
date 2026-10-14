@@ -8,10 +8,6 @@ namespace NativeSsh.Ssh
 {
     public sealed class ConexionSshNet : IConexionSsh
     {
-        // Mensaje de SSH.NET 2026.0.0 cuando el servidor responde a CHANNEL_OPEN con un rechazo (Open lanza un
-        // SshException genérico, el mismo tipo que para un pty-req o shell rechazados).
-        private const string PrefijoCanalRechazado = "Failed to open a channel";
-
         // Modos PTY: sin eco desde el primer byte y sin conversión LF→CRLF (D5).
         private static readonly Dictionary<TerminalModes, uint> ModosTerminal = new()
         {
@@ -98,7 +94,7 @@ namespace NativeSsh.Ssh
                     ? _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal, SesionShell.ComandoSinPerfil)
                     : _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal);
             }
-            catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoCanalRechazado, StringComparison.Ordinal) && IsConectada)
+            catch (SshChannelOpenRejectedException ex) when (IsConectada)
             {
                 // SesionShell dice qué ocupa las sesiones del servidor (lecturas, shells abandonados...): aquí no se sabe.
                 throw new CanalRechazadoException("El servidor rechazó abrir el canal del shell.", ex);
