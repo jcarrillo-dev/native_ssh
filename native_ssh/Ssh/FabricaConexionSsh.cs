@@ -38,14 +38,7 @@ namespace NativeSsh.Ssh
 
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
-            bool isDeConfiguracion = destino.Identidades is not null;
-            string[] rutas = destino.Identidades ?? opciones.RutasIdentidad;
-            List<string> motivos = [];
-            List<AuthenticationMethod> metodos = CrearMetodos(destino.Usuario, rutas, motivos);
-            string origen = isDeConfiguracion ? "IdentityFile de la configuración de ssh" : "NATIVE_SSH_IDENTIDADES";
-            string detalle = motivos.Count == 0 ? "" : $" {string.Join(" ", motivos)}";
-            if (metodos.Count == 0)
-                throw new NativeSshException($"No hay credenciales para {destino.Clave}: ninguna clave de {origen} ({string.Join(", ", rutas)}) se pudo cargar y NATIVE_SSH_PASSWORD no está definida.{detalle}");
+            AuthenticationMethod[] metodos = CrearMetodos(destino, out string origen, out string detalle);
 
             // El servidor se resuelve aquí y SSH.NET recibe la dirección ya resuelta (un literal, que no vuelve a preguntar al
             // DNS): la dirección de cada intento es exactamente el extremo remoto del socket (IConexionSsh.DireccionRemota, que
@@ -79,9 +72,9 @@ namespace NativeSsh.Ssh
             return direcciones.Length > 0 ? direcciones : throw new SocketException((int)SocketError.HostNotFound);
         }
 
-        private async Task<IConexionSsh> ConectarADireccionAsync(DestinoSsh destino, IPAddress direccion, List<AuthenticationMethod> metodos, string origen, string detalle, CancellationToken cancellationToken)
+        private async Task<IConexionSsh> ConectarADireccionAsync(DestinoSsh destino, IPAddress direccion, AuthenticationMethod[] metodos, string origen, string detalle, CancellationToken cancellationToken)
         {
-            ConnectionInfo info = new(direccion.ToString(), destino.Puerto, destino.Usuario, [.. metodos])
+            ConnectionInfo info = new(direccion.ToString(), destino.Puerto, destino.Usuario, metodos)
             {
                 Timeout = opciones.TimeoutConexion,
                 RetryAttempts = 1
@@ -128,30 +121,41 @@ namespace NativeSsh.Ssh
             }
         }
 
-        private List<AuthenticationMethod> CrearMetodos(string usuario, ReadOnlySpan<string> rutas, List<string> motivos)
+        // Los métodos de autenticación del destino (clave y contraseña), con el origen de las claves y los motivos de las que
+        // no se pudieron cargar (detalle) para los mensajes de error; lanza si no hay ninguno. Síncrono, antes del primer
+        // await de ConectarAsync: las claves y los motivos van en listas rentadas (con try/finally, porque se pasan por ref).
+        private AuthenticationMethod[] CrearMetodos(DestinoSsh destino, out string origen, out string detalle)
         {
-            List<AuthenticationMethod> metodos = new(2);
+            bool isDeConfiguracion = destino.Identidades is not null;
+            string[] rutas = destino.Identidades ?? opciones.RutasIdentidad;
+            origen = isDeConfiguracion ? "IdentityFile de la configuración de ssh" : "NATIVE_SSH_IDENTIDADES";
+            using PooledListRef<AuthenticationMethod> metodos = new();
             PooledListRef<PrivateKeyFile> claves = new();
+            PooledListRef<string> motivos = new();
             try
             {
-                CargarClaves(rutas, ref claves, motivos);
+                CargarClaves(rutas, ref claves, ref motivos);
                 if (claves.Tamaño > 0)
-                    metodos.Add(new PrivateKeyAuthenticationMethod(usuario, [.. claves.Span]));
+                    metodos.Add(new PrivateKeyAuthenticationMethod(destino.Usuario, [.. claves.Span]));
+                detalle = motivos.Tamaño == 0 ? "" : $" {string.Join(" ", motivos.Span)}";
             }
             finally
             {
+                motivos.Dispose();
                 claves.Dispose();
             }
 
             if (opciones.Contrasena is { Length: > 0 } contrasena)
-                metodos.Add(new PasswordAuthenticationMethod(usuario, contrasena));
-            return metodos;
+                metodos.Add(new PasswordAuthenticationMethod(destino.Usuario, contrasena));
+            return metodos.Tamaño == 0
+                ? throw new NativeSshException($"No hay credenciales para {destino.Clave}: ninguna clave de {origen} ({string.Join(", ", rutas)}) se pudo cargar y NATIVE_SSH_PASSWORD no está definida.{detalle}")
+                : metodos.Span.ToArray();
         }
 
         // Ruta fría (una vez por conexión). Una ruta que no existe se salta en silencio, como hace ssh con las claves por
         // defecto; una que existe y no se pudo abrir deja su motivo (una frase con la ruta) en motivos y un aviso en el log.
         // Las cargadas se añaden a 'claves', en el orden de 'rutas'.
-        internal void CargarClaves(scoped ReadOnlySpan<string> rutas, scoped ref PooledListRef<PrivateKeyFile> claves, List<string> motivos)
+        internal void CargarClaves(scoped ReadOnlySpan<string> rutas, scoped ref PooledListRef<PrivateKeyFile> claves, scoped ref PooledListRef<string> motivos)
         {
             foreach (string ruta in rutas)
             {

@@ -62,16 +62,17 @@ namespace NativeSsh.Test.Ssh
 
         private static (IReadOnlyList<PrivateKeyFile> Claves, List<string> Motivos) Cargar(FabricaConexionSsh fabrica, string ruta)
         {
-            List<string> motivos = [];
+            PooledListRef<string> motivos = new();
             PooledListRef<PrivateKeyFile> claves = new();
             try
             {
-                fabrica.CargarClaves([ruta], ref claves, motivos);
-                return ([.. claves.Span], motivos);
+                fabrica.CargarClaves([ruta], ref claves, ref motivos);
+                return ([.. claves.Span], [.. motivos.Span]);
             }
             finally
             {
                 claves.Dispose();
+                motivos.Dispose();
             }
         }
 

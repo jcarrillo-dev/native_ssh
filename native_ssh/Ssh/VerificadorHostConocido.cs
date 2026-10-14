@@ -61,8 +61,10 @@ namespace NativeSsh.Ssh
         public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
         {
             string nombre = puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
-            List<(string Tipo, byte[] Clave)> conocidas = [];
-            List<byte[]> revocadas = [];
+            // Las claves de cada línea son arrays propios (TryDecodificar): las listas rentadas solo guardan referencias, que se
+            // limpian al devolverlas.
+            using PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
+            using PooledListRef<byte[]> revocadas = new();
 
             foreach (string linea in lineas)
             {
