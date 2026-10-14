@@ -85,7 +85,7 @@ namespace NativeSsh.Protocolo
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(ventana);
+                ArrayPool<byte>.Shared.Return(ventana, clearArray: true);
             }
         }
 

@@ -2,7 +2,8 @@ using System.Buffers;
 
 namespace NativeSsh.Buffers
 {
-    // Buffer temporal del pool para usar con 'using' (Dispose por patrón, sin interfaz ni boxing).
+    // Buffer temporal del pool para usar con 'using' (Dispose por patrón, sin interfaz ni boxing). Vuelve al pool a cero:
+    // lleva el comando, lo tecleado o una página de la salida.
     public ref struct BufferAlquilado
     {
         private byte[]? _array;
@@ -24,7 +25,7 @@ namespace NativeSsh.Buffers
                 return;
 
             _array = null;
-            ArrayPool<byte>.Shared.Return(array);
+            ArrayPool<byte>.Shared.Return(array, clearArray: true);
         }
     }
 }

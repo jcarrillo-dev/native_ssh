@@ -158,7 +158,7 @@ namespace NativeSsh.Ssh
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(bloque);
+                ArrayPool<byte>.Shared.Return(bloque, clearArray: true);
             }
 
             return destino;
