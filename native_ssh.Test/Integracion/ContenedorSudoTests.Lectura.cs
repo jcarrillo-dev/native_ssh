@@ -225,5 +225,36 @@ namespace NativeSsh.Test.Integracion
             _ = relativo.Should().Be("[Líneas 1-2 de 2]\ndef f():\n    return 42\n");
             _ = textos.Should().Be("a.txt\ncrlf.txt\nlatin1.txt\nprivado.txt\nsinsalto.txt");
         }
+
+        // RC9: ssh_find con tamanoMin/tamanoMax igual en GNU (con -printf) y en busybox (sin -printf ni unidades M/G en -size,
+        // que redondea k: medido), en bytes e inclusivo, con el tamaño delante y de mayor a menor.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task BuscarPorNombre_ConTamano_IgualEnLasDosDistros(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+            _ = entorno.Servidor.ComoUsuario("""
+                cd "$1"
+                mkdir -p tamanos/sub
+                head -c 1000 /dev/zero > tamanos/mil.log
+                head -c 1024 /dev/zero > tamanos/un_k.log
+                head -c 1500000 /dev/zero > tamanos/sub/grande.log
+                : > tamanos/vacio.log
+                """, entorno.DirectorioUsuario);
+            string carpeta = $"{entorno.DirectorioUsuario}/tamanos";
+
+            // Act
+            string minimo = await herramientas.BuscarPorNombreAsync(entorno.Destino, "*.log", carpeta, tamanoMin: "1k");
+            string maximo = await herramientas.BuscarPorNombreAsync(entorno.Destino, "*.log", carpeta, tamanoMax: "1000");
+            string megas = await herramientas.BuscarPorNombreAsync(entorno.Destino, "*", carpeta, tamanoMin: "1M");
+
+            // Assert
+            _ = minimo.Should().Be("1.4 MiB\tsub/grande.log\n1 KiB\tun_k.log");
+            _ = maximo.Should().Be("1000 B\tmil.log\n0 B\tvacio.log");
+            _ = megas.Should().Be("1.4 MiB\tsub/grande.log");
+        }
     }
 }

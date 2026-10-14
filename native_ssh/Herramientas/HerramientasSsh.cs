@@ -1344,7 +1344,7 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_find", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*'). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, o si find no termina bien (p. ej. no llega a ejecutarse), devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para localizar archivos o carpetas por nombre o patrón glob (ej. '*.service', 'docker-compose*.yml', '.env*') y archivos por tamaño (tamanoMin/tamanoMax: cada resultado con su tamaño, de mayor a menor; p. ej. para liberar espacio en disco). Poda automáticamente carpetas pesadas (.git, node_modules, .venv, bin, obj) y devuelve rutas relativas limpias. Mucho más rápido que find en shell. Nunca entra en los sistemas de ficheros virtuales del kernel que haya por debajo de la ruta (/proc, /sys, /dev, cgroup, debugfs, tracefs, autofs...; con ruta='/' es lo que evita recorrer el sistema una vez por proceso a través de /proc), salvo el que contenga la propia ruta pedida (ruta='/proc' sí busca en /proc). Con cruzarMontajes=true (por defecto) recorre los demás sistemas de ficheros montados por debajo de la ruta; con cruzarMontajes=false no sale del sistema de ficheros de la ruta (como 'find -xdev'; también deja fuera los subvolúmenes btrfs, que tienen otro dispositivo). Si algún montaje quedó sin recorrer, la última línea de la respuesta es '[montajes_no_explorados: /proc, /sys, …]' (sin repetidos ni montajes anidados, con tope): para buscar dentro de uno de ellos, repite ssh_find con ruta igual a ese montaje. Si la ruta no existe, no se puede atravesar o no se puede recorrer, o si find no termina bien (p. ej. no llega a ejecutarse), devuelve un error que lo indica (nunca un «no se encontraron» engañoso). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> BuscarPorNombreAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Patrón de nombre o glob a buscar (ej. '*.service', 'docker-compose.yml', '*.conf').")] string patron,
@@ -1353,6 +1353,8 @@ namespace NativeSsh.Herramientas
             [Description("Profundidad máxima de recursión (por defecto 10, entre 1 y 20).")] int profundidadMax = 10,
             [Description("Número máximo de resultados a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
             [Description("true (por defecto): entra también en los demás sistemas de ficheros montados por debajo de la ruta (nunca en los virtuales del kernel). false: no sale del sistema de ficheros de la ruta, como 'find -xdev'; úsalo para ir montaje por montaje con la línea '[montajes_no_explorados: …]'.")] bool cruzarMontajes = true,
+            [Description("Tamaño mínimo, inclusivo: un entero de bytes o con unidad k, M o G (potencias de 1024), p. ej. '50M' (como 'find -size'). Solo con tipo='file'. Con tamanoMin o tamanoMax cada resultado sale como '<tamaño><tabulador><ruta>' y ordenados de mayor a menor (con el tope, los más grandes): úsalo para liberar espacio en disco.")] string? tamanoMin = null,
+            [Description("Tamaño máximo, inclusivo, con el mismo formato que tamanoMin (p. ej. '0' para los archivos vacíos). Solo con tipo='file'; también ordena de mayor a menor y muestra el tamaño.")] string? tamanoMax = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrEmpty(patron))
@@ -1373,12 +1375,46 @@ namespace NativeSsh.Herramientas
                 _ => throw new NativeSshException($"Tipo '{tipo}' no válido: usa 'file', 'dir' (o 'directory') o 'all', sin distinguir mayúsculas.")
             };
 
+            long? minBytes = LeerTamano(tamanoMin, "tamanoMin");
+            long? maxBytes = LeerTamano(tamanoMax, "tamanoMax");
+            bool isConTamano = minBytes is not null || maxBytes is not null;
+            if (isConTamano && filtroTipo != "-type f ")
+                throw new NativeSshException("tamanoMin y tamanoMax solo se admiten con tipo='file' (el tamaño de un directorio es el de su entrada, no el de su contenido; para eso, 'du' con ssh_exec).");
+
+            if (minBytes > maxBytes)
+                throw new NativeSshException($"tamanoMin ({tamanoMin}) es mayor que tamanoMax ({tamanoMax}): ningún archivo puede cumplir los dos.");
+
             string idMarca = Guid.NewGuid().ToString("N");
-            string comando = ConstruirComandoBusquedaNombre(patron, rutaEfectiva, filtroTipo, profundidad, limite, cruzarMontajes, idMarca);
+            string comando = ConstruirComandoBusquedaNombre(patron, rutaEfectiva, filtroTipo, profundidad, limite, cruzarMontajes, idMarca, minBytes, maxBytes);
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Refina la ruta, el patrón o la profundidad.", cancellationToken).ConfigureAwait(false);
             return lectura.Codigo != 0
                 ? throw new NativeSshException(lectura.Error("Error en búsqueda por nombre"))
-                : InterpretarBusquedaNombre(lectura.Salida, idMarca, patron, rutaEfectiva, profundidad, limite, cruzarMontajes);
+                : InterpretarBusquedaNombre(lectura.Salida, idMarca, patron, rutaEfectiva, profundidad, limite, cruzarMontajes, isConTamano);
+        }
+
+        // tamanoMin/tamanoMax de ssh_find (RC9): un entero de bytes o con unidad k, M o G (potencias de 1024), sin blancos, signo
+        // ni decimales; null si no se pidió. Se convierte a bytes aquí: el find de busybox no admite M ni G y redondea k
+        // (medido: '-size +1k' no da un archivo de 1024 bytes), así que el script usa siempre bytes ('c').
+        private static long? LeerTamano(string? tamano, string nombre)
+        {
+            if (string.IsNullOrEmpty(tamano))
+                return null;
+
+            ReadOnlySpan<char> cifras = tamano;
+            long multiplicador = cifras[^1] switch
+            {
+                'k' => 1024L,
+                'M' => 1024L * 1024L,
+                'G' => 1024L * 1024L * 1024L,
+                _ => 1L
+            };
+            if (multiplicador > 1)
+                cifras = cifras[..^1];
+
+            bool isValido = cifras.Length is > 0 and <= 15 && !cifras.ContainsAnyExceptInRange('0', '9');
+            return isValido && long.Parse(cifras, NumberStyles.None, CultureInfo.InvariantCulture) is var numero && numero <= long.MaxValue / multiplicador
+                ? numero * multiplicador
+                : throw new NativeSshException($"{nombre} '{tamano}' no es válido: un entero de bytes o con unidad k, M o G (potencias de 1024) pegada, sin blancos, signo ni decimales; p. ej. '500', '64k', '50M' o '2G'.");
         }
 
         // Tipos de los sistemas de ficheros virtuales del kernel que ssh_find nunca recorre por debajo de la ruta (C13): con
@@ -1529,11 +1565,24 @@ namespace NativeSsh.Herramientas
         // cruzarMontajes=false, -xdev. Los montajes no recorridos salen detrás de los nombres, cada uno como un nombre más
         // con la marca '__NS_MONTAJE_<id>__' (id aleatorio por petición: ningún archivo la puede imitar; solo los 20 primeros)
         // seguidos de '__NS_TOTAL_MONTAJES_<id>__<n>', y '__NS_SIN_TABLA_<id>__' si no se pudo leer la tabla de montajes.
-        internal static string ConstruirComandoBusquedaNombre(string patron, string rutaEfectiva, string filtroTipo, int profundidad, int limite, bool isCruzarMontajes, string idMarca)
+        // Con tamaño (minBytes/maxBytes, RC9): '-size +Nc'/'-size -Nc' en bytes (estrictos en GNU y busybox, de ahí el ±1 para
+        // que sean inclusivos) y cada resultado sale como '<bytes>\t<ruta>': con el -printf de GNU find, o, si find no lo tiene
+        // (busybox), con un 'stat -L -c %s' por resultado (un archivo que desaparece entretanto se omite). Se ordenan TODOS
+        // por tamaño, de mayor a menor, antes del tope: lo que se muestra son de verdad los más grandes.
+        internal static string ConstruirComandoBusquedaNombre(string patron, string rutaEfectiva, string filtroTipo, int profundidad, int limite, bool isCruzarMontajes, string idMarca, long? minBytes = null, long? maxBytes = null)
         {
             string rutaEscapada = Escapar(rutaEfectiva);
             string patronEscapado = Escapar(patron);
             string xdev = isCruzarMontajes ? string.Empty : "-xdev ";
+            bool isConTamano = minBytes is not null || maxBytes is not null;
+            string filtroTamano = (minBytes is > 0 ? $"-size +{minBytes - 1}c " : string.Empty) + (maxBytes is { } maximo ? $"-size -{maximo + 1}c " : string.Empty);
+            string imprimir = isConTamano ? "\"${imprimir[@]}\"" : "-print0";
+            string elegirImpresion = isConTamano
+                ? """imprimir=(-print0); con_stat=1; if find . -maxdepth 0 -printf '' >/dev/null 2>&1; then imprimir=(-printf '%s\t%p\0'); con_stat=; fi"""
+                : string.Empty;
+            string ordenar = isConTamano
+                ? $"{{ if [ -n \"$con_stat\" ]; then while IFS= read -r -d '' n; do t=$(stat -L -c %s -- \"$n\" 2>/dev/null) && printf '%s\\t%s\\0' \"$t\" \"$n\"; done; else cat; fi; }} | sort -z -t \"$(printf '\\t')\" -k1,1nr | {LimitarNombres(limite + 1)}"
+                : $"sort -z | {LimitarNombres(limite + 1)}";
             return PlantillaBash.Crear($$"""
                 (
                 {{DefinicionSinAcceso}}
@@ -1550,14 +1599,15 @@ namespace NativeSsh.Herramientas
                 {{SustitucionLiteral("raiz", "pwd -P")}}
                 {{DefinicionMontajes}}
                 explorar_montajes {{(isCruzarMontajes ? 1 : 0)}} {{profundidad}}
-                [ "${#poda[@]}" = 0 ] || poda+=(\( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) -o)
+                {{elegirImpresion}}
+                [ "${#poda[@]}" = 0 ] || poda+=(\( {{filtroTipo}}-name {{patronEscapado}} {{filtroTamano}}{{imprimir}} -prune -o -prune \) -o)
                 # Los nombres van a la salida (fd 7); el stderr de find y su código, a 'error_find' (solo los últimos 1 000
                 # bytes: con miles de avisos no crece).
                 exec 7>&1
                 error_find=$( { { find -L . {{xdev}}-maxdepth {{profundidad}} -mindepth 1 "${poda[@]}" \
                   \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name __pycache__ -o -name dist -o -name build -o -name .next -o -name bin -o -name obj -o -name .cache \) \
-                  \( {{filtroTipo}}-name {{patronEscapado}} -print0 -prune -o -prune \) \
-                  -o {{filtroTipo}}-name {{patronEscapado}} -print0 2>&8 | sort -z | {{LimitarNombres(limite + 1)}} >&7
+                  \( {{filtroTipo}}-name {{patronEscapado}} {{filtroTamano}}{{imprimir}} -prune -o -prune \) \
+                  -o {{filtroTipo}}-name {{patronEscapado}} {{filtroTamano}}{{imprimir}} 2>&8 | {{ordenar}} >&7
                   printf '\n%s' "${PIPESTATUS[0]}" >&8; } 8>&1 | tail -c 1000; } )
                 exec 7>&-
                 codigo_find=${error_find##*$'\n'}
@@ -1571,7 +1621,8 @@ namespace NativeSsh.Herramientas
         }
 
         // Respuesta de ssh_find: los nombres encontrados (con su límite) y, al final, la línea de los montajes no recorridos.
-        internal static string InterpretarBusquedaNombre(string salida, string idMarca, string patron, string rutaEfectiva, int profundidad, int limite, bool isCruzarMontajes)
+        // isConTamano (RC9): cada nombre llega como '<bytes>\t<ruta>' y sale como '<tamaño legible>\t<ruta>', en el orden recibido.
+        internal static string InterpretarBusquedaNombre(string salida, string idMarca, string patron, string rutaEfectiva, int profundidad, int limite, bool isCruzarMontajes, bool isConTamano = false)
         {
             string marcaMontaje = $"{PrefijoMarcaMontaje}{idMarca}__";
             string marcaTotal = $"{PrefijoMarcaTotalMontajes}{idMarca}__";
@@ -1595,12 +1646,32 @@ namespace NativeSsh.Herramientas
 
             string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes, totalMontajes);
             string pie = lineaMontajes.Length == 0 ? string.Empty : "\n\n" + lineaMontajes;
-            string listado = UnirNombres([.. nombres], limite);
+            string listado = isConTamano ? UnirNombresConTamano(nombres, limite) : UnirNombres([.. nombres], limite);
             return nombres.Count == 0
                 ? $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.{pie}"
                 : nombres.Count > limite
                     ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]{pie}"
                     : listado + pie;
+        }
+
+        // Los 'cantidad' primeros '<bytes>\t<ruta>' como '<tamaño legible>\t<ruta>', uno por línea (la ruta, como EscaparNombre;
+        // sin el './' inicial del -printf de GNU find).
+        private static string UnirNombresConTamano(List<string> nombres, int cantidad)
+        {
+            StringBuilder listado = new();
+            int total = Math.Min(nombres.Count, cantidad);
+            for (int i = 0; i < total; i++)
+            {
+                string nombre = nombres[i];
+                int tabulador = nombre.IndexOf('\t', StringComparison.Ordinal);
+                long bytes = 0;
+                bool isConBytes = tabulador > 0 && long.TryParse(nombre.AsSpan(0, tabulador), NumberStyles.None, CultureInfo.InvariantCulture, out bytes);
+                string ruta = isConBytes ? nombre[(tabulador + 1)..] : nombre;
+                _ = listado.Append(i > 0 ? "\n" : "").Append(isConBytes ? FormatearTamano(bytes) : "?").Append('\t');
+                EscaparNombre(listado, ruta.StartsWith("./", StringComparison.Ordinal) ? ruta[2..] : ruta);
+            }
+
+            return listado.ToString();
         }
 
         // 'codigoYError': el código de find, un espacio y el final de su stderr.
