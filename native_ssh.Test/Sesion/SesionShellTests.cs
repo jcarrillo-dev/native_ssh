@@ -642,6 +642,23 @@ namespace NativeSsh.Test.Sesion
             _ = peticion.Aviso.Should().Contain("es Windows (OpenSSH for Windows, terminal ConPTY)").And.Contain("3 s").And.NotContain("perfil");
         }
 
+        // Un shell de Windows bajo ConPTY que se cierra en la inicialización sin señal de cmd ni de PowerShell (p. ej. Git Bash
+        // con un perfil roto): el error dice que es Windows y cita lo último que escribió, sin las secuencias del terminal.
+        [Fact]
+        public async Task ServidorWindowsQueSeCierraEnLaInicializacion_CitaLoUltimoQueEscribio()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = true, RespuestaConPty = "\e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[H\e]0;UCRT64:/c/Users/nsws\a\e[?25hbash: /etc/profile: línea 3: error de sintaxis\r\n\e[?9001l\e[?1004l", IsCierraTrasConPty = true };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "echo hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = peticion.Aviso.Should().Contain("es Windows (OpenSSH for Windows, terminal ConPTY)").And.Contain("lo último que escribió: «").And.Contain("bash: /etc/profile: línea 3: error de sintaxis»").And.NotContain("[?");
+        }
+
         // WS1 por el canal exec: el shell de login de Windows contesta con su error (CRLF) sin que el programa arranque.
         [Theory]
         [InlineData("3>& was unexpected at this time.\r\n", "3>& was unexpected at this time.")]

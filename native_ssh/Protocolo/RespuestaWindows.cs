@@ -43,9 +43,11 @@ namespace NativeSsh.Protocolo
         // no hay nada.
         public static string? BuscarShell(string salida)
         {
-            Match coincidencia = PatronShellWindows().Match(PatronSecuenciaEscape().Replace(salida, ""));
+            Match coincidencia = PatronShellWindows().Match(QuitarSecuencias(salida));
             return coincidencia.Success ? Acotar(coincidencia.Value) : null;
         }
+
+        public static string QuitarSecuencias(string salida) => PatronSecuenciaEscape().Replace(salida, "");
 
         // Respuesta de un canal exec del shell de login de Windows: nada en stdout, el error en stderr y líneas con CRLF (los
         // errores de bash, también los del de Git Bash, terminan en LF). Solo se llama si el programa no escribió su marca.

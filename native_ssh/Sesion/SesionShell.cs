@@ -1702,7 +1702,9 @@ namespace NativeSsh.Sesion
             {
                 string salida = TerminarInicializacion(canal);
                 throw new NativeSshException(IsConPtyDeWindows(canal)
-                    ? RespuestaWindows.DescribirConPty(Destino.Clave, "su shell se cerró durante la inicialización de native_ssh")
+                    ? RespuestaWindows.DescribirConPty(Destino.Clave, UltimasLineas(RespuestaWindows.QuitarSecuencias(salida)) is { } ultimas
+                        ? $"su shell se cerró durante la inicialización de native_ssh; lo último que escribió: «{ultimas}»"
+                        : "su shell se cerró durante la inicialización de native_ssh sin escribir nada")
                     : DescribirCierreEnLaInicializacion(salida, isSinPerfil));
             }
 
@@ -1750,7 +1752,15 @@ namespace NativeSsh.Sesion
                 return RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: !isSinPerfil);
 
             string causa = isSinPerfil ? "" : " (p. ej. un 'exit' en el perfil)";
+            return UltimasLineas(salida) is { } ultimas
+                ? $"El shell de {Destino.Clave} se cerró durante la inicialización{causa}; lo último que escribió: «{ultimas}». {DescribirConsecuenciasInicializacion(isSinPerfil)}"
+                : $"El shell de {Destino.Clave} se cerró durante la inicialización{causa} sin escribir nada. {DescribirConsecuenciasInicializacion(isSinPerfil)}";
+        }
 
+        // Las tres últimas líneas no vacías de lo que escribió el shell al inicializarse, sin las del propio protocolo (el eco
+        // del terminal de lo que se le envió) y unidas con " / "; null si no queda ninguna.
+        private static string? UltimasLineas(string salida)
+        {
             List<string> lineas = [];
             foreach (string linea in salida.Split('\n'))
             {
@@ -1760,9 +1770,7 @@ namespace NativeSsh.Sesion
                     lineas.Add(limpia);
             }
 
-            return lineas.Count == 0
-                ? $"El shell de {Destino.Clave} se cerró durante la inicialización{causa} sin escribir nada. {DescribirConsecuenciasInicializacion(isSinPerfil)}"
-                : $"El shell de {Destino.Clave} se cerró durante la inicialización{causa}; lo último que escribió: «{string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..])}». {DescribirConsecuenciasInicializacion(isSinPerfil)}";
+            return lineas.Count == 0 ? null : string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..]);
         }
 
         // La apertura de SSH.NET es síncrona, no atiende ningún token y, sin ConnectionInfo.Timeout, espera a que el servidor
@@ -1976,7 +1984,7 @@ namespace NativeSsh.Sesion
                 if (!isVigente || !_escaner.Procesar(datos, (IDestinoSalida?)filtro ?? _salidaActual, out codigo))
                 {
                     // WS1: mientras no llegue el primer marcador, un shell de Windows que no es bash termina la espera.
-                    if (!isVigente || _esperaMarcador is null || !canal.DetectarShellWindows())
+                    if (!isVigente || _esperaMarcador is null || !canal.DetectarShellWindows(datos))
                         return;
 
                     codigo = CodigoShellWindows;
@@ -2306,14 +2314,15 @@ namespace NativeSsh.Sesion
             // Windows no arranca ni con Git Bash (medido) y PowerShell tarda casi 3 s en contestar; en la petición 'shell' hace
             // falta además la cabecera o el indicador de cmd o de PowerShell (con Git Bash llega el mismo prefijo y funciona).
             // Con _candadoProceso tomado.
-            public bool DetectarShellWindows()
+            // 'datos' (lo que acaba de llegar) se mira también entero: la cola solo guarda los últimos MaxBytesColaInicializacion.
+            public bool DetectarShellWindows(ReadOnlySpan<byte> datos)
             {
                 byte[]? cola = _colaInicializacion;
                 if (!IsServidorWindows || !_isDetectandoWindows || cola is null)
                     return false;
 
                 ReadOnlySpan<byte> anotado = cola.AsSpan(0, _longitudCola);
-                HasConPty = HasConPty || RespuestaWindows.HasPrefijoConPty(anotado);
+                HasConPty = HasConPty || RespuestaWindows.HasPrefijoConPty(datos) || RespuestaWindows.HasPrefijoConPty(anotado);
                 if (!HasConPty)
                     return false;
 
