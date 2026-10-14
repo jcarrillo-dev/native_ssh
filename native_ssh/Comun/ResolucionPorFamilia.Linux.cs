@@ -89,11 +89,11 @@ namespace NativeSsh.Comun
 
             try
             {
-                List<IPAddress> direcciones = [];
+                using PooledListRef<IPAddress> direcciones = new();
                 for (InfoDireccion* actual = (InfoDireccion*)lista; actual != null; actual = (InfoDireccion*)actual->Siguiente)
-                    if (Leer(actual) is { } direccion && !direcciones.Contains(direccion))
+                    if (Leer(actual) is { } direccion && !direcciones.Span.Contains(direccion))
                         direcciones.Add(direccion);
-                return [.. direcciones];
+                return direcciones.Span.ToArray();
             }
             finally
             {

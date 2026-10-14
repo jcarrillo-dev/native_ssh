@@ -139,9 +139,9 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
-                List<IPAddress> ninguna = ResolucionPorFamilia.DireccionesEnHosts(ruta, "otro.ejemplo");
-                List<IPAddress> sinFichero = ResolucionPorFamilia.DireccionesEnHosts(ruta + ".no-existe", "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] ninguna = ResolucionPorFamilia.DireccionesEnHosts(ruta, "otro.ejemplo");
+                IPAddress[] sinFichero = ResolucionPorFamilia.DireccionesEnHosts(ruta + ".no-existe", "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().Equal(IPAddress.Parse("10.0.0.5"), IPAddress.Parse("fd00::5"));
@@ -193,7 +193,7 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().BeEmpty();
@@ -220,7 +220,7 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().Equal(IPAddress.Parse(direccion));
@@ -249,7 +249,7 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().BeEmpty();
@@ -289,7 +289,7 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().BeEmpty();
@@ -310,7 +310,7 @@ namespace NativeSsh.Test.Comun
             try
             {
                 // Act
-                List<IPAddress> direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
+                IPAddress[] direcciones = ResolucionPorFamilia.DireccionesEnHosts(ruta, "prod.ejemplo");
 
                 // Assert
                 _ = direcciones.Should().Equal(IPAddress.Parse("10.99.0.7"));

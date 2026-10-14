@@ -147,7 +147,7 @@ namespace NativeSsh.Comun
         // nombre se compara entero (sin quitarle el punto final) y sin distinguir mayúsculas solo en ASCII. Si una línea que
         // no es sencilla contiene el nombre antes del comentario (aunque sea dentro de otro, como 'prod.ejemplo.com'), no
         // cuenta ninguna: la máquina podría usar también su dirección y native_ssh no la compararía.
-        public static List<IPAddress> DireccionesEnHosts(string ruta, string nombre)
+        public static IPAddress[] DireccionesEnHosts(string ruta, string nombre)
         {
             byte[] contenido;
             try
@@ -163,7 +163,7 @@ namespace NativeSsh.Comun
             if (!Ascii.IsValid(nombre) || nombre.Length == 0 || IsConMarcaDeOrden(resto) || resto.Contains((byte)0))
                 return [];
 
-            List<IPAddress> direcciones = [];
+            using PooledListRef<IPAddress> direcciones = new();
             while (!resto.IsEmpty)
             {
                 int finLinea = resto.IndexOf((byte)'\n');
@@ -185,7 +185,7 @@ namespace NativeSsh.Comun
                     direcciones.Add(direccion);
             }
 
-            return direcciones;
+            return direcciones.Span.ToArray();
         }
 
         // UTF-8 (EF BB BF), UTF-16 (FE FF, FF FE; también UTF-32 LE, FF FE 00 00) o UTF-32 BE (00 00 FE FF).

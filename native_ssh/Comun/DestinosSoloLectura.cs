@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.InteropServices;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Comun
 {
@@ -156,7 +156,7 @@ namespace NativeSsh.Comun
             if (string.IsNullOrWhiteSpace(texto))
                 return true;
 
-            List<Entrada> entradas = [];
+            using PooledListRef<Entrada> entradas = new();
             foreach (string trozo in texto.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
             {
                 if (!TryParsearEntrada(trozo, out Entrada entrada))
@@ -168,7 +168,7 @@ namespace NativeSsh.Comun
                 entradas.Add(entrada);
             }
 
-            destinos = new DestinosSoloLectura([.. entradas], resolver, resolverEntrada, rutaHosts);
+            destinos = new DestinosSoloLectura(entradas.Span.ToArray(), resolver, resolverEntrada, rutaHosts);
             return true;
         }
 
@@ -288,11 +288,11 @@ namespace NativeSsh.Comun
         {
             string servidor = Normalizar(destino.Servidor);
             Entrada[] entradas = await EntradasConConfiguracionAsync().ConfigureAwait(false);
-            List<Entrada> porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
+            Entrada[] porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
             if (isCoincideSinRed || IsAliasCoincidente(porResolver, destino.Alias))
                 return new ComprobacionSoloLectura(true, null);
 
-            if (porResolver.Count == 0)
+            if (porResolver.Length == 0)
                 return new ComprobacionSoloLectura(false, null);
 
             IPAddress? conectada = conectado?.Direccion is { } direccion ? Unificar(direccion) : null;
@@ -302,7 +302,7 @@ namespace NativeSsh.Comun
                 return new ComprobacionSoloLectura(true, null, IsDireccionDesconocida: true);
 
             Task<Resolucion>? delDestino = isResolverDestino ? ResolverAsync(servidor, isDestino: true, cancellationToken) : null;
-            List<Task<Resolucion>> deLasEntradas = porResolver.ConvertAll(e => e.IsIlegible ? Task.FromResult(default(Resolucion)) : ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
+            Task<Resolucion>[] deLasEntradas = Array.ConvertAll(porResolver, e => e.IsIlegible ? Task.FromResult(default(Resolucion)) : ResolverAsync(e.Servidor, isDestino: false, cancellationToken));
             Resolucion destinoResuelto = delDestino is null ? default : await delDestino.ConfigureAwait(false);
             Resolucion[] resueltas = await Task.WhenAll(deLasEntradas).ConfigureAwait(false);
             HashSet<IPAddress>? direcciones = destinoResuelto.Direcciones;
@@ -382,7 +382,7 @@ namespace NativeSsh.Comun
         private bool? IsSoloLecturaSinRed(Entrada[] entradas, DestinoSsh destino, ExtremoConectado? conectado, string[]? alias)
         {
             string servidor = Normalizar(destino.Servidor);
-            List<Entrada> porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
+            Entrada[] porResolver = Candidatas(entradas, destino, servidor, out bool isCoincideSinRed);
             if (isCoincideSinRed)
                 return true;
 
@@ -390,7 +390,7 @@ namespace NativeSsh.Comun
                 if (IsAliasCoincidente(porResolver, texto))
                     return true;
 
-            if (porResolver.Count == 0)
+            if (porResolver.Length == 0)
                 return false;
 
             IPAddress? conectada = conectado?.Direccion is { } direccion ? Unificar(direccion) : null;
@@ -410,10 +410,10 @@ namespace NativeSsh.Comun
 
         // Las entradas que casan en usuario y puerto pero cuyo servidor solo se puede comparar por sus direcciones;
         // isCoincideSinRed si alguna ya coincide sin red.
-        private static List<Entrada> Candidatas(Entrada[] entradas, DestinoSsh destino, string servidor, out bool isCoincideSinRed)
+        private static Entrada[] Candidatas(Entrada[] entradas, DestinoSsh destino, string servidor, out bool isCoincideSinRed)
         {
             isCoincideSinRed = false;
-            List<Entrada> porResolver = [];
+            using PooledListRef<Entrada> porResolver = new();
             bool isDestinoLoopback = IsLoopback(servidor);
             foreach (Entrada entrada in entradas)
             {
@@ -430,11 +430,11 @@ namespace NativeSsh.Comun
                 porResolver.Add(entrada);
             }
 
-            return porResolver;
+            return porResolver.Span.ToArray();
         }
 
         // El texto pedido (un alias), solo como texto y con el texto de la entrada: nunca se resuelve.
-        private static bool IsAliasCoincidente(List<Entrada> candidatas, string? alias)
+        private static bool IsAliasCoincidente(ReadOnlySpan<Entrada> candidatas, string? alias)
         {
             if (alias is null)
                 return false;
@@ -446,7 +446,7 @@ namespace NativeSsh.Comun
             return false;
         }
 
-        private static bool IsCoincideAlguna(List<Entrada> candidatas, string servidor)
+        private static bool IsCoincideAlguna(ReadOnlySpan<Entrada> candidatas, string servidor)
         {
             bool isServidorLoopback = IsLoopback(servidor);
             foreach (Entrada entrada in candidatas)
@@ -677,14 +677,14 @@ namespace NativeSsh.Comun
         private async Task<(HashSet<IPAddress>? Direcciones, bool IsTolerado, string? Incidencia)> DireccionesDeEntradaAsync(string servidor, CancellationToken plazo)
         {
             DireccionesPorFamilia porFamilia = await _resolverEntrada(servidor, plazo).ConfigureAwait(false);
-            List<IPAddress> enHosts = _rutaHosts is null ? [] : ResolucionPorFamilia.DireccionesEnHosts(_rutaHosts, servidor);
-            if (porFamilia.HasFallo && enHosts.Count == 0)
+            IPAddress[] enHosts = _rutaHosts is null ? [] : ResolucionPorFamilia.DireccionesEnHosts(_rutaHosts, servidor);
+            if (porFamilia.HasFallo && enHosts.Length == 0)
                 return (null, false, porFamilia.Incidencia);
 
             HashSet<IPAddress> direcciones = [];
             Anadir(direcciones, porFamilia.Ipv4);
             Anadir(direcciones, porFamilia.Ipv6);
-            Anadir(direcciones, CollectionsMarshal.AsSpan(enHosts));
+            Anadir(direcciones, enHosts);
             bool hasDirecciones = direcciones.Count > 0;
             return (hasDirecciones ? direcciones : null, porFamilia.HasFallo, hasDirecciones ? null : porFamilia.Incidencia);
         }
