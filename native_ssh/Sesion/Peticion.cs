@@ -49,7 +49,7 @@ namespace NativeSsh.Sesion
         // Su id sale en ssh_status y en los errores de la herramienta, para ssh_cancel, pero ninguna otra herramienta devuelve
         // su salida: ssh_output, ssh_input y ssh_cancel dicen de qué herramienta es (HerramientasSsh.MensajePeticionInterna).
         // La propia herramienta solo la da en su error, y de la lectura de ssh_replace_file_content (el archivo en base64)
-        // nunca lo que sigue a su marcador de inicio (HerramientasSsh.MensajeErrorLecturaReplace). Los avisos de otras respuestas no citan su id
+        // nunca nada: su error lo construye native_ssh con el código y la ruta (HerramientasSsh.MensajeErrorLecturaReplace). Los avisos de otras respuestas no citan su id
         // (HerramientasSsh.Resultado, SesionShell.EjecutarAsync).
         public string? Herramienta { get; init; }
 

@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
@@ -92,7 +94,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         // La lectura previa de replace termina con un código distinto de 0 después de imprimir el base64 (o parte): el error
-        // dice el código y, como mucho, lo que el script escribió antes del marcador de inicio; nunca el archivo. Un 'printf'
+        // dice el código y nada de la salida de la lectura; nunca el archivo. Un 'printf'
         // exportado como función en el shell persistente (el 'bash -c' del script la importa) provoca el fallo: devolviendo 1
         // en el marcador final, matando el script con SIGTERM en él o, además, sin imprimir ninguno de los dos marcadores.
         [Theory]
@@ -125,6 +127,82 @@ namespace NativeSsh.Test.Integracion
             _ = isError.Should().BeTrue(error);
             _ = error.Should().Contain(codigo).And.NotContain(base64[..12]).And.NotContain(base64[^12..]).And.NotContain("__NS_B64_").And.NotContain("CLAVE");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Contenido + "objetivo\n");
+        }
+
+        // Un 'printf' redefinido que no imprime los marcadores y falla: lo que queda en la salida es el archivo en base64, sin
+        // marcadores. El error no lleva nada de la salida de la lectura: ni el base64 (entero, o su última línea, más corta)
+        // ni el contenido en claro; solo el código.
+        [Theory]
+        [InlineData(1)]
+        [InlineData(14)]
+        [InlineData(63)]
+        [InlineData(77)]
+        public async Task LecturaDeReplace_PrintfSinMarcadores_NoDaElArchivo(int bytes)
+        {
+            // Arrange
+            string contenido = "objetivo" + new string('K', bytes)[..Math.Max(0, bytes - 8)];
+            contenido = contenido[..bytes];
+            string archivo = Path.Combine(_directorio, $"a{bytes}.txt");
+            await File.WriteAllTextAsync(archivo, contenido);
+            (bool isErrorExec, string exec) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "printf() { case \"$1\" in *__NS_B64_*) return 1;; esac; builtin printf \"$@\"; }; export -f printf; echo listo" });
+
+            // Act
+            (bool isError, string error) = await _cliente.LlamarAsync("ssh_replace_file_content", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["targetContent"] = "o", ["replacementContent"] = "x", ["allowMultiple"] = true });
+            _ = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "unset -f printf; export -n printf" });
+
+            // Assert
+            string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(contenido));
+            string ultimaLinea = base64[((base64.Length - 1) / 76 * 76)..];
+            _ = isErrorExec.Should().BeFalse(exec);
+            _ = isError.Should().BeTrue(error);
+            _ = error.Should().Contain("código 1").And.NotContain(ultimaLinea).And.NotContain(base64);
+            if (bytes >= 6)
+                _ = error.Should().NotContain(contenido);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(contenido);
+        }
+
+        // Los errores conocidos de la lectura previa dicen la causa con la ruta que pidió el modelo (native_ssh los construye a
+        // partir del código de salida del script, sin texto de la salida): el archivo no existe (también con '__NS_B64_' en el
+        // nombre), es un directorio, no es un archivo regular, sin permiso de lectura, sin acceso por un directorio, demasiado
+        // grande o con el candado tomado por otro.
+        [Theory]
+        [InlineData("no_existe", "Error: el archivo no existe: {0}")]
+        [InlineData("no__NS_B64_existe.txt", "Error: el archivo no existe: {0}")]
+        [InlineData("dir", "Error: la ruta es un directorio: {0}")]
+        [InlineData("fifo", "Error: {0} no es un archivo regular (es una FIFO, un socket o un dispositivo)")]
+        [InlineData("privado", "Error: sin permiso de lectura: {0} (prueba con sudo=true).")]
+        [InlineData("cerrado/f", "Error: sin permiso para acceder a la ruta: {0}")]
+        [InlineData("grande", "supera el máximo editable con ssh_replace_file_content (773184 bytes)")]
+        [InlineData("ocupado", "Error: hay otra escritura, reemplazo o restauración en curso sobre {0}")]
+        public async Task LecturaDeReplace_ErroresConocidos_DicenLaCausaConLaRuta(string nombre, string esperado)
+        {
+            // Arrange
+            string ruta = Path.Combine(_directorio, nombre);
+            _ = Directory.CreateDirectory(Path.Combine(_directorio, "dir"));
+            _ = Directory.CreateDirectory(Path.Combine(_directorio, "cerrado"));
+            await File.WriteAllTextAsync(Path.Combine(_directorio, "cerrado", "f"), "objetivo\n");
+            await File.WriteAllTextAsync(Path.Combine(_directorio, "privado"), "objetivo\n");
+            await File.WriteAllTextAsync(Path.Combine(_directorio, "ocupado"), "objetivo\n");
+            await File.WriteAllTextAsync(Path.Combine(_directorio, "grande"), "objetivo\n" + new string('x', 800_000));
+            File.SetUnixFileMode(Path.Combine(_directorio, "privado"), UnixFileMode.None);
+            File.SetUnixFileMode(Path.Combine(_directorio, "cerrado"), UnixFileMode.None);
+            using Process mkfifo = Process.Start("mkfifo", Path.Combine(_directorio, "fifo"));
+            await mkfifo.WaitForExitAsync();
+            // .NET toma un flock exclusivo con FileShare.None: el candado compartido de la lectura no se puede tomar.
+            using FileStream ocupado = new(Path.Combine(_directorio, "ocupado"), FileMode.Open, FileAccess.Read, FileShare.None);
+            try
+            {
+                // Act
+                (bool isError, string error) = await _cliente!.LlamarAsync("ssh_replace_file_content", new JsonObject { ["destino"] = Destino, ["ruta"] = ruta, ["targetContent"] = "objetivo", ["replacementContent"] = "x" });
+
+                // Assert
+                _ = isError.Should().BeTrue(error);
+                _ = error.Should().Contain(string.Format(CultureInfo.InvariantCulture, esperado, ruta)).And.NotContain("después de empezar a dar el archivo");
+            }
+            finally
+            {
+                File.SetUnixFileMode(Path.Combine(_directorio, "cerrado"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
         }
 
         [Fact]

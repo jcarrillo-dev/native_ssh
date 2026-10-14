@@ -2147,38 +2147,26 @@ namespace NativeSsh.Herramientas
             // Con sudo=true todas las comprobaciones van con sudo: sin él, un archivo en un directorio que el usuario no
             // puede atravesar parece no existir. El base64 se imprime entre marcadores (ver ExtraerArchivoEntreMarcadores)
             // y se lee entero antes del primero, así que el stderr de cat y base64 nunca cae entre ellos. Los marcadores se
-            // componen con printf para que su texto literal no aparezca en el propio script.
+            // componen con printf para que su texto literal no aparezca en el propio script. Cada error conocido sale con su
+            // código (CodigoErrorLectura) y sin texto: el error de la herramienta lo construye native_ssh con la ruta
+            // (MensajeErrorLecturaReplace), nunca con la salida de la lectura, que puede ser el archivo.
             string comandoLectura = EnvolverEnBash(PlantillaBash.Crear($$"""
                 ruta=$1
                 {{DefinicionSinAcceso}}
                 if [ ! -e "$ruta" ]; then
-                  sin_acceso "$ruta" || printf 'Error: el archivo no existe: %s\n' "$ruta" >&2
-                  exit 1
+                  sin_acceso "$ruta" >/dev/null 2>&1 && exit {{(int)CodigoErrorLecturaEnum.SinAcceso}}
+                  exit {{(int)CodigoErrorLecturaEnum.NoExiste}}
                 fi
-                if [ -d "$ruta" ]; then
-                  printf 'Error: la ruta es un directorio: %s\n' "$ruta" >&2
-                  exit 1
-                fi
-                if [ ! -f "$ruta" ]; then
-                  {{ErrorNoRegular}}
-                fi
-                if [ ! -r "$ruta" ]; then
-                  printf 'Error: sin permiso de lectura: %s (prueba con sudo=true).\n' "$ruta" >&2
-                  exit 1
-                fi
+                [ -d "$ruta" ] && exit {{(int)CodigoErrorLecturaEnum.Directorio}}
+                [ -f "$ruta" ] || exit {{(int)CodigoErrorLecturaEnum.NoRegular}}
+                [ -r "$ruta" ] || exit {{(int)CodigoErrorLecturaEnum.SinPermisoLectura}}
                 {{DefinicionCandado}}
                 destino=$ruta
-                tomar_candado -s || exit 1
+                tomar_candado -s 2>/dev/null || exit {{(int)CodigoErrorLecturaEnum.Candado}}
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
-                if [ -z "$tam" ]; then
-                  printf 'Error: no se pudo obtener el tamaño de: %s\n' "$ruta" >&2
-                  exit 1
-                fi
-                if [ "$tam" -gt {{maxBytesEditable}} ]; then
-                  printf 'Error: el archivo %s ocupa %s bytes y supera el máximo editable con ssh_replace_file_content ({{maxBytesEditable}} bytes). No se ha modificado.\n' "$ruta" "$tam" >&2
-                  exit 1
-                fi
-                b64=$(cat -- "$ruta" | base64) || exit 1
+                [ -z "$tam" ] && exit {{(int)CodigoErrorLecturaEnum.SinTamano}}
+                [ "$tam" -gt {{maxBytesEditable}} ] && exit {{(int)CodigoErrorLecturaEnum.DemasiadoGrande}}
+                b64=$(cat -- "$ruta" | base64) || exit {{(int)CodigoErrorLecturaEnum.NoLeido}}
                 printf '{{PrefijoMarcaBase64}}%s_%s__\n' INICIO {{idMarcas}}
                 printf '%s\n' "$b64"
                 printf '{{PrefijoMarcaBase64}}%s_%s__ %s\n' FIN {{idMarcas}} "$tam"
@@ -2190,7 +2178,7 @@ namespace NativeSsh.Herramientas
             ExigirCompletada(peticionLectura, _ => sinModificar, isConSalida: false);
 
             if (peticionLectura.CodigoSalida != 0)
-                throw new NativeSshException(MensajeErrorLecturaReplace(ReconstruirSalida(peticionLectura, out _), peticionLectura.CodigoSalida, ruta));
+                throw new NativeSshException(MensajeErrorLecturaReplace(peticionLectura.CodigoSalida, ruta, sudo, maxBytesEditable));
 
             string salidaLectura = ReconstruirSalidaCompleta(peticionLectura, $"No se ha escrito nada en '{ruta}'.");
             byte[] bytesLeidos = ExtraerArchivoEntreMarcadores(salidaLectura, idMarcas, ruta);
@@ -2829,30 +2817,38 @@ namespace NativeSsh.Herramientas
                 : bytes;
         }
 
-        // El error de la lectura previa de ssh_replace_file_content que terminó con un código distinto de 0. Su salida es el
-        // archivo en base64 a partir del marcador de inicio, así que nunca se da entera: si aparece alguno de sus marcadores
-        // (el de inicio o el final: "__NS_B64_", que el base64 no contiene), solo lo anterior al primero, con el código; si no,
-        // el error que escribió el script (p. ej. «Error: el archivo no existe: ...») o el código. En los dos casos sin las
-        // líneas de 20 caracteres o más que son solo del alfabeto del base64: un 'printf' redefinido en el shell que no
-        // imprima los marcadores dejaría el base64 sin ellos.
-        internal static string MensajeErrorLecturaReplace(string salida, int codigo, string ruta)
+        // Los errores conocidos de la lectura previa de ssh_replace_file_content: el script sale con estos códigos, sin texto.
+        internal enum CodigoErrorLecturaEnum
         {
-            int marcador = salida.IndexOf(PrefijoMarcaBase64, StringComparison.Ordinal);
-            bool isConMarcador = marcador >= 0;
-            StringBuilder texto = new();
-            foreach (string linea in (isConMarcador ? salida[..marcador] : salida).Split('\n'))
-            {
-                string limpia = linea.Trim();
-                bool isBase64 = limpia.Length >= 20 && !limpia.AsSpan().ContainsAnyExcept(CaracteresBase64);
-                if (limpia.Length > 0 && !isBase64)
-                    _ = texto.Append(texto.Length == 0 ? string.Empty : "\n").Append(limpia);
-            }
-
-            string sinModificar = $"No se ha modificado '{ruta}'.";
-            return isConMarcador
-                ? $"La lectura de '{ruta}' para el reemplazo terminó con código {codigo} después de empezar a dar el archivo; no se muestra su salida desde ahí (es el archivo en base64).{(texto.Length == 0 ? string.Empty : $" Antes escribió: {texto}")} {sinModificar}"
-                : texto.Length == 0 ? $"Error al leer el archivo para reemplazo (código {codigo})." : texto.ToString();
+            NoExiste = 80,
+            SinAcceso = 81,
+            Directorio = 82,
+            NoRegular = 83,
+            SinPermisoLectura = 84,
+            Candado = 85,
+            SinTamano = 86,
+            DemasiadoGrande = 87,
+            NoLeido = 88
         }
+
+        // El error de la lectura previa de ssh_replace_file_content que terminó con un código distinto de 0. Nunca lleva su
+        // salida: a partir del marcador de inicio es el archivo en base64, y un 'printf' redefinido en el shell puede dejar
+        // el base64 (o el archivo en claro) sin marcadores. Para los errores conocidos, el mensaje que native_ssh construye
+        // con el código y la ruta; para cualquier otro código, el código (con sudo=true, también si sudo no llegó a ejecutar
+        // la lectura).
+        internal static string MensajeErrorLecturaReplace(int codigo, string ruta, bool isSudo, long maxBytesEditable) => (CodigoErrorLecturaEnum)codigo switch
+        {
+            CodigoErrorLecturaEnum.NoExiste => $"Error: el archivo no existe: {ruta}",
+            CodigoErrorLecturaEnum.SinAcceso => $"Error: sin permiso para acceder a la ruta: {ruta} (algún directorio de la ruta no se puede atravesar; prueba con sudo=true).",
+            CodigoErrorLecturaEnum.Directorio => $"Error: la ruta es un directorio: {ruta}",
+            CodigoErrorLecturaEnum.NoRegular => $"Error: {ruta} no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.",
+            CodigoErrorLecturaEnum.SinPermisoLectura => $"Error: sin permiso de lectura: {ruta} (prueba con sudo=true).",
+            CodigoErrorLecturaEnum.Candado => $"Error: hay otra escritura, reemplazo o restauración en curso sobre {ruta} (otro proceso tiene tomado su candado, flock), o se sustituyó por otro archivo cada vez que se tomaba. No se ha modificado: reintenta cuando termine.",
+            CodigoErrorLecturaEnum.SinTamano => $"Error: no se pudo obtener el tamaño de: {ruta}",
+            CodigoErrorLecturaEnum.DemasiadoGrande => $"Error: el archivo {ruta} supera el máximo editable con ssh_replace_file_content ({maxBytesEditable} bytes). No se ha modificado.",
+            CodigoErrorLecturaEnum.NoLeido => $"Error: no se pudo leer {ruta} (cat o base64 fallaron). No se ha modificado.",
+            _ => $"Error al leer el archivo para reemplazo (código {codigo}{(isSudo ? "; con sudo=true, también si sudo no llegó a ejecutar la lectura: contraseña incorrecta o sin permiso de sudo" : string.Empty)}). No se muestra la salida de la lectura, que puede ser el archivo. No se ha modificado '{ruta}'."
+        };
 
         // Solo se edita lo que sobrevive a bytes → UTF-8 → bytes: UTF-8 estricto (el BOM se conserva como U+FEFF) y sin NUL.
         private static string DecodificarArchivoUtf8(byte[] bytes, string ruta)

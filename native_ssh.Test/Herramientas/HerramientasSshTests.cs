@@ -1362,8 +1362,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             string lectura = _fabrica.Ultima!.Comandos.First(c => c.Contains("base64", StringComparison.Ordinal));
-            _ = lectura.Should().Contain("773184");
-            _ = lectura.Should().Contain("supera el máximo editable");
+            _ = lectura.Should().Contain("[ \"$tam\" -gt 773184 ] && exit 87");
         }
 
         // ssh_search corta con head; ssh_find y ssh_list_dir, con el bucle que lee sus nombres terminados en NUL.
