@@ -275,7 +275,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 foreach (string linea in respuesta.Salida.Split('\n'))
                 {
                     bool isError = linea.StartsWith("Error:", StringComparison.Ordinal) || linea.StartsWith("grep:", StringComparison.Ordinal) || linea.StartsWith("rg:", StringComparison.Ordinal)
-                        || linea.StartsWith("ash:", StringComparison.Ordinal) || linea.StartsWith("__NS_", StringComparison.Ordinal);
+                        || linea.StartsWith("ash:", StringComparison.Ordinal) || linea == ConstructorComandoExec.MarcaInicio || linea == ConstructorComandoExec.MarcaTruncado;
                     _ = (isError ? errores : salida).Append(linea).Append('\n');
                 }
 
