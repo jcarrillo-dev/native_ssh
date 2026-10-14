@@ -24,6 +24,10 @@ namespace NativeSsh.Sesion
         // lectura (DestinosSoloLectura) la compara con sus entradas: así el DNS de ahora no decide por una sesión ya abierta.
         IPAddress? DireccionRemota { get; }
 
+        // El servidor anunció al conectar que es OpenSSH for Windows (RespuestaWindows.IsVersionWindows): sus shells de login
+        // pueden ser cmd o PowerShell (WS1).
+        bool IsServidorWindows { get; }
+
         // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta. isSinPerfil (ssh_reset_shell con
         // sinPerfil=true, RC1): en lugar de pedir el shell del usuario (petición 'shell', que lee .profile y .bashrc), ejecuta
         // ComandoSinPerfil con una petición 'exec' sobre el mismo pseudoterminal.

@@ -539,6 +539,178 @@ namespace NativeSsh.Test.Sesion
             _ = otro.CodigoSalida.Should().Be(127, "otro programa que falta no es falta de bash");
         }
 
+        // Lo que escribe el terminal de Windows Server 2025 (OpenSSH for Windows 9.5) al abrir el shell de login, medido con
+        // DefaultShell cmd y PowerShell 5.1 (bytes del principio, hasta el eco de la primera línea enviada).
+        private const string TerminalCmd = "\e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[HMicrosoft Windows [Version 10.0.26100.1742]\e]0;C:\\WINDOWS\\system32\\conhost.exe\a\e[?25h\e[?25l\r\n(c) Microsoft Corporation. All rights reserved.\e[4;1Hnsws@WINSRV C:\\Users\\nsws>exec bash --noediting --norc --noprofile\e[?25h";
+        private const string TerminalPowerShell = "\e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[HWindows PowerShell\r\nCopyright (C) Microsoft Corporation. All rights reserved.\e[4;1HInstall the latest PowerShell for new features and improvements! https://aka.ms/PSWindows\e]0;C:\\WINDOWS\\system32\\conhost.exe\a\e[?25h";
+
+        // Con un PowerShell traducido o un indicador propio: solo el indicador con la ruta de Windows.
+        private const string TerminalIndicador = "\e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[H\e]0;C:\\WINDOWS\\system32\\conhost.exe\a\e[?25hPS C:\\Users\\nsws> ";
+
+        // Git Bash como shell de login: el mismo prefijo de ConPTY, su título y su indicador, y responde como bash.
+        private const string TerminalGitBash = "\e[?9001h\e[?1004h\e[?25l\e[2J\e[m\e[H\e]0;UCRT64:/c/Users/nsws\a\e[?25h\e[32m\r\nnsws@WINSRV \e[35mUCRT64 \e[33m~\e[m\r\n$ ";
+
+        // WS1: con cmd o PowerShell como shell de login, nada de lo enviado se ejecuta (bajo ConPTY un '\n' no es Intro) y antes
+        // se esperaba el plazo de inicialización (15 s) para acabar culpando al perfil. Ahora falla en cuanto el terminal lo
+        // delata, con una sola conexión, sin proponer sinPerfil y diciendo que no se ejecutó nada.
+        [Theory]
+        [InlineData(TerminalCmd, "Microsoft Windows [Version 10.0.26100.1742]")]
+        [InlineData(TerminalPowerShell, "Windows PowerShell")]
+        [InlineData(TerminalIndicador, "PS C:\\Users\\nsws>")]
+        public async Task ServidorWindowsConCmdOPowerShell_ShellDeLogin_FallaEnSeguidaYDiceQueNoEsBash(string terminal, string evidencia)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = true, RespuestaConPty = terminal };
+            await using SesionShell sesion = Crear(fabrica, Opciones(timeoutInicializacionSegundos: 15));
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Peticion primero = await EjecutarAsync(sesion, "echo hola");
+            TimeSpan duracion = reloj.Elapsed;
+            Peticion segundo = await EjecutarAsync(sesion, "echo otra");
+
+            // Assert
+            _ = primero.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = primero.IsComandoEnviado.Should().BeFalse();
+            _ = duracion.Should().BeLessThan(TimeSpan.FromSeconds(2));
+            _ = primero.Aviso.Should().Contain("cmd/PowerShell").And.Contain($"«{evidencia}»").And.Contain("No se ejecutó nada")
+                .And.NotContain("perfil").And.NotContain("sinPerfil");
+            _ = RespuestaWindows.IsMensajeWindows(primero.Aviso).Should().BeTrue();
+            _ = segundo.Aviso.Should().Be(primero.Aviso);
+            _ = fabrica.Conexiones.Should().Be(1);
+            _ = fabrica.Ultima!.CanalActual!.IsCerrado.Should().BeTrue();
+        }
+
+        // El shell sin perfil (petición 'exec' con PTY) en Windows: ni con Git Bash arranca (medido: se cierra a los 0,4 s sin
+        // escribir nada) y con PowerShell tarda ~2,9 s en contestar, así que basta el prefijo de ConPTY.
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ServidorWindows_ShellSinPerfil_FallaConElPrefijoDeConPty(bool isCierra)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = true, RespuestaConPty = "\e[?9001h\e[?1004h", IsCierraTrasConPty = isCierra };
+            await using SesionShell sesion = Crear(fabrica, Opciones(timeoutInicializacionSegundos: 15));
+            _ = sesion.SolicitarResetConLimpieza(isSinPerfil: true);
+            Stopwatch reloj = Stopwatch.StartNew();
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "echo hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+            _ = peticion.Aviso.Should().Contain("es Windows (OpenSSH for Windows, terminal ConPTY)").And.Contain("No se ejecutó nada").And.NotContain("perfil roto");
+            _ = RespuestaWindows.IsMensajeWindows(peticion.Aviso).Should().BeTrue();
+            _ = fabrica.Ultima!.AperturasSinPerfil.Should().Be(1);
+        }
+
+        // Sin falsos positivos: Git Bash en Windows (mismo prefijo de ConPTY) funciona como antes, y un servidor que no es
+        // Windows no se toma por Windows aunque su perfil imprima lo mismo que cmd.
+        [Theory]
+        [InlineData(true, TerminalGitBash)]
+        [InlineData(false, TerminalCmd)]
+        [InlineData(false, TerminalPowerShell)]
+        public async Task ConPtyConBash_OServidorQueNoEsWindows_SeInicializaComoSiempre(bool isWindows, string terminal)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = isWindows, RespuestaConPty = terminal, IsBashTrasConPty = true };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "echo hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Completado, peticion.Aviso);
+            _ = Texto(peticion).Should().Be("eco:echo hola\n");
+        }
+
+        // Un shell de Windows bajo ConPTY sin cabecera ni indicador reconocibles: se espera el plazo como antes, pero el error
+        // dice que es Windows en lugar de culpar al perfil.
+        [Fact]
+        public async Task ServidorWindowsSinSenalDelShell_AlAgotarseElPlazo_DiceQueEsWindows()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = true, RespuestaConPty = "\e[?9001h\e[?1004h\e[2Jmi-indicador$ " };
+            await using SesionShell sesion = Crear(fabrica, Opciones() with { TimeoutInicializacionShell = TimeSpan.FromSeconds(3) });
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "echo hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = peticion.Aviso.Should().Contain("es Windows (OpenSSH for Windows, terminal ConPTY)").And.Contain("3 s").And.NotContain("perfil");
+        }
+
+        // WS1 por el canal exec: el shell de login de Windows contesta con su error (CRLF) sin que el programa arranque.
+        [Theory]
+        [InlineData("3>& was unexpected at this time.\r\n", "3>& was unexpected at this time.")]
+        [InlineData("La línea de comandos es demasiado larga.\r\n", "La línea de comandos es demasiado larga.")]
+        [InlineData("At line:1 char:693\r\n+ ... </dev/nul ...\r\nThe '<' operator is reserved for future use.\r\n    + FullyQualifiedErrorId : RedirectionNotSupported\r\n", "FullyQualifiedErrorId : RedirectionNotSupported")]
+        public async Task ServidorWindows_CanalExecSinArrancarBash_ElErrorDiceQueEsCmdOPowerShell(string errores, string linea)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(c => c.EndsWith("\nleer", StringComparison.Ordinal) ? new("", 1, BytesErrores: Encoding.UTF8.GetBytes(errores)) : Guion(c)) { IsServidorWindows = true };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("leer", TimeSpan.FromSeconds(10), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("cmd/PowerShell").And.Contain($"«{linea}»").And.Contain("No se ejecutó nada");
+            _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().BeTrue();
+        }
+
+        // Un comando exec más largo que la línea de órdenes de Windows: su sshd rechaza la petición exec sin cerrar el canal
+        // (medido: «exec request failed», y SSH.NET no lo ve y espera hasta el plazo, 90 s en ssh_search). En un servidor
+        // Windows no se envía y el error lo dice en seguida; en otro, se envía como siempre.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task CanalExecMasLargoQueLaLineaDeOrdenesDeWindows_NoSeEnviaAUnServidorWindows(bool isWindows)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = isWindows };
+            await using SesionShell sesion = Crear(fabrica);
+            string script = "echo " + new string('x', SesionShell.MaxCaracteresComandoExecWindows);
+
+            // Act
+            Func<Task<ResultadoCanalExec>> lectura = () => sesion.EjecutarExecAsync(script, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            // Assert
+            if (isWindows)
+            {
+                NativeSshException error = (await lectura.Should().ThrowAsync<NativeSshException>()).Which;
+                _ = error.Message.Should().Contain("caracteres").And.Contain("No se ejecutó nada");
+                _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().BeTrue();
+                _ = fabrica.Ultima!.ComandosExec.Should().BeEmpty();
+            }
+            else
+            {
+                _ = (await lectura()).CodigoSalida.Should().Be(0);
+            }
+        }
+
+        // Sin la marca de inicio pero sin señales de Windows (otro servidor, o errores con LF como los de bash), el resultado
+        // llega como antes.
+        [Theory]
+        [InlineData(false, "3>& was unexpected at this time.\r\n")]
+        [InlineData(true, "bash: /dev/nu: No such file or directory\n")]
+        public async Task CanalExecSinMarcaYSinSenalesDeWindows_DevuelveElResultadoTalCual(bool isWindows, string errores)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(c => c.EndsWith("\nleer", StringComparison.Ordinal) ? new("", 1, BytesErrores: Encoding.UTF8.GetBytes(errores)) : Guion(c)) { IsServidorWindows = isWindows };
+            await using SesionShell sesion = Crear(fabrica);
+
+            // Act
+            ResultadoCanalExec resultado = await sesion.EjecutarExecAsync("leer", TimeSpan.FromSeconds(10), CancellationToken.None);
+
+            // Assert
+            _ = resultado.CodigoSalida.Should().Be(1);
+            _ = Encoding.UTF8.GetString(resultado.Errores.Span).Should().Be(errores);
+        }
+
         // WS2: el programa del canal exec sale con CodigoComandoTruncado y su marca si no le llegaron todos los argumentos (el
         // servidor cortó la línea de órdenes): no se ejecutó nada y el error lo dice, sin devolver el código como del script.
         [Fact]

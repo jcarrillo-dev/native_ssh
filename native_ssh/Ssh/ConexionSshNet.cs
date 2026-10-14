@@ -1,6 +1,7 @@
 using System.Net;
 using Renci.SshNet;
 using Renci.SshNet.Common;
+using NativeSsh.Protocolo;
 using NativeSsh.Sesion;
 
 namespace NativeSsh.Ssh
@@ -83,6 +84,8 @@ namespace NativeSsh.Ssh
 
         // La dirección a la que FabricaConexionSsh conectó el socket (SSH.NET la recibe ya resuelta y no vuelve a resolver).
         public IPAddress DireccionRemota { get; }
+
+        public bool IsServidorWindows => RespuestaWindows.IsVersionWindows(_cliente.ConnectionInfo.ServerVersion);
 
         public ICanalShell AbrirShell(bool isSinPerfil)
         {

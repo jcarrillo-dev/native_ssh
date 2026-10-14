@@ -22,6 +22,7 @@ namespace NativeSsh.Test.Utilidades
             public bool IsConectada => interna.IsConectada;
 
             public IPAddress? DireccionRemota => interna.DireccionRemota;
+            public bool IsServidorWindows => interna.IsServidorWindows;
 
             public ICanalShell AbrirShell(bool isSinPerfil) => interna.AbrirShell(isSinPerfil);
 

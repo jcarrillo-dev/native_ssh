@@ -50,6 +50,16 @@ namespace NativeSsh.Sesion
         public const int TamanoBloqueLectura = 16 * 1024;
         public const int CodigoCanalCerrado = int.MinValue;
 
+        // El sshd de Windows rechaza una petición exec cuyo comando no cabe en su línea de órdenes (medido con OpenSSH for
+        // Windows 9.5: acepta hasta 32 703–32 731 caracteres según la ruta del shell de login), y SSH.NET no ve el rechazo
+        // (SshCommand descarta la respuesta de la petición) y espera el cierre del canal, que no llega: la operación agotaba
+        // su plazo entero. Por encima de este tope no se envía (WS1). Por debajo, lo que pase de unos 8191 caracteres el sshd
+        // lo trunca, y eso lo detecta el propio programa (ConstructorComandoExec, WS2).
+        public const int MaxCaracteresComandoExecWindows = 32_000;
+
+        // La inicialización termina sin marcador porque el terminal delató un shell de Windows que no es bash (WS1).
+        private const int CodigoShellWindows = int.MinValue + 1;
+
         // Canales exec simultáneos por conexión (más el canal del shell): muy por debajo del MaxSessions 10 de OpenSSH
         // y de SSH.NET. Los que pasen del cupo esperan su turno dentro de su timeout.
         public const int MaxCanalesExecSimultaneos = 4;
@@ -605,6 +615,9 @@ namespace NativeSsh.Sesion
                 isCupoTomado = true;
                 etapa = EtapaExecEnum.Conexion;
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
+                if (conexion.IsServidorWindows && comando.Length > MaxCaracteresComandoExecWindows)
+                    throw new NativeSshException(RespuestaWindows.DescribirComandoLargo(Destino.Clave, comando.Length));
+
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
                 etapa = EtapaExecEnum.Apertura;
@@ -621,8 +634,12 @@ namespace NativeSsh.Sesion
 
                 // Sin bash en el servidor, el shell del usuario (con -c, sin login) no encuentra el 'bash' del comando: 127,
                 // nada en stdout y su error en stderr. Se dice la causa en lugar de devolver ese stderr crudo.
-                return resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash
-                    ? throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: false))
+                if (resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash)
+                    throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: false));
+
+                // WS1: en un servidor Windows, cmd o PowerShell como shell de login rechazan el comando sin arrancar bash.
+                return conexion.IsServidorWindows && RespuestaWindows.IsRespuestaExec(resultado.CodigoSalida, resultado.Salida.Span, resultado.Errores.Span)
+                    ? throw new NativeSshException(RespuestaWindows.DescribirExec(Destino.Clave, RespuestaWindows.LineaRespuesta(Encoding.UTF8.GetString(resultado.Errores.Span))))
                     : resultado;
             }
             catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
@@ -1603,7 +1620,7 @@ namespace NativeSsh.Sesion
             bool isSinPerfil = _isSinPerfil;
             try
             {
-                canal = new ShellAbierto(await ObtenerCanalShellAsync(conexion, isSinPerfil, token).ConfigureAwait(false)) { IsSinPerfil = isSinPerfil };
+                canal = new ShellAbierto(await ObtenerCanalShellAsync(conexion, isSinPerfil, token).ConfigureAwait(false)) { IsSinPerfil = isSinPerfil, IsServidorWindows = conexion.IsServidorWindows };
             }
             catch (CanalRechazadoException ex)
             {
@@ -1652,17 +1669,19 @@ namespace NativeSsh.Sesion
                     // pueden ejecutarse las dos: la sincronización posterior deja el shell en un estado conocido.
                     _ = TryEscribir(canal, EscrituraEnum.ReenvioInicializacion, id);
                     codigo = await espera.Task.WaitAsync(limite.Token).ConfigureAwait(false);
-                    if (codigo != CodigoCanalCerrado)
+                    if (codigo is not (CodigoCanalCerrado or CodigoShellWindows))
                         codigo = await SincronizarAsync(canal, id, limite.Token).ConfigureAwait(false);
                 }
 
-                if (codigo != CodigoCanalCerrado)
+                if (codigo is not (CodigoCanalCerrado or CodigoShellWindows))
                     codigo = await CapturarIdentidadYPathAsync(canal, limite.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 CerrarCanal(canal);
-                throw new NativeSshException(DescribirInicializacionAgotada(isSinPerfil));
+                throw new NativeSshException(IsConPtyDeWindows(canal)
+                    ? RespuestaWindows.DescribirConPty(Destino.Clave, $"su shell no completó la inicialización de native_ssh en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s")
+                    : DescribirInicializacionAgotada(isSinPerfil));
             }
             catch
             {
@@ -1670,8 +1689,22 @@ namespace NativeSsh.Sesion
                 throw;
             }
 
+            if (codigo == CodigoShellWindows)
+            {
+                string evidencia = TerminarInicializacion(canal);
+                CerrarCanal(canal);
+                throw new NativeSshException(evidencia.Length == 0
+                    ? RespuestaWindows.DescribirConPty(Destino.Clave, "native_ssh no puede abrir en él un shell sin perfil (ni con Git Bash como shell de login: ese shell se cierra sin arrancar bash)")
+                    : RespuestaWindows.DescribirShell(Destino.Clave, evidencia));
+            }
+
             if (codigo == CodigoCanalCerrado)
-                throw new NativeSshException(DescribirCierreEnLaInicializacion(TerminarInicializacion(canal), isSinPerfil));
+            {
+                string salida = TerminarInicializacion(canal);
+                throw new NativeSshException(IsConPtyDeWindows(canal)
+                    ? RespuestaWindows.DescribirConPty(Destino.Clave, "su shell se cerró durante la inicialización de native_ssh")
+                    : DescribirCierreEnLaInicializacion(salida, isSinPerfil));
+            }
 
             _ = TerminarInicializacion(canal);
 
@@ -1693,11 +1726,19 @@ namespace NativeSsh.Sesion
         private string DescribirInicializacionAgotada(bool isSinPerfil) =>
             $"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s: {(isSinPerfil ? "el servidor no respondió" : "el login tardó más que ese plazo (p. ej. algo lento, un 'read' o un 'sleep' en el perfil), el servidor no respondió")} o al shell le falta bash, stty o base64. {DescribirConsecuenciasInicializacion(isSinPerfil)}";
 
-        // Con el candado de la bomba, que es quien anota.
+        // Con el candado de la bomba, que es quien anota. Tras CodigoShellWindows, lo que delató al shell (vacío si fue el
+        // prefijo de ConPTY de un shell sin perfil).
         private string TerminarInicializacion(ShellAbierto canal)
         {
             lock (_candadoProceso)
                 return canal.TerminarInicializacion();
+        }
+
+        // Llegó el prefijo de ConPTY de un servidor que se anunció como OpenSSH for Windows (WS1).
+        private bool IsConPtyDeWindows(ShellAbierto canal)
+        {
+            lock (_candadoProceso)
+                return canal.HasConPty;
         }
 
         // Lo que escribió el shell al cerrarse durante la inicialización dice por qué: sin bash, la respuesta del shell de
@@ -1931,9 +1972,17 @@ namespace NativeSsh.Sesion
             {
                 canal.AnotarInicializacion(datos);
                 FiltroMarcasGuardado? filtro = _filtroActual is { } f && ReferenceEquals(f.Salida, _salidaActual) ? f : null;
-                if (!ReferenceEquals(_canal, canal) || !_escaner.Procesar(datos, (IDestinoSalida?)filtro ?? _salidaActual, out codigo))
-                    return;
+                bool isVigente = ReferenceEquals(_canal, canal);
+                if (!isVigente || !_escaner.Procesar(datos, (IDestinoSalida?)filtro ?? _salidaActual, out codigo))
+                {
+                    // WS1: mientras no llegue el primer marcador, un shell de Windows que no es bash termina la espera.
+                    if (!isVigente || _esperaMarcador is null || !canal.DetectarShellWindows())
+                        return;
 
+                    codigo = CodigoShellWindows;
+                }
+
+                canal.DejarDeDetectarWindows();
                 filtro?.Vaciar();
                 completada = _esperaMarcador;
                 _esperaMarcador = null;
@@ -2241,12 +2290,47 @@ namespace NativeSsh.Sesion
             // Terminó la inicialización (TerminarInicializacion). Con _candadoProceso tomado.
             public bool IsInicializado => _colaInicializacion is null;
 
+            // El servidor se anunció como OpenSSH for Windows (IConexionSsh.IsServidorWindows).
+            public bool IsServidorWindows { get; init; }
+
+            // Llegó el prefijo de ConPTY (RespuestaWindows.HasPrefijoConPty). Con _candadoProceso tomado.
+            public bool HasConPty { get; private set; }
+
+            // Lo que delató a cmd o a PowerShell (vacío si bastó el prefijo de ConPTY), en lugar de la cola, desde que
+            // DetectarShellWindows lo encuentra.
+            private string? _evidenciaWindows;
+            private bool _isDetectandoWindows = true;
+
+            // Solo durante la inicialización, en un servidor Windows y hasta el primer marcador: true si lo que ha escrito el
+            // terminal delata un shell de Windows que no es bash (WS1). En el shell sin perfil basta el prefijo de ConPTY: en
+            // Windows no arranca ni con Git Bash (medido) y PowerShell tarda casi 3 s en contestar; en la petición 'shell' hace
+            // falta además la cabecera o el indicador de cmd o de PowerShell (con Git Bash llega el mismo prefijo y funciona).
+            // Con _candadoProceso tomado.
+            public bool DetectarShellWindows()
+            {
+                byte[]? cola = _colaInicializacion;
+                if (!IsServidorWindows || !_isDetectandoWindows || cola is null)
+                    return false;
+
+                ReadOnlySpan<byte> anotado = cola.AsSpan(0, _longitudCola);
+                HasConPty = HasConPty || RespuestaWindows.HasPrefijoConPty(anotado);
+                if (!HasConPty)
+                    return false;
+
+                _evidenciaWindows = IsSinPerfil ? "" : RespuestaWindows.BuscarShell(Encoding.UTF8.GetString(anotado));
+                return _evidenciaWindows is not null;
+            }
+
+            // Llegó un marcador (o ya se decidió): desde aquí la salida es de bash. Con _candadoProceso tomado.
+            public void DejarDeDetectarWindows() => _isDetectandoWindows = false;
+
             // Devuelve la cola como texto y deja de anotar. Con _candadoProceso tomado.
             public string TerminarInicializacion()
             {
                 byte[]? cola = _colaInicializacion;
                 _colaInicializacion = null;
-                return cola is null ? "" : Encoding.UTF8.GetString(cola, 0, _longitudCola);
+                _isDetectandoWindows = false;
+                return _evidenciaWindows ?? (cola is null ? "" : Encoding.UTF8.GetString(cola, 0, _longitudCola));
             }
 
             // Se completa cuando un canal abandonado termina de cerrarse.
