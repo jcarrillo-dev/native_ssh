@@ -2819,15 +2819,34 @@ namespace NativeSsh.Herramientas
         // - El contenido (base64) llega por stdin, nunca como argumento: un argumento no puede pasar de 128 KiB (MAX_ARG_STRLEN).
         //   sudo pide la contraseña por /dev/tty, no por stdin.
         // - Es siempre bash (no el shell de login), así que el script puede usar sintaxis de bash como $'\n'.
+        // - El script se pone a salvo de las funciones que hereda (las exportadas con 'export -f' en el shell persistente, que
+        //   'bash -c' importaría: un 'printf' que sale con otro código o un 'base64' que cambia lo que decodifica): bash
+        //   arranca en modo POSIX (--posix, que además no lee BASH_ENV), donde 'unset' (orden interna especial) va antes
+        //   que cualquier función, quita 'declare' y después todas las que haya, y vuelve al modo normal. Una función
+        //   heredada con el nombre de una orden interna especial (unset, set, export...) hace que bash en modo POSIX no
+        //   arranque (código 2): falla sin ejecutar nada. Medido con bash 5.3: con printf, declare, command y builtin
+        //   exportadas, el script ve 0 funciones y el printf de verdad.
+        // - Fuera del script, en el shell persistente del usuario, no hay forma completa de evitar sus funciones: printf,
+        //   sudo y bash se llaman con 'command' (salta una función con su nombre, no una función 'command'), y lo que llega
+        //   por la tubería lo comprueban las escrituras (DefinicionVerificarContenido).
+        private const string PrologoSinFunciones = """
+            unset -f declare
+            for __ns_f in $(declare -F); do case $__ns_f in declare|-f) ;; *) unset -f -- "$__ns_f" ;; esac; done
+            unset __ns_f
+            set +o posix
+            set -o pipefail
+
+            """;
+
         private static string EnvolverEnBash(string script, bool sudo, string argumentos, string? payloadBase64 = null)
         {
-            string entrada = payloadBase64 is null ? string.Empty : $"printf '%s' '{payloadBase64}' | ";
-            string programa = sudo ? "sudo bash" : "bash";
+            string entrada = payloadBase64 is null ? string.Empty : $"command printf '%s' '{payloadBase64}' | ";
+            string programa = sudo ? "command sudo bash --posix" : "command bash --posix";
             return PlantillaBash.Crear($$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~
                 set -o pipefail
-                {{entrada}}{{programa}} -c {{Escapar("set -o pipefail\n" + script)}} ns {{argumentos}}
+                {{entrada}}{{programa}} -c {{Escapar(PrologoSinFunciones.ReplaceLineEndings("\n") + script)}} ns {{argumentos}}
                 )
                 """);
         }

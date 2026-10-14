@@ -1468,7 +1468,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert: todo el script, comprobaciones incluidas, en un único 'sudo bash'; el contenido llega por stdin.
             string comando = _fabrica.Ultima!.Comandos.Last(c => c.Contains("base64 -d", StringComparison.Ordinal));
-            _ = comando.Should().Contain("| sudo bash -c '");
+            _ = comando.Should().Contain("| command sudo bash --posix -c '");
             _ = comando.Split("sudo ").Should().HaveCount(2);
             _ = comando.Should().Contain("readlink -f -- \"$ruta\"");
             _ = comando.Should().Contain("mktemp -- \"$dir/.$corto.tmp.XXXXXX\"").And.Contain("mktemp -- \"$dir/.$corto.orig.XXXXXX\"");
@@ -1508,7 +1508,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert: existencia, tipo, tamaño y lectura dentro del mismo 'sudo bash'.
             string lectura = _fabrica.Ultima!.Comandos.First(c => c.Contains("| base64", StringComparison.Ordinal));
-            _ = lectura.Should().Contain("sudo bash -c '");
+            _ = lectura.Should().Contain("command sudo bash --posix -c '");
             _ = lectura.Split("sudo ").Should().HaveCount(2);
             _ = lectura.IndexOf("sudo bash", StringComparison.Ordinal).Should().BeLessThan(lectura.IndexOf("[ ! -e \"$ruta\" ]", StringComparison.Ordinal));
         }

@@ -93,15 +93,16 @@ namespace NativeSsh.Test.Integracion
             await ComprobarSinSalidaAsync(id, "ssh_replace_file_content");
         }
 
-        // La lectura previa de replace termina con un código distinto de 0 después de imprimir el base64 (o parte): el error
-        // dice el código y nada de la salida de la lectura; nunca el archivo. Un 'printf'
-        // exportado como función en el shell persistente (el 'bash -c' del script la importa) provoca el fallo: devolviendo 1
-        // en el marcador final, matando el script con SIGTERM en él o, además, sin imprimir ninguno de los dos marcadores.
+        // Un 'printf' exportado como función en el shell persistente que hacía terminar la lectura previa de replace con un
+        // código distinto de 0 después de imprimir el base64 (devolviendo 1 en el marcador final, matando el script con
+        // SIGTERM en él o sin imprimir ninguno de los dos marcadores): el script se pone a salvo de las funciones heredadas,
+        // así que el reemplazo sale bien, y en ningún caso la respuesta lleva el archivo (si la lectura fallara así, su error
+        // no lleva nada de su salida: MensajeErrorLecturaReplace).
         [Theory]
-        [InlineData("*FIN*) return 1;;", "código 1")]
-        [InlineData("*FIN*) kill -TERM $$;;", "código 143")]
-        [InlineData("*INICIO*|*FIN*) return 1;;", "código 1")]
-        public async Task LecturaDeReplace_CodigoDistintoDeCeroTrasElBase64_NoDevuelveElArchivo(string caso, string codigo)
+        [InlineData("*FIN*) return 1;;")]
+        [InlineData("*FIN*) kill -TERM $$;;")]
+        [InlineData("*INICIO*|*FIN*) return 1;;")]
+        public async Task LecturaDeReplace_CodigoDistintoDeCeroTrasElBase64_NoDevuelveElArchivo(string caso)
         {
             // Arrange
             string archivo = Path.Combine(_directorio, "secreto.env");
@@ -124,14 +125,14 @@ namespace NativeSsh.Test.Integracion
             // Assert
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(Contenido + "objetivo\n"));
             _ = isErrorExec.Should().BeFalse(exec);
-            _ = isError.Should().BeTrue(error);
-            _ = error.Should().Contain(codigo).And.NotContain(base64[..12]).And.NotContain(base64[^12..]).And.NotContain("__NS_B64_").And.NotContain("CLAVE");
-            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Contenido + "objetivo\n");
+            _ = error.Should().NotContain(base64[..12]).And.NotContain(base64[^12..]).And.NotContain("__NS_B64_").And.NotContain("CLAVE");
+            _ = isError.Should().BeFalse(error);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Contenido + "cambiado\n");
         }
 
-        // Un 'printf' redefinido que no imprime los marcadores y falla: lo que queda en la salida es el archivo en base64, sin
-        // marcadores. El error no lleva nada de la salida de la lectura: ni el base64 (entero, o su última línea, más corta)
-        // ni el contenido en claro; solo el código.
+        // Un 'printf' exportado que no imprime los marcadores y falla (dejaba el archivo en base64, sin marcadores, en la
+        // salida de la lectura): el script se pone a salvo de las funciones heredadas y el reemplazo sale bien; la respuesta
+        // no lleva nada del archivo: ni el base64 (entero, o su última línea, más corta) ni el contenido en claro.
         [Theory]
         [InlineData(1)]
         [InlineData(14)]
@@ -154,11 +155,11 @@ namespace NativeSsh.Test.Integracion
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(contenido));
             string ultimaLinea = base64[((base64.Length - 1) / 76 * 76)..];
             _ = isErrorExec.Should().BeFalse(exec);
-            _ = isError.Should().BeTrue(error);
-            _ = error.Should().Contain("código 1").And.NotContain(ultimaLinea).And.NotContain(base64);
+            _ = error.Should().NotContain(ultimaLinea).And.NotContain(base64);
             if (bytes >= 6)
                 _ = error.Should().NotContain(contenido);
-            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(contenido);
+            _ = isError.Should().BeFalse(error);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(contenido.Replace('o', 'x'));
         }
 
         // Los errores conocidos de la lectura previa dicen la causa con la ruta que pidió el modelo (native_ssh los construye a
@@ -203,6 +204,31 @@ namespace NativeSsh.Test.Integracion
             {
                 File.SetUnixFileMode(Path.Combine(_directorio, "cerrado"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             }
+        }
+
+        // Una función exportada en el shell persistente (el 'bash -c' del script la heredaría) que hace salir la lectura con
+        // uno de sus códigos propios (80, 85, 87) por otra causa: el script se pone a salvo de las funciones heredadas al
+        // empezar, así que no hay mensaje con una causa falsa («no existe», «candado», «supera el máximo»).
+        [Theory]
+        [InlineData(80)]
+        [InlineData(85)]
+        [InlineData(87)]
+        public async Task LecturaDeReplace_CodigoPropioPorOtraCausa_NoDaUnMensajeFalso(int codigo)
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, $"c{codigo}.txt");
+            await File.WriteAllTextAsync(archivo, Contenido + "objetivo\n");
+            (bool isErrorExec, string exec) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = $"printf() {{ builtin printf \"$@\"; [ \"$2\" = FIN ] && return {codigo}; return 0; }}; export -f printf; true" });
+
+            // Act
+            (bool isError, string respuesta) = await _cliente.LlamarAsync("ssh_replace_file_content", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["targetContent"] = "objetivo", ["replacementContent"] = "x" });
+            _ = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "unset -f printf; export -n printf; true" });
+
+            // Assert
+            _ = isErrorExec.Should().BeFalse(exec);
+            _ = respuesta.Should().NotContainAny("no existe", "candado", "supera el máximo").And.NotContain("CLAVE");
+            _ = isError.Should().BeFalse(respuesta);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Contenido + "x\n");
         }
 
         [Fact]

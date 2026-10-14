@@ -94,6 +94,26 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
+        // Una función exportada con el nombre de una orden interna especial ('set'): el script arranca bash en modo POSIX para
+        // quitar las funciones heredadas, y bash no arranca con ella (código 2): la escritura falla sin tocar el archivo.
+        [Fact]
+        public async Task FuncionHeredadaConNombreDeOrdenEspecial_FallaSinTocarElArchivo()
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, "especial.txt");
+            await File.WriteAllTextAsync(archivo, Original);
+            await ExecAsync("set() { builtin set \"$@\"; }; export -f set; true");
+
+            // Act
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = true });
+            await ExecAsync("unset -f set; export -n set; true");
+
+            // Assert
+            _ = isError.Should().BeTrue(respuesta);
+            _ = respuesta.Should().ContainAny("orden interna especial", "special shell builtin", "código 2");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
+        }
+
         // La comprobación de lo decodificado con lo que haya en el servidor: sha256sum o, sin él, cksum; sin ninguno, solo el
         // tamaño, y lo dice (verificacion=tamano). Aquí, en un bash local con un PATH que solo tiene lo que se le da.
         [Theory]
