@@ -114,6 +114,30 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
         }
 
+        // Sin 'wc' en el servidor no se puede comprobar el tamaño de lo que llegó: la escritura falla sin tocar nada y el error
+        // lo dice, sin culpar al shell de alterar el contenido.
+        [Fact]
+        public async Task SinWc_NoCulpaAlShell()
+        {
+            // Arrange
+            string sinWc = Directory.CreateDirectory(Path.Combine(_directorio, "sinwc")).FullName;
+            foreach (string programa in Directory.GetFiles("/usr/bin"))
+                if (Path.GetFileName(programa) != "wc")
+                    _ = File.CreateSymbolicLink(Path.Combine(sinWc, Path.GetFileName(programa)), programa);
+            string archivo = Path.Combine(_directorio, "sinwc.txt");
+            await File.WriteAllTextAsync(archivo, Original);
+            await ExecAsync($"export PATH={sinWc}");
+
+            // Act
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = true });
+            _ = await _cliente.LlamarAsync("ssh_reset_shell", new JsonObject { ["destino"] = Destino });
+
+            // Assert
+            _ = isError.Should().BeTrue(respuesta);
+            _ = respuesta.Should().Contain("no tiene 'wc'").And.Contain($"No se ha modificado '{archivo}'").And.NotContain("alteró");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
+        }
+
         // La comprobación de lo decodificado con lo que haya en el servidor: sha256sum o, sin él, cksum; sin ninguno, solo el
         // tamaño, y lo dice (verificacion=tamano). Aquí, en un bash local con un PATH que solo tiene lo que se le da.
         [Theory]

@@ -1046,7 +1046,7 @@ namespace NativeSsh.Herramientas
                     }
                     trap 'command rm -f -- "$fragmento"' EXIT
                     base64 -d > "$fragmento" || exit 1
-                    verificar_contenido "$fragmento" || exit {{CodigoContenidoNoIntegro}}
+                    verificar_contenido "$fragmento" || { [ "$?" = 2 ] && exit {{CodigoSinVerificador}}; exit {{CodigoContenidoNoIntegro}}; }
                     anunciar verificacion "$verificacion"
                     {{DefinicionCandado}}
                     destino=$ruta
@@ -1062,6 +1062,8 @@ namespace NativeSsh.Herramientas
             (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, "ssh_write_file", DescribirHerramienta("ssh_write_file", ruta), Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
             return peticion.CodigoSalida == CodigoContenidoNoIntegro
                 ? throw new NativeSshException(MensajeContenidoNoIntegro(ruta, bytesUtf8.Length, append))
+                : peticion.CodigoSalida == CodigoSinVerificador
+                ? throw new NativeSshException(MensajeSinVerificador(ruta, append))
                 : peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
@@ -2225,6 +2227,9 @@ namespace NativeSsh.Herramientas
             if (peticionEscritura.CodigoSalida == CodigoContenidoNoIntegro)
                 throw new NativeSshException(MensajeContenidoNoIntegro(ruta, bytesModificados.Length, isAnexar: false));
 
+            if (peticionEscritura.CodigoSalida == CodigoSinVerificador)
+                throw new NativeSshException(MensajeSinVerificador(ruta, isAnexar: false));
+
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
@@ -2466,7 +2471,7 @@ namespace NativeSsh.Herramientas
                 fi
                 anunciar_ruta tmp "$tmp"
                 base64 -d > "$tmp" || exit 1
-                verificar_contenido "$tmp" || exit {{CodigoContenidoNoIntegro}}
+                verificar_contenido "$tmp" || { [ "$?" = 2 ] && exit {{CodigoSinVerificador}}; exit {{CodigoContenidoNoIntegro}}; }
                 anunciar verificacion "$verificacion"
                 {{colocar}}
                 """);
@@ -2539,13 +2544,15 @@ namespace NativeSsh.Herramientas
         // verificar_contenido ARCHIVO: que lo decodificado en ARCHIVO sea lo que mandó native_ssh, antes de colocarlo o
         // anexarlo: el tamaño ($tam_esperado, con wc) y, con lo que haya en el servidor, el sha256 ($sha_esperado) o, sin
         // sha256sum, el cksum POSIX ($cksum_esperado: "suma bytes"); sin ninguno de los dos, solo el tamaño. Deja en
-        // 'verificacion' cuál se comprobó (sha256, cksum o tamano) y devuelve 1 si no coincide. El contenido llega al script
+        // 'verificacion' cuál se comprobó (sha256, cksum o tamano) y devuelve 1 si no coincide, o 2 si no hay wc (no se
+        // puede comprobar nada). El contenido llega al script
         // por la tubería de EnvolverEnBash desde el shell PTY, donde una función o un alias del usuario (p. ej. printf) puede
         // desviarlo: sin esto, un archivo vacío se daba por escrito.
         internal static readonly string DefinicionVerificarContenido = """
             verificar_contenido() {
               local tam suma
               verificacion=
+              command -v wc >/dev/null 2>&1 || return 2
               tam=$(command wc -c < "$1") || return 1
               [ "$(( tam ))" = "$tam_esperado" ] || return 1
               if command -v sha256sum >/dev/null 2>&1; then
@@ -2565,6 +2572,13 @@ namespace NativeSsh.Herramientas
 
         // Código con el que salen las escrituras cuando lo decodificado no es lo que se mandó (verificar_contenido).
         internal const int CodigoContenidoNoIntegro = 90;
+
+        // Código con el que salen las escrituras cuando el servidor no tiene wc y no se puede comprobar lo decodificado.
+        internal const int CodigoSinVerificador = 91;
+
+        // El error de una escritura que no pudo comprobar lo decodificado porque el servidor no tiene wc: no se hizo nada.
+        internal static string MensajeSinVerificador(string ruta, bool isAnexar) =>
+            $"Error: no se pudo comprobar que el contenido llegó íntegro al servidor: no tiene 'wc' (de coreutils o busybox), con el que native_ssh comprueba el tamaño de lo que llega antes de escribirlo. {(isAnexar ? $"No se ha anexado nada a '{ruta}'." : $"No se ha modificado '{ruta}'.")}";
 
         // La huella de lo que se manda, para verificar_contenido: "<bytes> <sha256> '<cksum> <bytes>'".
         private static string HuellaContenido(byte[] contenido) =>
