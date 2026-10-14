@@ -41,7 +41,13 @@ namespace NativeSsh.Herramientas
             {
                 // El productor de una tubería (echo … | tee) es el segmento anterior si este lee de él.
                 OrdenSimple? productor = orden.IsTuberiaDeEntrada ? anterior : null;
+                // Rama de respaldo (RC6 a): lo que sigue a '||', y lo que va en tubería detrás, solo se ejecuta si falló lo
+                // anterior, y desde aquí no se sabe: el aviso se condiciona en vez de afirmar que se ejecutó. Un '&&' o un ';'
+                // posterior ya no es de la rama ('a || b && cat x' ejecuta cat si a o b terminan bien).
+                orden.IsRespaldo = orden.SeparadorPrevio == "||" || (orden.IsTuberiaDeEntrada && anterior?.IsRespaldo == true);
                 string? aviso = AvisoDeOrden(orden, productor);
+                if (aviso is not null && orden.IsRespaldo)
+                    aviso = PrefijoRespaldo + aviso;
                 if (aviso is not null && !avisos.Contains(aviso))
                     avisos.Add(aviso);
                 anterior = orden;
@@ -59,6 +65,8 @@ namespace NativeSsh.Herramientas
             return string.Join(" ", ordenados);
         }
 
+        private const string PrefijoRespaldo = "Solo si llegó a ejecutarse la rama de respaldo tras '||' (desde aquí no se sabe): ";
+
         private static string? AvisoDeOrden(OrdenSimple orden, OrdenSimple? productor)
         {
             if (orden.Programa is null || orden.HasAyuda)
@@ -70,7 +78,7 @@ namespace NativeSsh.Herramientas
             return programa switch
             {
                 "cd" => orden.SeparadorSiguiente == "&&" ? AvisoCdEncadenado : null,
-                "find" => orden.IsTuberiaDeEntrada ? null : AvisoFindDisco,
+                "find" => orden.IsTuberiaDeEntrada || !IsFindQueHaceSshFind(orden) ? null : AvisoFindDisco,
                 "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || RegexFlagsRecursivosGrep().IsMatch(orden.TextoArgumentos) ? AvisoGrepDisco : null,
                 "rg" or "ag" or "ack" or "ack-grep" => orden.IsTuberiaDeEntrada ? null : AvisoBusquedaRg(programa),
                 "ls" or "tree" or "exa" or "eza" => isSalidaAlLlm ? AvisoListado(programa) : null,
@@ -83,6 +91,36 @@ namespace NativeSsh.Herramientas
                 "tee" => IsEscrituraTee(orden, productor) ? AvisoEscrituraArchivo("tee") : null,
                 _ => null
             };
+        }
+
+        // RC6 (b): find solo avisa si lo que pide lo hace ssh_find: nombre (-name), tipo f o d, profundidad (-maxdepth,
+        // -mindepth 1, que es la de ssh_find), sin salir del sistema de ficheros (-xdev, -mount), tamaño (-size, RC9),
+        // imprimir y las opciones de enlaces (-L, -H, -P). Con cualquier otro predicado (fechas, dueño, permisos, -iname,
+        // -path, -regex, -empty), acción (-exec, -delete, -printf, -ls) u operador (-o, -a, -not, !, paréntesis), no hay
+        // herramienta que lo sustituya y no se avisa (el aviso disuadía de usar 'find -newer' o 'find -size' cuando no había alternativa).
+        private static bool IsFindQueHaceSshFind(OrdenSimple orden)
+        {
+            List<string> argumentos = orden.Argumentos;
+            for (int i = 0; i < argumentos.Count; i++)
+            {
+                string argumento = argumentos[i];
+                string? valor = i + 1 < argumentos.Count ? argumentos[i + 1] : null;
+                bool isAdmitido = argumento switch
+                {
+                    "-L" or "-H" or "-P" or "-xdev" or "-mount" or "-print" or "-print0" => true,
+                    "-name" or "-maxdepth" or "-size" => valor is not null,
+                    "-type" => valor is "f" or "d",
+                    "-mindepth" => valor is "1",
+                    _ => !argumento.StartsWith('-') && argumento is not ("(" or ")" or "!" or ",")
+                };
+                if (!isAdmitido)
+                    return false;
+
+                if (argumento is "-name" or "-maxdepth" or "-size" or "-type" or "-mindepth")
+                    i++;
+            }
+
+            return true;
         }
 
         // cat: con heredoc o herestring y la salida a un archivo es una escritura (cat > f <<EOF); con archivos y la salida al
@@ -205,6 +243,9 @@ namespace NativeSsh.Herramientas
             public string? DestinoSalida { get; set; }
             public bool HasDocumentoEnLinea { get; set; }
             public bool HasAyuda { get; set; }
+
+            // En una rama de respaldo ('a || cat log'): ver DetectarAvisoAntipatron.
+            public bool IsRespaldo { get; set; }
             public string SeparadorPrevio { get; set; } = string.Empty;
             public string SeparadorSiguiente { get; set; } = string.Empty;
             public bool IsTuberiaDeEntrada => SeparadorPrevio is "|" or "|&";
