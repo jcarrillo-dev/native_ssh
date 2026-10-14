@@ -483,7 +483,9 @@ namespace NativeSsh.Test.Herramientas
             NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 0).ComoComando()).Should().ThrowAsync<NativeSshException>()).Which;
             ResultadoEstado estado = _herramientas.Estado("servidor");
             _ = bloqueo.Release();
-            await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado("servidor").Sesiones[0].IsShellActivo && _fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)));
+            // La pregunta, ya en la salida del comando: el falso apunta el comando antes de escribirla, y la respuesta de
+            // ssh_input empieza en lo que había al enviar (si llegara después, ocuparía los 16 bytes de MaxBytesPorRespuesta).
+            await EsperasPrueba.EsperarHastaAsync(() => _herramientas.Estado("servidor").Sesiones[0].IsShellActivo && _fabrica.Ultima!.Comandos.Any(c => c.Contains("pregunta", StringComparison.Ordinal)) && peticion.Salida.Longitud > 0);
             ResultadoComando reintento = await _herramientas.EnviarEntradaAsync(comando.Id, "x", esperarSegundos: 5).ComoComando();
 
             // Assert
