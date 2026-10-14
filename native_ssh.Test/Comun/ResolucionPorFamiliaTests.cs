@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Text;
 using FluentAssertions;
 using NativeSsh.Comun;
+using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Comun
 {
@@ -62,6 +63,54 @@ namespace NativeSsh.Test.Comun
             _ = resultado.Ipv4.Should().Equal(IPAddress.Parse("10.0.0.5"));
             _ = resultado.Ipv6.Should().BeNull();
             _ = tardado.Should().BeLessThan(TimeSpan.FromSeconds(5));
+        }
+
+        // Una familia colgada no se vuelve a lanzar mientras siga sin terminar: las resoluciones siguientes del mismo nombre
+        // esperan esa misma (y fallan al vencer su plazo), así que con un DNS colgado los reintentos no suman hilos bloqueados;
+        // la familia que terminó sí se vuelve a preguntar, y otro nombre tiene las suyas. Al terminar la colgada, la
+        // siguiente resolución la lanza de nuevo.
+        [Fact]
+        public async Task FamiliaColgada_NoSeVuelveALanzarMientrasSigaSinTerminar()
+        {
+            // Arrange
+            using ManualResetEventSlim soltar = new(false);
+            int ipv4Lanzadas = 0;
+            int ipv6Lanzadas = 0;
+            IPAddress[]? Ipv6Colgada(string nombre, AddressFamily familia)
+            {
+                if (familia == AddressFamily.InterNetwork)
+                {
+                    _ = Interlocked.Increment(ref ipv4Lanzadas);
+                    return [IPAddress.Parse("10.0.0.5")];
+                }
+
+                _ = Interlocked.Increment(ref ipv6Lanzadas);
+                _ = soltar.Wait(TimeSpan.FromSeconds(30));
+                return [IPAddress.Parse("fd00::5")];
+            }
+
+            FamiliasEnCurso enCurso = new();
+            async Task<DireccionesPorFamilia> ResolverAsync(string nombre)
+            {
+                using CancellationTokenSource plazo = new(TimeSpan.FromMilliseconds(200));
+                return await ResolucionPorFamilia.ResolverAsync(nombre, Ipv6Colgada, enCurso, plazo.Token);
+            }
+
+            // Act
+            DireccionesPorFamilia[] colgadas = [await ResolverAsync("prod.ejemplo"), await ResolverAsync("prod.ejemplo"), await ResolverAsync("prod.ejemplo")];
+            DireccionesPorFamilia otroNombre = await ResolverAsync("otro.ejemplo");
+            int ipv6LanzadasColgada = Volatile.Read(ref ipv6Lanzadas);
+            soltar.Set();
+            await EsperasPrueba.EsperarHastaAsync(() => enCurso.Cantidad == 0);
+            DireccionesPorFamilia tras = await ResolverAsync("prod.ejemplo");
+
+            // Assert
+            _ = colgadas.Should().OnlyContain(d => d.Ipv4 != null && d.Ipv4.Length == 1 && d.Ipv6 == null);
+            _ = otroNombre.Ipv6.Should().BeNull();
+            _ = ipv6LanzadasColgada.Should().Be(2, "una por nombre: los reintentos de prod.ejemplo esperan la que sigue colgada");
+            _ = ipv4Lanzadas.Should().Be(5, "la familia que termina se pregunta en cada resolución");
+            _ = tras.Ipv6.Should().Equal(IPAddress.Parse("fd00::5"));
+            _ = ipv6Lanzadas.Should().Be(3);
         }
 
         // getaddrinfo de verdad, por familia: localhost tiene 127.0.0.1 (de /etc/hosts o del módulo de NSS de la máquina).

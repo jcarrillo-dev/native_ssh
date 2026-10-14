@@ -23,8 +23,11 @@ namespace NativeSsh.Comun
     // compila (NativeSshSistema en Directory.Build.props); esta parte común no mira el sistema.
     public static partial class ResolucionPorFamilia
     {
+        // Las familias que el resolver del sistema aún no ha terminado de resolver (ver FamiliasEnCurso).
+        private static readonly FamiliasEnCurso EnCursoDelSistema = new();
+
         public static Task<DireccionesPorFamilia> ResolverAsync(string nombre, CancellationToken plazo) =>
-            ResolverAsync(nombre, ResolverFamiliaDelSistema, plazo);
+            ResolverAsync(nombre, ResolverFamiliaDelSistema, EnCursoDelSistema, plazo);
 
         // Las direcciones de 'nombre' de una sola familia en este sistema: vacío si no tiene direcciones de esa familia y el
         // sistema lo distingue; null o una excepción si esa familia falla. Bloquea el hilo.
@@ -39,11 +42,16 @@ namespace NativeSsh.Comun
 
         // Las dos familias a la vez, cada una en un hilo del grupo (getaddrinfo bloquea y no se puede cancelar); cuando vence
         // 'plazo' se deja de esperar y la familia que no terminó cuenta como fallida (su hilo acaba cuando acabe getaddrinfo).
-        // resolverFamilia: las direcciones de una familia, vacío si no tiene, null si falla.
-        public static async Task<DireccionesPorFamilia> ResolverAsync(string nombre, Func<string, AddressFamily, IPAddress[]?> resolverFamilia, CancellationToken plazo)
+        // resolverFamilia: las direcciones de una familia, vacío si no tiene, null si falla. Cada llamada lanza las suyas.
+        public static Task<DireccionesPorFamilia> ResolverAsync(string nombre, Func<string, AddressFamily, IPAddress[]?> resolverFamilia, CancellationToken plazo) =>
+            ResolverAsync(nombre, resolverFamilia, new FamiliasEnCurso(), plazo);
+
+        // Igual, pero una familia del nombre que sigue en curso en 'enCurso' (de una llamada anterior cuyo plazo ya venció) se
+        // espera en lugar de lanzarla otra vez (la del sistema comparte las suyas: EnCursoDelSistema).
+        internal static async Task<DireccionesPorFamilia> ResolverAsync(string nombre, Func<string, AddressFamily, IPAddress[]?> resolverFamilia, FamiliasEnCurso enCurso, CancellationToken plazo)
         {
-            Task<IPAddress[]?> ipv4 = Task.Run(() => resolverFamilia(nombre, AddressFamily.InterNetwork), CancellationToken.None);
-            Task<IPAddress[]?> ipv6 = Task.Run(() => resolverFamilia(nombre, AddressFamily.InterNetworkV6), CancellationToken.None);
+            Task<IPAddress[]?> ipv4 = enCurso.Lanzar(nombre, AddressFamily.InterNetwork, resolverFamilia);
+            Task<IPAddress[]?> ipv6 = enCurso.Lanzar(nombre, AddressFamily.InterNetworkV6, resolverFamilia);
             await ((Task)Task.WhenAll(ipv4, ipv6)).WaitAsync(plazo).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
             return new DireccionesPorFamilia(Resultado(ipv4), Resultado(ipv6));
         }
@@ -211,6 +219,55 @@ namespace NativeSsh.Comun
             }
 
             return numeros == 4;
+        }
+    }
+
+    // Las resoluciones de una familia lanzadas y aún sin terminar, por nombre y familia. getaddrinfo (y DnsQuery_W en
+    // Windows) bloquean el hilo y no se pueden cancelar: al vencer el plazo se deja de esperar, pero el hilo sigue bloqueado
+    // hasta que el resolver se rinda (con el TCP/53 del DNS colgado, de 20 s a 2 min en las medidas). Si cada comprobación
+    // lanzara la familia otra vez, los hilos bloqueados crecerían con cada reintento (medido sin esto en Linux: +5 o 6 hilos
+    // por llamada a ssh_exec con 20 entradas, de 42 a 220 en 30 llamadas, y tools/list esperando hasta 1 s al grupo de
+    // hilos; en Windows, unos 135 con las mismas llamadas). Mientras una siga sin terminar, la misma familia del mismo
+    // nombre espera esa en lugar de lanzar otra: como mucho un hilo bloqueado por nombre y familia, aunque se reintente. Al
+    // terminar deja de estar en curso y la siguiente se lanza.
+    internal sealed class FamiliasEnCurso
+    {
+        private readonly Dictionary<(string Nombre, AddressFamily Familia), Task<IPAddress[]?>> _enCurso = [];
+        private readonly Lock _candado = new();
+
+        // Las que siguen sin terminar (para las pruebas).
+        public int Cantidad
+        {
+            get
+            {
+                lock (_candado)
+                    return _enCurso.Count;
+            }
+        }
+
+        // La resolución de esa familia del nombre: la que sigue en curso, o una nueva en un hilo del grupo.
+        public Task<IPAddress[]?> Lanzar(string nombre, AddressFamily familia, Func<string, AddressFamily, IPAddress[]?> resolverFamilia)
+        {
+            (string, AddressFamily) clave = (nombre, familia);
+            Task<IPAddress[]?> resolucion;
+            lock (_candado)
+            {
+                if (_enCurso.TryGetValue(clave, out Task<IPAddress[]?>? enCurso))
+                    return enCurso;
+
+                resolucion = Task.Run(() => resolverFamilia(nombre, familia), CancellationToken.None);
+                _enCurso[clave] = resolucion;
+            }
+
+            _ = resolucion.ContinueWith(terminada => Quitar(clave, terminada), CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            return resolucion;
+        }
+
+        private void Quitar((string, AddressFamily) clave, Task<IPAddress[]?> terminada)
+        {
+            lock (_candado)
+                if (_enCurso.TryGetValue(clave, out Task<IPAddress[]?>? enCurso) && ReferenceEquals(enCurso, terminada))
+                    _ = _enCurso.Remove(clave);
         }
     }
 }

@@ -59,8 +59,13 @@ namespace NativeSsh.Comun
     // escritura tampoco se envía. Lo que queda: el nombre de una entrada que pase a apuntar a otra máquina se ve, como
     // tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no cuenta al comparar.
     // Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso (las demás no se lanzan y el
-    // rechazo lo dice), para que un DNS colgado no acumule hilos bloqueados: como mucho dos por resolución de una entrada
-    // (una por familia), 2 × MaxResolucionesEnCurso.
+    // rechazo lo dice). Una resolución deja de estar en curso al vencer su plazo, aunque sus hilos sigan bloqueados
+    // (getaddrinfo y DnsQuery_W no se pueden cancelar); lo que acota esos hilos es ResolucionPorFamilia (FamiliasEnCurso):
+    // una familia de un nombre que sigue sin terminar no se vuelve a lanzar, así que un DNS colgado deja como mucho un hilo
+    // bloqueado por familia de cada entrada (2 × el número de entradas), aunque se reintente. Medido con el TCP/53 colgado,
+    // 20 entradas y 30 llamadas seguidas: en Linux, los hilos del proceso pasan de 42 a 71-76 (sin ese tope crecían con cada
+    // llamada, hasta 220); en Windows, de 18 a 42-50 (sin él, unos 135: ahí el techo lo pone lo que tarda DnsQuery_W en
+    // rendirse, y crecería con un DNS que tarde más).
     public sealed class DestinosSoloLectura
     {
         public const string Variable = "NATIVE_SSH_SOLO_LECTURA";
