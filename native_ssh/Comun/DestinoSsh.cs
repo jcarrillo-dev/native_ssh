@@ -17,7 +17,7 @@ namespace NativeSsh.Comun
 
         // Claves de los IdentityFile de la configuración de ssh (ResolutorConfiguracionSsh), ya expandidas; null: las de
         // NATIVE_SSH_IDENTIDADES (o las por defecto). Forman parte de la clave de la sesión (ClaveSesion).
-        public IReadOnlyList<string>? Identidades { get; private init; }
+        public string[]? Identidades { get; private init; }
 
         // El servidor tal como se escribió cuando la configuración de ssh lo cambió por otro HostName (un alias); null si
         // el destino ya era el servidor real.
@@ -38,7 +38,7 @@ namespace NativeSsh.Comun
         public string ClaveServidor => $"{Servidor.ToLowerInvariant()}:{Puerto}";
 
         // Destino ya resuelto con la configuración de ssh (ssh -G).
-        public static DestinoSsh Resuelto(string usuario, string servidor, int puerto, IReadOnlyList<string>? identidades, string? alias) =>
+        public static DestinoSsh Resuelto(string usuario, string servidor, int puerto, string[]? identidades, string? alias) =>
             new(usuario, servidor, puerto) { Identidades = identidades, Alias = alias };
 
         public static bool TryParse(ReadOnlySpan<char> entrada, string usuarioPorDefecto, out DestinoSsh destino) =>

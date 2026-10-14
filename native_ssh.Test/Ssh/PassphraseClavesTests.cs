@@ -2,6 +2,7 @@ using System.Runtime.Versioning;
 using System.Linq;
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using NativeSsh.Comun;
 using NativeSsh.Ssh;
 using NativeSsh.Test.Utilidades;
@@ -60,8 +61,16 @@ namespace NativeSsh.Test.Ssh
         private (IReadOnlyList<PrivateKeyFile> Claves, List<string> Motivos) Cargar(FabricaConexionSsh fabrica, params string[] rutas)
         {
             List<string> motivos = [];
-            IReadOnlyList<PrivateKeyFile> claves = fabrica.CargarClaves(rutas, motivos);
-            return (claves, motivos);
+            PooledListRef<PrivateKeyFile> claves = new();
+            try
+            {
+                fabrica.CargarClaves(rutas, ref claves, motivos);
+                return ([.. claves.Span], motivos);
+            }
+            finally
+            {
+                claves.Dispose();
+            }
         }
 
         private void SinRastroDeLaFrase(IEnumerable<string> textos)

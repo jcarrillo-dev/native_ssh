@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Ssh
 {
@@ -14,25 +15,50 @@ namespace NativeSsh.Ssh
 
     // Comprueba la clave del servidor contra known_hosts (OpenSSH): patrones planos, comodines,
     // negaciones, '[host]:puerto', entradas hasheadas '|1|sal|hash' y el marcador @revoked.
-    public sealed class VerificadorHostConocido(IReadOnlyList<string> rutas)
+    public sealed class VerificadorHostConocido(string[] rutas)
     {
-        public IReadOnlyList<string> Rutas { get; } = rutas;
+        public string[] Rutas { get; } = rutas;
 
-        public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave) =>
-            Verificar(LeerLineas(), servidor, puerto, tipoClave, clave);
+        // Las líneas van en una lista rentada que se devuelve al salir (un 'using' no se puede pasar por ref a LeerLineas).
+        public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        {
+            PooledListRef<string> lineas = new();
+            try
+            {
+                LeerLineas(ref lineas);
+                return Verificar(lineas.Span, servidor, puerto, tipoClave, clave);
+            }
+            finally
+            {
+                lineas.Dispose();
+            }
+        }
 
-        public IReadOnlySet<string> ObtenerTiposClave(string servidor, int puerto) =>
-            ObtenerTiposClave(LeerLineas(), servidor, puerto);
+        public HashSet<string> ObtenerTiposClave(string servidor, int puerto)
+        {
+            PooledListRef<string> lineas = new();
+            try
+            {
+                LeerLineas(ref lineas);
+                return ObtenerTiposClave(lineas.Span, servidor, puerto);
+            }
+            finally
+            {
+                lineas.Dispose();
+            }
+        }
 
-        private IEnumerable<string> LeerLineas()
+        // Todas las líneas de los known_hosts que existen, en orden (antes se leían a demanda con un iterador; el resultado de
+        // la comprobación es el mismo, porque la de @revoked solo adelanta la respuesta).
+        private void LeerLineas(scoped ref PooledListRef<string> lineas)
         {
             foreach (string ruta in Rutas)
                 if (File.Exists(ruta))
                     foreach (string linea in File.ReadLines(ruta))
-                        yield return linea;
+                        lineas.Add(linea);
         }
 
-        public static IReadOnlySet<string> ObtenerTiposClave(IEnumerable<string> lineas, string servidor, int puerto)
+        public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
         {
             string nombre = puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
             List<(string Tipo, byte[] Clave)> conocidas = [];
@@ -81,7 +107,7 @@ namespace NativeSsh.Ssh
             return tipos;
         }
 
-        public static ResultadoHostEnum Verificar(IEnumerable<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        public static ResultadoHostEnum Verificar(ReadOnlySpan<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
         {
             string nombre = puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
             bool hasMismoTipo = false;

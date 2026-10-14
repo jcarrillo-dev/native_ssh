@@ -6,6 +6,7 @@ using Renci.SshNet;
 using Renci.SshNet.Common;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 // El SDK Web importa Microsoft.AspNetCore.Http (usings implícitos), que también define ConnectionInfo.
 using ConnectionInfo = Renci.SshNet.ConnectionInfo;
 
@@ -38,7 +39,7 @@ namespace NativeSsh.Ssh
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             bool isDeConfiguracion = destino.Identidades is not null;
-            IReadOnlyList<string> rutas = destino.Identidades ?? opciones.RutasIdentidad;
+            string[] rutas = destino.Identidades ?? opciones.RutasIdentidad;
             List<string> motivos = [];
             List<AuthenticationMethod> metodos = CrearMetodos(destino.Usuario, rutas, motivos);
             string origen = isDeConfiguracion ? "IdentityFile de la configuración de ssh" : "NATIVE_SSH_IDENTIDADES";
@@ -85,7 +86,7 @@ namespace NativeSsh.Ssh
                 Timeout = opciones.TimeoutConexion,
                 RetryAttempts = 1
             };
-            IReadOnlySet<string> tiposConocidos = verificador.ObtenerTiposClave(destino.Servidor, destino.Puerto);
+            HashSet<string> tiposConocidos = verificador.ObtenerTiposClave(destino.Servidor, destino.Puerto);
             FiltrarAlgoritmosHost(info, tiposConocidos);
             SshClient cliente = new(info) { KeepAliveInterval = opciones.IntervaloKeepAlive };
 
@@ -127,12 +128,21 @@ namespace NativeSsh.Ssh
             }
         }
 
-        private List<AuthenticationMethod> CrearMetodos(string usuario, IReadOnlyList<string> rutas, List<string> motivos)
+        private List<AuthenticationMethod> CrearMetodos(string usuario, ReadOnlySpan<string> rutas, List<string> motivos)
         {
             List<AuthenticationMethod> metodos = new(2);
-            IReadOnlyList<PrivateKeyFile> claves = CargarClaves(rutas, motivos);
-            if (claves.Count > 0)
-                metodos.Add(new PrivateKeyAuthenticationMethod(usuario, [.. claves]));
+            PooledListRef<PrivateKeyFile> claves = new();
+            try
+            {
+                CargarClaves(rutas, ref claves, motivos);
+                if (claves.Tamaño > 0)
+                    metodos.Add(new PrivateKeyAuthenticationMethod(usuario, [.. claves.Span]));
+            }
+            finally
+            {
+                claves.Dispose();
+            }
+
             if (opciones.Contrasena is { Length: > 0 } contrasena)
                 metodos.Add(new PasswordAuthenticationMethod(usuario, contrasena));
             return metodos;
@@ -140,9 +150,9 @@ namespace NativeSsh.Ssh
 
         // Ruta fría (una vez por conexión). Una ruta que no existe se salta en silencio, como hace ssh con las claves por
         // defecto; una que existe y no se pudo abrir deja su motivo (una frase con la ruta) en motivos y un aviso en el log.
-        internal IReadOnlyList<PrivateKeyFile> CargarClaves(IReadOnlyList<string> rutas, List<string> motivos)
+        // Las cargadas se añaden a 'claves', en el orden de 'rutas'.
+        internal void CargarClaves(scoped ReadOnlySpan<string> rutas, scoped ref PooledListRef<PrivateKeyFile> claves, List<string> motivos)
         {
-            List<PrivateKeyFile> claves = new(rutas.Count);
             foreach (string ruta in rutas)
             {
                 FalloClave? fallo;
@@ -181,8 +191,6 @@ namespace NativeSsh.Ssh
                 logger.ClaveNoCargada(ruta, motivo);
                 motivos.Add(frase);
             }
-
-            return claves;
         }
 
         // Otra conexión pudo abrir la misma clave a la vez: se queda la primera guardada.
@@ -335,12 +343,13 @@ namespace NativeSsh.Ssh
             };
         }
 
-        public static void FiltrarAlgoritmosHost(ConnectionInfo info, IReadOnlySet<string> tiposConocidos)
+        public static void FiltrarAlgoritmosHost(ConnectionInfo info, HashSet<string> tiposConocidos)
         {
             if (tiposConocidos.Count == 0)
                 return;
 
-            List<string> noCompatibles = [];
+            // HostKeyAlgorithms es un IDictionary de SSH.NET: su recorrido sigue siendo por la interfaz.
+            using PooledListRef<string> noCompatibles = new();
             foreach (string algo in info.HostKeyAlgorithms.Keys)
                 if (!EsAlgoritmoCompatible(algo, tiposConocidos))
                     noCompatibles.Add(algo);
@@ -349,7 +358,7 @@ namespace NativeSsh.Ssh
                 _ = info.HostKeyAlgorithms.Remove(algo);
         }
 
-        private static bool EsAlgoritmoCompatible(string algo, IReadOnlySet<string> tiposConocidos)
+        private static bool EsAlgoritmoCompatible(string algo, HashSet<string> tiposConocidos)
         {
             foreach (string tipo in tiposConocidos)
             {

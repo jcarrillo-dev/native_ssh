@@ -4,7 +4,7 @@ namespace NativeSsh.Comun
     {
         public string UsuarioPorDefecto { get; init; } = Environment.UserName;
         public string DirectorioSsh { get; init; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");
-        public IReadOnlyList<string> RutasIdentidad { get; init; } = [];
+        public string[] RutasIdentidad { get; init; } = [];
 
         // NATIVE_SSH_IDENTIDADES definida: sus claves mandan sobre los IdentityFile de la configuración de ssh.
         public bool IsRutasIdentidadExplicitas { get; init; }

@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Ssh
 {
@@ -50,7 +51,7 @@ namespace NativeSsh.Ssh
         private static readonly Lazy<string?> ProgramaSetsid = new(() => OperatingSystem.IsLinux() ? BuscarPrograma("setsid") : null);
 
         private readonly Lock _candado = new();
-        private IReadOnlyList<string>? _identidadesPorDefecto;
+        private List<string>? _identidadesPorDefecto;
         private volatile bool _isSinPrograma;
 
         // Repetida: una opción de valor único (hostname, user, port) que salió más de una vez (ssh -G las escribe una sola vez).
@@ -77,7 +78,7 @@ namespace NativeSsh.Ssh
             if (leida.Servidor is not { Length: > 0 } real || leida.Usuario is not { Length: > 0 } usuario || !isPuertoValido)
                 throw new NativeSshException($"'ssh -G' no devolvió el servidor, el usuario y el puerto de '{servidor}' (hostname '{leida.Servidor}', user '{leida.Usuario}', port '{leida.Puerto}'). Revisa la configuración de ssh o usa NATIVE_SSH_CONFIG_SSH=none para no usarla.");
 
-            IReadOnlyList<string>? identidades = null;
+            string[]? identidades = null;
             if (!opciones.IsRutasIdentidadExplicitas && !IsListaPorDefecto(leida.Identidades, servidor))
                 identidades = Expandir(leida.Identidades, servidor, real, usuario, puerto);
 
@@ -183,7 +184,7 @@ namespace NativeSsh.Ssh
         // Las claves por defecto de ssh (las que lista sin ningún IdentityFile), leídas una vez con 'ssh -G -F none'.
         private bool IsListaPorDefecto(List<string> identidades, string servidor)
         {
-            IReadOnlyList<string> porDefecto;
+            List<string> porDefecto;
             lock (_candado)
             {
                 if (_identidadesPorDefecto is null)
@@ -207,20 +208,21 @@ namespace NativeSsh.Ssh
             return true;
         }
 
-        private static List<string> Expandir(List<string> identidades, string alias, string servidor, string usuario, int puerto)
+        // Sin repetidas, en su orden. Se guardan en el destino (DestinoSsh.Identidades): array del tamaño justo.
+        private static string[] Expandir(List<string> identidades, string alias, string servidor, string usuario, int puerto)
         {
             string casa = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            List<string> rutas = new(identidades.Count);
+            using PooledListRef<string> rutas = new();
             foreach (string identidad in identidades)
             {
                 if (!TryExpandir(identidad, casa, alias, servidor, usuario, puerto, out string? ruta, out string? motivo))
                     throw new NativeSshException($"El IdentityFile '{identidad}' de la configuración de ssh de '{alias}' {motivo}. Corrígelo, o define NATIVE_SSH_IDENTIDADES (manda sobre los IdentityFile).");
 
-                if (!rutas.Contains(ruta))
+                if (rutas.IndexOf(ruta) < 0)
                     rutas.Add(ruta);
             }
 
-            return rutas;
+            return rutas.Span.ToArray();
         }
 
         internal static bool TryExpandir(string identidad, string casa, string alias, string servidor, string usuario, int puerto, [NotNullWhen(true)] out string? ruta, [NotNullWhen(false)] out string? motivo)

@@ -147,10 +147,10 @@ namespace NativeSsh.Test.Ssh
             int totalInicial = infoVacio.HostKeyAlgorithms.Count;
 
             // Act
-            FabricaConexionSsh.FiltrarAlgoritmosHost(infoEd, new HashSet<string> { "ssh-ed25519" });
-            FabricaConexionSsh.FiltrarAlgoritmosHost(infoRsa, new HashSet<string> { "ssh-rsa" });
-            FabricaConexionSsh.FiltrarAlgoritmosHost(infoEcdsa, new HashSet<string> { "ecdsa-sha2-nistp256" });
-            FabricaConexionSsh.FiltrarAlgoritmosHost(infoVacio, new HashSet<string>());
+            FabricaConexionSsh.FiltrarAlgoritmosHost(infoEd, ["ssh-ed25519"]);
+            FabricaConexionSsh.FiltrarAlgoritmosHost(infoRsa, ["ssh-rsa"]);
+            FabricaConexionSsh.FiltrarAlgoritmosHost(infoEcdsa, ["ecdsa-sha2-nistp256"]);
+            FabricaConexionSsh.FiltrarAlgoritmosHost(infoVacio, []);
 
             // Assert
             _ = infoEd.HostKeyAlgorithms.Keys.Should().Equal(["ssh-ed25519"]);
