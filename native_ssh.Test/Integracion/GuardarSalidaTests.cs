@@ -94,6 +94,21 @@ namespace NativeSsh.Test.Integracion
             _ = r.Aviso.Should().Contain(r.Archivo).And.Contain("ssh_read_file").And.Contain("ssh_search");
         }
 
+        // RC8: con varios avisos, primero el de guardarSalida (la ruta y cómo leerla) y después las sugerencias de rendimiento.
+        [Fact]
+        public async Task ConAvisoDeAntipatron_LaRutaDelArchivoVaPrimero()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+
+            // Act
+            ResultadoComando r = await EsperarFinAsync(h, await GuardarAsync(h, $"find {_raiz} -name '*.nada'"));
+
+            // Assert
+            salida.WriteLine($"aviso '{r.Aviso}'");
+            _ = r.Aviso.Should().StartWith($"Salida completa guardada en {r.Archivo}").And.Contain("Sugerencia de rendimiento");
+        }
+
         // El comando se evalúa byte a byte como sin guardarSalida: comillas simples y dobles, varias líneas y un heredoc.
         [Fact]
         public async Task ComandoConComillasYHeredoc_SeEjecutaTalCual()

@@ -2866,7 +2866,9 @@ namespace NativeSsh.Herramientas
             return resultado with
             {
                 Salida = salida,
-                Aviso = Unir(resultado.Aviso, aviso),
+                // Primero lo de guardarSalida (la ruta y cómo leerla) y después lo demás (sugerencias de rendimiento incluidas): con
+                // varios avisos, la ruta quedaba al final de cientos de caracteres (RC8).
+                Aviso = Unir(aviso, resultado.Aviso),
                 Archivo = informe.Archivo,
                 Lineas = informe.Lineas,
                 Bytes = informe.Bytes
