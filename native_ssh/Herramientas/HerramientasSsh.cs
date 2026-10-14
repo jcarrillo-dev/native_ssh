@@ -99,7 +99,8 @@ namespace NativeSsh.Herramientas
         // tomarlo: no hay flock, python3 ni perl que funcionen, o el sistema de archivos no admite flock) o 'sin_abrir' (no
         // se pudo abrir ni para leer ni para anexar: sin permiso, o el archivo desapareció entretanto). Con 'ninguno' y
         // 'sin_abrir' se sigue sin exclusión; con ellos y con 'sin_comprobar', la respuesta lo avisa. Si otro proceso lo
-        // tiene, da el error y devuelve 1 sin haber tocado nada.
+        // tiene, da el error y devuelve 1 sin haber tocado nada ('estado_candado' queda en 'ocupado'; si el archivo se
+        // sustituyó cada vez que se tomaba, en 'sustituido': la lectura de ssh_replace_file_content sale con su código).
         // - No puede quedar huérfano: un flock pertenece a la descripción de archivo abierta y el núcleo lo suelta al
         //   cerrarse su último descriptor, es decir, al terminar el script y los hijos que lo heredan (también por SIGKILL o
         //   tras caer la conexión, cuando el script acaba su restauración). No se crea ningún archivo de candado (no hace
@@ -236,12 +237,14 @@ namespace NativeSsh.Herramientas
                       2) estado_candado=sin_comprobar; return 0 ;;
                     esac ;;
                   75)
+                    estado_candado=ocupado
                     printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
                     return 1 ;;
                   *) estado_candado=ninguno; return 0 ;;
                 esac
                 exec {candado}<&-
               done
+              estado_candado=sustituido
               printf 'Error: %s se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.\n' "$ruta" >&2
               return 1
             }
@@ -2167,7 +2170,10 @@ namespace NativeSsh.Herramientas
                 [ -r "$ruta" ] || exit {{(int)CodigoErrorLecturaEnum.SinPermisoLectura}}
                 {{DefinicionCandado}}
                 destino=$ruta
-                tomar_candado -s 2>/dev/null || exit {{(int)CodigoErrorLecturaEnum.Candado}}
+                if ! tomar_candado -s 2>/dev/null; then
+                  [ "$estado_candado" = sustituido ] && exit {{(int)CodigoErrorLecturaEnum.Sustituido}}
+                  exit {{(int)CodigoErrorLecturaEnum.Candado}}
+                fi
                 tam=$(stat -L -c %s -- "$ruta" 2>/dev/null || stat -L -f %z -- "$ruta" 2>/dev/null)
                 [ -z "$tam" ] && exit {{(int)CodigoErrorLecturaEnum.SinTamano}}
                 [ "$tam" -gt {{maxBytesEditable}} ] && exit {{(int)CodigoErrorLecturaEnum.DemasiadoGrande}}
@@ -2833,7 +2839,8 @@ namespace NativeSsh.Herramientas
             Candado = 85,
             SinTamano = 86,
             DemasiadoGrande = 87,
-            NoLeido = 88
+            NoLeido = 88,
+            Sustituido = 89
         }
 
         // El error de la lectura previa de ssh_replace_file_content que terminó con un código distinto de 0. Nunca lleva su
@@ -2848,7 +2855,8 @@ namespace NativeSsh.Herramientas
             CodigoErrorLecturaEnum.Directorio => $"Error: la ruta es un directorio: {ruta}",
             CodigoErrorLecturaEnum.NoRegular => $"Error: {ruta} no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.",
             CodigoErrorLecturaEnum.SinPermisoLectura => $"Error: sin permiso de lectura: {ruta} (prueba con sudo=true).",
-            CodigoErrorLecturaEnum.Candado => $"Error: hay otra escritura, reemplazo o restauración en curso sobre {ruta} (otro proceso tiene tomado su candado, flock), o se sustituyó por otro archivo cada vez que se tomaba. No se ha modificado: reintenta cuando termine.",
+            CodigoErrorLecturaEnum.Candado => $"Error: hay otra escritura, reemplazo o restauración en curso sobre {ruta} (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.",
+            CodigoErrorLecturaEnum.Sustituido => $"Error: {ruta} se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.",
             CodigoErrorLecturaEnum.SinTamano => $"Error: no se pudo obtener el tamaño de: {ruta}",
             CodigoErrorLecturaEnum.DemasiadoGrande => $"Error: el archivo {ruta} supera el máximo editable con ssh_replace_file_content ({maxBytesEditable} bytes). No se ha modificado.",
             CodigoErrorLecturaEnum.NoLeido => $"Error: no se pudo leer {ruta} (cat o base64 fallaron). No se ha modificado.",
