@@ -46,6 +46,32 @@ namespace NativeSsh.Test.Protocolo
             _ = Encoding.UTF8.GetString(bytes, 0, longitud).Should().Be(esperado);
         }
 
+        // RC3: lo que ve el LLM de ssh_exec trata un '\r' suelto como un terminal: lo escrito tras el último '\r' de la línea
+        // sustituye a lo anterior (barras de progreso de apt, dpkg o curl). Un '\r' al final de los datos o de la línea no
+        // borra nada; el CRLF sigue siendo un salto.
+        [Theory]
+        [InlineData("progreso\r50%\r100%\n", "100%\n")]
+        [InlineData("a\nb 10%\rb 20%\rb 30%\nc\n", "a\nb 30%\nc\n")]
+        [InlineData("linea\r\n", "linea\n")]
+        [InlineData("descargando 99%\r", "descargando 99%")]
+        [InlineData("x\r\ry", "y")]
+        [InlineData("x 50%\r\r\nsiguiente", "x 50%\nsiguiente")]
+        [InlineData("x 50%\r\u001b[K\nsiguiente", "x 50%\nsiguiente")]
+        [InlineData("\u001b[32m10%\u001b[0m\r\u001b[32m20%\u001b[0m\n", "20%\n")]
+        [InlineData("sin retornos\n", "sin retornos\n")]
+        [InlineData("\rprincipio", "principio")]
+        public void LimpiarAnsi_ComoTerminal_ElRetornoSueltoSustituyeLaLinea(string entrada, string esperado)
+        {
+            // Arrange
+            byte[] bytes = Encoding.UTF8.GetBytes(entrada);
+
+            // Act
+            int longitud = ConversorTexto.LimpiarAnsi(bytes, isComoTerminal: true);
+
+            // Assert
+            _ = Encoding.UTF8.GetString(bytes, 0, longitud).Should().Be(esperado);
+        }
+
         [Fact]
         public void ATexto_DecodificaUtf8() => _ = ConversorTexto.ATexto([0xC3, 0xB1]).Should().Be("ñ");
     }

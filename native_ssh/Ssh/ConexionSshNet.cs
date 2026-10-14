@@ -84,12 +84,16 @@ namespace NativeSsh.Ssh
         // La dirección a la que FabricaConexionSsh conectó el socket (SSH.NET la recibe ya resuelta y no vuelve a resolver).
         public IPAddress DireccionRemota { get; }
 
-        public ICanalShell AbrirShell()
+        public ICanalShell AbrirShell(bool isSinPerfil)
         {
             ShellStream flujo;
             try
             {
-                flujo = _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal);
+                // Sin perfil: el mismo pseudoterminal con una petición 'exec' (externo/SSH.NET, "Run a command on a
+                // pseudo-terminal with an exec request"): el servidor lo ejecuta con el shell del usuario y '-c', sin login.
+                flujo = isSinPerfil
+                    ? _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal, SesionShell.ComandoSinPerfil)
+                    : _cliente.CreateShellStream("dumb", 200, 50, 0, 0, SesionShell.TamanoBloqueLectura, ModosTerminal);
             }
             catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoCanalRechazado, StringComparison.Ordinal) && IsConectada)
             {

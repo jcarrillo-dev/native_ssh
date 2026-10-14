@@ -67,7 +67,8 @@ namespace NativeSsh.Protocolo
         public const int MaxBytesLineaVistaPrevia = 512;
 
         // Lo que lee la vista previa (ScriptVistaPrevia): el primer MiB del archivo (una primera línea enorme no se lee
-        // entera), sus 5 primeras líneas cortadas a 513 bytes (el byte de más dice que la línea seguía) y, en total, como
+        // entera), sus 5 primeras líneas, de cada una lo que sigue a su último '\r' seguido de algo que no es otro '\r' (como en un terminal: de
+        // una barra de progreso, lo último que mostró, aunque la línea pase del recorte; RC3), cortadas a 513 bytes (el byte de más dice que la línea seguía) y, en total, como
         // mucho esto.
         public const int MaxBytesVistaPrevia = LineasVistaPrevia * (MaxBytesLineaVistaPrevia + 2);
 
@@ -195,7 +196,7 @@ namespace NativeSsh.Protocolo
         public static string ScriptVistaPrevia(string archivo) => $$"""
             f={{Literal(archivo)}}
             { [ -f "$f" ] && [ ! -L "$f" ]; } || exit 3
-            head -c 1048576 -- "$f" | head -n {{LineasVistaPrevia}} | cut -b 1-{{MaxBytesLineaVistaPrevia + 1}} | head -c {{MaxBytesVistaPrevia}}
+            head -c 1048576 -- "$f" | head -n {{LineasVistaPrevia}} | LC_ALL=C sed 's/.*'$'\r''\([^'$'\r'']\)/\1/' | cut -b 1-{{MaxBytesLineaVistaPrevia + 1}} | head -c {{MaxBytesVistaPrevia}}
             """.ReplaceLineEndings("\n");
 
         // La ruta que dio la marca A es la que corresponde a este shell y esta petición (prefijo-<usuario>/<shell>/<id>.out):
@@ -333,11 +334,12 @@ namespace NativeSsh.Protocolo
                 int salto = resto.IndexOf((byte)'\n');
                 ReadOnlySpan<byte> linea = salto < 0 ? resto : resto[..salto];
                 resto = salto < 0 ? [] : resto[(salto + 1)..];
-                bool isCortada = linea.Length > MaxBytesLineaVistaPrevia;
-                byte[] copia = (isCortada ? linea[..ConversorTexto.AjustarFinUtf8(linea[..MaxBytesLineaVistaPrevia])] : linea).ToArray();
-                int longitud = ConversorTexto.LimpiarAnsi(copia);
-                if (longitud > 0 && copia[longitud - 1] == (byte)'\r')
-                    longitud--;
+                // Primero como un terminal (RC3: de una barra de progreso queda lo último que mostró) y después el recorte.
+                byte[] copia = linea.ToArray();
+                int longitud = ConversorTexto.LimpiarAnsi(copia, isComoTerminal: true);
+                bool isCortada = longitud > MaxBytesLineaVistaPrevia;
+                if (isCortada)
+                    longitud = ConversorTexto.AjustarFinUtf8(copia.AsSpan(0, MaxBytesLineaVistaPrevia));
                 _ = texto.Append(ConversorTexto.ATexto(copia.AsSpan(0, longitud)));
                 if (isCortada)
                     _ = texto.Append(" […]");

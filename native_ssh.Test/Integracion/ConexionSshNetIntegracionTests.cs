@@ -65,7 +65,7 @@ namespace NativeSsh.Test.Integracion
             SenalarCaidaSinAvisar(cliente);
 
             // Act
-            Action abrir = () => conexion.AbrirShell().Dispose();
+            Action abrir = () => conexion.AbrirShell(isSinPerfil: false).Dispose();
 
             // Assert
             _ = abrir.Should().Throw<SshConnectionException>();

@@ -48,6 +48,24 @@ namespace NativeSsh.Test.Integracion
             _ = tras.Should().Be("borrado\nbase\n");
         }
 
+        // RC3: la vista previa de una barra de progreso es lo último que mostró, también con el sed de busybox.
+        [TheoryContenedor]
+        [InlineData(ContenedorSudo.Debian)]
+        [InlineData(ContenedorSudo.Alpine)]
+        public async Task GuardarSalida_BarraDeProgreso_VistaPreviaComoEnUnTerminal(string distro)
+        {
+            // Arrange
+            await using Entorno entorno = Preparar(distro);
+            HerramientasSsh herramientas = entorno.Herramientas();
+            const string Comando = "printf 'a 10%%\\rb 20%%\\rc 30%%\\n'; for i in $(seq 1 200); do printf 'progreso %d%%\\r' $i; done; printf '\\r\\nfin\\n'";
+
+            // Act
+            ResultadoComando r = await herramientas.EjecutarAsync(entorno.Destino, Comando, timeoutSegundos: 120, esperarSegundos: 90, guardarSalida: true).ComoComando();
+
+            // Assert
+            _ = r.Salida.Should().Be("c 30%\nprogreso 200%\nfin\n");
+        }
+
         // Directorio base creado antes por otro usuario (aquí root): con 1777 (el de prueba podría escribir en él) o con 700
         // (el modo coincide: solo el propietario lo delata). Error claro, el comando no se ejecuta y no se escribe nada dentro.
         [TheoryContenedor]

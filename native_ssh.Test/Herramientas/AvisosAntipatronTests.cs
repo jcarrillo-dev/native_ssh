@@ -89,6 +89,61 @@ namespace NativeSsh.Test.Herramientas
         public void Escritura_AvisaDeSshWriteFile(string comando, string orden) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().Be($"Sugerencia de seguridad: Has escrito un archivo con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_write_file' (contenido sin problemas de comillas ni de expansión de variables, escritura atómica con candado, append=true para anexar y sudo=true para archivos de root).");
 
+        // RC6 (b): find con predicados que ssh_find no tiene (fechas, dueño, permisos, acciones, operadores lógicos, otro
+        // tipo...) no avisa: no hay herramienta que lo sustituya. Con solo lo que ssh_find hace (nombre, tipo f/d,
+        // profundidad, -xdev y, desde RC9, -size), sí, y el aviso nombra tamanoMin/tamanoMax.
+        [Theory]
+        [InlineData("find / -xdev -newer /etc/passwd")]
+        [InlineData("find /var/log -mtime -1")]
+        [InlineData("find . -mmin -5 -name '*.log'")]
+        [InlineData("find /srv -user www-data")]
+        [InlineData("find . -group adm")]
+        [InlineData("find . -perm -4000 -type f")]
+        [InlineData("find . -name '*.log' -exec rm {} +")]
+        [InlineData("find /tmp -name '*.tmp' -delete")]
+        [InlineData("find . -empty")]
+        [InlineData("find . -iname readme.md")]
+        [InlineData("find . -path '*/src/*.c'")]
+        [InlineData("find . -regex '.*[0-9]'")]
+        [InlineData("find . -name a -o -name b")]
+        [InlineData("find . \\( -name a -o -name b \\)")]
+        [InlineData("find . ! -name '*.o'")]
+        [InlineData("find . -not -name '*.o'")]
+        [InlineData("find . -type l")]
+        [InlineData("find . -printf '%s %p\\n'")]
+        [InlineData("find . -ls")]
+        [InlineData("find . -mindepth 2 -name x")]
+        [InlineData("find / -xdev -size +50M -mtime +30")]
+        public void FindConPredicadosQueSshFindNoTiene_NoAvisa(string comando) =>
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
+
+        [Theory]
+        [InlineData("find / -xdev -size +50M")]
+        [InlineData("find . -name '*.py'")]
+        [InlineData("find /etc -maxdepth 2 -type d -name 'nginx*'")]
+        [InlineData("sudo find /var -type f -size +100M -print")]
+        [InlineData("find -L . -mindepth 1 -name '*.service'")]
+        public void FindConLoQueHaceSshFind_AvisaConElTamano(string comando) =>
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().StartWith("Sugerencia de rendimiento: Has ejecutado 'find' vía ssh_exec. Utiliza la herramienta especializada 'ssh_find'").And.Contain("tamanoMin");
+
+        // RC6 (a): una orden en una rama de respaldo ('a || cat log') solo se ejecuta si falla lo anterior, y desde aquí no se
+        // sabe si falló: el aviso no afirma que se ejecutara, lo condiciona. Lo que va detrás de un '&&' o un ';' que sigue
+        // a la rama ya no es de respaldo.
+        [Theory]
+        [InlineData("test -s app.log || cat /var/log/app.log", "ssh_read_file")]
+        [InlineData("test -f x || find . -name x", "ssh_find")]
+        [InlineData("systemctl status app || ls /etc/app", "ssh_list_dir")]
+        [InlineData("false || grep 'error' app.log", "ssh_search")]
+        [InlineData("a || b | cat x", "ssh_read_file")]
+        public void OrdenEnRamaDeRespaldo_AvisoCondicionado(string comando, string herramienta) =>
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().StartWith("Solo si llegó a ejecutarse la rama de respaldo tras '||' (desde aquí no se sabe): ").And.Contain(herramienta).And.NotStartWith("Sugerencia");
+
+        [Theory]
+        [InlineData("a || b && cat x")]
+        [InlineData("a || b; cat x")]
+        public void TrasLaRamaDeRespaldo_AvisaComoSiempre(string comando) =>
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().StartWith("Sugerencia de rendimiento: Has leído un archivo con 'cat'");
+
         // El cuerpo de un heredoc no son órdenes: solo cuenta la escritura, no el 'ls' ni el 'cat' de dentro.
         [Fact]
         public void HeredocConOrdenesDentro_SoloAvisaDeLaEscritura() =>

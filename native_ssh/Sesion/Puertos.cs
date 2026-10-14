@@ -24,8 +24,10 @@ namespace NativeSsh.Sesion
         // lectura (DestinosSoloLectura) la compara con sus entradas: así el DNS de ahora no decide por una sesión ya abierta.
         IPAddress? DireccionRemota { get; }
 
-        // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta.
-        ICanalShell AbrirShell();
+        // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta. isSinPerfil (ssh_reset_shell con
+        // sinPerfil=true, RC1): en lugar de pedir el shell del usuario (petición 'shell', que lee .profile y .bashrc), ejecuta
+        // ComandoSinPerfil con una petición 'exec' sobre el mismo pseudoterminal.
+        ICanalShell AbrirShell(bool isSinPerfil);
 
         // Ejecuta 'comando' tal cual en un canal exec nuevo sobre la misma conexión TCP (lo interpreta el shell de login).
         // Cancelar el token cierra el canal y lanza OperationCanceledException. La tarea termina solo cuando el canal ya

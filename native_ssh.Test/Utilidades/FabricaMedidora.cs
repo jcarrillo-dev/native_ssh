@@ -23,7 +23,7 @@ namespace NativeSsh.Test.Utilidades
 
             public IPAddress? DireccionRemota => interna.DireccionRemota;
 
-            public ICanalShell AbrirShell() => interna.AbrirShell();
+            public ICanalShell AbrirShell(bool isSinPerfil) => interna.AbrirShell(isSinPerfil);
 
             public async Task<ResultadoCanalExec> EjecutarExecAsync(string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
             {

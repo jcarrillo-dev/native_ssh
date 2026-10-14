@@ -57,7 +57,8 @@ namespace NativeSsh.Herramientas
         int CanalesExecActivos,
         IReadOnlyList<string>? Alias = null,
         IReadOnlyList<string>? IdentityFile = null,
-        bool? IsSoloLectura = null);
+        bool? IsSoloLectura = null,
+        bool? IsSinPerfil = null);
 
     public sealed record ResumenPeticion(
         string Id,
@@ -95,6 +96,7 @@ namespace NativeSsh.Herramientas
     // Una edición de ssh_replace_file_content con 'ediciones' (CI5): se busca en todo el archivo, tras aplicar las anteriores.
     // ReplacementContent es obligatorio (está en 'required' del esquema), pero el JSON del cliente puede omitirlo o traerlo
     // nulo: la herramienta lo rechaza antes de enviar nada.
+    [Description("Sin rango de líneas: las ediciones se aplican en orden, cada una buscada en todo el archivo tras aplicar las anteriores")]
     public sealed record EdicionTexto(
         [property: Description("Texto exacto a reemplazar (incluyendo espacios e indentación). No puede estar vacío.")] string TargetContent,
         [property: Description("Nuevo texto que reemplazará a targetContent. Obligatorio (\"\" para borrar targetContent).")] string? ReplacementContent,

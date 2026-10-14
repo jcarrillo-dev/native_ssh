@@ -85,7 +85,8 @@ namespace NativeSsh.Test.Integracion
 
         // El shell de login sale durante la inicialización por otra causa que la falta de bash: el error dice que no se
         // ejecutó nada (y, en las escrituras, que el archivo no se ha modificado) con lo último que escribió el servidor, sin
-        // el aviso de bash y sin remitir a otras herramientas.
+        // el aviso de bash y sin remitir a otras herramientas para comprobar el archivo ni la salida (no hay nada que comprobar).
+        // Sí dice que las de lectura siguen funcionando y cómo abrir un shell sin perfil (RC2): el login es el que falla.
         [Theory]
         [InlineData("sobrescribir")]
         [InlineData("anexar")]
@@ -113,7 +114,8 @@ namespace NativeSsh.Test.Integracion
             string mensaje = error.Should().BeOfType<NativeSshException>().Which.Message;
             _ = mensaje.Should().Contain("no llegó a ejecutarse").And.Contain("cosa rara del login").And.NotContain(RespuestaSinBash.MarcaMensaje);
             _ = mensaje.Should().ContainEquivalentOf(operacion == "cwd" ? "sigue siendo" : "no se ha modificado");
-            _ = mensaje.Should().NotContain("ssh_stat").And.NotContain("ssh_read_file").And.NotContain("ssh_output");
+            _ = mensaje.Should().NotContain("compruébalo").And.NotContain("ssh_output");
+            _ = mensaje.Should().Contain("siguen funcionando").And.Contain("sinPerfil=true");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("uno\n");
         }
     }
