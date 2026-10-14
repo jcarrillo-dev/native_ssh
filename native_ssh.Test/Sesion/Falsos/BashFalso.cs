@@ -50,8 +50,9 @@ namespace NativeSsh.Test.Sesion.Falsos
         ComeInicializacion
     }
 
-    // Bytes: stdout exacto de un canal exec (para contenido que no es UTF-8); si es null se usa Salida.
-    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal, byte[]? Bytes = null);
+    // Bytes: stdout exacto de un canal exec (para contenido que no es UTF-8); si es null se usa Salida. BytesErrores: stderr
+    // exacto (p. ej. con CRLF); si es null, las líneas de error de Salida.
+    public sealed record RespuestaFalsa(string Salida, int Codigo = 0, ComportamientoFalsoEnum Comportamiento = ComportamientoFalsoEnum.Normal, byte[]? Bytes = null, byte[]? BytesErrores = null);
 
     public sealed class FabricaFalsa(Func<string, RespuestaFalsa> guion, int tamanoTrozo = 7, LoginFalsoEnum login = LoginFalsoEnum.Instantaneo, TimeSpan retrasoLogin = default) : IFabricaConexion
     {
@@ -107,6 +108,18 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Servidor sin bash: el shell de login responde al 'exec bash' de la inicialización con este texto y sale.
         public string? RespuestaSinBash { get; set; }
 
+        // Servidor Windows (WS1): la versión que anuncia (IConexionSsh.IsServidorWindows) y, si el shell no es bash, lo que
+        // escribe su terminal ConPTY (CanalFalso.RespuestaConPty).
+        public bool IsServidorWindows { get; set; }
+
+        // Los comandos exec más largos que esto los rechaza el servidor (PeticionExecRechazadaException), como OpenSSH for
+        // Windows con los que no caben en la línea de órdenes de Windows.
+        public int? MaxCaracteresComandoExec { get; set; }
+        public string? RespuestaConPty { get; set; }
+        public bool IsCierraTrasConPty { get; set; }
+        public bool IsBashTrasConPty { get; set; }
+        public bool IsMudoTrasConPty { get; set; }
+
         public async Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken)
         {
             if (ErrorAlConectar is { } error)
@@ -140,7 +153,13 @@ namespace NativeSsh.Test.Sesion.Falsos
                 RuidoAntesCapturaPath = RuidoAntesCapturaPath,
                 RuidoTrasCapturaPath = RuidoTrasCapturaPath,
                 IsSinIdentidad = IsSinIdentidad,
-                RespuestaSinBash = RespuestaSinBash
+                RespuestaSinBash = RespuestaSinBash,
+                IsServidorWindows = IsServidorWindows,
+                MaxCaracteresComandoExec = MaxCaracteresComandoExec,
+                RespuestaConPty = RespuestaConPty,
+                IsCierraTrasConPty = IsCierraTrasConPty,
+                IsBashTrasConPty = IsBashTrasConPty,
+                IsMudoTrasConPty = IsMudoTrasConPty
             };
             Ultima = conexion;
             return conexion;
@@ -208,6 +227,12 @@ namespace NativeSsh.Test.Sesion.Falsos
         public string RuidoTrasCapturaPath { get; init; } = "";
         public bool IsSinIdentidad { get; init; }
         public string? RespuestaSinBash { get; init; }
+        public bool IsServidorWindows { get; init; }
+        public int? MaxCaracteresComandoExec { get; init; }
+        public string? RespuestaConPty { get; init; }
+        public bool IsCierraTrasConPty { get; init; }
+        public bool IsBashTrasConPty { get; init; }
+        public bool IsMudoTrasConPty { get; init; }
         public CanalFalso? CanalActual { get; private set; }
 
         // Desde ahora el servidor rechaza abrir canales (el del shell y los exec) con la conexión intacta: como OpenSSH al
@@ -224,6 +249,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             if (IsRechazandoAperturas)
                 throw new CanalRechazadoException("Rechazado (MaxSessions).");
+
+            if (comando.Length > MaxCaracteresComandoExec)
+            {
+                ComandosExec.Enqueue(comando);
+                throw new PeticionExecRechazadaException("Rechazada (exec).", new InvalidOperationException("exec request failed"));
+            }
 
             string script = ScriptExec.Decodificar(comando);
             ComandosExec.Enqueue(comando);
@@ -259,12 +290,12 @@ namespace NativeSsh.Test.Sesion.Falsos
                 foreach (string linea in respuesta.Salida.Split('\n'))
                 {
                     bool isError = linea.StartsWith("Error:", StringComparison.Ordinal) || linea.StartsWith("grep:", StringComparison.Ordinal) || linea.StartsWith("rg:", StringComparison.Ordinal)
-                        || linea.StartsWith("ash:", StringComparison.Ordinal);
+                        || linea.StartsWith("ash:", StringComparison.Ordinal) || linea == ConstructorComandoExec.MarcaInicio || linea == ConstructorComandoExec.MarcaTruncado;
                     _ = (isError ? errores : salida).Append(linea).Append('\n');
                 }
 
                 byte[] bytesSalida = respuesta.Bytes ?? Encoding.UTF8.GetBytes(salida.ToString(0, Math.Max(0, salida.Length - 1)));
-                byte[] bytesErrores = Encoding.UTF8.GetBytes(errores.ToString());
+                byte[] bytesErrores = respuesta.BytesErrores ?? Encoding.UTF8.GetBytes(errores.ToString());
                 return bytesSalida.Length + bytesErrores.Length > maxBytesSalida
                     ? new ResultadoCanalExec(null, null, ReadOnlyMemory<byte>.Empty, ReadOnlyMemory<byte>.Empty, true)
                     : new ResultadoCanalExec(respuesta.Codigo, null, bytesSalida, bytesErrores, false);
@@ -322,7 +353,11 @@ namespace NativeSsh.Test.Sesion.Falsos
                 RuidoTrasCapturaPath = RuidoTrasCapturaPath,
                 Pid = 4232 + (abiertos * 10),
                 IsSinIdentidad = IsSinIdentidad,
-                RespuestaSinBash = RespuestaSinBash
+                RespuestaSinBash = RespuestaSinBash,
+                RespuestaConPty = RespuestaConPty,
+                IsCierraTrasConPty = IsCierraTrasConPty,
+                IsBashTrasConPty = IsBashTrasConPty,
+                IsMudoTrasConPty = IsMudoTrasConPty
             };
             return CanalActual;
         }
@@ -442,6 +477,18 @@ namespace NativeSsh.Test.Sesion.Falsos
         public bool IsSinIdentidad { get; init; }
         public string? RespuestaSinBash { get; init; }
 
+        // Un shell de Windows bajo ConPTY (cmd o PowerShell, WS1): al recibir lo primero, el terminal escribe RespuestaConPty
+        // (su prefijo, la cabecera, el indicador...) y no ejecuta ninguna línea (bajo ConPTY un '\n' no es Intro). Con
+        // IsCierraTrasConPty, el shell sale después (el shell sin perfil: 'cmd /c exec ...' falla y termina). Con
+        // IsBashTrasConPty, después de escribirlo se comporta como bash (Git Bash como shell de login: ConPTY sin cmd).
+        public string? RespuestaConPty { get; init; }
+        public bool IsCierraTrasConPty { get; init; }
+        public bool IsBashTrasConPty { get; init; }
+
+        // Sin eco de lo recibido (un terminal de Windows que no muestra nada más).
+        public bool IsMudoTrasConPty { get; init; }
+        private int _isConPtyEmitido;
+
         // Lo que imprimiría "$$ $PPID ${__NS_TESTIGO-}" en el shell que ejecuta ahora las líneas: el del canal (con el
         // testigo que guardó la captura) o otro.
         public string IdentidadActual => Volatile.Read(ref _identidadActual) ?? $"{Pid} {PidPadre} {Volatile.Read(ref _testigo)}";
@@ -530,6 +577,28 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             if (_isEscrituraRechazada)
                 throw new InvalidOperationException("The channel is closed.");
+
+            if (RespuestaConPty is { } conPty)
+            {
+                if (Interlocked.Exchange(ref _isConPtyEmitido, 1) == 0)
+                {
+                    Emitir(conPty);
+                    if (IsCierraTrasConPty)
+                        Cerrar();
+                }
+
+                if (IsBashTrasConPty)
+                {
+                    // Lo que escriba el perfil de un bash bajo ConPTY no cambia cómo trata las líneas.
+                }
+                else
+                {
+                    // cmd o PowerShell bajo ConPTY: eco de lo recibido sin ejecutarlo; un '\n' no es Intro.
+                    if (!IsCierraTrasConPty && !IsMudoTrasConPty)
+                        Emitir(Encoding.UTF8.GetString(datos).Replace("\n", "", StringComparison.Ordinal));
+                    return;
+                }
+            }
 
             lock (_candado)
             {

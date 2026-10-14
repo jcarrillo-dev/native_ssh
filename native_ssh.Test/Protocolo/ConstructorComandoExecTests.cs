@@ -7,7 +7,7 @@ namespace NativeSsh.Test.Protocolo
 {
     public partial class ConstructorComandoExecTests
     {
-        [GeneratedRegex(@"^bash --noprofile --norc -c '[^'\\!]*' ns [A-Za-z0-9+/=]+ [0-9]+ (-|[A-Za-z0-9+/=]+) </dev/null$")]
+        [GeneratedRegex(@"^bash --noprofile --norc -c '[^'\\!]*' ns [A-Za-z0-9+/=]+ [0-9]+ (-|[A-Za-z0-9+/=]+) ns_fin </dev/null$")]
         private static partial Regex RegexComandoPortable();
 
         [Fact]
@@ -40,7 +40,7 @@ namespace NativeSsh.Test.Protocolo
             string comando = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(segundos));
 
             // Assert
-            _ = comando.Split(' ')[^3].Should().Be(esperado);
+            _ = comando.Split(' ')[^4].Should().Be(esperado);
         }
 
         [Fact]
@@ -54,6 +54,20 @@ namespace NativeSsh.Test.Protocolo
             // Assert
             _ = RegexComandoPortable().IsMatch(comando).Should().BeTrue(comando);
             _ = RegexComandoPortable().IsMatch(conPath).Should().BeTrue(conPath);
+        }
+
+        // WS2: el último argumento es el de control, que el programa comprueba antes de nada; la redirección de entrada sigue
+        // al final: cmd y PowerShell rechazan la línea al analizarla, antes de ejecutar nada (medido con Windows Server 2025:
+        // «3>& was unexpected at this time.» y el ParserError «RedirectionNotSupported»).
+        [Fact]
+        public void Construir_TerminaConElArgumentoDeControlYLaRedireccionDeEntrada()
+        {
+            // Act
+            string comando = ConstructorComandoExec.Construir("true", null, TimeSpan.FromSeconds(5));
+
+            // Assert
+            _ = comando.Should().EndWith($" {ConstructorComandoExec.ArgumentoControl} </dev/null");
+            _ = comando.Should().Contain("3>&-");
         }
 
         [Fact]

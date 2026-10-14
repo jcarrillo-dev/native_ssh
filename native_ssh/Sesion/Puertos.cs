@@ -24,6 +24,10 @@ namespace NativeSsh.Sesion
         // lectura (DestinosSoloLectura) la compara con sus entradas: así el DNS de ahora no decide por una sesión ya abierta.
         IPAddress? DireccionRemota { get; }
 
+        // El servidor anunció al conectar que es OpenSSH for Windows (RespuestaWindows.IsVersionWindows): sus shells de login
+        // pueden ser cmd o PowerShell (WS1).
+        bool IsServidorWindows { get; }
+
         // CanalRechazadoException si el servidor rechaza la apertura con la conexión intacta. isSinPerfil (ssh_reset_shell con
         // sinPerfil=true, RC1): en lugar de pedir el shell del usuario (petición 'shell', que lee .profile y .bashrc), ejecuta
         // ComandoSinPerfil con una petición 'exec' sobre el mismo pseudoterminal.
@@ -51,6 +55,11 @@ namespace NativeSsh.Sesion
         {
         }
     }
+
+    // El servidor rechazó la petición exec de un canal ya abierto (SSH_MSG_CHANNEL_FAILURE): no ejecutó el comando. Medido con
+    // OpenSSH for Windows cuando el comando no cabe en la línea de órdenes de Windows; el canal puede seguir abierto, y antes
+    // la operación esperaba su plazo entero (externo/SSH.NET: "Fail at once when the server rejects the exec request").
+    public sealed class PeticionExecRechazadaException(string mensaje, Exception interna) : Exception(mensaje, interna);
 
     public interface IFabricaConexion
     {

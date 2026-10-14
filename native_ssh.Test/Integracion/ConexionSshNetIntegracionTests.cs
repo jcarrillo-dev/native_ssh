@@ -18,6 +18,20 @@ namespace NativeSsh.Test.Integracion
             _ = typeof(BaseClient).GetMethod("Session_ErrorOccurred", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(cliente, [null, new ExceptionEventArgs(new SshConnectionException("An established connection was aborted by the server."))]);
 
+        // WS1: la versión que anuncia el servidor decide IsServidorWindows; el OpenSSH de Linux no es Windows.
+        [Fact]
+        public async Task IsServidorWindows_ConElOpenSshDeLinux_EsFalsoYLaVersionLlega()
+        {
+            using PrivateKeyFile clave = new(sshd.RutaClave);
+            SshClient cliente = new(new Renci.SshNet.ConnectionInfo("127.0.0.1", sshd.Puerto, Environment.UserName, new PrivateKeyAuthenticationMethod(Environment.UserName, clave)));
+            cliente.HostKeyReceived += (_, e) => e.CanTrust = true;
+            await cliente.ConnectAsync(CancellationToken.None);
+            using ConexionSshNet conexion = new(cliente, System.Net.IPAddress.Loopback);
+
+            _ = cliente.ConnectionInfo.ServerVersion.Should().StartWith("SSH-2.0-OpenSSH_");
+            _ = conexion.IsServidorWindows.Should().BeFalse();
+        }
+
         [Fact]
         public async Task AvisoDeCaidaSinShellAbierto_LaConexionSeDaPorPerdidaSinEsperarAQueSshNetCierreElSocket()
         {

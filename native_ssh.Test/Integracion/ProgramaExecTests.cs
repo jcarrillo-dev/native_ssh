@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.Versioning;
 using FluentAssertions;
 using NativeSsh.Protocolo;
@@ -15,6 +16,10 @@ namespace NativeSsh.Test.Integracion
         // Tras salir bash, lo que tarde en cerrarse su salida: solo un proceso que sobreviva al script (p. ej. un watchdog
         // que no muere) la mantiene abierta.
         private static readonly TimeSpan CierreSalida = TimeSpan.FromSeconds(5);
+
+        // Shells de login con los que se prueban los cortes del comando (los que no estén instalados se omiten).
+        // fish tarda unos 20 ms en arrancar: con él, uno de cada 7 cortes.
+        private static readonly CortesComandoExec.ShellCortes[] ShellsDeLogin = [new("/usr/bin/sh", 1), new("/usr/bin/bash", 1), new("/usr/bin/zsh", 1), new("/usr/bin/fish", 7)];
 
         private readonly string _raiz = Path.Combine(Path.GetTempPath(), $"ns_programa_{Guid.NewGuid():N}");
         private readonly string _sinTimeout;
@@ -54,10 +59,33 @@ namespace NativeSsh.Test.Integracion
             // Act
             (int codigo, string salida, string errores, _) = Ejecutar(ConstructorComandoExec.Construir("echo fuera; echo error >&2; exit 7", null, TimeSpan.FromSeconds(30)), _sinTimeout, TimeSpan.FromSeconds(20));
 
-            // Assert
+            // Assert: en stderr, antes que nada del script, la marca de que el programa arrancó con todos sus argumentos
+            // (SesionShell.EjecutarExecAsync la quita).
             _ = codigo.Should().Be(7);
             _ = salida.Should().Be("fuera\n");
-            _ = errores.Should().Be("error\n");
+            _ = errores.Should().Be(ConstructorComandoExec.MarcaInicio + "\nerror\n");
+        }
+
+        // WS2: el comando cortado en cada posición, con sh y bash (y zsh y fish si están): ningún corte ejecuta nada.
+        [Fact]
+        public async Task Truncado_EnCualquierPosicion_NoEjecutaNadaDelScript()
+        {
+            // Arrange
+            _ = Directory.CreateDirectory(_raiz);
+            string efecto = Path.Combine(_raiz, "efecto");
+            string comando = ConstructorComandoExec.Construir(CortesComandoExec.Script(efecto), null, TimeSpan.FromSeconds(30));
+            CortesComandoExec.ShellCortes[] shells = [.. ShellsDeLogin.Where(s => File.Exists(s.Ruta))];
+            ProcessStartInfo inicio = new("/usr/bin/bash", ["-c", CortesComandoExec.Conductor, "ns", comando, efecto, .. shells.Select(s => s.Argumento)]) { RedirectStandardOutput = true, RedirectStandardError = true };
+
+            // Act
+            using Process proceso = Process.Start(inicio)!;
+            Task<string> errores = proceso.StandardError.ReadToEndAsync();
+            string salida = await proceso.StandardOutput.ReadToEndAsync();
+            await proceso.WaitForExitAsync();
+
+            // Assert
+            _ = proceso.ExitCode.Should().Be(0, await errores);
+            CortesComandoExec.Comprobar(comando, CortesComandoExec.Leer(salida), shells);
         }
 
         [Fact]
