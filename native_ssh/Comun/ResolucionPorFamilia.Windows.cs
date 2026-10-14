@@ -10,9 +10,12 @@ namespace NativeSsh.Comun
     // 11001; medido en Windows 11 con ipv4only.arpa, que solo tiene A), así que, con HostNotFound, esa familia se pregunta a
     // la API de DNS de Windows (DnsWindows: DnsQuery_W, la del servicio Cliente DNS, con su caché y el fichero hosts, y
     // después, para confirmarlo, solo por TCP y sin caché), y solo si dice que el nombre existe y no tiene direcciones de
-    // esa familia cuenta como «sin direcciones»; si no, esa familia falla (falla cerrado). SocketError.NoData (WSANO_DATA)
-    // también es «sin direcciones». Cualquier otro error sale y hace fallar esa familia. El fichero hosts está en
-    // %SystemRoot%\System32\drivers\etc.
+    // esa familia cuenta como «sin direcciones»; si no, esa familia falla (falla cerrado). Lo mismo con SocketError.NoData
+    // (WSANO_DATA) y con una respuesta sin ninguna dirección de esa familia: no se han visto llegar (medido en Windows 11 con
+    // un DNS falso: NODATA con y sin SOA, sin ninguna familia, CNAME en bucle o a un nombre sin registros, otro tipo o un SOA
+    // en la respuesta, NOTIMP, FORMERR y YXDOMAIN dan HostNotFound, NoRecovery o direcciones), pero si llegaran no darían
+    // «sin direcciones» sin la misma confirmación. Cualquier otro error sale y hace fallar esa familia. El fichero hosts está
+    // en %SystemRoot%\System32\drivers\etc.
     public static partial class ResolucionPorFamilia
     {
         private static partial IPAddress[]? ResolverFamiliaDelSistema(string nombre, AddressFamily familia) =>
@@ -22,22 +25,24 @@ namespace NativeSsh.Comun
 
         // dns: el resolver de una familia; isSinDirecciones: si el DNS de Windows dice que el nombre existe y no tiene
         // direcciones de esa familia (las pruebas dan los suyos).
-        internal static IPAddress[] ResolverFamiliaWindows(string nombre, AddressFamily familia, Func<string, AddressFamily, IPAddress[]> dns, Func<string, AddressFamily, bool> isSinDirecciones)
+        // Sin ninguna dirección de la familia (NoData, HostNotFound o una respuesta sin ninguna de esa familia), solo es «sin
+        // direcciones» si isSinDirecciones lo confirma; si no, HostNotFound y NoData salen y la respuesta vacía es null (esa
+        // familia falla).
+        internal static IPAddress[]? ResolverFamiliaWindows(string nombre, AddressFamily familia, Func<string, AddressFamily, IPAddress[]> dns, Func<string, AddressFamily, bool> isSinDirecciones)
         {
+            IPAddress[] direcciones;
             try
             {
-                return DeLaFamilia(dns(nombre, familia), familia);
+                direcciones = DeLaFamilia(dns(nombre, familia), familia);
             }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.NoData)
-            {
-                return [];
-            }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.HostNotFound)
+            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.HostNotFound or SocketError.NoData)
             {
                 if (isSinDirecciones(nombre, familia))
                     return [];
                 throw;
             }
+
+            return direcciones.Length > 0 || isSinDirecciones(nombre, familia) ? direcciones : null;
         }
 
         // carpetaSistema: %SystemRoot%\System32 (vacía si no se sabe: la de una instalación normal).

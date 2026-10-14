@@ -52,18 +52,35 @@ namespace NativeSsh.Test.Comun
             _ = pedidas.Should().BeEquivalentTo([AddressFamily.InterNetwork, AddressFamily.InterNetworkV6]);
         }
 
-        // WSANO_DATA (SocketError.NoData): el nombre no tiene direcciones de esa familia, que es legítimo.
-        [Fact]
-        public async Task NoData_EsSinDirecciones()
+        // WSANO_DATA (SocketError.NoData) o una respuesta sin ninguna dirección de la familia pedida: como con HostNotFound,
+        // solo es «sin direcciones» si el DNS de Windows lo confirma (la consulta estándar y la solo TCP sin caché); si no,
+        // esa familia falla (falla cerrado). Con direcciones de la familia, no se le pregunta.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public async Task NoDataOSinDireccionesDeLaFamilia_SinDireccionesSoloSiLoConfirmaElDnsDeWindows(bool isSinDirecciones)
         {
+            // Arrange
+            static IPAddress[] SoloIpv4(string nombre, AddressFamily familia) => [IPAddress.Parse("10.0.0.5")];
+            static IPAddress[] Ninguna(string nombre, AddressFamily familia) => familia == AddressFamily.InterNetwork ? [IPAddress.Parse("10.0.0.5")] : [];
+            List<AddressFamily> preguntadas = [];
+
             // Act
-            DireccionesPorFamilia sinIpv6 = await ResolverAsync(DnsFalso(SocketError.NoData));
-            DireccionesPorFamilia lasDos = await ResolverAsync(DnsFalso(null));
+            DireccionesPorFamilia noData = await ResolverAsync(DnsFalso(SocketError.NoData), isSinDirecciones, preguntadas);
+            DireccionesPorFamilia otraFamilia = await ResolverAsync(SoloIpv4, isSinDirecciones, preguntadas);
+            DireccionesPorFamilia vacia = await ResolverAsync(Ninguna, isSinDirecciones, preguntadas);
+            DireccionesPorFamilia lasDos = await ResolverAsync(DnsFalso(null), isSinDirecciones, preguntadas);
 
             // Assert
-            _ = sinIpv6.Ipv4.Should().Equal(IPAddress.Parse("10.0.0.5"));
-            _ = sinIpv6.Ipv6.Should().NotBeNull().And.BeEmpty();
+            foreach (DireccionesPorFamilia resultado in new[] { noData, otraFamilia, vacia })
+            {
+                _ = resultado.Ipv4.Should().Equal(IPAddress.Parse("10.0.0.5"));
+                _ = (resultado.Ipv6 is []).Should().Be(isSinDirecciones);
+                _ = (resultado.Ipv6 is null).Should().Be(!isSinDirecciones);
+            }
+
             _ = lasDos.Ipv6.Should().Equal(IPAddress.Parse("fd00::5"));
+            _ = preguntadas.Should().Equal(AddressFamily.InterNetworkV6, AddressFamily.InterNetworkV6, AddressFamily.InterNetworkV6);
         }
 
         // Solo cuenta la familia pedida, y cualquier otra excepción sale (hace fallar la tarea de esa familia).
@@ -75,8 +92,8 @@ namespace NativeSsh.Test.Comun
             static IPAddress[] Argumento(string nombre, AddressFamily familia) => throw new ArgumentException("prueba");
 
             // Act
-            IPAddress[] ipv4 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Mezcla, (_, _) => true);
-            IPAddress[] ipv6 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetworkV6, Mezcla, (_, _) => true);
+            IPAddress[]? ipv4 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Mezcla, (_, _) => true);
+            IPAddress[]? ipv6 = ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetworkV6, Mezcla, (_, _) => true);
             Action argumento = () => ResolucionPorFamilia.ResolverFamiliaWindows("prod.ejemplo", AddressFamily.InterNetwork, Argumento, (_, _) => true);
 
             // Assert
