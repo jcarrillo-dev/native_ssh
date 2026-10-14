@@ -71,8 +71,9 @@ namespace NativeSsh.Herramientas
     // Aviso: con un alias, sus sesiones para otro usuario o puerto y las de sesiones llenas que no lo guardaron, con qué
     // destino cerrarlas y qué más cerraría cada uno (null si no hay). SoloLectura: las entradas de NATIVE_SSH_SOLO_LECTURA
     // (null si no hay). En cada sesión, IsSoloLectura es true o false si ya se sabe sin esperar al DNS y null si aún no (o
-    // si no hay modo solo lectura).
-    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, string? Aviso = null, IReadOnlyList<string>? SoloLectura = null);
+    // si no hay modo solo lectura). ResolucionesSinTerminar: los procesos de resolución de nombres de esa comprobación que no
+    // murieron con SIGKILL y siguen vivos (Linux: ResolutorEnProceso; null si no hay).
+    public sealed record ResultadoEstado(IReadOnlyList<EstadoSesion> Sesiones, IReadOnlyList<ResumenPeticion> Peticiones, string? Aviso = null, IReadOnlyList<string>? SoloLectura = null, IReadOnlyList<string>? ResolucionesSinTerminar = null);
 
     public sealed record ResultadoAccion(string Destino, bool IsHecho, string Mensaje);
 

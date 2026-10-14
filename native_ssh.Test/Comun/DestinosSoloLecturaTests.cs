@@ -309,11 +309,11 @@ namespace NativeSsh.Test.Comun
             _ = consultas.Should().Be(2, "el fallo no se recuerda; el éxito sí");
         }
 
-        // El plazo de 3 s se cumple aunque la resolución no haga caso de la cancelación (getaddrinfo no se puede cancelar):
-        // se deja de esperar y se rechaza. Las llamadas siguientes al mismo nombre esperan esa misma resolución en lugar de
-        // empezar otra (no se acumulan hilos bloqueados).
+        // El plazo se cumple aunque la resolución no haga caso de la cancelación (como getaddrinfo, que no se puede cancelar):
+        // se deja de esperar y se rechaza. Las comprobaciones a la vez del mismo nombre comparten la resolución; la siguiente,
+        // con la anterior ya vencida, lanza otra (así se vuelve a resolver cuando el DNS responda).
         [Fact]
-        public async Task ResolucionQueNoTermina_SeRechazaAlVencerElPlazoSinLanzarOtra()
+        public async Task ResolucionQueNoTermina_SeRechazaAlVencerElPlazoYLaSiguienteLanzaOtra()
         {
             // Arrange
             int consultas = 0;
@@ -334,8 +334,8 @@ namespace NativeSsh.Test.Comun
             // Assert
             _ = resultados.Should().AllBeEquivalentTo(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
             _ = otraVez.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
-            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(9), "cada llamada espera como mucho 3 s");
-            _ = consultas.Should().Be(1, "una sola resolución en curso por nombre");
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(11), "cada llamada espera como mucho el plazo y la recogida (4,5 s)");
+            _ = consultas.Should().Be(2, "una sola resolución en curso por nombre para las diez a la vez y otra para la siguiente");
             nunca.SetResult([IPAddress.Parse("10.0.0.5")]);
         }
 
@@ -364,6 +364,118 @@ namespace NativeSsh.Test.Comun
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
         }
 
+        // Un destino cuya resolución se queda colgada (no hace caso del plazo, como getaddrinfo con el TCP/53 colgado) no se
+        // sigue esperando: al vencer su plazo deja de estar en curso, y cuando el DNS ya responde, la comprobación siguiente
+        // vuelve a resolver el nombre (antes esperaba para siempre la colgada y rechazaba).
+        [Fact]
+        public async Task DestinoColgado_DnsRecuperado_LaSiguienteVuelveAResolver()
+        {
+            // Arrange
+            int consultas = 0;
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Resolver(string nombre, CancellationToken token) =>
+                Interlocked.Increment(ref consultas) == 1 ? nunca.Task : Task.FromResult(new[] { IPAddress.Parse("10.0.0.5") });
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Resolver).Should().BeTrue();
+            ComprobacionSoloLectura colgada = await destinos.ComprobarAsync(Destino("root@prod.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Act
+            ComprobacionSoloLectura siguiente = await destinos.ComprobarAsync(Destino("root@prod.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
+
+            // Assert
+            _ = colgada.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo"));
+            _ = siguiente.Should().Be(new ComprobacionSoloLectura(true, null), "el DNS ya responde: prod.ejemplo es 10.0.0.5, que es de solo lectura");
+            _ = consultas.Should().Be(2);
+        }
+
+        // Lo mismo con una entrada: su resolución colgada no se sigue esperando y, con el DNS ya sano, la siguiente la resuelve.
+        [Fact]
+        public async Task EntradaColgada_DnsRecuperado_LaSiguienteVuelveAResolver()
+        {
+            // Arrange
+            int consultas = 0;
+            TaskCompletionSource<DireccionesPorFamilia> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<DireccionesPorFamilia> ResolverEntrada(string nombre, CancellationToken token) =>
+                Interlocked.Increment(ref consultas) == 1 ? nunca.Task : Task.FromResult(new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], []));
+
+            _ = DestinosSoloLectura.TryParsear("prod.ejemplo", out DestinosSoloLectura destinos, out _, ResolverFalso, ResolverEntrada).Should().BeTrue();
+            ComprobacionSoloLectura colgada = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Act
+            ComprobacionSoloLectura siguiente = await destinos.ComprobarAsync(Destino("root@10.0.0.5"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            nunca.SetResult(default);
+
+            // Assert
+            _ = colgada.Should().Be(new ComprobacionSoloLectura(true, "prod.ejemplo", Entrada: "prod.ejemplo"));
+            _ = siguiente.Should().Be(new ComprobacionSoloLectura(true, null));
+            _ = consultas.Should().Be(2);
+        }
+
+        // Con muchos nombres de destino colgados (más que las resoluciones que puede haber a la vez), las ranuras se liberan al
+        // vencer el plazo: después, un nombre que el DNS sí resuelve se resuelve (antes, con 16 colgados, todo se rechazaba
+        // por el cupo para siempre).
+        [Fact]
+        public async Task RanurasConNombresColgados_SeLiberanAlVencerElPlazo()
+        {
+            // Arrange
+            TaskCompletionSource<IPAddress[]> nunca = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<IPAddress[]> Resolver(string nombre, CancellationToken token) =>
+                nombre.StartsWith("colgado", StringComparison.Ordinal) ? nunca.Task : ResolverFalso(nombre, token);
+
+            _ = DestinosSoloLectura.TryParsear("10.0.0.5", out DestinosSoloLectura destinos, out _, Resolver).Should().BeTrue();
+            ComprobacionSoloLectura[] colgados = await Task.WhenAll(Enumerable.Range(0, 2 * DestinosSoloLectura.MaxResolucionesEnCurso).Select(i => destinos.ComprobarAsync(Destino($"root@colgado{i}.ejemplo"), CancellationToken.None))).WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Act
+            ComprobacionSoloLectura sano = await destinos.ComprobarAsync(Destino("root@prod.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
+
+            // Assert
+            _ = colgados.Should().OnlyContain(r => r.IsSoloLectura && r.NoResuelto != null);
+            _ = sano.Should().Be(new ComprobacionSoloLectura(true, null));
+        }
+
+        // Con más entradas que resoluciones a la vez y el DNS sano, la primera comprobación no rechaza: las que no caben esperan
+        // su turno dentro del plazo (antes, con 20 entradas, las que pasaban de 16 se rechazaban por el cupo).
+        [Fact]
+        public async Task MasEntradasQueResolucionesALaVez_DnsSano_NoRechaza()
+        {
+            // Arrange
+            int enCurso = 0;
+            int maximo = 0;
+            async Task<DireccionesPorFamilia> ResolverEntrada(string nombre, CancellationToken token)
+            {
+                int ahora = Interlocked.Increment(ref enCurso);
+                InterlockedMaximo(ref maximo, ahora);
+                await Task.Delay(100, token);
+                _ = Interlocked.Decrement(ref enCurso);
+                return new DireccionesPorFamilia([IPAddress.Parse($"10.1.{nombre.Length}.{nombre[1..nombre.IndexOf('.', StringComparison.Ordinal)]}")], []);
+            }
+
+            int entradas = DestinosSoloLectura.MaxResolucionesEnCurso + 4;
+            string configuracion = string.Join(',', Enumerable.Range(0, entradas).Select(i => $"x{i}.ejemplo"));
+            _ = DestinosSoloLectura.TryParsear(configuracion, out DestinosSoloLectura destinos, out _, ResolverFalso, ResolverEntrada).Should().BeTrue();
+
+            // Act
+            ComprobacionSoloLectura resultado = await destinos.ComprobarAsync(Destino("root@10.0.0.99"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Assert
+            _ = resultado.Should().Be(new ComprobacionSoloLectura(false, null));
+            _ = maximo.Should().BeLessThanOrEqualTo(DestinosSoloLectura.MaxResolucionesEnCurso);
+        }
+
+        private static void InterlockedMaximo(ref int maximo, int valor)
+        {
+            int actual = Volatile.Read(ref maximo);
+            while (valor > actual)
+            {
+                int previo = Interlocked.CompareExchange(ref maximo, valor, actual);
+                if (previo == actual)
+                    return;
+                actual = previo;
+            }
+        }
+
         // Un nombre que es a la vez el de una entrada (de otro usuario) y el del destino: lo recordado por la entrada no se usa
         // para el destino, que se resuelve de nuevo.
         [Fact]
@@ -386,8 +498,9 @@ namespace NativeSsh.Test.Comun
             _ = consultas.Should().Be(2);
         }
 
-        // Con el cupo de resoluciones lleno, lo que no se llegó a resolver se distingue de lo que no se resolvió (fallo o
-        // plazo): el rechazo puede decir que se vuelva a intentar en unos segundos en lugar de culpar al DNS.
+        // Con todos los turnos de resolución ocupados durante más de lo que se espera turno, lo que no se llegó a resolver se
+        // distingue de lo que no se resolvió (fallo o plazo): el rechazo puede decir que se vuelva a intentar en unos segundos
+        // en lugar de culpar al DNS.
         [Fact]
         public async Task CupoLleno_SeDistingueDeNoResuelto()
         {
@@ -401,8 +514,10 @@ namespace NativeSsh.Test.Comun
             Task<ComprobacionSoloLectura>[] colgados = [.. Enumerable.Range(0, DestinosSoloLectura.MaxResolucionesEnCurso).Select(i => destinos.ComprobarAsync(Destino($"root@colgado{i}.ejemplo"), CancellationToken.None))];
 
             // Act
-            ComprobacionSoloLectura sinCupo = await destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
-            ComprobacionSoloLectura entradaSinCupo = await destinos.ComprobarAsync(Destino("deploy@10.0.0.9"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+            Task<ComprobacionSoloLectura> sinCupoTarea = destinos.ComprobarAsync(Destino("root@otro.ejemplo"), CancellationToken.None);
+            Task<ComprobacionSoloLectura> entradaSinCupoTarea = destinos.ComprobarAsync(Destino("deploy@10.0.0.9"), CancellationToken.None);
+            ComprobacionSoloLectura sinCupo = await sinCupoTarea.WaitAsync(TimeSpan.FromSeconds(30));
+            ComprobacionSoloLectura entradaSinCupo = await entradaSinCupoTarea.WaitAsync(TimeSpan.FromSeconds(30));
             ComprobacionSoloLectura[] porPlazo = await Task.WhenAll(colgados).WaitAsync(TimeSpan.FromSeconds(30));
             nunca.SetResult([IPAddress.Parse("10.0.0.9")]);
 

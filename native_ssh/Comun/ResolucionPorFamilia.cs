@@ -9,11 +9,16 @@ namespace NativeSsh.Comun
 {
     // Las direcciones de un nombre por familia: Ipv4 o Ipv6 vacío si el nombre no tiene direcciones de esa familia (NODATA:
     // un host solo IPv4 o solo IPv6); null si esa familia falló (el DNS dice que el nombre no existe, falla, rechaza la
-    // consulta o no responde) o no terminó dentro del plazo.
-    public readonly record struct DireccionesPorFamilia(IPAddress[]? Ipv4, IPAddress[]? Ipv6)
+    // consulta o no responde) o no terminó dentro del plazo. Incidencia: lo que impidió resolverla aparte del DNS (un
+    // proceso de resolución que no se pudo terminar o el tope de ellos: ResolutorEnProceso, en Linux), para el rechazo.
+    public readonly record struct DireccionesPorFamilia(IPAddress[]? Ipv4, IPAddress[]? Ipv6, string? Incidencia = null)
     {
         public bool HasFallo => Ipv4 is null || Ipv6 is null;
     }
+
+    // Lo que dio la resolución de un nombre (una familia o, para el destino, las dos juntas): las direcciones (vacío: sin
+    // direcciones de esa familia; null: falló o no terminó en su plazo) y la incidencia, como en DireccionesPorFamilia.
+    public readonly record struct ResultadoResolucion(IPAddress[]? Direcciones, string? Incidencia = null);
 
     // Resolución de las entradas de NATIVE_SSH_SOLO_LECTURA por familia (A y AAAA por separado, a la vez) en todos los
     // sistemas, nunca las dos juntas: con AF_UNSPEC, si el DNS falla solo en una familia, getaddrinfo devuelve la otra como
@@ -23,11 +28,48 @@ namespace NativeSsh.Comun
     // compila (NativeSshSistema en Directory.Build.props); esta parte común no mira el sistema.
     public static partial class ResolucionPorFamilia
     {
-        // Las familias que el resolver del sistema aún no ha terminado de resolver (ver FamiliasEnCurso).
-        private static readonly FamiliasEnCurso EnCursoDelSistema = new();
+        // Lo que se espera, tras vencer el plazo de una resolución que se hace en otro proceso (Linux: ResolutorEnProceso),
+        // a que ese proceso muera tras el SIGKILL y se recoja; quien espera la resolución cuenta con ello.
+        public static readonly TimeSpan EsperaRecogida = TimeSpan.FromSeconds(1);
 
-        public static Task<DireccionesPorFamilia> ResolverAsync(string nombre, CancellationToken plazo) =>
-            ResolverAsync(nombre, ResolverFamiliaDelSistema, EnCursoDelSistema, plazo);
+        // Las dos familias de una entrada con el resolver del sistema, dentro del plazo (al vencer, la que no terminó falla).
+        public static Task<DireccionesPorFamilia> ResolverAsync(string nombre, CancellationToken plazo) => ResolverDelSistemaAsync(nombre, plazo);
+
+        // El destino, con las dos familias juntas (como lo resuelve la conexión), con el resolver del sistema y dentro del
+        // plazo: sus direcciones, o null si falla o no termina a tiempo.
+        public static Task<ResultadoResolucion> ResolverDestinoAsync(string nombre, CancellationToken plazo) => ResolverDestinoDelSistemaAsync(nombre, plazo);
+
+        // Las resoluciones del sistema que no se pudieron terminar y siguen vivas (ssh_status), una por texto; vacía si no hay
+        // o el sistema no las tiene (solo Linux resuelve en otro proceso).
+        public static IReadOnlyList<string> ResolucionesSinTerminar()
+        {
+            List<string> sinTerminar = [];
+            AnadirSinTerminarDelSistema(sinTerminar);
+            return sinTerminar;
+        }
+
+        // El modo interno del binario (Linux: el proceso hijo que resuelve un nombre, ResolutorEnProceso): si 'args' lo pide y
+        // el sistema lo tiene, lo ejecuta y da su código de salida. En los demás sistemas no existe (el argumento se rechaza
+        // como cualquier otro desconocido).
+        public static bool TryEjecutarModoInterno(string[] args, out int codigo)
+        {
+            codigo = 0;
+            bool isHecho = false;
+            EjecutarModoInternoDelSistema(args, ref codigo, ref isHecho);
+            return isHecho;
+        }
+
+        private static partial Task<DireccionesPorFamilia> ResolverDelSistemaAsync(string nombre, CancellationToken plazo);
+
+        // El destino con el DNS asíncrono de .NET, que deja de esperar al vencer el plazo (el de Windows y los demás Unix).
+        internal static async Task<ResultadoResolucion> ResolverDestinoConNetAsync(string nombre, CancellationToken plazo) =>
+            new(await Dns.GetHostAddressesAsync(nombre, plazo).ConfigureAwait(false));
+
+        private static partial Task<ResultadoResolucion> ResolverDestinoDelSistemaAsync(string nombre, CancellationToken plazo);
+
+        static partial void AnadirSinTerminarDelSistema(List<string> sinTerminar);
+
+        static partial void EjecutarModoInternoDelSistema(string[] args, ref int codigo, ref bool isHecho);
 
         // Las direcciones de 'nombre' de una sola familia en este sistema: vacío si no tiene direcciones de esa familia y el
         // sistema lo distingue; null o una excepción si esa familia falla. Bloquea el hilo.
@@ -47,7 +89,8 @@ namespace NativeSsh.Comun
             ResolverAsync(nombre, resolverFamilia, new FamiliasEnCurso(), plazo);
 
         // Igual, pero una familia del nombre que sigue en curso en 'enCurso' (de una llamada anterior cuyo plazo ya venció) se
-        // espera en lugar de lanzarla otra vez (la del sistema comparte las suyas: EnCursoDelSistema).
+        // espera en lugar de lanzarla otra vez (la del sistema en Windows y los demás Unix comparte las suyas:
+        // EnCursoDelSistema; en Linux cada resolución va en un proceso que se mata al vencer: ResolutorEnProceso).
         internal static async Task<DireccionesPorFamilia> ResolverAsync(string nombre, Func<string, AddressFamily, IPAddress[]?> resolverFamilia, FamiliasEnCurso enCurso, CancellationToken plazo)
         {
             Task<IPAddress[]?> ipv4 = enCurso.Lanzar(nombre, AddressFamily.InterNetwork, resolverFamilia);
@@ -57,6 +100,20 @@ namespace NativeSsh.Comun
         }
 
         private static IPAddress[]? Resultado(Task<IPAddress[]?> familia) => familia.IsCompletedSuccessfully ? familia.Result : null;
+
+        // Las dos familias a la vez con un resolver asíncrono que cumple él mismo el plazo (lanzar: el de Linux, que resuelve
+        // cada una en un proceso que mata al vencer): se esperan las dos, con su incidencia si la hubo (una excepción es un
+        // fallo de esa familia).
+        internal static async Task<DireccionesPorFamilia> ResolverAsync(string nombre, Func<string, AddressFamily, CancellationToken, Task<ResultadoResolucion>> lanzar, CancellationToken plazo)
+        {
+            Task<ResultadoResolucion> ipv4 = lanzar(nombre, AddressFamily.InterNetwork, plazo);
+            Task<ResultadoResolucion> ipv6 = lanzar(nombre, AddressFamily.InterNetworkV6, plazo);
+            await ((Task)Task.WhenAll(ipv4, ipv6)).ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+            ResultadoResolucion de4 = ipv4.IsCompletedSuccessfully ? ipv4.Result : default;
+            ResultadoResolucion de6 = ipv6.IsCompletedSuccessfully ? ipv6.Result : default;
+            string? incidencia = de4.Incidencia is null || de6.Incidencia is null || de4.Incidencia == de6.Incidencia ? de4.Incidencia ?? de6.Incidencia : $"{de4.Incidencia}; {de6.Incidencia}";
+            return new DireccionesPorFamilia(de4.Direcciones, de6.Direcciones, incidencia);
+        }
 
         // Una lista de direcciones de las dos familias, repartida (la familia sin ninguna, vacía). Solo para un resolver de
         // las dos familias juntas (el de las pruebas): no distingue una familia que falló de una sin direcciones.
@@ -222,14 +279,15 @@ namespace NativeSsh.Comun
         }
     }
 
-    // Las resoluciones de una familia lanzadas y aún sin terminar, por nombre y familia. getaddrinfo (y DnsQuery_W en
-    // Windows) bloquean el hilo y no se pueden cancelar: al vencer el plazo se deja de esperar, pero el hilo sigue bloqueado
-    // hasta que el resolver se rinda (con el TCP/53 del DNS colgado, de 20 s a 2 min en las medidas). Si cada comprobación
-    // lanzara la familia otra vez, los hilos bloqueados crecerían con cada reintento (medido sin esto en Linux: +5 o 6 hilos
-    // por llamada a ssh_exec con 20 entradas, de 42 a 220 en 30 llamadas, y tools/list esperando hasta 1 s al grupo de
-    // hilos; en Windows, unos 135 con las mismas llamadas). Mientras una siga sin terminar, la misma familia del mismo
-    // nombre espera esa en lugar de lanzar otra: como mucho un hilo bloqueado por nombre y familia, aunque se reintente. Al
-    // terminar deja de estar en curso y la siguiente se lanza.
+    // Las resoluciones de una familia lanzadas y aún sin terminar, por nombre y familia, donde se resuelve en hilos (Windows
+    // y los demás Unix; Linux usa procesos: ResolutorEnProceso). DnsQuery_W bloquea el hilo y no se puede cancelar: al
+    // vencer el plazo se deja de esperar, pero el hilo sigue bloqueado hasta que el resolver se rinda. Si cada comprobación
+    // lanzara la familia otra vez, los hilos bloqueados crecerían con cada reintento (medido sin esto en Windows: unos 135
+    // con 20 entradas y 30 llamadas). Mientras una siga sin terminar, la misma familia del mismo nombre espera esa en lugar
+    // de lanzar otra: como mucho un hilo bloqueado por nombre y familia, aunque se reintente. Al terminar deja de estar en
+    // curso y la siguiente se lanza (en Windows, medido con el TCP/53 colgado: el nombre vuelve a resolverse de 11 a 14 s
+    // después de que el DNS responda). Con un resolver que no se rindiera nunca (getaddrinfo de glibc con un TCP/53 que no
+    // cierra) el nombre no volvería a resolverse: por eso Linux no lo usa.
     internal sealed class FamiliasEnCurso
     {
         private readonly Dictionary<(string Nombre, AddressFamily Familia), Task<IPAddress[]?>> _enCurso = [];

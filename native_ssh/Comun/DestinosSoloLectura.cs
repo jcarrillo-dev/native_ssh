@@ -9,12 +9,14 @@ namespace NativeSsh.Comun
     // se pudo resolver; entonces IsSoloLectura es true aunque no conste que sea la misma máquina (ante la duda, se deniega).
     // Entrada: si NoResuelto es el nombre de una entrada (o el HostName de una entrada que es un alias) que no se resolvió,
     // la entrada tal como se escribió (el rechazo la nombra para que se pueda corregir); null si es el destino.
-    // IsCupoLleno: no se llegó a intentar resolverlo (demasiadas resoluciones en curso), no es que el DNS fallara.
+    // IsCupoLleno: no se llegó a intentar resolverlo (demasiadas resoluciones a la vez: no hubo turno dentro del plazo), no es
+    // que el DNS fallara. Incidencia: lo que impidió resolver NoResuelto aparte del DNS (en Linux, un proceso de resolución
+    // que no se pudo terminar o el tope de ellos: ResolutorEnProceso), para el rechazo.
     // DireccionConectada: es de solo lectura por la dirección a la que está conectada la sesión (ExtremoConectado), aunque ni
     // el texto pedido ni lo que resuelve ahora el nombre lo sean. IsDireccionDesconocida: la sesión está conectada y no se sabe
     // a qué dirección (también se deniega). IsErrorConfiguracion: NoResuelto es una entrada que ssh -G no pudo leer (no se
     // sabe a qué máquina lleva).
-    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false, IPAddress? DireccionConectada = null, bool IsDireccionDesconocida = false, bool IsErrorConfiguracion = false, string? Entrada = null);
+    public readonly record struct ComprobacionSoloLectura(bool IsSoloLectura, string? NoResuelto, bool IsCupoLleno = false, IPAddress? DireccionConectada = null, bool IsDireccionDesconocida = false, bool IsErrorConfiguracion = false, string? Entrada = null, string? Incidencia = null);
 
     // La conexión abierta de una sesión: Direccion es el extremo remoto de su socket (IConexionSsh.DireccionRemota), null si
     // no se sabe.
@@ -58,31 +60,43 @@ namespace NativeSsh.Comun
     // sesión se abre o se reabre después de la comprobación y el nombre resuelve entonces a una máquina protegida, la
     // escritura tampoco se envía. Lo que queda: el nombre de una entrada que pase a apuntar a otra máquina se ve, como
     // tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no cuenta al comparar.
-    // Por nombre hay como mucho una resolución en curso, y en total MaxResolucionesEnCurso (las demás no se lanzan y el
-    // rechazo lo dice). Una resolución deja de estar en curso al vencer su plazo, aunque sus hilos sigan bloqueados
-    // (getaddrinfo y DnsQuery_W no se pueden cancelar); lo que acota esos hilos es ResolucionPorFamilia (FamiliasEnCurso):
-    // una familia de un nombre que sigue sin terminar no se vuelve a lanzar, así que un DNS colgado deja como mucho un hilo
-    // bloqueado por familia de cada entrada (2 × el número de entradas), aunque se reintente. Medido con el TCP/53 colgado,
-    // 20 entradas y 30 llamadas seguidas: en Linux, los hilos del proceso pasan de 42 a 71-76 (sin ese tope crecían con cada
-    // llamada, hasta 220); en Windows, de 18 a 42-50 (sin él, unos 135: ahí el techo lo pone lo que tarda DnsQuery_W en
-    // rendirse, y crecería con un DNS que tarde más).
+    // Por nombre hay como mucho una resolución en curso (las comprobaciones a la vez del mismo nombre la comparten), y como
+    // mucho MaxResolucionesEnCurso nombres a la vez: las demás esperan turno (EsperaRanura) y solo si no lo tienen dentro
+    // del plazo no se resuelven (IsCupoLleno; el rechazo lo dice). Una resolución termina siempre dentro de su plazo (más
+    // la recogida del proceso en Linux) aunque el resolver del sistema siga bloqueado: deja de estar en curso y libera su
+    // turno, y la comprobación siguiente la lanza de nuevo, así que en cuanto el DNS responde el nombre se resuelve. En
+    // Linux cada resolución va en un proceso hijo que se mata al vencer el plazo (ResolutorEnProceso: no queda ningún hilo
+    // bloqueado; los hijos que no mueren con SIGKILL se cuentan contra un tope y se muestran en ssh_status); en Windows,
+    // en hilos del grupo, y una familia que sigue en curso se espera en lugar de lanzarla otra vez (FamiliasEnCurso):
+    // DnsQuery_W se rinde solo (medido con el TCP/53 colgado, 20 entradas y 30 llamadas: hilos de 18 a 42-50, y el nombre
+    // vuelve a resolverse de 11 a 14 s después de que el DNS responda).
     public sealed class DestinosSoloLectura
     {
         public const string Variable = "NATIVE_SSH_SOLO_LECTURA";
-        public const int MaxResolucionesEnCurso = 16;
+        public const int MaxResolucionesEnCurso = 32;
 
         private static readonly TimeSpan PlazoResolucion = TimeSpan.FromSeconds(3);
-        // Lo que se espera a la resolución de una entrada: su plazo (ResolucionPorFamilia deja de esperar a la familia que no
-        // terminó y devuelve la otra) y un margen para recibir ese resultado.
-        private static readonly TimeSpan PlazoEsperaEntrada = PlazoResolucion + TimeSpan.FromMilliseconds(500);
+        // Lo que puede tardar una resolución en terminar: su plazo, la recogida del proceso que la hacía (Linux) y un margen
+        // para que llegue lo que diga esa recogida. Pasado esto se deja de esperarla aunque el resolver no haga caso del
+        // plazo (el de las pruebas).
+        private static readonly TimeSpan LimiteResolucion = PlazoResolucion + ResolucionPorFamilia.EsperaRecogida + TimeSpan.FromMilliseconds(250);
+        // Lo que se espera a la resolución del destino y a la de una entrada: su límite y un margen para recibir el resultado.
+        private static readonly TimeSpan PlazoEsperaDestino = LimiteResolucion + TimeSpan.FromMilliseconds(250);
+        private static readonly TimeSpan PlazoEsperaEntrada = LimiteResolucion + TimeSpan.FromMilliseconds(500);
+        // Lo que una resolución espera turno si ya hay MaxResolucionesEnCurso: menos que su plazo, para que, si lo consigue,
+        // le quede tiempo para resolver.
+        private static readonly TimeSpan EsperaRanura = PlazoResolucion - TimeSpan.FromMilliseconds(500);
         private static readonly TimeSpan DuracionRecuerdo = TimeSpan.FromMinutes(5);
         private readonly ConcurrentDictionary<string, (long Caduca, HashSet<IPAddress> Direcciones)> _resueltos = new(StringComparer.Ordinal);
         private readonly Dictionary<string, Task<Resolucion>> _enCurso = new(StringComparer.Ordinal);
+        private readonly Queue<TaskCompletionSource<bool>> _esperandoRanura = new();
+        private int _ranurasLibres = MaxResolucionesEnCurso;
         private readonly Lock _candadoEnCurso = new();
 
         private readonly Entrada[] _entradas;
-        private readonly Func<string, CancellationToken, Task<IPAddress[]>> _resolver;
+        private readonly Func<string, CancellationToken, Task<ResultadoResolucion>> _resolverDestino;
         private readonly Func<string, CancellationToken, Task<DireccionesPorFamilia>> _resolverEntrada;
+        private readonly Func<IReadOnlyList<string>> _sinTerminar;
         private readonly string? _rutaHosts;
         private volatile Func<string?, string, int?, string?>? _hostNameDeEntrada;
 
@@ -90,23 +104,29 @@ namespace NativeSsh.Comun
         // familia; sin él, el de resolver repartido por familia (un fallo es de las dos) si se dio, y si no, getaddrinfo por
         // familia (ResolucionPorFamilia). rutaHosts: el fichero con el formato de /etc/hosts donde se buscan también las
         // entradas; sin resolvers propios, el del sistema (/etc/hosts; en Windows, %SystemRoot%\System32\drivers\etc\hosts).
-        private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver, Func<string, CancellationToken, Task<DireccionesPorFamilia>>? resolverEntrada, string? rutaHosts)
+        // resolverDestino y sinTerminar: los de resolver con incidencias (las pruebas que simulan un proceso de resolución que
+        // no se pudo terminar); sin ellos, los del sistema (ResolucionPorFamilia).
+        private DestinosSoloLectura(Entrada[] entradas, Func<string, CancellationToken, Task<IPAddress[]>>? resolver, Func<string, CancellationToken, Task<DireccionesPorFamilia>>? resolverEntrada, string? rutaHosts, Func<string, CancellationToken, Task<ResultadoResolucion>>? resolverDestino = null, Func<IReadOnlyList<string>>? sinTerminar = null)
         {
             _entradas = entradas;
-            _resolver = resolver ?? Dns.GetHostAddressesAsync;
+            _resolverDestino = resolverDestino ?? (resolver is null ? ResolucionPorFamilia.ResolverDestinoAsync : async (nombre, token) => new ResultadoResolucion(await resolver(nombre, token).ConfigureAwait(false)));
             _resolverEntrada = resolverEntrada ?? (resolver is null ? ResolucionPorFamilia.ResolverAsync : (nombre, token) => RepartirAsync(resolver, nombre, token));
-            _rutaHosts = rutaHosts ?? (resolver is null && resolverEntrada is null ? ResolucionPorFamilia.RutaHostsDelSistema : null);
+            _rutaHosts = rutaHosts ?? (resolver is null && resolverEntrada is null && resolverDestino is null ? ResolucionPorFamilia.RutaHostsDelSistema : null);
+            _sinTerminar = sinTerminar ?? ResolucionPorFamilia.ResolucionesSinTerminar;
             Entradas = Array.ConvertAll(entradas, e => e.Texto);
         }
 
         public static DestinosSoloLectura Ninguno { get; } = new([], null, null, null);
+
+        // Las resoluciones que no se pudieron terminar y siguen vivas (ssh_status); vacía si no hay.
+        public IReadOnlyList<string> ResolucionesSinTerminar() => _sinTerminar();
 
         public bool IsVacio => _entradas.Length == 0;
 
         // Las entradas tal como se configuraron (ssh_status las muestra).
         public IReadOnlyList<string> Entradas { get; }
 
-        private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno);
+        private readonly record struct Resolucion(HashSet<IPAddress>? Direcciones, bool IsCupoLleno, string? Incidencia = null);
 
         // Escrito: el servidor de la entrada tal como se escribió (normalizado), con el que se comparan los textos pedidos;
         // Servidor: el que se compara con el destino, el HostName si la entrada es un alias de la configuración de ssh (si
@@ -145,6 +165,14 @@ namespace NativeSsh.Comun
 
             destinos = new DestinosSoloLectura([.. entradas], resolver, resolverEntrada, rutaHosts);
             return true;
+        }
+
+        // Para las pruebas: con resolvers que dan incidencias (destino y entradas) y las resoluciones sin terminar que
+        // mostraría ssh_status.
+        internal static DestinosSoloLectura ConResolutores(string texto, Func<string, CancellationToken, Task<ResultadoResolucion>> resolverDestino, Func<string, CancellationToken, Task<DireccionesPorFamilia>> resolverEntrada, Func<IReadOnlyList<string>> sinTerminar)
+        {
+            _ = TryParsear(texto, out DestinosSoloLectura leidos, out string? error);
+            return error is null ? new DestinosSoloLectura(leidos._entradas, null, resolverEntrada, null, resolverDestino, sinTerminar) : throw new ArgumentException(error, nameof(texto));
         }
 
         private static bool TryParsearEntrada(string trozo, out Entrada entrada)
@@ -275,6 +303,7 @@ namespace NativeSsh.Comun
             HashSet<IPAddress>? direcciones = destinoResuelto.Direcciones;
             string? noResuelto = isResolverDestino && direcciones is null ? servidor : null;
             bool isCupoLleno = destinoResuelto.IsCupoLleno;
+            string? incidencia = noResuelto is null ? null : destinoResuelto.Incidencia;
             bool isErrorConfiguracion = false;
             string? entradaNoResuelta = null;
             for (int i = 0; i < resueltas.Length; i++)
@@ -285,7 +314,7 @@ namespace NativeSsh.Comun
                     // intentar por el cupo: esos mensajes ya dicen lo que pasa).
                     bool isFalloDns = !porResolver[i].IsIlegible && !resueltas[i].IsCupoLleno;
                     if (noResuelto is null)
-                        (noResuelto, isCupoLleno, isErrorConfiguracion, entradaNoResuelta) = porResolver[i].IsIlegible ? (porResolver[i].Escrito, false, true, null) : (porResolver[i].Servidor, resueltas[i].IsCupoLleno, false, isFalloDns ? porResolver[i].Texto : null);
+                        (noResuelto, isCupoLleno, isErrorConfiguracion, entradaNoResuelta, incidencia) = porResolver[i].IsIlegible ? (porResolver[i].Escrito, false, true, null, null) : (porResolver[i].Servidor, resueltas[i].IsCupoLleno, false, isFalloDns ? porResolver[i].Texto : null, resueltas[i].Incidencia);
                 }
                 else if (conectada is not null && deLaEntrada.Contains(conectada))
                     return new ComprobacionSoloLectura(true, null, DireccionConectada: conectada);
@@ -293,7 +322,7 @@ namespace NativeSsh.Comun
                     return new ComprobacionSoloLectura(true, null);
             }
 
-            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno, IsErrorConfiguracion: isErrorConfiguracion, Entrada: entradaNoResuelta);
+            return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno, IsErrorConfiguracion: isErrorConfiguracion, Entrada: entradaNoResuelta, Incidencia: incidencia);
         }
 
         // Las entradas con el HostName que les da la configuración de ssh, todas a la vez (ssh -G puede tardar hasta su plazo
@@ -435,7 +464,7 @@ namespace NativeSsh.Comun
         // (abrir el shell, la lectura de ssh_replace_file_content): el mensaje dice que no se envió la escritura, no «nada».
         public static string? MensajeRechazo(ComprobacionSoloLectura comprobacion, string clave, string herramienta, bool isEnSesion = false) => comprobacion switch
         {
-            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion, isEnSesion, comprobacion.Entrada),
+            { NoResuelto: { } noResuelto } => MensajeNoComprobado(clave, herramienta, noResuelto, comprobacion.IsCupoLleno, comprobacion.IsErrorConfiguracion, isEnSesion, comprobacion.Entrada, comprobacion.Incidencia),
             { IsDireccionDesconocida: true } => MensajeNoComprobado(clave, herramienta, null, isEnSesion: isEnSesion),
             { IsSoloLectura: true } => MensajeSoloLectura(clave, herramienta, comprobacion.DireccionConectada, isEnSesion),
             _ => null
@@ -451,15 +480,20 @@ namespace NativeSsh.Comun
         // el nombre no se llegó a resolver (demasiadas resoluciones a la vez), no es que el DNS fallara. isErrorConfiguracion:
         // noResuelto es una entrada que ssh -G no pudo leer. entrada: noResuelto es el nombre (o el HostName) de esa entrada de
         // NATIVE_SSH_SOLO_LECTURA, que no se resolvió: el mensaje la nombra y dice qué hacer (corregirla o comprobar el DNS).
-        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false, string? entrada = null)
+        // incidencia: lo que impidió resolverlo aparte del DNS (un proceso de resolución que no se pudo terminar, o el tope de
+        // ellos): el mensaje lo dice tal cual.
+        public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false, string? entrada = null, string? incidencia = null)
         {
+            string deLaEntrada = entrada is null ? string.Empty : $", de la entrada '{entrada}' de {Variable}";
             string causa = noResuelto is null ? "no se sabe a qué dirección está conectada su sesión"
                 : isErrorConfiguracion ? $"no se pudo leer la entrada {noResuelto} con la configuración de ssh (ssh -G)"
+                : incidencia is not null ? $"no se resolvió {noResuelto}{deLaEntrada}: {incidencia}"
                 : isCupoLleno ? $"no se llegó a resolver {noResuelto}: demasiadas resoluciones a la vez"
                 : entrada is not null ? $"no se resolvió {noResuelto}, de la entrada '{entrada}' de {Variable}"
                 : $"no se resolvió {noResuelto}";
             string cuando = noResuelto is null ? "la comprobación se repite en cada llamada."
                 : isErrorConfiguracion ? "la comprobación se repite en cada llamada y pasará cuando ssh -G pueda leer esa entrada (quien configura native_ssh debe revisar su configuración de ssh)."
+                : incidencia is not null ? "la comprobación se repite en cada llamada. Díselo al usuario: ssh_status muestra los procesos de resolución que siguen vivos; native_ssh vuelve a mirar si terminaron en cada comprobación (un proceso que no muere con SIGKILL suele estar bloqueado en el núcleo y lo libera el sistema, no native_ssh)."
                 : isCupoLleno ? "vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada."
                 : entrada is not null ? $"la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de {Variable}, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh."
                 : "la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).";
@@ -507,9 +541,9 @@ namespace NativeSsh.Comun
             return direcciones is not null;
         }
 
-        // Direcciones de un nombre (o la propia IP), o sin ellas si no se pudo resolver: fallo, plazo de 3 s vencido (se deja
-        // de esperar aunque la resolución siga) o demasiadas resoluciones en curso (IsCupoLleno). Si ya hay una en curso para ese nombre, se
-        // espera esa misma (también si la pidió otra llamada: está en curso, así que es igual de reciente).
+        // Direcciones de un nombre (o la propia IP), o sin ellas si no se pudo resolver: fallo, plazo de 3 s vencido o sin
+        // turno dentro del plazo (IsCupoLleno). Si ya hay una en curso para ese nombre, se espera esa misma (también si la
+        // pidió otra llamada: está en curso, así que es igual de reciente; termina dentro de su límite).
         private async Task<Resolucion> ResolverAsync(string servidor, bool isDestino, CancellationToken cancellationToken)
         {
             if (TryDireccionesSinRed(servidor, isDestino, out HashSet<IPAddress>? conocidas))
@@ -520,19 +554,20 @@ namespace NativeSsh.Comun
             {
                 if (!_enCurso.TryGetValue(servidor, out resolucion))
                 {
-                    if (_enCurso.Count >= MaxResolucionesEnCurso)
-                        return new Resolucion(null, IsCupoLleno: true);
-
                     // En el grupo de hilos (getaddrinfo puede bloquear el hilo que lo llama) y fuera de este candado: su
                     // 'finally' lo necesita para quitarse de _enCurso, así que no puede terminar antes de anotarla.
-                    resolucion = Task.Run(() => ResolverEnCursoAsync(servidor, isRecordar: !isDestino));
+                    // El turno se toma aquí si hay alguno libre (en orden de llegada); si no, la resolución lo espera.
+                    bool hasRanura = _ranurasLibres > 0;
+                    if (hasRanura)
+                        _ranurasLibres--;
+                    resolucion = Task.Run(() => ResolverEnCursoAsync(servidor, isRecordar: !isDestino, hasRanura));
                     _enCurso[servidor] = resolucion;
                 }
             }
 
             try
             {
-                return await resolucion.WaitAsync(isDestino ? PlazoResolucion : PlazoEsperaEntrada, cancellationToken).ConfigureAwait(false);
+                return await resolucion.WaitAsync(isDestino ? PlazoEsperaDestino : PlazoEsperaEntrada, cancellationToken).ConfigureAwait(false);
             }
             catch (TimeoutException)
             {
@@ -544,38 +579,89 @@ namespace NativeSsh.Comun
         // (por si el resolver lo respeta), sin el token de quien la pidió (la esperan varios); si la pidió una entrada y se
         // resolvió completa (sin ninguna familia fallida), se recuerda (las del destino no, ni la tolerada por /etc/hosts:
         // una familia falló y se vuelve a preguntar en cada comprobación, como un fallo). Cualquier fallo (también
-        // HostNotFound, que no distingue un nombre inexistente de un DNS que falla) es no resuelto y no se recuerda. Al
-        // terminar deja de estar en curso.
-        private async Task<Resolucion> ResolverEnCursoAsync(string servidor, bool isRecordar)
+        // HostNotFound, que no distingue un nombre inexistente de un DNS que falla) es no resuelto y no se recuerda. Espera
+        // turno (como mucho EsperaRanura, dentro del plazo) y, pase lo que pase con el resolver, termina en LimiteResolucion:
+        // al terminar deja de estar en curso y libera su turno.
+        // hasRanura: ya tiene turno (si no, lo espera).
+        private async Task<Resolucion> ResolverEnCursoAsync(string servidor, bool isRecordar, bool hasRanura)
         {
             try
             {
                 using CancellationTokenSource plazo = new(PlazoResolucion);
-                (HashSet<IPAddress>? direcciones, bool isTolerado) = isRecordar ? await DireccionesDeEntradaAsync(servidor, plazo.Token).ConfigureAwait(false) : (await DireccionesDeDestinoAsync(servidor, plazo.Token).ConfigureAwait(false), false);
+                hasRanura = hasRanura || await TomarRanuraAsync().ConfigureAwait(false);
+                if (!hasRanura)
+                    return new Resolucion(null, IsCupoLleno: true);
+
+                (HashSet<IPAddress>? direcciones, bool isTolerado, string? incidencia) = isRecordar
+                    ? await DireccionesDeEntradaAsync(servidor, plazo.Token).WaitAsync(LimiteResolucion).ConfigureAwait(false)
+                    : await DireccionesDeDestinoAsync(servidor, plazo.Token).WaitAsync(LimiteResolucion).ConfigureAwait(false);
                 if (direcciones is null)
-                    return default;
+                    return new Resolucion(null, IsCupoLleno: false, incidencia);
 
                 if (isRecordar && !isTolerado)
                     _resueltos[servidor] = (Environment.TickCount64 + (long)DuracionRecuerdo.TotalMilliseconds, direcciones);
                 return new Resolucion(direcciones, IsCupoLleno: false);
             }
-            catch (Exception ex) when (ex is SocketException or ArgumentException or OperationCanceledException)
+            catch (Exception ex) when (ex is SocketException or ArgumentException or OperationCanceledException or TimeoutException)
             {
                 return default;
             }
             finally
             {
                 lock (_candadoEnCurso)
+                {
                     _ = _enCurso.Remove(servidor);
+                    if (hasRanura)
+                        SoltarRanura();
+                }
             }
         }
 
-        // El destino, con las dos familias juntas (como lo resolverá la conexión): null si no tiene ninguna dirección.
-        private async Task<HashSet<IPAddress>?> DireccionesDeDestinoAsync(string servidor, CancellationToken plazo)
+        // Un turno de resolución para la que no lo tuvo al lanzarse: al momento si ya queda alguno libre; si no, el primero
+        // que se suelte, esperando como mucho EsperaRanura (false si no llega).
+        private async Task<bool> TomarRanuraAsync()
         {
+            TaskCompletionSource<bool> turno;
+            lock (_candadoEnCurso)
+            {
+                if (_ranurasLibres > 0)
+                {
+                    _ranurasLibres--;
+                    return true;
+                }
+
+                turno = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _esperandoRanura.Enqueue(turno);
+            }
+
+            try
+            {
+                return await turno.Task.WaitAsync(EsperaRanura).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                // Si se soltó un turno para esta justo al vencer, ya es suyo.
+                lock (_candadoEnCurso)
+                    return !turno.TrySetResult(false);
+            }
+        }
+
+        // Con el candado tomado: el turno pasa a la primera que sigue esperando, o queda libre.
+        private void SoltarRanura()
+        {
+            while (_esperandoRanura.TryDequeue(out TaskCompletionSource<bool>? turno))
+                if (turno.TrySetResult(true))
+                    return;
+            _ranurasLibres++;
+        }
+
+        // El destino, con las dos familias juntas (como lo resolverá la conexión): null si no tiene ninguna dirección.
+        private async Task<(HashSet<IPAddress>? Direcciones, bool IsTolerado, string? Incidencia)> DireccionesDeDestinoAsync(string servidor, CancellationToken plazo)
+        {
+            ResultadoResolucion resultado = await _resolverDestino(servidor, plazo).ConfigureAwait(false);
             HashSet<IPAddress> direcciones = [];
-            Anadir(direcciones, await _resolver(servidor, plazo).ConfigureAwait(false));
-            return direcciones.Count > 0 ? direcciones : null;
+            Anadir(direcciones, resultado.Direcciones);
+            return (direcciones.Count > 0 ? direcciones : null, false, resultado.Incidencia);
         }
 
         // Una entrada, por familia (A y AAAA a la vez, dentro del plazo), más las direcciones con que aparece en /etc/hosts
@@ -586,18 +672,18 @@ namespace NativeSsh.Comun
         // lo de /etc/hosts sin preguntar al DNS, y la familia que no está ahí la pregunta al DNS, que dice que no existe (un
         // host solo IPv4 de /etc/hosts no debe fallar): entonces IsTolerado. Sin ninguna dirección en total, tampoco se
         // resuelve.
-        private async Task<(HashSet<IPAddress>? Direcciones, bool IsTolerado)> DireccionesDeEntradaAsync(string servidor, CancellationToken plazo)
+        private async Task<(HashSet<IPAddress>? Direcciones, bool IsTolerado, string? Incidencia)> DireccionesDeEntradaAsync(string servidor, CancellationToken plazo)
         {
             DireccionesPorFamilia porFamilia = await _resolverEntrada(servidor, plazo).ConfigureAwait(false);
             List<IPAddress> enHosts = _rutaHosts is null ? [] : ResolucionPorFamilia.DireccionesEnHosts(_rutaHosts, servidor);
             if (porFamilia.HasFallo && enHosts.Count == 0)
-                return (null, false);
+                return (null, false, porFamilia.Incidencia);
 
             HashSet<IPAddress> direcciones = [];
             Anadir(direcciones, porFamilia.Ipv4);
             Anadir(direcciones, porFamilia.Ipv6);
             Anadir(direcciones, enHosts);
-            return (direcciones.Count > 0 ? direcciones : null, porFamilia.HasFallo);
+            return (direcciones.Count > 0 ? direcciones : null, porFamilia.HasFallo, direcciones.Count > 0 ? null : porFamilia.Incidencia);
         }
 
         private static void Anadir(HashSet<IPAddress> conjunto, IEnumerable<IPAddress>? direcciones)

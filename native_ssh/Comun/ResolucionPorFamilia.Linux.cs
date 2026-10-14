@@ -7,10 +7,29 @@ namespace NativeSsh.Comun
     // Lo de Linux de la resolución por familia (solo se compila para Linux: ver NativeSshSistema en Directory.Build.props):
     // getaddrinfo propio de una sola familia, que distingue «sin direcciones de esa familia» (EAI_NODATA;
     // Dns.GetHostAddresses lo convierte en HostNotFound, igual que un nombre que no existe). Medido con glibc, con
-    // 'files dns' y con 'resolve [!UNAVAIL=return]' de systemd-resolved.
+    // 'files dns' y con 'resolve [!UNAVAIL=return]' de systemd-resolved. Cada resolución (cada familia de una entrada y el
+    // destino) va en un proceso hijo que se mata al vencer su plazo (ResolutorEnProceso): glibc no tiene plazo en la lectura
+    // por TCP del DNS y un getaddrinfo en un hilo propio se quedaría colgado para siempre.
     public static partial class ResolucionPorFamilia
     {
         private static partial IPAddress[]? ResolverFamiliaDelSistema(string nombre, AddressFamily familia) => GetAddrInfoLinux.ResolverFamilia(nombre, familia, out _);
+
+        private static partial Task<DireccionesPorFamilia> ResolverDelSistemaAsync(string nombre, CancellationToken plazo) =>
+            ResolverAsync(nombre, ResolutorEnProceso.DelSistema.ResolverAsync, plazo);
+
+        private static partial Task<ResultadoResolucion> ResolverDestinoDelSistemaAsync(string nombre, CancellationToken plazo) =>
+            ResolutorEnProceso.DelSistema.ResolverAsync(nombre, AddressFamily.Unspecified, plazo);
+
+        static partial void AnadirSinTerminarDelSistema(List<string> sinTerminar) => ResolutorEnProceso.DelSistema.AnadirSinTerminar(sinTerminar);
+
+        static partial void EjecutarModoInternoDelSistema(string[] args, ref int codigo, ref bool isHecho)
+        {
+            if (args.Length == 0 || args[0] != ResolutorEnProceso.ModoInterno)
+                return;
+
+            isHecho = true;
+            codigo = ResolutorEnProceso.EjecutarModoInterno(args);
+        }
 
         public static partial string RutaHostsDelSistema => "/etc/hosts";
     }
@@ -22,6 +41,7 @@ namespace NativeSsh.Comun
         public const int SinDireccionesDeLaFamilia = -5; // EAI_NODATA: el nombre existe y no tiene direcciones de esa familia
         public const int FamiliaIpv4 = 2; // AF_INET
         public const int FamiliaIpv6 = 10; // AF_INET6
+        public const int FamiliasJuntas = 0; // AF_UNSPEC
         private const int Flujo = 1; // SOCK_STREAM
 
         // struct addrinfo de Linux: cuatro int, socklen_t (con el relleno de alineación antes del primer puntero) y tres punteros.
@@ -41,17 +61,19 @@ namespace NativeSsh.Comun
         // getaddrinfo de una familia (AF_INET o AF_INET6): su código y, si es 0, la lista de struct addrinfo.
         internal delegate int ObtenerDirecciones(string nombre, int familia, out IntPtr lista);
 
-        // Las direcciones de 'nombre' de una sola familia (InterNetwork o InterNetworkV6) con getaddrinfo, sin AI_ADDRCONFIG
-        // (la máquina no necesita tener esa familia configurada) ni nada mapeado a IPv6. Vacío si getaddrinfo dice que el
-        // nombre no tiene direcciones de esa familia (EAI_NODATA); null con el código de getaddrinfo en 'codigo' si falla de
-        // cualquier otra forma. Bloquea el hilo hasta que la resolución termina (no se puede cancelar).
+        // Las direcciones de 'nombre' de una sola familia (InterNetwork o InterNetworkV6; Unspecified, las dos juntas, como el
+        // destino) con getaddrinfo, sin AI_ADDRCONFIG (la máquina no necesita tener esa familia configurada) ni nada mapeado a
+        // IPv6. Vacío si getaddrinfo dice que el nombre no tiene direcciones de esa familia (EAI_NODATA); null con el código
+        // de getaddrinfo en 'codigo' si falla de cualquier otra forma. Bloquea el hilo hasta que la resolución termina (no se
+        // puede cancelar).
         public static IPAddress[]? ResolverFamilia(string nombre, AddressFamily familia, out int codigo) =>
             ResolverFamilia(nombre, familia, ObtenerConLibc, LiberarConLibc, out codigo);
 
         // Lo mismo con getaddrinfo y freeaddrinfo dados (las pruebas dan los suyos): la lista se libera siempre que se obtuvo.
         internal static unsafe IPAddress[]? ResolverFamilia(string nombre, AddressFamily familia, ObtenerDirecciones obtener, Action<IntPtr> liberar, out int codigo)
         {
-            codigo = obtener(nombre, familia == AddressFamily.InterNetworkV6 ? FamiliaIpv6 : FamiliaIpv4, out IntPtr lista);
+            int pedida = familia == AddressFamily.InterNetworkV6 ? FamiliaIpv6 : familia == AddressFamily.Unspecified ? FamiliasJuntas : FamiliaIpv4;
+            codigo = obtener(nombre, pedida, out IntPtr lista);
             if (codigo != 0)
                 return codigo == SinDireccionesDeLaFamilia ? [] : null;
 

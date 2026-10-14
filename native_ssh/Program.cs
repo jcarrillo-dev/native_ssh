@@ -1,6 +1,10 @@
 using NativeSsh;
 using NativeSsh.Comun;
 
+// El modo interno de la resolución en un proceso aparte (en Linux: ResolutorEnProceso), antes que nada más.
+if (ResolucionPorFamilia.TryEjecutarModoInterno(args, out int codigoInterno))
+    return codigoInterno;
+
 Arranque.PrepararSalidaDeErrores();
 
 if (!OpcionesArranque.TryParsear(args, Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_HTTP"), out OpcionesArranque arranque, out string? error))
