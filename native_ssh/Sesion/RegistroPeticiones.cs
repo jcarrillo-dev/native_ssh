@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using NativeSsh.Comun;
 
 namespace NativeSsh.Sesion
@@ -35,13 +36,13 @@ namespace NativeSsh.Sesion
             if (exceso <= 0)
                 return;
 
-            List<Peticion> finalizadas = [];
+            using PooledListRef<Peticion> finalizadas = new();
             foreach (Peticion peticion in _peticiones.Values)
                 if (peticion.IsFinalizada)
                     finalizadas.Add(peticion);
 
-            finalizadas.Sort(static (a, b) => a.FinTimestamp.CompareTo(b.FinTimestamp));
-            int aQuitar = Math.Min(exceso, finalizadas.Count);
+            finalizadas.Span.Sort(static (a, b) => a.FinTimestamp.CompareTo(b.FinTimestamp));
+            int aQuitar = Math.Min(exceso, finalizadas.Tamaño);
             for (int i = 0; i < aQuitar; i++)
                 Quitar(finalizadas[i].IdTexto);
         }

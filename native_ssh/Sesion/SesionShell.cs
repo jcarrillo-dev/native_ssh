@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 using System.Threading.Channels;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using NativeSsh.Buffers;
 using NativeSsh.Comun;
 using NativeSsh.Protocolo;
@@ -728,7 +729,7 @@ namespace NativeSsh.Sesion
             int lecturas = CanalesExecActivos - lecturasPropias;
             int abandonados = ShellsAbandonados;
             int cerrandose = Volatile.Read(ref _shellsCerrandose);
-            List<string> causas = [];
+            using PooledListRef<string> causas = new();
             if (isConShell)
                 causas.Add("el shell de ssh_exec (1 sesión, mientras siga abierto)");
             if (lecturas > 0)
@@ -738,9 +739,9 @@ namespace NativeSsh.Sesion
             if (cerrandose > 0)
                 causas.Add($"{cerrandose} shell(s) anterior(es) cuyo cierre el servidor aún no ha confirmado (su proceso puede seguir vivo sin terminal)");
 
-            return causas.Count == 0
+            return causas.Tamaño == 0
                 ? " Ahora no hay en esta conexión ningún shell ni lecturas en curso que ocupen sesiones: puede que el servidor tenga un límite muy bajo o rechace el canal por otro motivo."
-                : $" Ocupan sesiones en esta conexión: {string.Join("; ", causas)}.";
+                : $" Ocupan sesiones en esta conexión: {string.Join("; ", causas.Span)}.";
         }
 
         // Un shell abandonado (AbandonarCanal) retiene una plaza del cupo hasta cerrarse, sin plazo conocido.
@@ -1125,11 +1126,11 @@ namespace NativeSsh.Sesion
         // Los shells de la lista cuyo directorio sigue en el servidor, con los archivos que se crearon en cada uno.
         private static KeyValuePair<Guid, int>[] Siguen(KeyValuePair<Guid, int>[] shells, Guid[] siguen)
         {
-            List<KeyValuePair<Guid, int>> quedan = [];
+            using PooledListRef<KeyValuePair<Guid, int>> quedan = new();
             foreach (KeyValuePair<Guid, int> shell in shells)
                 if (Array.IndexOf(siguen, shell.Key) >= 0)
                     quedan.Add(shell);
-            return [.. quedan];
+            return quedan.Span.ToArray();
         }
 
         // Varios borrados fallidos antes del ssh_reset_shell siguiente se suman; si de alguno no se sabe cuántos quedaron, el
@@ -1763,7 +1764,7 @@ namespace NativeSsh.Sesion
         // del terminal de lo que se le envió) y unidas con " / "; null si no queda ninguna.
         private static string? UltimasLineas(string salida)
         {
-            List<string> lineas = [];
+            using PooledListRef<string> lineas = new();
             foreach (string linea in salida.Split('\n'))
             {
                 string limpia = RespuestaSinBash.Limpiar(linea);
@@ -1772,7 +1773,7 @@ namespace NativeSsh.Sesion
                     lineas.Add(limpia);
             }
 
-            return lineas.Count == 0 ? null : string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..]);
+            return lineas.Tamaño == 0 ? null : string.Join(" / ", lineas.Span[^Math.Min(lineas.Tamaño, 3)..]);
         }
 
         // La apertura de SSH.NET es síncrona, no atiende ningún token y, sin ConnectionInfo.Timeout, espera a que el servidor

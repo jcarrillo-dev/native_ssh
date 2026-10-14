@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 
 namespace NativeSsh.Protocolo
 {
@@ -284,7 +285,7 @@ namespace NativeSsh.Protocolo
                 || otros < -1)
                 return null;
 
-            List<Guid> siguen = [];
+            using PooledListRef<Guid> siguen = new();
             foreach (string id in campos[2].Split(',', StringSplitOptions.RemoveEmptyEntries))
             {
                 if (!Guid.TryParseExact(id, "N", out Guid shell))
@@ -293,7 +294,7 @@ namespace NativeSsh.Protocolo
             }
 
             bool isListado = otros >= 0;
-            return new RecuentoLimpieza(contados, isListado ? quedan : null, [.. siguen], isListado ? otros : null);
+            return new RecuentoLimpieza(contados, isListado ? quedan : null, siguen.Span.ToArray(), isListado ? otros : null);
         }
 
         // Una marca ya separada por FiltroMarcasGuardado: tipo ('A', 'F' o 'E') y sus campos. Devuelve el informe con ella
