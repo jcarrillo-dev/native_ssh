@@ -53,12 +53,15 @@ namespace NativeSsh.Test.Protocolo
         public void Describir_NombraBashYQueNativeSshLoNecesita()
         {
             // Act
-            string mensaje = RespuestaSinBash.Describir("u@h:22", "ash: bash: not found");
+            string mensaje = RespuestaSinBash.Describir("u@h:22", "ash: bash: not found", isLogin: false);
+            string login = RespuestaSinBash.Describir("u@h:22", "-ash: exec: line 1: bash: not found", isLogin: true);
 
             // Assert
             _ = mensaje.Should().Contain("no tiene bash").And.Contain("«ash: bash: not found»").And.Contain("native_ssh lo necesita").And.Contain("No se ejecutó nada")
                 .And.NotContain("ssh_stat").And.NotContain("ssh_read_file");
-            _ = RespuestaSinBash.IsMensajeSinBash(mensaje).Should().BeTrue();
+            _ = mensaje.Should().Contain("el shell del usuario, con -c y sin login, respondió").And.NotContain("shell de login");
+            _ = login.Should().Contain("el shell de login respondió");
+            _ = (RespuestaSinBash.IsMensajeSinBash(mensaje), RespuestaSinBash.IsMensajeSinBash(login)).Should().Be((true, true));
             _ = RespuestaSinBash.IsMensajeSinBash("ash: bash: not found").Should().BeFalse();
             _ = RespuestaSinBash.IsMensajeSinBash(null).Should().BeFalse();
         }

@@ -33,18 +33,18 @@ namespace NativeSsh.Sesion
         private readonly IResolutorDestino? _resolutor = UsarConfiguracionEnSoloLectura(opciones.SoloLectura, resolutor);
         private bool _isDispuesto;
 
-        // isHerramienta: la petición de una herramienta de archivo o de ssh_set_cwd (Peticion.IsHerramienta).
+        // herramienta: la herramienta de archivo o ssh_set_cwd que la lanza por el shell (Peticion.Herramienta), o null.
         // isGuardarSalida: ssh_exec con guardarSalida=true (Peticion.MarcaGuardado, SalidaGuardada).
         // herramientaEscritura: la herramienta de escritura que lo lanza (Peticion.HerramientaEscritura), o null.
         // descripcion y grupo: lo que se muestra de la petición y la llamada a la que pertenece (Peticion.Descripcion, Grupo).
-        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, bool isHerramienta = false, bool isGuardarSalida = false, string? herramientaEscritura = null, string? descripcion = null, Guid? grupo = null)
+        public Peticion Ejecutar(string destinoTexto, string comando, TimeSpan timeout, string? herramienta = null, bool isGuardarSalida = false, string? herramientaEscritura = null, string? descripcion = null, Guid? grupo = null)
         {
             if (string.IsNullOrWhiteSpace(comando))
                 throw new NativeSshException("El comando está vacío.");
 
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell sesion = ObtenerOCrear(destino);
-            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj, isGuardarSalida ? IdentidadShell.NuevoTestigo() : null) { IsHerramienta = isHerramienta, HerramientaEscritura = herramientaEscritura, Descripcion = descripcion ?? comando, Grupo = grupo };
+            Peticion peticion = new(destino, comando, Ajustar(timeout), opciones.MaxBytesSalidaPorPeticion, reloj, isGuardarSalida ? IdentidadShell.NuevoTestigo() : null) { Herramienta = herramienta, HerramientaEscritura = herramientaEscritura, Descripcion = descripcion ?? comando, Grupo = grupo };
             registro.Registrar(peticion);
             sesion.Encolar(peticion);
             return peticion;
@@ -65,8 +65,11 @@ namespace NativeSsh.Sesion
             ObtenerOCrear(ParsearDestino(destinoTexto)).DirectorioTrabajo = directorio;
         }
 
-        public Peticion BuscarPeticion(string id) =>
-            registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
+        // id null: el SDK lo enlaza tal cual (ValidadorArgumentos.IsDelTipo); sin esto, el modelo solo vería el error genérico.
+        public Peticion BuscarPeticion(string? id) =>
+            id is null
+                ? throw new NativeSshException("'id' llegó como null: usa el id que devolvió ssh_exec (ssh_status lista los comandos recientes con el suyo).")
+                : registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
 
         // isSecreto: el texto no debe quedar en ningún sitio (ssh_input con secreto=true): la salida de la petición ya lo
         // enmascara (BufferSalida.RegistrarSecreto, antes de llamar aquí) y la sesión borra su copia tras enviarlo.
@@ -246,27 +249,28 @@ namespace NativeSsh.Sesion
             foreach (SesionShell sesion in cerradas)
             {
                 await sesion.DisposeAsync().ConfigureAwait(false);
-                resultado.Add(new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar));
+                resultado.Add(new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado));
             }
 
             return resultado;
         }
 
-        public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
+        public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto, isSinPerfil: false, out _) is not null;
 
         // Solo la sesión que usaría el próximo comando con ese destino (sus claves actuales). null si no había sesión; si no,
         // los archivos de guardarSalida creados en los shells cuyo borrado se lanza (sin recuento del servidor: el borrado
         // sigue en segundo plano) y si el de un ssh_reset_shell anterior no se completó.
         // isSinPerfil (RC1): el shell nuevo y los siguientes, sin perfil; si no había sesión, se crea (sin conectar) para que
-        // el primer shell ya se abra así: con un perfil roto, el primero de todos tampoco termina el login.
-        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto, bool isSinPerfil = false)
+        // el primer shell ya se abra así: con un perfil roto, el primero de todos tampoco termina el login (isSesionNueva).
+        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto, bool isSinPerfil, out bool isSesionNueva)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
             lock (_candado)
                 sesion = _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion;
 
-            if (sesion is null && isSinPerfil)
+            isSesionNueva = sesion is null && isSinPerfil;
+            if (isSesionNueva)
                 sesion = ObtenerOCrear(destino);
 
             return sesion?.SolicitarResetConLimpieza(isSinPerfil);
@@ -389,7 +393,8 @@ namespace NativeSsh.Sesion
     }
 
     // Una sesión cerrada por ssh_disconnect y lo que pasó con sus archivos de guardarSalida.
-    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza);
+    // IsSinConectar: la sesión no llegó a conectarse (SesionShell.HasConectado): no se cerró ninguna conexión.
+    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza, bool IsSinConectar = false);
 
     // Ver GestorSesiones.BuscarPistasAlias. Viejas: las sesiones del alias que la pista nombra (no vacía); IsEnElTope: las
     // de una sesión llena que no guardó el alias (si no, abiertas con él para otro usuario o puerto).

@@ -305,6 +305,9 @@ namespace NativeSsh.Herramientas
             CancellationToken cancellationToken = default)
         {
             Peticion peticion = gestor.BuscarPeticion(id);
+            if (peticion.Herramienta is { } herramienta)
+                throw new NativeSshException(MensajePeticionInterna(peticion, herramienta, "ssh_output no da su salida"));
+
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
             return DosBloques(Resultado(peticion, desdeByte));
         }
@@ -354,6 +357,11 @@ namespace NativeSsh.Herramientas
             }
 
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
+            // A una petición interna (p. ej. la contraseña que pide sudo en una escritura con sudo=true) la entrada se le envía,
+            // pero la respuesta no lleva su salida (MensajePeticionInterna).
+            if (peticion.Herramienta is { } herramienta)
+                return new CallToolResult { Content = [new TextContentBlock { Text = MensajePeticionInterna(peticion, herramienta, $"entrada enviada{(secreto ? " como secreto" : string.Empty)} (estado: {peticion.Estado}), pero su salida no se muestra") }] };
+
             ResultadoComando resultado = Resultado(peticion, desde);
             return DosBloques(secreto ? resultado with { Aviso = resultado.Aviso is null ? AvisoEntradaSecreta : $"{resultado.Aviso} {AvisoEntradaSecreta}" } : resultado);
         }
@@ -449,8 +457,17 @@ namespace NativeSsh.Herramientas
             Peticion peticion = gestor.BuscarPeticion(id);
             _ = peticion.SolicitarCancelacion();
             await EsperarAsync(peticion.Finalizacion, (int)Math.Ceiling(opciones.EsperaTrasCtrlC.TotalSeconds) + 2, cancellationToken).ConfigureAwait(false);
-            return DosBloques(Resultado(peticion, 0));
+            return peticion.Herramienta is { } herramienta
+                ? new CallToolResult { Content = [new TextContentBlock { Text = MensajePeticionInterna(peticion, herramienta, $"se pidió cancelarla (estado: {peticion.Estado}), pero su salida no se muestra") }] }
+                : DosBloques(Resultado(peticion, 0));
         }
+
+        // ssh_output, ssh_input y ssh_cancel sobre el id de una petición interna de una herramienta (Peticion.Herramienta): de
+        // qué herramienta es y que su resultado lo da ella, nunca su salida (Bloque ST). ssh_input y ssh_cancel actúan igual
+        // que con un comando (entrada, p. ej. la contraseña de sudo de una escritura con sudo=true; cancelación); el aviso de la petición sí (p. ej. el
+        // de una escritura atascada en un servidor que no lee: solo ssh_disconnect la corta), que no lleva nada del archivo.
+        internal static string MensajePeticionInterna(Peticion peticion, string herramienta, string accion) =>
+            $"La petición {peticion.IdTexto} es interna de {herramienta} («{Recortar(peticion.Descripcion)}»): {accion}. Su resultado lo da la respuesta de {herramienta} (lo que hizo o, si falló, su error), no esta herramienta.{(peticion.Aviso is { Length: > 0 } aviso ? " " + aviso : string.Empty)}";
 
         [McpServerTool(Name = "ssh_status", ReadOnly = true, Idempotent = true)]
         [Description("Estado de las sesiones abiertas y de los últimos comandos (sin su salida; de las herramientas que van por el shell, «[herramienta] ruta», una entrada por llamada). isSinPerfil=true: los shells de esa sesión se abren sin ~/.profile ni ~/.bashrc (ssh_reset_shell con sinPerfil=true). Si hay destinos en modo solo lectura (configuración local NATIVE_SSH_SOLO_LECTURA, que no se puede cambiar desde aquí), 'soloLectura' lista sus entradas y cada sesión lleva isSoloLectura: con true, ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan para ese destino, o al menos para el alias que lo hace de solo lectura, mientras la configuración de ssh de ese alias no cambie (usa las de lectura). Si cambió con la sesión abierta (otro HostName, User, Port o IdentityFile), una escritura con ese alias usa la sesión que corresponde a la configuración nueva y su resultado puede ser otro: vale lo que responda la herramienta de escritura, que lo comprueba en cada llamada. Si la configuración de ssh de ese alias pudo cambiar con la sesión abierta, NO te fíes de isSoloLectura para ese alias: atente a lo que responda la herramienta de escritura y, si la rechaza, no reintentes ni busques otra vía. Cuentan el destino de la sesión, la dirección a la que está conectada y sus alias (con un alias en 'destino', solo ese; sin 'destino', todos los alias con que se usó la sesión): una sesión conectada a una máquina de solo lectura lo sigue siendo aunque el nombre apunte ya a otra. Con usuario@servidor[:puerto] en 'destino' no cuenta ningún alias y solo lleva isSoloLectura la sesión que usaría una escritura con ese mismo texto (la de las claves de ese destino): dice exactamente si esa escritura se rechaza. Las otras sesiones listadas de ese destino son de otras claves (de un alias con otro IdentityFile): esa escritura no las usa y van sin isSoloLectura; para ellas, usa su alias en 'destino'. En los demás casos, sin isSoloLectura no se puede saber sin resolver un nombre y cada una de esas herramientas lo comprueba en cada llamada.")]
@@ -518,6 +535,7 @@ namespace NativeSsh.Herramientas
             {
                 0 when resuelto.Alias is { } alias => $"No había conexión con '{alias}' ({resuelto.Clave}).",
                 0 => "No había conexión con ese destino.",
+                1 when cerradasConLimpieza[0].IsSinConectar => $"Sesión sin conectar descartada: {DescribirCerradas(cerradas, isConDestino: true)}; no llegó a conectarse, así que no había conexión que cerrar.",
                 1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
                 // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
                 _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Length} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
@@ -766,16 +784,19 @@ namespace NativeSsh.Herramientas
             [Description("true: el shell nuevo (y los que se reabran solos) se abre sin perfil, con una petición 'exec' de 'bash --noediting --norc --noprofile' en lugar del login: sin ~/.profile ni ~/.bashrc, con el PATH por defecto de sshd y sin las variables, alias ni funciones del perfil (ssh_status lo muestra con isSinPerfil). Dura hasta otro ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect. Si el servidor tiene un ForceCommand, este sustituye la petición y el shell es el de siempre. Por defecto false.")] bool sinPerfil = false)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil);
+            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil, out bool isSesionNueva);
             if (limpieza is null)
                 return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
 
             string borrado = limpieza.Creados == 0
                 ? ""
                 : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions) o el borrado falla, se dirá en el siguiente ssh_reset_shell y se volverán a intentar en él o con ssh_disconnect, que dice cuántos quedan.";
-            string shell = sinPerfil
-                ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
-                : "El próximo comando usará un shell nuevo.";
+            // Sin sesión, sinPerfil la crea sin conectar (GestorSesiones.ReiniciarShellConLimpieza): no se descartó nada.
+            string shell = isSesionNueva
+                ? "No había sesión con ese destino: no se ha descartado ningún shell. Se ha preparado una sin conectar (ssh_status la muestra con isConectada=false e isSinPerfil=true), que se conectará con el próximo comando y abrirá su shell SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                : sinPerfil
+                    ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                    : "El próximo comando usará un shell nuevo.";
             return new ResultadoAccion(clave, true, $"{shell}{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
         }
 
@@ -925,6 +946,12 @@ namespace NativeSsh.Herramientas
             await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_write_file", cancellationToken).ConfigureAwait(false);
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
+
+            // El SDK enlaza un null tal cual (ValidadorArgumentos.IsDelTipo) y escribir "nada" vaciaría el archivo con
+            // overwrite=true: un null nunca vacía un archivo, hay que pedirlo con "". Es el único texto obligatorio cuyo null
+            // tiene un efecto destructivo (los demás dan el error de su herramienta sin tocar nada).
+            if (contenido is null)
+                throw new NativeSshException("'contenido' llegó como null: no se ha escrito nada. Para un archivo vacío pasa contenido: \"\".");
 
             if (overwrite && append)
                 throw new NativeSshException("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
@@ -1832,7 +1859,7 @@ namespace NativeSsh.Herramientas
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
                 const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, DescribirHerramienta("ssh_set_cwd", DirectorioHome), Guid.NewGuid(), TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", DirectorioHome), Guid.NewGuid(), TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 
                 if (peticionReset.CodigoSalida != 0)
@@ -1874,7 +1901,7 @@ namespace NativeSsh.Herramientas
 
             // La validación va en un subshell: falle como falle, no cambia nada.
             Guid grupo = Guid.NewGuid();
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, DescribirHerramienta("ssh_set_cwd", ruta, "validación"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", ruta, "validación"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion));
 
             if (peticionValidacion.CodigoSalida != 0)
@@ -1890,7 +1917,7 @@ namespace NativeSsh.Herramientas
             // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
             SesionShell? sesionValidacion = SesionDe(claveSesion);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, DescribirHerramienta("ssh_set_cwd", ruta, "export"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", ruta, "export"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion));
 
             if (peticionExport.CodigoSalida != 0)
@@ -2106,8 +2133,8 @@ namespace NativeSsh.Herramientas
 
             string sinModificar = $"No se ha modificado '{ruta}'.";
             Guid grupo = Guid.NewGuid();
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, DescribirHerramienta("ssh_replace_file_content", ruta, "lectura"), grupo, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura, _ => sinModificar);
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, "ssh_replace_file_content", DescribirHerramienta("ssh_replace_file_content", ruta, "lectura"), grupo, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
+            ExigirCompletada(peticionLectura, _ => sinModificar, isConSalida: false);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -2975,10 +3002,10 @@ namespace NativeSsh.Herramientas
         // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
         // 'consecuencia' se calcula con la petición ya cancelada (si seguía en la cola, ya no se ejecutará).
         // descripcion y grupo: lo que ssh_status muestra de la petición y la llamada a la que pertenece (Peticion.Descripcion).
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, string descripcion, Guid grupo, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, string herramienta, string descripcion, Guid grupo, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true, descripcion: descripcion, grupo: grupo);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, herramienta: herramienta, descripcion: descripcion, grupo: grupo);
             try
             {
                 await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
@@ -3005,14 +3032,14 @@ namespace NativeSsh.Herramientas
         // Escrituras (ssh_write_file, ssh_replace_file_content) por el shell PTY. Si no terminan (timeout, cancelación con
         // ssh_cancel, ssh_disconnect o el token, conexión perdida), se cancela la petición y se espera a que el script atienda
         // el Ctrl+C (su trampa de salida restaura el original o conserva las copias) para que el error diga qué pasó con el
-        // archivo según lo que el script anunció (InformeEscritura), con el id de la petición para ssh_output. Con el token
+        // archivo según lo que el script anunció (InformeEscritura), con el id de la petición. Con el token
         // cancelado se lanza OperationCanceledException con ese mismo mensaje. Si terminan, quien llama mira el código.
         // herramienta: la que escribe (Peticion.HerramientaEscritura); si la sesión la rechaza por el modo solo lectura, el
         // error es ese rechazo.
         private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, string herramienta, string descripcion, Guid grupo, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true, herramientaEscritura: herramienta, descripcion: descripcion, grupo: grupo);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, herramienta: herramienta, herramientaEscritura: herramienta, descripcion: descripcion, grupo: grupo);
             bool isSinTerminar = false;
             bool isCancelada = false;
             try
@@ -3111,7 +3138,7 @@ namespace NativeSsh.Herramientas
         // (Peticion.IsComandoEnviado) cuando falla la conexión o la apertura e inicialización del shell (en un servidor sin
         // bash, con el aviso de RespuestaSinBash, que ya dice que no se ejecutó nada y que ninguna herramienta funcionará),
         // cuando la sesión ya está cerrada o con un error interno antes de enviarlo. Entonces no se ejecutó nada y el error no
-        // remite a ssh_output (no hay salida) ni a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco
+        // da el id de la petición ni remite a ssh_stat o ssh_read_file (no hay nada que comprobar; sin bash, tampoco
         // funcionan). Es el único sitio que lo decide para ExigirCompletada, EjecutarEscrituraAsync y ConsecuenciaCwd (estas
         // dos añaden IsInterrumpidaSinEnviar). El estado se lee antes que la señal, que la sesión marca antes de finalizarla.
         internal static bool IsNoEnviadaAlShell(Peticion peticion) =>
@@ -3120,16 +3147,30 @@ namespace NativeSsh.Herramientas
         private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse (no se envió al shell de ssh_exec: no se pudo abrir —conexión, inicio de sesión o inicialización— o la sesión ya estaba cerrada).";
 
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
-        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id, para ver su salida con ssh_output.
+        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id (el de ssh_status) y, con isConSalida, lo
+        // que escribió el script (sin las líneas de sus marcadores), ya que ssh_output no da la salida de una petición interna.
+        // isConSalida=false en la lectura previa de ssh_replace_file_content: su salida es el archivo en base64.
         // 'consecuencia' solo se calcula si la petición no se completó.
-        private static void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null)
+        private void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null, bool isConSalida = true)
         {
             if (IsNoEnviadaAlShell(peticion))
                 throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
 
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}, su salida completa con ssh_output).{(AvisoConTecleado(peticion) is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}).{(AvisoConTecleado(peticion) is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}{(isConSalida ? SalidaSinMarcadores(peticion) : string.Empty)}");
+        }
+
+        // La salida de una petición interna de ssh_set_cwd para su error, sin las líneas de los marcadores del script; vacía si
+        // no escribió nada más.
+        private string SalidaSinMarcadores(Peticion peticion)
+        {
+            StringBuilder texto = new();
+            foreach (string linea in ReconstruirSalida(peticion, out _).Split('\n'))
+                if (!linea.Contains("__NS_", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(linea))
+                    _ = texto.Append(texto.Length == 0 ? string.Empty : "\n").Append(linea.TrimEnd());
+
+            return texto.Length == 0 ? string.Empty : InformeEscritura.DescribirSalidaDelScript(texto.ToString());
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

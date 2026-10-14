@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Protocol;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
@@ -694,7 +695,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = (sinPerfil.IsHecho, normal.IsHecho).Should().Be((true, true));
-            _ = sinPerfil.Mensaje.Should().StartWith("El próximo comando usará un shell nuevo SIN PERFIL");
+            _ = sinPerfil.Mensaje.Should().StartWith("No había sesión con ese destino").And.Contain("shell SIN PERFIL");
             _ = primero.Aviso.Should().Contain("Shell SIN PERFIL");
             _ = durante.Sesiones.Single().IsSinPerfil.Should().BeTrue();
             _ = despues.Aviso.Should().BeNull();
@@ -793,9 +794,22 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().MatchRegex("^La operación no se completó \\(estado: TiempoAgotado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. ")
-                .And.EndWith("No se ha modificado 'colgado_r.txt'.");
+            _ = error.Message.Should().MatchRegex("^La operación no se completó \\(estado: TiempoAgotado; petición [0-9a-f]{32}\\)\\. ")
+                .And.EndWith("No se ha modificado 'colgado_r.txt'.").And.NotContain("parcial", "la salida de la lectura previa es el archivo en base64: no se da nunca");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        // La validación de ssh_set_cwd no termina: el error lleva lo que escribió (ssh_output no da la salida de una petición
+        // interna).
+        [Fact]
+        public async Task SetCwd_ValidacionConTiempoAgotado_DaLaSalidaDelScript()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => HerramientasConTimeoutCorto().FijarDirectorioAsync("servidor", "/srv/colgado_cwd"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().StartWith("La operación no se completó (estado: TiempoAgotado;").And.Contain(" Salida del script: parcial");
         }
 
         // Cancelada con el token durante la lectura previa: la OperationCanceledException también dice que no se tocó.
@@ -845,9 +859,58 @@ namespace NativeSsh.Test.Herramientas
                 .Should().ThrowAsync<OperationCanceledException>()).Which;
 
             // Assert
-            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}, su salida completa con ssh_output\\)\\. No se llegó a ejecutar: 'nuevo.txt' no se ha modificado\\. Cancelada antes de empezar\\.$");
+            _ = error.Message.Should().MatchRegex("^La escritura en 'nuevo.txt' no terminó \\(estado: Cancelado; petición [0-9a-f]{32}\\)\\. No se llegó a ejecutar: 'nuevo.txt' no se ha modificado\\. Cancelada antes de empezar\\.$");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
             _ = (await _herramientas.CancelarAsync(colgado.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+        }
+
+        // ssh_cancel sobre el id de una escritura interna en cola (el que muestra ssh_status): la cancela, sin ejecutarse, y
+        // responde sin su salida, diciendo de qué herramienta es; el error de la escritura dice que no se llegó a ejecutar.
+        [Fact]
+        public async Task WriteFile_EncoladaYCanceladaConSshCancel_LaCancelaSinDarSuSalida()
+        {
+            // Arrange
+            ResultadoComando colgado = await _herramientas.EjecutarAsync("servidor", "colgado", esperarSegundos: 0).ComoComando();
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.BuscarPeticion(colgado.Id).Salida.Longitud > 0);
+            Task<ResultadoEscritura> escritura = _herramientas.EscribirArchivoAsync("servidor", "encolada.txt", "contenido-secreto");
+            await EsperasPrueba.EsperarHastaAsync(() => _gestor.ListarPeticiones().Any(p => p.IsHerramienta));
+            string id = _herramientas.Estado().Peticiones.First(p => p.Comando.StartsWith("[ssh_write_file]", StringComparison.Ordinal)).Id;
+
+            // Act
+            CallToolResult cancelacion = await _herramientas.CancelarAsync(id);
+            NativeSshException error = (await FluentActions.Awaiting(() => escritura).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            string texto = string.Join("\n", cancelacion.Content.OfType<TextContentBlock>().Select(b => b.Text));
+            _ = cancelacion.Content.Should().ContainSingle();
+            _ = texto.Should().Contain("interna de ssh_write_file").And.Contain("Su resultado lo da la respuesta de ssh_write_file")
+                .And.NotContain(Convert.ToBase64String("contenido-secreto"u8.ToArray())[..12]);
+            _ = error.Message.Should().Contain("No se llegó a ejecutar: 'encolada.txt' no se ha modificado");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+            _ = (await _herramientas.CancelarAsync(colgado.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+        }
+
+        // ssh_reset_shell con sinPerfil sobre un destino sin sesión: no descarta nada y la prepara sin conectar, y lo dice;
+        // ssh_status la muestra sin conectar y ssh_disconnect la descarta sin decir que cerró una conexión. Con la sesión ya
+        // conectada, el mensaje de siempre.
+        [Fact]
+        public async Task ResetSinPerfil_SinSesion_LoDiceYDisconnectNoCierraNingunaConexion()
+        {
+            // Act
+            ResultadoAccion reset = _herramientas.ReiniciarShell("servidor", sinPerfil: true);
+            EstadoSesion sesion = _herramientas.Estado().Sesiones.Single();
+            ResultadoAccion desconexion = await _herramientas.DesconectarAsync("servidor");
+            _ = await _herramientas.EjecutarAsync("servidor", "echo hola").ComoComando();
+            ResultadoAccion resetConectada = _herramientas.ReiniciarShell("servidor", sinPerfil: true);
+            ResultadoAccion desconexionConectada = await _herramientas.DesconectarAsync("servidor");
+
+            // Assert
+            _ = reset.IsHecho.Should().BeTrue();
+            _ = reset.Mensaje.Should().StartWith("No había sesión con ese destino: no se ha descartado ningún shell.").And.Contain("se conectará con el próximo comando").And.Contain("SIN PERFIL");
+            _ = (sesion.IsConectada, sesion.IsShellActivo, sesion.IsSinPerfil).Should().Be((false, false, true));
+            _ = desconexion.Mensaje.Should().StartWith("Sesión sin conectar descartada: ana@servidor:22").And.NotContain("Conexión cerrada");
+            _ = resetConectada.Mensaje.Should().StartWith("El próximo comando usará un shell nuevo SIN PERFIL");
+            _ = desconexionConectada.Mensaje.Should().StartWith("Conexión cerrada: ana@servidor:22");
         }
 
         [Fact]

@@ -14,9 +14,9 @@ namespace NativeSsh.Herramientas
     // el argumento, lo que llegó y lo que se admite.
     // Se admite lo mismo que el SDK: en el nivel superior los nombres distinguen mayúsculas (medido: 'Destino' no es
     // 'destino'); dentro de un objeto de una lista (cada edición) no (medido: 'TargetContent' se enlazaba); un entero puede
-    // llegar como texto con el número ('10', medido), pero no con decimales (10.0 fallaba); null solo donde el esquema lo
-    // admite. Del esquema se miran 'type', 'properties', 'required' e 'items', que es lo que genera el SDK para estas
-    // herramientas.
+    // llegar como texto con el número ('10', medido), pero no con decimales (10.0 fallaba); null, en un texto, una lista o un
+    // objeto (obligatorio u opcional) y donde el esquema lo admite, no en un entero ni en un booleano (ver IsDelTipo). Del
+    // esquema se miran 'type', 'properties', 'required' e 'items', que es lo que genera el SDK para estas herramientas.
     internal static class ValidadorArgumentos
     {
         private const int MaxCaracteresValor = 40;
@@ -147,15 +147,20 @@ namespace NativeSsh.Herramientas
         }
 
         // Un tipo desconocido para el validador no rechaza nada: lo decide el SDK.
+        // null: el SDK lo enlaza tal cual en un parámetro de tipo referencia (texto, lista u objeto), sea obligatorio u opcional,
+        // y lo decide la herramienta (medido con el SDK 2.2.0: 'ruta' null en ssh_find, ssh_list_dir y ssh_search y 'tipo' null
+        // en ssh_find buscan con su valor por defecto; 'destino' null da el error de la herramienta, «Destino '' no válido»;
+        // 'contenido' null en ssh_write_file escribía un archivo vacío y ahora lo rechaza la herramienta). En un entero o un booleano sin "null" en el esquema
+        // fallaba con el mensaje genérico: aquí se rechaza nombrándolo.
         private static bool IsDelTipo(JsonElement valor, string tipo) => tipo switch
         {
-            "string" => valor.ValueKind == JsonValueKind.String,
+            "string" => valor.ValueKind is JsonValueKind.String or JsonValueKind.Null,
             "boolean" => valor.ValueKind is JsonValueKind.True or JsonValueKind.False,
             // Entero de 64 bits (desdeByte es long): uno de 32 fuera de rango lo rechaza el SDK con su mensaje genérico.
             "integer" => valor.ValueKind == JsonValueKind.Number ? valor.TryGetInt64(out _) : valor.ValueKind == JsonValueKind.String && long.TryParse(valor.GetString(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _),
             "number" => valor.ValueKind == JsonValueKind.Number,
-            "array" => valor.ValueKind == JsonValueKind.Array,
-            "object" => valor.ValueKind == JsonValueKind.Object,
+            "array" => valor.ValueKind is JsonValueKind.Array or JsonValueKind.Null,
+            "object" => valor.ValueKind is JsonValueKind.Object or JsonValueKind.Null,
             "null" => valor.ValueKind == JsonValueKind.Null,
             _ => true
         };

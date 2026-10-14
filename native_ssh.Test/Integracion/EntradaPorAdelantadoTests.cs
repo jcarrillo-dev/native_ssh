@@ -286,8 +286,8 @@ namespace NativeSsh.Test.Integracion
             _ = new[] { e.Aviso, finalTrae.Aviso }.Should().AllSatisfy(a => (a ?? string.Empty).Should().NotContain("no leyó"));
         }
 
-        // (M07) La herramienta de archivo cuya petición trae el aviso no termina: su error lo da (con el id de la petición,
-        // que el mismo error cita para ssh_output). Una función '[' del usuario deja colgada la validación de ssh_set_cwd.
+        // (M07) La herramienta de archivo cuya petición trae el aviso no termina: su error lo da (con el id de la petición).
+        // Una función '[' del usuario deja colgada la validación de ssh_set_cwd.
         [Fact]
         public async Task HerramientaQueNoTermina_SuErrorDaElAviso()
         {

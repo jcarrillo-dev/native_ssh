@@ -90,7 +90,8 @@ namespace NativeSsh.Test.Herramientas
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().Be($"Sugerencia de seguridad: Has escrito un archivo con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_write_file' (contenido sin problemas de comillas ni de expansión de variables, escritura atómica con candado, append=true para anexar y sudo=true para archivos de root).");
 
         // RC6 (b): find con predicados que ssh_find no tiene (fechas, dueño, permisos, acciones, operadores lógicos, otro
-        // tipo...) no avisa: no hay herramienta que lo sustituya. Con solo lo que ssh_find hace (nombre, tipo f/d,
+        // tipo...) no avisa: no hay herramienta que lo sustituya; tampoco el tamaño de directorios (-size con -type d), que
+        // ssh_find rechaza (tamanoMin y tamanoMax solo con tipo='file'). Con solo lo que ssh_find hace (nombre, tipo f/d,
         // profundidad, -xdev y, desde RC9, -size), sí, y el aviso nombra tamanoMin/tamanoMax.
         [Theory]
         [InlineData("find / -xdev -newer /etc/passwd")]
@@ -114,6 +115,9 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("find . -ls")]
         [InlineData("find . -mindepth 2 -name x")]
         [InlineData("find / -xdev -size +50M -mtime +30")]
+        [InlineData("find /var -size +100M -type d")]
+        [InlineData("find /var -type d -size +100M")]
+        [InlineData("find /var -type f -type d -size +1M")]
         public void FindConPredicadosQueSshFindNoTiene_NoAvisa(string comando) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
 

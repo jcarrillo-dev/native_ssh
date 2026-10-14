@@ -1,6 +1,8 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.Versioning;
+using System.Text;
 using FluentAssertions;
+using ModelContextProtocol.Protocol;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
 using NativeSsh.Sesion;
@@ -274,7 +276,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // La contraseña también se puede responder con ssh_input mientras la propia ssh_write_file con sudo=true espera:
-        // la escritura termina bien y el prompt de sudo no estropea su informe.
+        // la escritura termina bien y el prompt de sudo no estropea su informe. La respuesta de ssh_input no lleva la salida de
+        // la petición interna.
         [TheoryContenedor]
         [InlineData(ContenedorSudo.Debian)]
         [InlineData(ContenedorSudo.Alpine)]
@@ -289,11 +292,12 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Task<ResultadoEscritura> escritura = herramientas.EscribirArchivoAsync(entorno.Destino, archivo, "despues\n", overwrite: true, sudo: true);
-            string id = await EsperarPromptAsync(entorno, herramientas);
-            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0).ComoComando();
+            string id = await EsperarPromptAsync(entorno);
+            CallToolResult entrada = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0, secreto: true);
             ResultadoEscritura resultado = await escritura;
 
             // Assert
+            _ = entrada.Content.Should().ContainSingle().Which.Should().BeOfType<TextContentBlock>().Which.Text.Should().Contain("interna de ssh_write_file").And.Contain("entrada enviada como secreto").And.NotContain("assword");
             _ = resultado.Mensaje.Should().StartWith("Archivo escrito correctamente").And.NotContain(entorno.Servidor.Contrasena);
             _ = entorno.Root("cat \"$1\"; stat -c '%U:%G %a' \"$1\"", archivo).Should().Be("despues\nroot:root 600\n");
         }
@@ -314,8 +318,8 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             Task<ResultadoEscritura> reemplazo = herramientas.ReemplazarContenidoArchivoAsync(entorno.Destino, archivo, "clave=1", "clave=2", sudo: true);
-            string id = await EsperarPromptAsync(entorno, herramientas);
-            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0).ComoComando();
+            string id = await EsperarPromptAsync(entorno);
+            _ = await herramientas.EnviarEntradaAsync(id, entorno.Servidor.Contrasena, esperarSegundos: 0, secreto: true);
             ResultadoEscritura resultado = await reemplazo;
 
             // Assert
@@ -345,7 +349,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Id de la petición en ejecución en el shell de la prueba cuando su salida ya muestra el prompt de sudo.
-        private static async Task<string> EsperarPromptAsync(Entorno entorno, HerramientasSsh herramientas)
+        // Se mira el búfer de la petición: ssh_output no da la salida de una petición interna.
+        private static async Task<string> EsperarPromptAsync(Entorno entorno)
         {
             DateTime tope = DateTime.UtcNow + TimeSpan.FromSeconds(20);
             while (DateTime.UtcNow < tope)
@@ -355,8 +360,9 @@ namespace NativeSsh.Test.Integracion
                     if (p.Estado != EstadoPeticionEnum.Ejecutando)
                         continue;
 
-                    ResultadoComando salida = await herramientas.LeerSalidaAsync(p.IdTexto).ComoComando();
-                    if (salida.Salida.Contains("assword", StringComparison.Ordinal))
+                    byte[] bytes = new byte[64 * 1024];
+                    int copiados = p.Salida.Leer(0, bytes).Copiados;
+                    if (Encoding.UTF8.GetString(bytes, 0, copiados).Contains("assword", StringComparison.Ordinal))
                         return p.IdTexto;
                 }
 

@@ -45,9 +45,14 @@ namespace NativeSsh.Sesion
 
         public Guid Id { get; }
 
-        // La de una herramienta de archivo o de ssh_set_cwd por el shell: su id solo lo ve el LLM si la herramienta falla, así
-        // que los avisos de otras respuestas no lo citan (HerramientasSsh.Resultado, SesionShell.EjecutarAsync).
-        public bool IsHerramienta { get; init; }
+        // La herramienta que la lanzó por el shell (ssh_write_file, ssh_replace_file_content, ssh_set_cwd), o null en ssh_exec.
+        // Su id sale en ssh_status y en los errores de la herramienta, para ssh_cancel, pero ninguna herramienta devuelve su
+        // salida (la lectura de ssh_replace_file_content es el archivo en base64): ssh_output, ssh_input y ssh_cancel dicen de
+        // qué herramienta es (HerramientasSsh.MensajePeticionInterna). Los avisos de otras respuestas no citan su id
+        // (HerramientasSsh.Resultado, SesionShell.EjecutarAsync).
+        public string? Herramienta { get; init; }
+
+        public bool IsHerramienta => Herramienta is not null;
 
         // Con ssh_exec y guardarSalida=true: el nonce de las marcas que el envoltorio deja en el terminal (SalidaGuardada). La
         // sesión envuelve el comando al enviarlo; Comando sigue siendo el que pidió el LLM (ssh_status, avisos de antipatrón).

@@ -131,6 +131,7 @@ namespace NativeSsh.Sesion
         private BufferSalida? _salidaConCanalCerrado;
 
         private volatile IConexionSsh? _conexion;
+        private volatile bool _hasConectado;
         private bool _isShellInicializadoAlgunaVez;
 
         // Apertura del canal del shell aún en curso (la de un comando que venció antes) y su conexión. Solo el bucle (y
@@ -245,6 +246,10 @@ namespace NativeSsh.Sesion
 
         public DestinoSsh Destino { get; }
         public bool IsConectada => _conexion?.IsConectada ?? false;
+
+        // Llegó a conectarse alguna vez. No, en una sesión que ssh_reset_shell con sinPerfil=true creó sin conectar (o cuya
+        // conexión falló siempre): ssh_disconnect no dice que cerró una conexión.
+        public bool HasConectado => _hasConectado;
 
         // La conexión vigente, si está conectada, con la dirección a la que va su socket (modo solo lectura).
         public ExtremoConectado? Extremo => _conexion is { IsConectada: true } conexion ? new ExtremoConectado(conexion.DireccionRemota) : null;
@@ -606,10 +611,10 @@ namespace NativeSsh.Sesion
                 apertura = new AperturaExec(this);
                 ejecucion = conexion.EjecutarExecAsync(comando, _opciones.MaxBytesSalidaPorPeticion, apertura.Confirmar, token);
                 ResultadoCanalExec resultado = await ejecucion.WaitAsync(token).ConfigureAwait(false);
-                // Sin bash en el servidor, el shell de login no encuentra el 'bash' del comando: 127, nada en stdout y su
-                // error en stderr. Se dice la causa en lugar de devolver ese stderr crudo.
+                // Sin bash en el servidor, el shell del usuario (con -c, sin login) no encuentra el 'bash' del comando: 127,
+                // nada en stdout y su error en stderr. Se dice la causa en lugar de devolver ese stderr crudo.
                 return resultado is { CodigoSalida: 127, Salida.IsEmpty: true } && RespuestaSinBash.BuscarLinea(Encoding.UTF8.GetString(resultado.Errores.Span)) is { } faltaBash
-                    ? throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash))
+                    ? throw new NativeSshException(RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: false))
                     : resultado;
             }
             catch (Exception ex) when (IsCerrando && !cancellationToken.IsCancellationRequested)
@@ -1514,6 +1519,7 @@ namespace NativeSsh.Sesion
                 _conexion = null;
                 IConexionSsh nueva = await ConectarAsync(token).ConfigureAwait(false);
                 _conexion = nueva;
+                _hasConectado = true;
                 return nueva;
             }
             finally
@@ -1684,12 +1690,12 @@ namespace NativeSsh.Sesion
         }
 
         // Lo que escribió el shell al cerrarse durante la inicialización dice por qué: sin bash, la respuesta del shell de
-        // login al 'exec bash' (RespuestaSinBash); si no, sus últimas líneas, sin las del propio protocolo (el eco del
+        // login al 'exec bash' o, sin perfil, la del shell del usuario con -c (RespuestaSinBash); si no, sus últimas líneas, sin las del propio protocolo (el eco del
         // terminal de lo que se le envió).
         private string DescribirCierreEnLaInicializacion(string salida, bool isSinPerfil)
         {
             if (RespuestaSinBash.BuscarLinea(salida) is { } faltaBash)
-                return RespuestaSinBash.Describir(Destino.Clave, faltaBash);
+                return RespuestaSinBash.Describir(Destino.Clave, faltaBash, isLogin: !isSinPerfil);
 
             string causa = isSinPerfil ? "" : " (p. ej. un 'exit' en el perfil)";
 
