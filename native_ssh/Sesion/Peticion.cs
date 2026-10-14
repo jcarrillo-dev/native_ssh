@@ -59,7 +59,22 @@ namespace NativeSsh.Sesion
         public InformeGuardado? InformeGuardado => FiltroGuardado?.Informe;
         public string IdTexto { get; }
         public DestinoSsh Destino { get; }
+
+        // Lo que se envía al shell: el comando del LLM (ssh_exec) o el script interno de una herramienta, que lleva el
+        // contenido del archivo en base64 (ssh_write_file, ssh_replace_file_content). Nunca se muestra: ver Descripcion.
         public string Comando { get; }
+
+        // Lo que se muestra de la petición (ssh_status, el «comando en curso» de las pistas): el comando del LLM en ssh_exec y,
+        // en las herramientas, «[herramienta] ruta», sin el script ni el contenido (Bloque ST).
+        public string Descripcion
+        {
+            get => field ?? Comando;
+            init;
+        }
+
+        // Las peticiones de una misma llamada a una herramienta (lectura y escritura de ssh_replace_file_content; validación y
+        // export de ssh_set_cwd) comparten grupo: ssh_status las muestra como una sola entrada. null en ssh_exec.
+        public Guid? Grupo { get; init; }
 
         // La herramienta de escritura que la lanzó (ssh_exec, ssh_write_file, ssh_replace_file_content), o null si no es una
         // escritura (ssh_set_cwd, lecturas por el shell): antes de enviarla, la sesión comprueba el modo solo lectura con la

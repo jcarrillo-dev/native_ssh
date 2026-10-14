@@ -617,6 +617,63 @@ namespace NativeSsh.Test.Herramientas
             _ = filtrado.Peticiones[^1].Comando.Should().Be("cmd5");
         }
 
+        // ST1: ssh_status muestra qué herramienta y qué ruta, nunca el script interno ni el contenido (en base64 o tal cual) de
+        // un archivo escrito o reemplazado.
+        [Fact]
+        public async Task Status_TrasEscribirYReemplazar_MuestraHerramientaYRutaSinContenidoNiBase64()
+        {
+            // Arrange
+            const string Contenido = "CONTENIDO_ST_UNICO=clave-que-no-debe-salir\nsegunda linea del archivo\n";
+            _ = await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", Contenido, overwrite: true);
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "app.env", "linea 2", "REEMPLAZO_ST_UNICO");
+            _ = await _herramientas.EjecutarAsync("servidor", "echo hola").ComoComando();
+
+            // Act
+            ResultadoEstado estado = _herramientas.Estado();
+            string json = JsonSerializer.Serialize(estado, ContextoJsonNativeSsh.OpcionesHerramientas);
+
+            // Assert
+            _ = estado.Peticiones.Select(p => p.Comando).Should().Equal("echo hola", "[ssh_replace_file_content] app.env (escritura)", "[ssh_write_file] nuevo.txt");
+            string[] fugas = [Contenido[..20], Convert.ToBase64String(Encoding.UTF8.GetBytes(Contenido))[..16], "linea 1", Convert.ToBase64String(Encoding.UTF8.GetBytes("linea 1\nREEMPLAZO_ST_UNICO"))[..16], "REEMPLAZO_ST_UNICO", "base64", "printf"];
+            foreach (string fuga in fugas)
+                _ = json.Should().NotContain(fuga);
+        }
+
+        // ST2: la lectura y la escritura de ssh_replace_file_content, y la validación y el export de ssh_set_cwd, son una sola
+        // entrada de ssh_status (la de la petición más reciente de la llamada).
+        [Fact]
+        public async Task Status_ReemplazoYSetCwd_UnaEntradaPorLlamada()
+        {
+            // Arrange
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "app.env", "linea 2", "dos");
+            _ = await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto");
+
+            // Act
+            ResultadoEstado estado = _herramientas.Estado();
+
+            // Assert
+            _ = estado.Peticiones.Select(p => p.Comando).Should().Equal("[ssh_set_cwd] /var/www/proyecto (export)", "[ssh_replace_file_content] app.env (escritura)");
+        }
+
+        // ST2/ST3: 20 peticiones internas (10 llamadas a ssh_replace_file_content, lectura y escritura) no se comen las ranuras:
+        // los ssh_exec anteriores siguen en la lista, como antes de esas llamadas.
+        [Fact]
+        public async Task Status_VeintePeticionesInternas_SiguenMostrandoLosExecRecientes()
+        {
+            // Arrange
+            for (int i = 0; i < 5; i++)
+                _ = await _herramientas.EjecutarAsync("servidor", $"cmd{i}").ComoComando();
+            for (int i = 0; i < 10; i++)
+                _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", $"a{i}.txt", "linea 2", "dos");
+
+            // Act
+            ResultadoEstado estado = _herramientas.Estado();
+
+            // Assert
+            _ = estado.Peticiones.Count.Should().Be(15);
+            _ = estado.Peticiones.Select(p => p.Comando).TakeLast(5).Should().Equal("cmd4", "cmd3", "cmd2", "cmd1", "cmd0");
+        }
+
         [Fact]
         public async Task Disconnect_YReset()
         {

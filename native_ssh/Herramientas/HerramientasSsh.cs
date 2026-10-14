@@ -486,15 +486,18 @@ namespace NativeSsh.Herramientas
                 sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Count == 0 ? null : alias[i], s.Destino.Identidades, isOtrasClaves ? null : isSoloLectura[i]));
             }
 
-            // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador.
+            // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador. De las peticiones de una misma
+            // llamada a una herramienta (Peticion.Grupo) sale solo la más reciente, con su estado: una entrada por llamada.
             List<ResumenPeticion> peticiones = [];
+            HashSet<Guid> grupos = [];
             foreach (Peticion p in gestor.ListarPeticiones())
             {
                 if (peticiones.Count == MaxPeticionesEnEstado)
                     break;
 
-                if (isSinFiltro || GestorSesiones.IsDelDestino(p, filtro!.Value))
-                    peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Comando), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
+                bool isDelFiltro = isSinFiltro || GestorSesiones.IsDelDestino(p, filtro!.Value);
+                if (isDelFiltro && (p.Grupo is not { } grupo || grupos.Add(grupo)))
+                    peticiones.Add(new ResumenPeticion(p.IdTexto, p.Destino.Clave, p.Estado, Codigo(p), Recortar(p.Descripcion), Math.Round(p.TiempoEjecucion.TotalSeconds, 1)));
             }
 
             string? aviso = filtro is { Alias: not null } conAlias ? TextoPistas(conAlias, gestor.BuscarPistasAlias(conAlias), gestor) : null;
@@ -750,7 +753,7 @@ namespace NativeSsh.Herramientas
         private static void DescribirEnCurso(StringBuilder texto, SesionShell sesion)
         {
             if (sesion.PeticionActual is { } actual)
-                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"comando en curso {actual.IdTexto} «{Recortar(actual.Comando)}»");
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"comando en curso {actual.IdTexto} «{Recortar(actual.Descripcion)}»");
             int enCola = sesion.ComandosEnCola;
             if (enCola > 0)
                 _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"{enCola} en cola");
@@ -954,7 +957,7 @@ namespace NativeSsh.Herramientas
                     """), sudo, rutaEscapada, payloadBase64)
                 : ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, overwrite, idMarcas);
 
-            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, "ssh_write_file", cancellationToken).ConfigureAwait(false);
+            (Peticion peticion, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comando, idMarcas, ruta, "ssh_write_file", DescribirHerramienta("ssh_write_file", ruta), Guid.NewGuid(), cancellationToken).ConfigureAwait(false);
             return peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
@@ -1748,7 +1751,7 @@ namespace NativeSsh.Herramientas
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
                 const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
-                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
+                Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, DescribirHerramienta("ssh_set_cwd", DirectorioHome), Guid.NewGuid(), TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 
                 if (peticionReset.CodigoSalida != 0)
@@ -1789,7 +1792,8 @@ namespace NativeSsh.Herramientas
                 """);
 
             // La validación va en un subshell: falle como falle, no cambia nada.
-            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
+            Guid grupo = Guid.NewGuid();
+            Peticion peticionValidacion = await EjecutarHerramientaAsync(destino, comandoValidacion, DescribirHerramienta("ssh_set_cwd", ruta, "validación"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion), cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionValidacion, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, claveSesion: claveSesion));
 
             if (peticionValidacion.CodigoSalida != 0)
@@ -1805,7 +1809,7 @@ namespace NativeSsh.Herramientas
             // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
             SesionShell? sesionValidacion = SesionDe(claveSesion);
             string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
-            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
+            Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, DescribirHerramienta("ssh_set_cwd", ruta, "export"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion));
 
             if (peticionExport.CodigoSalida != 0)
@@ -2020,7 +2024,8 @@ namespace NativeSsh.Herramientas
                 """), sudo, rutaEscapada);
 
             string sinModificar = $"No se ha modificado '{ruta}'.";
-            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
+            Guid grupo = Guid.NewGuid();
+            Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, DescribirHerramienta("ssh_replace_file_content", ruta, "lectura"), grupo, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionLectura, _ => sinModificar);
 
             if (peticionLectura.CodigoSalida != 0)
@@ -2043,7 +2048,7 @@ namespace NativeSsh.Herramientas
             string idEscritura = Guid.NewGuid().ToString("N");
             string comandoEscritura = ConstruirComandoEscritura(rutaEscapada, payloadBase64, sudo, isSobrescribir: true, idEscritura, bytesLeidos);
 
-            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, "ssh_replace_file_content", cancellationToken).ConfigureAwait(false);
+            (Peticion peticionEscritura, InformeEscritura informe) = await EjecutarEscrituraAsync(destino, comandoEscritura, idEscritura, ruta, "ssh_replace_file_content", DescribirHerramienta("ssh_replace_file_content", ruta, "escritura"), grupo, cancellationToken).ConfigureAwait(false);
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
@@ -2873,6 +2878,11 @@ namespace NativeSsh.Herramientas
 
         private static int? Codigo(Peticion peticion) => peticion.IsFinalizada ? peticion.CodigoSalida : null;
 
+        // Descripción de una petición interna de una herramienta (Peticion.Descripcion): «[herramienta] ruta» y, si la llamada
+        // hace varias, la fase. Nunca el script ni el contenido.
+        private static string DescribirHerramienta(string herramienta, string ruta, string? fase = null) =>
+            fase is null ? $"[{herramienta}] {ruta}" : $"[{herramienta}] {ruta} ({fase})";
+
         private static string Recortar(string comando)
         {
             string linea = comando.ReplaceLineEndings(" ");
@@ -2881,10 +2891,11 @@ namespace NativeSsh.Herramientas
 
         // consecuencia: lo que no llegó a pasar si la operación no termina (p. ej. "No se ha modificado ..."), para el error.
         // 'consecuencia' se calcula con la petición ya cancelada (si seguía en la cola, ya no se ejecutará).
-        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
+        // descripcion y grupo: lo que ssh_status muestra de la petición y la llamada a la que pertenece (Peticion.Descripcion).
+        private async Task<Peticion> EjecutarHerramientaAsync(string destino, string comando, string descripcion, Guid grupo, int timeoutSegundos, Func<Peticion, string>? consecuencia, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(timeoutSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true, descripcion: descripcion, grupo: grupo);
             try
             {
                 await peticion.Finalizacion.WaitAsync(timeout + opciones.EsperaTrasCtrlC + MargenEsperaHerramienta, cancellationToken).ConfigureAwait(false);
@@ -2915,10 +2926,10 @@ namespace NativeSsh.Herramientas
         // cancelado se lanza OperationCanceledException con ese mismo mensaje. Si terminan, quien llama mira el código.
         // herramienta: la que escribe (Peticion.HerramientaEscritura); si la sesión la rechaza por el modo solo lectura, el
         // error es ese rechazo.
-        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, string herramienta, CancellationToken cancellationToken)
+        private async Task<(Peticion Peticion, InformeEscritura Informe)> EjecutarEscrituraAsync(string destino, string comando, string idMarcas, string ruta, string herramienta, string descripcion, Guid grupo, CancellationToken cancellationToken)
         {
             TimeSpan timeout = TimeoutForzado ?? TimeSpan.FromSeconds(TimeoutEscrituraSegundos);
-            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true, herramientaEscritura: herramienta);
+            Peticion peticion = gestor.Ejecutar(destino, comando, timeout, isHerramienta: true, herramientaEscritura: herramienta, descripcion: descripcion, grupo: grupo);
             bool isSinTerminar = false;
             bool isCancelada = false;
             try
