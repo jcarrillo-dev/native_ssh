@@ -56,6 +56,11 @@ namespace NativeSsh.Sesion
         }
     }
 
+    // El servidor rechazó la petición exec de un canal ya abierto (SSH_MSG_CHANNEL_FAILURE): no ejecutó el comando. Medido con
+    // OpenSSH for Windows cuando el comando no cabe en la línea de órdenes de Windows; el canal puede seguir abierto, y antes
+    // la operación esperaba su plazo entero (externo/SSH.NET: "Fail at once when the server rejects the exec request").
+    public sealed class PeticionExecRechazadaException(string mensaje, Exception interna) : Exception(mensaje, interna);
+
     public interface IFabricaConexion
     {
         Task<IConexionSsh> ConectarAsync(DestinoSsh destino, CancellationToken cancellationToken);

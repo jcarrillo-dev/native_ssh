@@ -679,34 +679,30 @@ namespace NativeSsh.Test.Sesion
             _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().BeTrue();
         }
 
-        // Un comando exec más largo que la línea de órdenes de Windows: su sshd rechaza la petición exec sin cerrar el canal
-        // (medido: «exec request failed», y SSH.NET no lo ve y espera hasta el plazo, 90 s en ssh_search). En un servidor
-        // Windows no se envía y el error lo dice en seguida; en otro, se envía como siempre.
+        // El servidor rechaza la petición exec (OpenSSH for Windows con un comando que no cabe en la línea de órdenes de
+        // Windows; medido: «exec request failed», y antes la lectura esperaba su plazo entero, 90 s en ssh_search): falla en
+        // seguida y lo dice; en un servidor Windows, también la causa medida y que Windows no está soportado.
         [Theory]
         [InlineData(true)]
         [InlineData(false)]
-        public async Task CanalExecMasLargoQueLaLineaDeOrdenesDeWindows_NoSeEnviaAUnServidorWindows(bool isWindows)
+        public async Task CanalExecConLaPeticionRechazada_FallaEnSeguidaYDiceQueNoSeEjecutoNada(bool isWindows)
         {
             // Arrange
-            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = isWindows };
+            FabricaFalsa fabrica = new(Guion) { IsServidorWindows = isWindows, MaxCaracteresComandoExec = 3000 };
             await using SesionShell sesion = Crear(fabrica);
-            string script = "echo " + new string('x', SesionShell.MaxCaracteresComandoExecWindows);
+            Stopwatch reloj = Stopwatch.StartNew();
 
             // Act
-            Func<Task<ResultadoCanalExec>> lectura = () => sesion.EjecutarExecAsync(script, TimeSpan.FromSeconds(10), CancellationToken.None);
+            NativeSshException error = (await FluentActions.Awaiting(() => sesion.EjecutarExecAsync("echo " + new string('x', 3000), TimeSpan.FromSeconds(30), CancellationToken.None))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+            ResultadoCanalExec corto = await sesion.EjecutarExecAsync("echo corto", TimeSpan.FromSeconds(10), CancellationToken.None);
 
             // Assert
-            if (isWindows)
-            {
-                NativeSshException error = (await lectura.Should().ThrowAsync<NativeSshException>()).Which;
-                _ = error.Message.Should().Contain("caracteres").And.Contain("No se ejecutó nada");
-                _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().BeTrue();
-                _ = fabrica.Ultima!.ComandosExec.Should().BeEmpty();
-            }
-            else
-            {
-                _ = (await lectura()).CodigoSalida.Should().Be(0);
-            }
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
+            _ = error.Message.Should().Contain("rechazó la petición exec").And.Contain(" caracteres").And.Contain("No se ejecutó nada");
+            _ = RespuestaWindows.IsMensajeWindows(error.Message).Should().Be(isWindows);
+            _ = corto.CodigoSalida.Should().Be(0);
+            _ = sesion.CanalesExecActivos.Should().Be(0);
         }
 
         // Sin la marca de inicio pero sin señales de Windows (otro servidor, o errores con LF como los de bash), el resultado

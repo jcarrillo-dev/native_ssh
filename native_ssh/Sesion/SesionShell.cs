@@ -50,13 +50,6 @@ namespace NativeSsh.Sesion
         public const int TamanoBloqueLectura = 16 * 1024;
         public const int CodigoCanalCerrado = int.MinValue;
 
-        // El sshd de Windows rechaza una petición exec cuyo comando no cabe en su línea de órdenes (medido con OpenSSH for
-        // Windows 9.5: acepta hasta 32 703–32 731 caracteres según la ruta del shell de login), y SSH.NET no ve el rechazo
-        // (SshCommand descarta la respuesta de la petición) y espera el cierre del canal, que no llega: la operación agotaba
-        // su plazo entero. Por encima de este tope no se envía (WS1). Por debajo, lo que pase de unos 8191 caracteres el sshd
-        // lo trunca, y eso lo detecta el propio programa (ConstructorComandoExec, WS2).
-        public const int MaxCaracteresComandoExecWindows = 32_000;
-
         // La inicialización termina sin marcador porque el terminal delató un shell de Windows que no es bash (WS1).
         private const int CodigoShellWindows = int.MinValue + 1;
 
@@ -607,6 +600,7 @@ namespace NativeSsh.Sesion
             bool isCupoTomado = false;
             bool isCanalContado = false;
             EtapaExecEnum etapa = EtapaExecEnum.Cupo;
+            bool isServidorWindows = false;
             Task<ResultadoCanalExec>? ejecucion = null;
             AperturaExec? apertura = null;
             try
@@ -615,9 +609,7 @@ namespace NativeSsh.Sesion
                 isCupoTomado = true;
                 etapa = EtapaExecEnum.Conexion;
                 IConexionSsh conexion = await ObtenerConexionAsync(token).ConfigureAwait(false);
-                if (conexion.IsServidorWindows && comando.Length > MaxCaracteresComandoExecWindows)
-                    throw new NativeSshException(RespuestaWindows.DescribirComandoLargo(Destino.Clave, comando.Length));
-
+                isServidorWindows = conexion.IsServidorWindows;
                 _ = Interlocked.Increment(ref _canalesExecActivos);
                 isCanalContado = true;
                 etapa = EtapaExecEnum.Apertura;
@@ -652,6 +644,10 @@ namespace NativeSsh.Sesion
             {
                 throw new NativeSshException(DescribirTiempoAgotadoExec(etapa == EtapaExecEnum.Apertura && apertura is { IsConfirmada: true } ? EtapaExecEnum.Canal : etapa, timeout));
             }
+            catch (PeticionExecRechazadaException ex)
+            {
+                throw new NativeSshException(DescribirPeticionExecRechazada(comando.Length, isServidorWindows), ex);
+            }
             catch (CanalRechazadoException ex)
             {
                 // Esta lectura ya cuenta en _canalesExecActivos: no es una de las que ocupan sesiones.
@@ -672,6 +668,12 @@ namespace NativeSsh.Sesion
                 }
             }
         }
+
+        // El servidor no aceptó ejecutar el comando (PeticionExecRechazadaException). En Windows la causa medida es la longitud:
+        // OpenSSH for Windows 9.5 rechaza un comando de más de 32 703–32 731 caracteres (según la ruta del shell de login).
+        private string DescribirPeticionExecRechazada(int longitud, bool isServidorWindows) => isServidorWindows
+            ? RespuestaWindows.DescribirPeticionRechazada(Destino.Clave, longitud)
+            : $"El servidor {Destino.Clave} rechazó la petición exec del comando de native_ssh ({longitud} caracteres) sin ejecutarlo (el registro de su sshd dice por qué). No se ejecutó nada.";
 
         private string DescribirComandoTruncado(int longitud) =>
             $"El servidor {Destino.Clave} truncó el comando de native_ssh ({longitud} caracteres): su línea de órdenes tiene un límite de longitud (el sshd de Windows, por ejemplo, la corta hacia los 8191 caracteres) y no llegaron todos sus argumentos. native_ssh lo comprueba antes de ejecutar nada. No se ejecutó nada.";

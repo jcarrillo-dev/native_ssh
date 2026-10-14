@@ -57,6 +57,9 @@ namespace NativeSsh.Ssh
     {
         private const int TamanoBloque = 16 * 1024;
 
+        // Mensaje de externo/SSH.NET (SshCommand.ExecuteAsync) cuando el servidor responde a la petición exec con un fallo.
+        private const string PrefijoPeticionExecRechazada = "The request to execute the command was not accepted by the server";
+
         public static async Task<ResultadoCanalExec> EjecutarAsync(SshClient cliente, string comando, int maxBytesSalida, Action alConfirmarseApertura, CancellationToken cancellationToken)
         {
             SshCommand orden = cliente.CreateCommand(comando);
@@ -66,6 +69,11 @@ namespace NativeSsh.Ssh
                 try
                 {
                     ejecucion = await Task.Factory.StartNew(() => orden.ExecuteAsync(CancellationToken.None), cancellationToken, TaskCreationOptions.DenyChildAttach, TaskScheduler.Default).ConfigureAwait(false);
+                }
+                catch (SshException ex) when (ex.GetType() == typeof(SshException) && ex.Message.StartsWith(PrefijoPeticionExecRechazada, StringComparison.Ordinal))
+                {
+                    // El canal se abrió, pero el servidor no aceptó ejecutar el comando (externo/SSH.NET lo dice al momento).
+                    throw new PeticionExecRechazadaException("El servidor rechazó la petición exec.", ex);
                 }
                 catch (SshException ex) when (ex.GetType() == typeof(SshException) && IsConectado(cliente))
                 {

@@ -89,9 +89,10 @@ namespace NativeSsh.Protocolo
         public static string DescribirExec(string destino, string linea) =>
             $"El shell de login del servidor {destino} es cmd/PowerShell (Windows): no arrancó el bash del comando de native_ssh y respondió «{linea}»; {Final}";
 
-        // Comando exec que no se envía porque el sshd de Windows lo rechazaría sin cerrar el canal (SesionShell).
-        public static string DescribirComandoLargo(string destino, int longitud) =>
-            $"El servidor {destino} es Windows (OpenSSH for Windows) y el comando de native_ssh mide {longitud} caracteres: no cabe en la línea de órdenes de Windows (unos 32 700) y su sshd lo rechazaría sin cerrar el canal, así que no se envía; {Final}";
+        // Petición exec rechazada por el sshd de Windows (SesionShell): lo hace con un comando que no cabe en la línea de
+        // órdenes de Windows.
+        public static string DescribirPeticionRechazada(string destino, int longitud) =>
+            $"El servidor {destino} es Windows (OpenSSH for Windows) y rechazó la petición exec del comando de native_ssh ({longitud} caracteres) sin ejecutarlo: lo hace con un comando que no cabe en la línea de órdenes de Windows (unos 32 700 caracteres); {Final}";
 
         // Shell PTY de un servidor Windows (ConPTY) sin señal de cmd ni de PowerShell: el shell sin perfil (que se decide con
         // el prefijo de ConPTY: ni con Git Bash arranca) o uno que no terminó la inicialización o se cerró en ella.

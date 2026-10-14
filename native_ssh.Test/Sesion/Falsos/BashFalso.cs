@@ -111,6 +111,10 @@ namespace NativeSsh.Test.Sesion.Falsos
         // Servidor Windows (WS1): la versión que anuncia (IConexionSsh.IsServidorWindows) y, si el shell no es bash, lo que
         // escribe su terminal ConPTY (CanalFalso.RespuestaConPty).
         public bool IsServidorWindows { get; set; }
+
+        // Los comandos exec más largos que esto los rechaza el servidor (PeticionExecRechazadaException), como OpenSSH for
+        // Windows con los que no caben en la línea de órdenes de Windows.
+        public int? MaxCaracteresComandoExec { get; set; }
         public string? RespuestaConPty { get; set; }
         public bool IsCierraTrasConPty { get; set; }
         public bool IsBashTrasConPty { get; set; }
@@ -150,6 +154,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 IsSinIdentidad = IsSinIdentidad,
                 RespuestaSinBash = RespuestaSinBash,
                 IsServidorWindows = IsServidorWindows,
+                MaxCaracteresComandoExec = MaxCaracteresComandoExec,
                 RespuestaConPty = RespuestaConPty,
                 IsCierraTrasConPty = IsCierraTrasConPty,
                 IsBashTrasConPty = IsBashTrasConPty
@@ -221,6 +226,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         public bool IsSinIdentidad { get; init; }
         public string? RespuestaSinBash { get; init; }
         public bool IsServidorWindows { get; init; }
+        public int? MaxCaracteresComandoExec { get; init; }
         public string? RespuestaConPty { get; init; }
         public bool IsCierraTrasConPty { get; init; }
         public bool IsBashTrasConPty { get; init; }
@@ -240,6 +246,12 @@ namespace NativeSsh.Test.Sesion.Falsos
 
             if (IsRechazandoAperturas)
                 throw new CanalRechazadoException("Rechazado (MaxSessions).");
+
+            if (comando.Length > MaxCaracteresComandoExec)
+            {
+                ComandosExec.Enqueue(comando);
+                throw new PeticionExecRechazadaException("Rechazada (exec).", new InvalidOperationException("exec request failed"));
+            }
 
             string script = ScriptExec.Decodificar(comando);
             ComandosExec.Enqueue(comando);
