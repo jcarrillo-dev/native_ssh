@@ -201,6 +201,39 @@ namespace NativeSsh.Test.Comun
         public void Interpretar_LoDemasEsFallo(string salida, int codigo) =>
             _ = ResolutorEnProceso.Interpretar(salida, codigo).Should().BeNull();
 
+        // native_ssh como pid 1 de su espacio de pids (un contenedor sin init: 'podman run -i imagen NativeSsh'): el hijo
+        // recibe '--resolver-interno 1 ...' y su padre es el 1; tiene que resolver igual. Aquí un sh es el pid 1 de un espacio
+        // de pids nuevo y lanza el modo interno con su pid, como haría native_ssh (necesita unshare y espacios de nombres de
+        // usuario).
+        [Fact]
+        public async Task ModoInterno_ConNativeSshComoPid1_Resuelve()
+        {
+            // Arrange
+            ProcessStartInfo inicio = new("unshare") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (string argumento in new[] { "-Urpf", "--mount-proc", "sh", "-c", "\"$0\" --resolver-interno $$ 4 localhost; echo \"rc=$?\"", ResolutorEnProceso.ProgramaPropio! })
+                inicio.ArgumentList.Add(argumento);
+
+            // Act
+            using Process proceso = Process.Start(inicio)!;
+            string salida = await proceso.StandardOutput.ReadToEndAsync();
+            string errores = await proceso.StandardError.ReadToEndAsync();
+            await proceso.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
+
+            // Assert
+            _ = salida.Should().Be("ok\n127.0.0.1\nrc=0\n", errores);
+        }
+
+        // El binario propio: /proc/self/exe si existe (el mismo aunque se sustituya el fichero); sin /proc (montado aparte
+        // o tapado), la ruta del proceso; sin ninguna de las dos, null (entonces se resuelve sin proceso hijo). Desde dotnet
+        // (las pruebas), el NativeSsh compilado junto a ellas.
+        [Theory]
+        [InlineData("/opt/ns/NativeSsh", true, "/proc/self/exe")]
+        [InlineData("/opt/ns/NativeSsh", false, "/opt/ns/NativeSsh")]
+        [InlineData(null, false, null)]
+        [InlineData("/usr/bin/dotnet", true, "PRUEBAS")]
+        public void ProgramaPropio_SinProcUsaLaRutaDelProceso(string? rutaProceso, bool hasProcSelfExe, string? esperado) =>
+            _ = ResolutorEnProceso.ElegirPrograma(rutaProceso, hasProcSelfExe).Should().Be(esperado == "PRUEBAS" ? Path.Combine(AppContext.BaseDirectory, "NativeSsh") : esperado);
+
         // El modo interno a mano: sin el pid de su padre de verdad, con otra familia o con un nombre no válido sale con 2 sin
         // resolver nada; con todo bien, resuelve.
         [Theory]
@@ -208,12 +241,14 @@ namespace NativeSsh.Test.Comun
         [InlineData("padre", "5", "localhost", 2)]
         [InlineData("padre", "4", "-x", 2)]
         [InlineData("padre", "4", "a;b", 2)]
+        [InlineData("0padre", "4", "localhost", 2)]
         [InlineData("padre", "4", "localhost", 0)]
         public async Task ModoInterno_ValidaSusArgumentos(string padre, string familia, string nombre, int codigoEsperado)
         {
             // Arrange
-            ProcessStartInfo inicio = new(ResolutorEnProceso.ProgramaPropio) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (string argumento in new[] { ResolutorEnProceso.ModoInterno, padre == "padre" ? Environment.ProcessId.ToString(CultureInfo.InvariantCulture) : padre, familia, nombre })
+            ProcessStartInfo inicio = new(ResolutorEnProceso.ProgramaPropio!) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true };
+            string pid = Environment.ProcessId.ToString(CultureInfo.InvariantCulture);
+            foreach (string argumento in new[] { ResolutorEnProceso.ModoInterno, padre.Replace("padre", pid, StringComparison.Ordinal), familia, nombre })
                 inicio.ArgumentList.Add(argumento);
 
             // Act

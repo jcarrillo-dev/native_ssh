@@ -40,11 +40,19 @@ namespace NativeSsh.Comun
 
         public static ResolutorEnProceso DelSistema { get; } = new(LanzarPropio, Matar, RecogerAsync);
 
-        // El binario propio: /proc/self/exe (el mismo aunque se haya sustituido o borrado el fichero tras arrancar); desde las
-        // pruebas, que corren dentro de dotnet, el NativeSsh compilado junto a ellas.
-        internal static string ProgramaPropio { get; } = Path.GetFileNameWithoutExtension(Environment.ProcessPath) is "dotnet" or "testhost"
-            ? Path.Combine(AppContext.BaseDirectory, "NativeSsh")
-            : "/proc/self/exe";
+        // El binario propio (ElegirPrograma); null si no se sabe cuál es: entonces no se resuelve en un proceso hijo
+        // (ResolucionPorFamilia.Linux.cs resuelve en hilos, como antes).
+        internal static string? ProgramaPropio { get; } = ElegirPrograma(Environment.ProcessPath, File.Exists("/proc/self/exe"));
+
+        // /proc/self/exe si existe (el mismo binario aunque se haya sustituido o borrado el fichero tras arrancar); si no (sin
+        // /proc, o tapado), la ruta del proceso; desde las pruebas, que corren dentro de dotnet, el NativeSsh compilado junto
+        // a ellas.
+        internal static string? ElegirPrograma(string? rutaProceso, bool hasProcSelfExe) =>
+            IsDesdeDotnet(rutaProceso) ? Path.Combine(AppContext.BaseDirectory, "NativeSsh")
+            : hasProcSelfExe ? "/proc/self/exe"
+            : rutaProceso;
+
+        private static bool IsDesdeDotnet(string? rutaProceso) => Path.GetFileNameWithoutExtension(rutaProceso) is "dotnet" or "testhost";
 
         private readonly Func<string, string, Process?> _lanzar;
         private readonly Action<Process> _matar;
@@ -226,7 +234,7 @@ namespace NativeSsh.Comun
 
         internal static Process? LanzarPropio(string nombre, string familia)
         {
-            ProcessStartInfo inicio = new(ProgramaPropio)
+            ProcessStartInfo inicio = new(ProgramaPropio!)
             {
                 UseShellExecute = false,
                 RedirectStandardInput = true,
@@ -244,7 +252,7 @@ namespace NativeSsh.Comun
                 if (Environment.GetEnvironmentVariable(variable) is { } valor)
                     inicio.Environment[variable] = valor;
             // El NativeSsh de las pruebas no es AOT: necesita encontrar .NET.
-            if (ProgramaPropio != "/proc/self/exe" && Environment.GetEnvironmentVariable("DOTNET_ROOT") is { } raiz)
+            if (IsDesdeDotnet(Environment.ProcessPath) && Environment.GetEnvironmentVariable("DOTNET_ROOT") is { } raiz)
                 inicio.Environment["DOTNET_ROOT"] = raiz;
             return Process.Start(inicio);
         }
@@ -267,7 +275,10 @@ namespace NativeSsh.Comun
         // nada. Un hilo vigila al padre mientras getaddrinfo bloquea el principal.
         public static int EjecutarModoInterno(string[] args)
         {
-            bool isPadre = args.Length == 4 && int.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out int padre) && padre > 1 && padre == ProcesoPadre();
+            // El pid tal como lo escribe native_ssh (sin ceros a la izquierda) y el del padre de verdad: también 1, si native_ssh
+            // es el pid 1 de su espacio de pids (un contenedor sin init).
+            bool isPadre = args.Length == 4 && int.TryParse(args[1], NumberStyles.None, CultureInfo.InvariantCulture, out int padre)
+                && args[1] == padre.ToString(CultureInfo.InvariantCulture) && padre == ProcesoPadre();
             AddressFamily? familia = args.Length == 4 ? args[2] switch { "4" => AddressFamily.InterNetwork, "6" => AddressFamily.InterNetworkV6, "0" => AddressFamily.Unspecified, _ => null } : null;
             if (!isPadre || familia is null || !IsNombreValido(args[3]))
             {

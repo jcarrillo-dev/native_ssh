@@ -14,11 +14,20 @@ namespace NativeSsh.Comun
     {
         private static partial IPAddress[]? ResolverFamiliaDelSistema(string nombre, AddressFamily familia) => GetAddrInfoLinux.ResolverFamilia(nombre, familia, out _);
 
+        // Si no se sabe cuál es el binario propio (sin /proc ni la ruta del proceso), como en los demás sistemas: en hilos
+        // (FamiliasEnCurso) y el destino con el DNS de .NET; ahí un TCP/53 que no cierra deja la familia sin volver a
+        // resolverse hasta que glibc se rinda.
+        private static readonly FamiliasEnCurso EnCursoSinProceso = new();
+
         private static partial Task<DireccionesPorFamilia> ResolverDelSistemaAsync(string nombre, CancellationToken plazo) =>
-            ResolverAsync(nombre, ResolutorEnProceso.DelSistema.ResolverAsync, plazo);
+            ResolutorEnProceso.ProgramaPropio is null
+                ? ResolverAsync(nombre, ResolverFamiliaDelSistema, EnCursoSinProceso, plazo)
+                : ResolverAsync(nombre, ResolutorEnProceso.DelSistema.ResolverAsync, plazo);
 
         private static partial Task<ResultadoResolucion> ResolverDestinoDelSistemaAsync(string nombre, CancellationToken plazo) =>
-            ResolutorEnProceso.DelSistema.ResolverAsync(nombre, AddressFamily.Unspecified, plazo);
+            ResolutorEnProceso.ProgramaPropio is null
+                ? ResolverDestinoConNetAsync(nombre, plazo)
+                : ResolutorEnProceso.DelSistema.ResolverAsync(nombre, AddressFamily.Unspecified, plazo);
 
         static partial void AnadirSinTerminarDelSistema(List<string> sinTerminar) => ResolutorEnProceso.DelSistema.AnadirSinTerminar(sinTerminar);
 
