@@ -58,21 +58,30 @@
     </ItemGroup>
   </Target>
 
-  <!-- Solo las pruebas pueden usar System.Linq: en el resto de proyectos (también en los que se añadan) el build falla si
-       algún fuente a compilar (también los generados, como el de los global using) lo nombra en un using (normal, global,
-       static o alias) o con el nombre completo. Se busca por texto, sin contar lo que va tras '//' en la línea: un
-       'Enumerable.' suelto no hace falta buscarlo, porque sin uno de esos usings no compila (ni se confunde así con
-       string.Concat o ValueLinqDelayExtensiones). Tarea en línea de MSBuild (sin paquetes ni órdenes del shell): igual en
-       Linux y en Windows. El SSH.NET del submódulo tiene su propio Directory.Build.props y no pasa por aquí. -->
+  <!-- Solo las pruebas pueden usar System.Linq (exentos y comprobación semántica, más abajo). Búsqueda por texto en cada
+       fuente a compilar (también los generados, como el de los global using), sin contar lo que va tras '//' en la línea:
+       System.Linq en un using (normal, global, static o alias) o con el nombre completo, el identificador RS0030 y un
+       '#pragma warning disable' sin identificadores. Tarea
+       en línea de MSBuild (sin paquetes ni órdenes del shell): igual en Linux y en Windows. El SSH.NET del submódulo tiene
+       su propio Directory.Build.props y no pasa por aquí. -->
   <UsingTask TaskName="NativeSshBuscarSystemLinq" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
       <Fuentes ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Analizadores ParameterType="Microsoft.Build.Framework.ITaskItem[]" />
     </ParameterGroup>
     <Task>
       <Using Namespace="System.IO" />
       <Using Namespace="System.Text.RegularExpressions" />
       <Code Type="Fragment" Language="cs"><![CDATA[
-        Regex patron = new Regex(@"\busing\s+(global::)?System\.Linq\b|\busing\s+static\s+(global::)?System\.Linq\.|\busing\s+\w+\s*=\s*(global::)?System\.Linq\b|(global::|[^\w.])System\.Linq\.", RegexOptions.CultureInvariant);
+        bool hasAnalizador = false;
+        foreach (ITaskItem analizador in Analizadores ?? new ITaskItem[0])
+            if (string.Equals(analizador.GetMetadata("Filename"), "Microsoft.CodeAnalysis.CSharp.BannedApiAnalyzers", StringComparison.OrdinalIgnoreCase))
+                hasAnalizador = true;
+        if (!hasAnalizador)
+            Log.LogError(null, "NSLINQ", null, null, 0, 0, 0, 0, "Falta el analizador Microsoft.CodeAnalysis.CSharp.BannedApiAnalyzers, que prohíbe System.Linq (RS0030).");
+        // Además de System.Linq, lo que suprimiría RS0030 en el fuente: el identificador (#pragma, SuppressMessage) y un
+        // '#pragma warning disable' sin identificadores.
+        Regex patron = new Regex(@"\busing\s+(global::)?System\.Linq\b|\busing\s+static\s+(global::)?System\.Linq\.|\busing\s+\w+\s*=\s*(global::)?System\.Linq\b|(global::|[^\w.])System\.Linq\.|\bRS0030\b|#\s*pragma\s+warning\s+disable\s*$", RegexOptions.CultureInvariant);
         foreach (ITaskItem fuente in Fuentes)
         {
             string ruta = fuente.GetMetadata("FullPath");
@@ -86,11 +95,9 @@
                 string codigo = comentario >= 0 ? linea.Substring(0, comentario) : linea;
                 Match coincidencia = patron.Match(" " + codigo);
                 if (coincidencia.Success)
-                    Log.LogError(null, "NSLINQ", null, ruta, numero, coincidencia.Index, 0, 0, "System.Linq solo se puede usar en las pruebas (native_ssh.Test): '{0}'.", linea.Trim());
+                    Log.LogError(null, "NSLINQ", null, ruta, numero, coincidencia.Index, 0, 0, "System.Linq solo se puede usar en las pruebas (native_ssh.Test), y su prohibición (RS0030) no se suprime: '{0}'.", linea.Trim());
             }
         }
-        // Sin esto la tarea acaba con éxito aunque haya dado errores: el Touch de la marca se ejecutaba y el build siguiente
-        // (incremental) ya no comprobaba nada.
         Success = !Log.HasLoggedErrors;
       ]]></Code>
     </Task>
@@ -103,22 +110,37 @@
          código es de BenchmarkDotNet y usa System.Linq), y solo bajo native_ssh.Benchmarks/bin/ (lo deja en
          bin/<configuración>/<marco>/<proyecto>-<job>-<n>/; bin/ no se versiona).
        En Windows las rutas se comparan sin distinguir mayúsculas (su sistema de archivos tampoco), en los demás tal cual.
-       Incremental: si ningún fuente cambió desde la última comprobación correcta, no se vuelve a compilar la tarea en
-       línea ni a leer los fuentes (la marca solo se escribe si no hubo error). -->
-  <Target Name="NativeSshProhibirSystemLinq" BeforeTargets="CoreCompile"
-          Condition="!(($([System.String]::Equals('$(MSBuildProjectName)', 'native_ssh.Test'))
+       Los no exentos llevan dos comprobaciones:
+       - Semántica: el analizador BannedApiAnalyzers con BannedSymbols.txt (N:System.Linq) y RS0030 como error
+         (sinlinq.globalconfig). Ve cualquier uso de un miembro de System.Linq, se escriba como se escriba: comentarios
+         dentro del nombre, partido en líneas, alias por partes, 'namespace System { using Linq; }', un espacio de nombres
+         bajo System.Linq, métodos de extensión. No ve un tipo de System.Linq que solo aparece en una firma ni la reflexión.
+       - Por texto, como red de seguridad (NativeSshBuscarSystemLinq, en cada build, sin marca incremental): los usings y el
+         nombre completo aunque no se usen, lo que suprimiría RS0030 en el fuente (su identificador o un '#pragma warning
+         disable' sin identificadores) y que el analizador esté referenciado.
+       Desactivarlas a propósito con opciones de build (-p: o variables de entorno de MSBuild, un .rsp, redefinir los
+       targets o quitar el paquete en un .csproj o en otro fichero de MSBuild) queda fuera: se ve en la línea de órdenes o
+       en el diff. -->
+  <Choose>
+    <When Condition="!(($([System.String]::Equals('$(MSBuildProjectName)', 'native_ssh.Test'))
             and (($([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::Equals($([MSBuild]::NormalizePath('$(MSBuildProjectFullPath)').ToUpperInvariant()),
             $([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)', 'native_ssh.Test', 'native_ssh.Test.csproj').ToUpperInvariant()))))
             or (!$([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::Equals($([MSBuild]::NormalizePath('$(MSBuildProjectFullPath)')), $([MSBuild]::NormalizePath('$(MSBuildThisFileDirectory)', 'native_ssh.Test', 'native_ssh.Test.csproj')))))))
           or ($([System.String]::Equals('$(MSBuildProjectName)', 'BenchmarkDotNet.Autogenerated'))
             and (($([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::CompareOrdinal($([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)').ToUpperInvariant()), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin').ToUpperInvariant()), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin').ToUpperInvariant().Length))) == 0)
-            or (!$([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::CompareOrdinal($([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)')), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin')), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin').Length))) == 0))))"
-          Inputs="@(Compile);$(MSBuildThisFileFullPath)" Outputs="$(IntermediateOutputPath)nativessh.sinlinq">
-    <NativeSshBuscarSystemLinq Fuentes="@(Compile)" />
-    <Touch Files="$(IntermediateOutputPath)nativessh.sinlinq" AlwaysCreate="true" />
-    <ItemGroup>
-      <FileWrites Include="$(IntermediateOutputPath)nativessh.sinlinq" />
-    </ItemGroup>
+            or (!$([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::CompareOrdinal($([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)')), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin')), 0, $([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', 'native_ssh.Benchmarks', 'bin').Length))) == 0))))">
+      <ItemGroup>
+        <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0" PrivateAssets="all" />
+        <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+        <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)sinlinq.globalconfig" />
+        <!-- Marca de proyecto no exento para el target de texto (un -p: no puede crear ni quitar elementos) -->
+        <_NativeSshSinLinq Include="$(MSBuildProjectFullPath)" />
+      </ItemGroup>
+    </When>
+  </Choose>
+
+  <Target Name="NativeSshProhibirSystemLinq" BeforeTargets="CoreCompile" Condition="'@(_NativeSshSinLinq)' != ''">
+    <NativeSshBuscarSystemLinq Fuentes="@(Compile)" Analizadores="@(Analyzer)" />
   </Target>
 
 </Project>

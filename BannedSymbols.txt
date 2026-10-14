@@ -1,0 +1,2 @@
+// System.Linq solo en las pruebas (Directory.Build.props): cualquier uso de su espacio de nombres es RS0030.
+N:System.Linq;System.Linq solo se puede usar en las pruebas (native_ssh.Test)

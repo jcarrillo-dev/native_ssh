@@ -1,0 +1,4 @@
+is_global = true
+
+# RS0030 (BannedSymbols.txt: System.Linq) como error en los proyectos que no pueden usar System.Linq (Directory.Build.props).
+dotnet_diagnostic.RS0030.severity = error
