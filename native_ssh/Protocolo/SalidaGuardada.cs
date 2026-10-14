@@ -332,8 +332,9 @@ namespace NativeSsh.Protocolo
             for (int i = 0; i < LineasVistaPrevia && !resto.IsEmpty; i++)
             {
                 int salto = resto.IndexOf((byte)'\n');
-                ReadOnlySpan<byte> linea = salto < 0 ? resto : resto[..salto];
-                resto = salto < 0 ? [] : resto[(salto + 1)..];
+                bool isUltimaLinea = salto < 0;
+                ReadOnlySpan<byte> linea = isUltimaLinea ? resto : resto[..salto];
+                resto = isUltimaLinea ? [] : resto[(salto + 1)..];
                 // Primero como un terminal (RC3: de una barra de progreso queda lo último que mostró) y después el recorte.
                 byte[] copia = linea.ToArray();
                 int longitud = ConversorTexto.LimpiarAnsi(copia, isComoTerminal: true);

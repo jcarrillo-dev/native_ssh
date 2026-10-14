@@ -853,7 +853,8 @@ namespace NativeSsh.Herramientas
                 return "No había sesión con ese destino";
 
             StringBuilder texto = new($"No había sesión con ese destino y esas claves ({DescribirCerradas([destino], isConDestino: false)}); ");
-            _ = texto.Append(otras.Length == 1 ? "hay otra de " : $"hay {otras.Length} más de ").Append(destino.Clave).Append(" con otras claves, que ").Append(otras.Length == 1 ? "no se toca: " : "no se tocan: ");
+            bool isUnaOtra = otras.Length == 1;
+            _ = texto.Append(isUnaOtra ? "hay otra de " : $"hay {otras.Length} más de ").Append(destino.Clave).Append(" con otras claves, que ").Append(isUnaOtra ? "no se toca: " : "no se tocan: ");
             for (int i = 0; i < otras.Length; i++)
             {
                 if (i > 0)
@@ -1261,8 +1262,9 @@ namespace NativeSsh.Herramientas
             if (salida.StartsWith(PrefijoMotor, StringComparison.Ordinal))
             {
                 int finLinea = salida.IndexOf('\n', StringComparison.Ordinal);
-                motor = finLinea < 0 ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea];
-                resultados = finLinea < 0 ? string.Empty : salida[(finLinea + 1)..];
+                bool isSinResultados = finLinea < 0;
+                motor = isSinResultados ? salida[PrefijoMotor.Length..] : salida[PrefijoMotor.Length..finLinea];
+                resultados = isSinResultados ? string.Empty : salida[(finLinea + 1)..];
             }
 
             resultados = QuitarSaltoFinal(resultados);
@@ -1794,8 +1796,9 @@ namespace NativeSsh.Herramientas
         private static string MensajeFindFallido(string codigoYError)
         {
             int espacio = codigoYError.IndexOf(' ', StringComparison.Ordinal);
-            string codigo = espacio < 0 ? codigoYError : codigoYError[..espacio];
-            string error = espacio < 0 ? string.Empty : codigoYError[(espacio + 1)..].Trim();
+            bool isSinError = espacio < 0;
+            string codigo = isSinError ? codigoYError : codigoYError[..espacio];
+            string error = isSinError ? string.Empty : codigoYError[(espacio + 1)..].Trim();
             string detalle = error.Length == 0 ? "sin mensaje" : error;
             return $"Error en búsqueda por nombre: find no terminó bien (código {codigo}) y su lista no es fiable, así que no se devuelve ninguna: {detalle}. Si dice que la lista de argumentos es demasiado larga, hay miles de sistemas de ficheros virtuales montados por debajo de la ruta (cada uno se poda en la línea de órdenes de find): repite ssh_find con una ruta más concreta.";
         }
@@ -1822,7 +1825,8 @@ namespace NativeSsh.Herramientas
                     superiores.Add(montaje);
             }
 
-            if (superiores.Count == 0 && !isSinTablaSinCruzar)
+            bool isSinSuperiores = superiores.Count == 0;
+            if (isSinSuperiores && !isSinTablaSinCruzar)
                 return string.Empty;
 
             StringBuilder linea = new("[montajes_no_explorados: ");
@@ -1838,7 +1842,7 @@ namespace NativeSsh.Herramientas
             if (restantes > 0)
                 _ = linea.Append(CultureInfo.InvariantCulture, $" (+{restantes} más)");
             if (isSinTablaSinCruzar)
-                _ = linea.Append(superiores.Count == 0 ? string.Empty : "; ").Append("no se pudo leer /proc/self/mountinfo: puede haber otros sistemas de ficheros montados por debajo de la ruta que no se recorrieron");
+                _ = linea.Append(isSinSuperiores ? string.Empty : "; ").Append("no se pudo leer /proc/self/mountinfo: puede haber otros sistemas de ficheros montados por debajo de la ruta que no se recorrieron");
             return linea.Append(']').ToString();
         }
 

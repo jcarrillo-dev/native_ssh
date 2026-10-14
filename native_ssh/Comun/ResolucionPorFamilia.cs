@@ -241,8 +241,9 @@ namespace NativeSsh.Comun
 
             linea = linea[inicio..];
             int fin = linea.IndexOfAny(Blancos);
-            campo = fin < 0 ? linea : linea[..fin];
-            linea = fin < 0 ? [] : linea[fin..];
+            bool isUltimoCampo = fin < 0;
+            campo = isUltimoCampo ? linea : linea[..fin];
+            linea = isUltimoCampo ? [] : linea[fin..];
             return true;
         }
 

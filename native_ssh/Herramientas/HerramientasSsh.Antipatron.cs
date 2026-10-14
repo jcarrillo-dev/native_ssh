@@ -532,11 +532,12 @@ namespace NativeSsh.Herramientas
                 while (i < comando.Length)
                 {
                     int finLinea = comando.IndexOf('\n', i);
-                    int fin = finLinea < 0 ? comando.Length : finLinea;
+                    bool isUltimaLinea = finLinea < 0;
+                    int fin = isUltimaLinea ? comando.Length : finLinea;
                     ReadOnlySpan<char> linea = comando.AsSpan(i, fin - i).TrimEnd('\r');
                     if (isQuitarTabuladores)
                         linea = linea.TrimStart('\t');
-                    i = finLinea < 0 ? comando.Length : finLinea + 1;
+                    i = isUltimaLinea ? comando.Length : finLinea + 1;
                     if (linea.SequenceEqual(delimitador))
                         break;
                 }

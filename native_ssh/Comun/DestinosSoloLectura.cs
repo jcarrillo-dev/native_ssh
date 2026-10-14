@@ -485,18 +485,21 @@ namespace NativeSsh.Comun
         // ellos): el mensaje lo dice tal cual.
         public static string MensajeNoComprobado(string clave, string herramienta, string? noResuelto, bool isCupoLleno = false, bool isErrorConfiguracion = false, bool isEnSesion = false, string? entrada = null, string? incidencia = null)
         {
-            string deLaEntrada = entrada is null ? string.Empty : $", de la entrada '{entrada}' de {Variable}";
-            string causa = noResuelto is null ? "no se sabe a qué dirección está conectada su sesión"
+            bool isSinNombre = noResuelto is null;
+            bool hasIncidencia = incidencia is not null;
+            bool hasEntrada = entrada is not null;
+            string deLaEntrada = !hasEntrada ? string.Empty : $", de la entrada '{entrada}' de {Variable}";
+            string causa = isSinNombre ? "no se sabe a qué dirección está conectada su sesión"
                 : isErrorConfiguracion ? $"no se pudo leer la entrada {noResuelto} con la configuración de ssh (ssh -G)"
-                : incidencia is not null ? $"no se resolvió {noResuelto}{deLaEntrada}: {incidencia}"
+                : hasIncidencia ? $"no se resolvió {noResuelto}{deLaEntrada}: {incidencia}"
                 : isCupoLleno ? $"no se llegó a resolver {noResuelto}: demasiadas resoluciones a la vez"
-                : entrada is not null ? $"no se resolvió {noResuelto}, de la entrada '{entrada}' de {Variable}"
+                : hasEntrada ? $"no se resolvió {noResuelto}, de la entrada '{entrada}' de {Variable}"
                 : $"no se resolvió {noResuelto}";
-            string cuando = noResuelto is null ? "la comprobación se repite en cada llamada."
+            string cuando = isSinNombre ? "la comprobación se repite en cada llamada."
                 : isErrorConfiguracion ? "la comprobación se repite en cada llamada y pasará cuando ssh -G pueda leer esa entrada (quien configura native_ssh debe revisar su configuración de ssh)."
-                : incidencia is not null ? "la comprobación se repite en cada llamada. Díselo al usuario: ssh_status muestra los procesos de resolución que siguen vivos; native_ssh vuelve a mirar si terminaron en cada comprobación (un proceso que no muere con SIGKILL suele estar bloqueado en el núcleo y lo libera el sistema, no native_ssh)."
+                : hasIncidencia ? "la comprobación se repite en cada llamada. Díselo al usuario: ssh_status muestra los procesos de resolución que siguen vivos; native_ssh vuelve a mirar si terminaron en cada comprobación (un proceso que no muere con SIGKILL suele estar bloqueado en el núcleo y lo libera el sistema, no native_ssh)."
                 : isCupoLleno ? "vuelve a intentarlo en unos segundos, cuando terminen las resoluciones en curso; la comprobación se repite en cada llamada."
-                : entrada is not null ? $"la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de {Variable}, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh."
+                : hasEntrada ? $"la comprobación se repite en cada llamada y pasará cuando ese nombre se resuelva. Díselo al usuario: mientras no se resuelva, esa entrada rechaza las escrituras a todos los destinos con su usuario y puerto; si está mal escrita o el nombre ya no existe, quien configura native_ssh debe corregirla o quitarla de {Variable}, y si no, comprobar el DNS (o /etc/hosts) de la máquina donde corre native_ssh."
                 : "la comprobación se repite en cada llamada y pasará cuando el nombre se resuelva (DNS o /etc/hosts).";
             return $"Rechazado: {clave}: no se pudo comprobar si es de solo lectura ({causa}); se rechaza por seguridad (configuración local de native_ssh, variable {Variable}), así que {QueNoSeHizo(herramienta, isEnSesion)}. ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd siguen disponibles. No busques otra vía para modificar el servidor: {cuando}";
         }
@@ -682,7 +685,8 @@ namespace NativeSsh.Comun
             Anadir(direcciones, porFamilia.Ipv4);
             Anadir(direcciones, porFamilia.Ipv6);
             Anadir(direcciones, CollectionsMarshal.AsSpan(enHosts));
-            return (direcciones.Count > 0 ? direcciones : null, porFamilia.HasFallo, direcciones.Count > 0 ? null : porFamilia.Incidencia);
+            bool hasDirecciones = direcciones.Count > 0;
+            return (hasDirecciones ? direcciones : null, porFamilia.HasFallo, hasDirecciones ? null : porFamilia.Incidencia);
         }
 
         // Un array nulo llega como un span vacío.
