@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -32,30 +33,44 @@ namespace NativeSsh.Herramientas
             if (esquema.ValueKind != JsonValueKind.Object || !esquema.TryGetProperty("properties", out JsonElement propiedades))
                 return null;
 
-            List<string> problemas = [];
-            List<string> desconocidos = [];
-            if (argumentos is not null)
-                foreach ((string nombre, JsonElement valor) in argumentos)
-                    if (!propiedades.TryGetProperty(nombre, out JsonElement propiedad))
-                        desconocidos.Add($"{nombre} ({Tipo(valor)})");
-                    else
-                        ValidarValor($"'{nombre}'", propiedad, valor, problemas);
+            // Listas rentadas que se llenan por ref en los métodos auxiliares: van con try/finally porque una variable de un
+            // 'using' no se puede pasar por ref.
+            PooledListRef<string> problemas = new();
+            PooledListRef<string> desconocidos = new();
+            PooledListRef<string> obligatorios = new();
+            try
+            {
+                if (argumentos is not null)
+                    foreach ((string nombre, JsonElement valor) in argumentos)
+                        if (!propiedades.TryGetProperty(nombre, out JsonElement propiedad))
+                            desconocidos.Add($"{nombre} ({Tipo(valor)})");
+                        else
+                            ValidarValor($"'{nombre}'", propiedad, valor, ref problemas);
 
-            foreach (string obligatorio in Obligatorios(esquema))
-                if (argumentos is null || !argumentos.ContainsKey(obligatorio))
-                    problemas.Add($"falta '{obligatorio}', que es obligatorio{PistaFalta(herramienta, obligatorio)}");
+                AnadirObligatorios(esquema, ref obligatorios);
+                foreach (string obligatorio in obligatorios)
+                    if (argumentos is null || !argumentos.ContainsKey(obligatorio))
+                        problemas.Add($"falta '{obligatorio}', que es obligatorio{PistaFalta(herramienta, obligatorio)}");
 
-            if (desconocidos.Count == 0 && problemas.Count == 0)
-                return null;
+                bool hasDesconocidos = desconocidos.Tamaño > 0;
+                if (!hasDesconocidos && problemas.Tamaño == 0)
+                    return null;
 
-            StringBuilder texto = new($"Argumentos no válidos para {herramienta}: no se ha ejecutado nada. ");
-            if (desconocidos.Count > 0)
-                _ = texto.Append(desconocidos.Count == 1 ? "Argumento desconocido: " : "Argumentos desconocidos: ").AppendJoin(", ", desconocidos).Append(". ");
-            foreach (string problema in problemas)
-                _ = texto.Append(char.ToUpperInvariant(problema[0])).Append(problema.AsSpan(1)).Append(". ");
-            _ = texto.Append("Admitidos: ");
-            DescribirAdmitidos(texto, esquema, propiedades);
-            return texto.Append('.').ToString();
+                StringBuilder texto = new($"Argumentos no válidos para {herramienta}: no se ha ejecutado nada. ");
+                if (hasDesconocidos)
+                    _ = texto.Append(desconocidos.Tamaño == 1 ? "Argumento desconocido: " : "Argumentos desconocidos: ").AppendJoin(", ", desconocidos.Span).Append(". ");
+                foreach (string problema in problemas)
+                    _ = texto.Append(char.ToUpperInvariant(problema[0])).Append(problema.AsSpan(1)).Append(". ");
+                _ = texto.Append("Admitidos: ");
+                DescribirAdmitidos(texto, esquema, propiedades);
+                return texto.Append('.').ToString();
+            }
+            finally
+            {
+                obligatorios.Dispose();
+                desconocidos.Dispose();
+                problemas.Dispose();
+            }
         }
 
         // Para los textos cuyo valor vacío tiene un efecto propio (y cuyo null rechaza la herramienta diciéndolo), lo mismo
@@ -68,33 +83,50 @@ namespace NativeSsh.Herramientas
             _ => string.Empty
         };
 
-        private static void ValidarValor(string ruta, JsonElement esquema, JsonElement valor, List<string> problemas)
+        private static void ValidarValor(string ruta, JsonElement esquema, JsonElement valor, scoped ref PooledListRef<string> problemas)
         {
-            List<string> tipos = Tipos(esquema);
-            if (tipos.Count > 0 && !tipos.Exists(t => IsDelTipo(valor, t)))
+            PooledListRef<string> tipos = new();
+            try
             {
-                problemas.Add($"{ruta} llegó como {DescribirLlegado(valor)} y debe ser {DescribirTipos(tipos)}");
-                return;
+                AnadirTipos(esquema, ref tipos);
+                if (tipos.Tamaño > 0 && !IsDeAlgunTipo(valor, tipos.Span))
+                {
+                    problemas.Add($"{ruta} llegó como {DescribirLlegado(valor)} y debe ser {DescribirTipos(tipos.Span)}");
+                    return;
+                }
+            }
+            finally
+            {
+                tipos.Dispose();
             }
 
             if (valor.ValueKind == JsonValueKind.Array && esquema.TryGetProperty("items", out JsonElement elementos))
             {
                 int i = 0;
                 foreach (JsonElement elemento in valor.EnumerateArray())
-                    ValidarValor($"{ruta}[{++i}]", elementos, elemento, problemas);
+                    ValidarValor($"{ruta}[{++i}]", elementos, elemento, ref problemas);
                 return;
             }
 
             if (valor.ValueKind == JsonValueKind.Object && esquema.TryGetProperty("properties", out JsonElement propiedades))
-                ValidarObjeto(ruta, esquema, propiedades, valor, problemas);
+                ValidarObjeto(ruta, esquema, propiedades, valor, ref problemas);
+        }
+
+        private static bool IsDeAlgunTipo(JsonElement valor, ReadOnlySpan<string> tipos)
+        {
+            foreach (string tipo in tipos)
+                if (IsDelTipo(valor, tipo))
+                    return true;
+
+            return false;
         }
 
         // Un objeto dentro de una lista (cada edición de ssh_replace_file_content): sus nombres no distinguen mayúsculas, como
         // en el SDK. Con campos desconocidos, el error dice cuáles y los que lleva cada elemento.
-        private static void ValidarObjeto(string ruta, JsonElement esquema, JsonElement propiedades, JsonElement valor, List<string> problemas)
+        private static void ValidarObjeto(string ruta, JsonElement esquema, JsonElement propiedades, JsonElement valor, scoped ref PooledListRef<string> problemas)
         {
-            List<string> desconocidos = [];
-            List<string> presentes = [];
+            using PooledListRef<string> desconocidos = new();
+            using PooledListRef<string> presentes = new();
             foreach (JsonProperty campo in valor.EnumerateObject())
             {
                 if (BuscarPropiedad(propiedades, campo.Name) is not { } propiedad)
@@ -104,20 +136,29 @@ namespace NativeSsh.Herramientas
                 }
 
                 presentes.Add(propiedad.Name);
-                ValidarValor($"{ruta}.{propiedad.Name}", propiedad.Value, campo.Value, problemas);
+                ValidarValor($"{ruta}.{propiedad.Name}", propiedad.Value, campo.Value, ref problemas);
             }
 
-            if (desconocidos.Count > 0)
+            if (desconocidos.Tamaño > 0)
             {
                 StringBuilder admitidos = new();
                 DescribirAdmitidos(admitidos, esquema, propiedades);
                 string extra = esquema.TryGetProperty("description", out JsonElement descripcion) && descripcion.ValueKind == JsonValueKind.String ? $" ({descripcion.GetString()})" : "";
-                problemas.Add($"{ruta}: {(desconocidos.Count == 1 ? "campo desconocido" : "campos desconocidos")}: {string.Join(", ", desconocidos)}; cada elemento lleva {admitidos}{extra}");
+                problemas.Add($"{ruta}: {(desconocidos.Tamaño == 1 ? "campo desconocido" : "campos desconocidos")}: {string.Join(", ", desconocidos.Span)}; cada elemento lleva {admitidos}{extra}");
             }
 
-            foreach (string obligatorio in Obligatorios(esquema))
-                if (!presentes.Contains(obligatorio))
-                    problemas.Add($"{ruta}: falta '{obligatorio}', que es obligatorio");
+            PooledListRef<string> obligatorios = new();
+            try
+            {
+                AnadirObligatorios(esquema, ref obligatorios);
+                foreach (string obligatorio in obligatorios)
+                    if (!presentes.Span.Contains(obligatorio))
+                        problemas.Add($"{ruta}: falta '{obligatorio}', que es obligatorio");
+            }
+            finally
+            {
+                obligatorios.Dispose();
+            }
         }
 
         private static JsonProperty? BuscarPropiedad(JsonElement propiedades, string nombre)
@@ -129,22 +170,20 @@ namespace NativeSsh.Herramientas
             return null;
         }
 
-        private static List<string> Obligatorios(JsonElement esquema)
+        // Los obligatorios del esquema ('required'), añadidos a 'obligatorios'.
+        private static void AnadirObligatorios(JsonElement esquema, scoped ref PooledListRef<string> obligatorios)
         {
-            List<string> obligatorios = [];
             if (esquema.TryGetProperty("required", out JsonElement requeridos) && requeridos.ValueKind == JsonValueKind.Array)
                 foreach (JsonElement requerido in requeridos.EnumerateArray())
                     if (requerido.GetString() is { } nombre)
                         obligatorios.Add(nombre);
-
-            return obligatorios;
         }
 
-        private static List<string> Tipos(JsonElement esquema)
+        // Los tipos del esquema ('type', un texto o una lista), añadidos a 'tipos'.
+        private static void AnadirTipos(JsonElement esquema, scoped ref PooledListRef<string> tipos)
         {
-            List<string> tipos = [];
             if (!esquema.TryGetProperty("type", out JsonElement tipo))
-                return tipos;
+                return;
 
             if (tipo.ValueKind == JsonValueKind.String)
                 tipos.Add(tipo.GetString()!);
@@ -152,8 +191,6 @@ namespace NativeSsh.Herramientas
                 foreach (JsonElement uno in tipo.EnumerateArray())
                     if (uno.GetString() is { } nombre)
                         tipos.Add(nombre);
-
-            return tipos;
         }
 
         // Un tipo desconocido para el validador no rechaza nada: lo decide el SDK.
@@ -199,11 +236,11 @@ namespace NativeSsh.Herramientas
 
         private static string Recortar(string texto) => texto.Length <= MaxCaracteresValor ? texto : string.Concat(texto.AsSpan(0, MaxCaracteresValor - 1), "…");
 
-        private static string DescribirTipos(List<string> tipos)
+        private static string DescribirTipos(ReadOnlySpan<string> tipos)
         {
-            List<string> nombres = [];
-            foreach (string tipo in tipos)
-                nombres.Add(tipo switch
+            StringBuilder nombres = new();
+            for (int i = 0; i < tipos.Length; i++)
+                _ = nombres.Append(i == 0 ? "" : " o ").Append(tipos[i] switch
                 {
                     "string" => "texto",
                     "integer" => "un entero (p. ej. 30)",
@@ -212,33 +249,62 @@ namespace NativeSsh.Herramientas
                     "array" => "una lista",
                     "object" => "un objeto",
                     "null" => "null",
-                    _ => tipo
+                    _ => tipos[i]
                 });
-            return string.Join(" o ", nombres);
+            return nombres.ToString();
         }
 
         // «nombre (tipo, obligatorio), …» de las propiedades del esquema.
         private static void DescribirAdmitidos(StringBuilder texto, JsonElement esquema, JsonElement propiedades)
         {
-            List<string> obligatorios = Obligatorios(esquema);
-            bool isPrimera = true;
-            foreach (JsonProperty propiedad in propiedades.EnumerateObject())
+            PooledListRef<string> obligatorios = new();
+            try
             {
-                _ = texto.Append(isPrimera ? "" : ", ").Append(propiedad.Name).Append(" (");
-                List<string> tipos = Tipos(propiedad.Value);
-                _ = tipos.Remove("null");
-                _ = texto.Append(tipos.Count == 0 ? "cualquiera" : string.Join(" o ", tipos.ConvertAll(t => t switch
+                AnadirObligatorios(esquema, ref obligatorios);
+                bool isPrimera = true;
+                foreach (JsonProperty propiedad in propiedades.EnumerateObject())
                 {
-                    "string" => "texto",
-                    "integer" => "entero",
-                    "boolean" => "booleano",
-                    "number" => "número",
-                    "array" => "lista",
-                    "object" => "objeto",
-                    _ => t
-                })));
-                _ = texto.Append(obligatorios.Contains(propiedad.Name) ? ", obligatorio)" : ")");
-                isPrimera = false;
+                    _ = texto.Append(isPrimera ? "" : ", ").Append(propiedad.Name).Append(" (");
+                    DescribirTiposAdmitidos(texto, propiedad.Value);
+                    _ = texto.Append(obligatorios.Span.Contains(propiedad.Name) ? ", obligatorio)" : ")");
+                    isPrimera = false;
+                }
+            }
+            finally
+            {
+                obligatorios.Dispose();
+            }
+        }
+
+        // «texto o entero» de los tipos de una propiedad, sin el primer "null"; «cualquiera» si no queda ninguno.
+        private static void DescribirTiposAdmitidos(StringBuilder texto, JsonElement esquema)
+        {
+            PooledListRef<string> tipos = new();
+            try
+            {
+                AnadirTipos(esquema, ref tipos);
+                _ = tipos.Remove("null");
+                if (tipos.Tamaño == 0)
+                {
+                    _ = texto.Append("cualquiera");
+                    return;
+                }
+
+                for (int i = 0; i < tipos.Tamaño; i++)
+                    _ = texto.Append(i == 0 ? "" : " o ").Append(tipos[i] switch
+                    {
+                        "string" => "texto",
+                        "integer" => "entero",
+                        "boolean" => "booleano",
+                        "number" => "número",
+                        "array" => "lista",
+                        "object" => "objeto",
+                        _ => tipos[i]
+                    });
+            }
+            finally
+            {
+                tipos.Dispose();
             }
         }
     }
