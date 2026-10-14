@@ -28,7 +28,7 @@ namespace NativeSsh.Test.Herramientas
         public void LineaMontajes_ConMasDeVeinte_LosAcotaYDiceCuantosFaltan()
         {
             // Arrange
-            List<string> montajes = [.. Enumerable.Range(0, 25).Select(i => $"/m{i:D2}")];
+            string[] montajes = [.. Enumerable.Range(0, 25).Select(i => $"/m{i:D2}")];
 
             // Act
             string linea = HerramientasSsh.LineaMontajesNoExplorados(montajes, isSinTablaSinCruzar: false);

@@ -1331,7 +1331,7 @@ namespace NativeSsh.Herramientas
             salida.Length == 0 ? [] : (salida.EndsWith('\0') ? salida[..^1] : salida).Split('\0');
 
         // Los 'cantidad' primeros nombres, uno por línea (EscaparNombre).
-        private static string UnirNombres(string[] nombres, int cantidad)
+        private static string UnirNombres(ReadOnlySpan<string> nombres, int cantidad)
         {
             StringBuilder listado = new();
             int total = Math.Min(nombres.Length, cantidad);
@@ -1746,8 +1746,8 @@ namespace NativeSsh.Herramientas
             string marcaTotal = $"{PrefijoMarcaTotalMontajes}{idMarca}__";
             string marcaSinTabla = $"{PrefijoMarcaSinTabla}{idMarca}__";
             string marcaFindFallo = $"{PrefijoMarcaFindFallo}{idMarca}__";
-            List<string> nombres = [];
-            List<string> montajes = [];
+            using PooledListRef<string> nombres = new();
+            using PooledListRef<string> montajes = new();
             int totalMontajes = 0;
             bool isSinTabla = false;
             foreach (string nombre in SepararNombres(salida))
@@ -1762,22 +1762,22 @@ namespace NativeSsh.Herramientas
                 else
                     nombres.Add(nombre);
 
-            string lineaMontajes = LineaMontajesNoExplorados(montajes, isSinTabla && !isCruzarMontajes, totalMontajes);
+            string lineaMontajes = LineaMontajesNoExplorados(montajes.Span, isSinTabla && !isCruzarMontajes, totalMontajes);
             string pie = lineaMontajes.Length == 0 ? string.Empty : "\n\n" + lineaMontajes;
-            string listado = isConTamano ? UnirNombresConTamano(nombres, limite) : UnirNombres([.. nombres], limite);
-            return nombres.Count == 0
+            string listado = isConTamano ? UnirNombresConTamano(nombres.Span, limite) : UnirNombres(nombres.Span, limite);
+            return nombres.Tamaño == 0
                 ? $"No se encontraron elementos que coincidan con '{patron}' en '{rutaEfectiva}'.{pie}"
-                : nombres.Count > limite
+                : nombres.Tamaño > limite
                     ? $"{listado}\n\n[Límite alcanzado: se muestran {limite} resultados (profundidad máx: {profundidad}). Refina la ruta o patrón para acotar.]{pie}"
                     : listado + pie;
         }
 
         // Los 'cantidad' primeros '<bytes>\t<ruta>' como '<tamaño legible>\t<ruta>', uno por línea (la ruta, como EscaparNombre;
         // sin el './' inicial del -printf de GNU find).
-        private static string UnirNombresConTamano(List<string> nombres, int cantidad)
+        private static string UnirNombresConTamano(ReadOnlySpan<string> nombres, int cantidad)
         {
             StringBuilder listado = new();
-            int total = Math.Min(nombres.Count, cantidad);
+            int total = Math.Min(nombres.Length, cantidad);
             for (int i = 0; i < total; i++)
             {
                 string nombre = nombres[i];
@@ -1806,11 +1806,12 @@ namespace NativeSsh.Herramientas
         // '[montajes_no_explorados: …]' con los montajes ordenados, sin repetidos (un punto puede estar montado varias veces) ni
         // los que están dentro de otro de la lista (no se recorren igualmente), con tope. Vacía si no hay ninguno y la tabla de
         // montajes se pudo leer. Cada ruta va como un nombre de los listados (EscaparNombre). 'totalMontajes' es cuántos contó
-        // el script (que solo manda los primeros): el «(+N más)» sale de él si es mayor que los recibidos.
-        internal static string LineaMontajesNoExplorados(List<string> montajes, bool isSinTablaSinCruzar, int totalMontajes = 0)
+        // el script (que solo manda los primeros): el «(+N más)» sale de él si es mayor que los recibidos. Ordena 'montajes'
+        // en su sitio.
+        internal static string LineaMontajesNoExplorados(Span<string> montajes, bool isSinTablaSinCruzar, int totalMontajes = 0)
         {
             montajes.Sort(StringComparer.Ordinal);
-            List<string> superiores = [];
+            using PooledListRef<string> superiores = new();
             foreach (string montaje in montajes)
             {
                 bool isDentroDeOtro = false;
@@ -1825,12 +1826,12 @@ namespace NativeSsh.Herramientas
                     superiores.Add(montaje);
             }
 
-            bool isSinSuperiores = superiores.Count == 0;
+            bool isSinSuperiores = superiores.Tamaño == 0;
             if (isSinSuperiores && !isSinTablaSinCruzar)
                 return string.Empty;
 
             StringBuilder linea = new("[montajes_no_explorados: ");
-            int mostrados = Math.Min(superiores.Count, MaxMontajesNoExplorados);
+            int mostrados = Math.Min(superiores.Tamaño, MaxMontajesNoExplorados);
             for (int i = 0; i < mostrados; i++)
             {
                 if (i > 0)
@@ -1838,7 +1839,7 @@ namespace NativeSsh.Herramientas
                 EscaparNombre(linea, superiores[i]);
             }
 
-            int restantes = Math.Max(superiores.Count, totalMontajes) - mostrados;
+            int restantes = Math.Max(superiores.Tamaño, totalMontajes) - mostrados;
             if (restantes > 0)
                 _ = linea.Append(CultureInfo.InvariantCulture, $" (+{restantes} más)");
             if (isSinTablaSinCruzar)
