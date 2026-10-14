@@ -1182,7 +1182,7 @@ namespace NativeSsh.Test.Integracion
 
                 // Act 2: Con incluirArchivos = true
                 string resTodos = await herramientas.ListarDirectoriosAsync(sshd.Destino.Clave, dirTemporal, incluirArchivos: true);
-                _ = resTodos.Should().Be(".git\nnode_modules\nREADME.md\nsrc\nsrc/app.cs");
+                _ = resTodos.Should().Be(".git/\nnode_modules/\nREADME.md\nsrc/\nsrc/app.cs");
                 _ = resTodos.Should().Contain(".git");
                 _ = resTodos.Should().Contain("node_modules");
                 _ = resTodos.Should().Contain("README.md");

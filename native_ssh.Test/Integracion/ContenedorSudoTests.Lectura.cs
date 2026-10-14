@@ -219,7 +219,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             _ = python.Should().Be("sub/b.py");
             _ = directorios.Should().Be(".git\ncerrado\nnode_modules\nsub\nsub/profundo");
-            _ = arbol.Should().Be(".git\na.txt\ncerrado\ncrlf.txt\nenlace\nlatin1.txt\nnode_modules\nprivado.txt\nsinsalto.txt\nsub\nsub/b.py\nsub/profundo");
+            _ = arbol.Should().Be(".git/\na.txt\ncerrado/\ncrlf.txt\nenlace\nlatin1.txt\nnode_modules/\nprivado.txt\nsinsalto.txt\nsub/\nsub/b.py\nsub/profundo/");
             _ = cerrado.Message.Should().Be($"Error: sin permiso para listar el directorio: {proyecto}/cerrado");
             _ = cwd.Directorio.Should().Be(proyecto);
             _ = relativo.Should().Be("[Líneas 1-2 de 2]\ndef f():\n    return 42\n");

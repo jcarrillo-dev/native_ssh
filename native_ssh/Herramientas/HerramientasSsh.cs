@@ -1202,6 +1202,12 @@ namespace NativeSsh.Herramientas
         private static string LimitarNombres(int maximo) =>
             PlantillaBash.Crear($$"""{ n=0; while [ "$n" -lt {{maximo}} ] && IFS= read -r -d '' nombre; do printf '%s\0' "${nombre#./}"; n=$((n + 1)); done; }""");
 
+        // Como LimitarNombres, para ssh_list_dir con incluirArchivos=true (RC7): un directorio sale con '/' al final; un enlace
+        // simbólico, aunque lleve a un directorio, no ([ -L ] mira el último componente: lo que hay dentro de un enlace a un
+        // directorio sí se marca). La barra va dentro del nombre, así que un nombre escapado como cadena JSON la lleva dentro.
+        private static string LimitarNombresMarcandoDirectorios(int maximo) =>
+            PlantillaBash.Crear($$"""{ n=0; while [ "$n" -lt {{maximo}} ] && IFS= read -r -d '' nombre; do barra=; [ -d "$nombre" ] && [ ! -L "$nombre" ] && barra=/; printf '%s%s\0' "${nombre#./}" "$barra"; n=$((n + 1)); done; }""");
+
         // Nombres de un listado terminados en NUL (el último NUL no deja un nombre vacío detrás).
         private static string[] SepararNombres(string salida) =>
             salida.Length == 0 ? [] : (salida.EndsWith('\0') ? salida[..^1] : salida).Split('\0');
@@ -1281,13 +1287,13 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_list_dir", ReadOnly = true, Idempotent = true)]
-        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea: si contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
+        [Description("Herramienta canónica y obligatoria para explorar la topología jerárquica de carpetas de un proyecto con poda automática de dependencias y profundidad controlada. Sustituye a 'ls -la' y 'tree'. Si la ruta no existe, no se puede atravesar o no se puede listar, devuelve un error que lo indica (nunca un listado vacío). Cada nombre ocupa una línea; con incluirArchivos=true, los directorios llevan '/' al final (la ruta con la '/' sirve igual en otra herramienta). Si un nombre contiene caracteres de control (salto de línea, retorno de carro, tabulador...) o los separadores de línea y de párrafo de Unicode (U+2028, U+2029), o empieza por comillas dobles o por '[', sale entre comillas dobles y escapado como una cadena JSON (el salto de línea como \\n, la barra invertida como \\\\), que se puede usar tal cual como cadena JSON de la ruta en otra herramienta; los demás nombres salen tal cual. Se ejecuta en un canal exec propio sobre la misma conexión SSH: no espera a los comandos de ssh_exec en curso.")]
         public async Task<string> ListarDirectoriosAsync(
             [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
             [Description("Ruta base donde explorar (por defecto '.' relativo a __NS_CWD).")] string ruta = ".",
             [Description("Profundidad máxima de recursión (por defecto 3, entre 1 y 10).")] int profundidadMax = 3,
             [Description("Número máximo de directorios a devolver (por defecto 100, máx 200).")] int maxResultados = 100,
-            [Description("Si es true, incluye también archivos inmediatos junto a los directorios (sustituyendo completamente a 'ls' o 'tree'). Por defecto false.")] bool incluirArchivos = false,
+            [Description("Si es true, incluye también los archivos junto a los directorios (sustituye completamente a 'ls' o 'tree') y cada directorio sale con '/' al final ('src/'; un enlace simbólico a un directorio no lleva '/': es un enlace, ssh_stat lo dice). Por defecto false (solo directorios, sin '/').")] bool incluirArchivos = false,
             CancellationToken cancellationToken = default)
         {
             ExigirValorLiteral(ruta ?? string.Empty, "La ruta");
@@ -1317,7 +1323,7 @@ namespace NativeSsh.Herramientas
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name __pycache__ -o -name .cache \) -prune \
                   -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print0 -prune \
-                  -o {{filtroTipo}}-print0 2>/dev/null | sort -z | {{LimitarNombres(limite + 1)}}
+                  -o {{filtroTipo}}-print0 2>/dev/null | sort -z | {{(incluirArchivos ? LimitarNombresMarcandoDirectorios(limite + 1) : LimitarNombres(limite + 1))}}
                 )
                 """);
 
