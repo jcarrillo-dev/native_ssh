@@ -92,13 +92,11 @@ namespace NativeSsh.Ssh
             {
                 bool isRevocada = false;
                 foreach (byte[] rev in revocadas)
-                {
                     if (claveValida.AsSpan().SequenceEqual(rev))
                     {
                         isRevocada = true;
                         break;
                     }
-                }
 
                 if (!isRevocada)
                     _ = tipos.Add(tipo);
@@ -195,7 +193,6 @@ namespace NativeSsh.Ssh
         {
             int p = 0, t = 0, estrella = -1, marca = 0;
             while (t < texto.Length)
-            {
                 if (p < patron.Length && (patron[p] == '?' || char.ToLowerInvariant(patron[p]) == char.ToLowerInvariant(texto[t])))
                 {
                     p++;
@@ -212,10 +209,7 @@ namespace NativeSsh.Ssh
                     t = ++marca;
                 }
                 else
-                {
                     return false;
-                }
-            }
 
             while (p < patron.Length && patron[p] == '*')
                 p++;

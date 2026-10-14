@@ -352,14 +352,12 @@ namespace NativeSsh.Sesion
                 }
 
                 if (destino.Alias is { } alias && !entrada.Alias.Contains(alias))
-                {
                     if (entrada.Alias.Count < MaxAliasPorSesion)
                         _ = entrada.Alias.Add(alias);
                     else if (entrada.AliasOlvidados.Count < MaxAliasPorSesion)
                         _ = entrada.AliasOlvidados.Add(alias);
                     else
                         entrada.IsOlvidadosDesbordado = true;
-                }
 
                 return entrada.Sesion;
             }

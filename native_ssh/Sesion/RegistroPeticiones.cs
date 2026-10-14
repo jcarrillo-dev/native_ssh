@@ -28,10 +28,8 @@ namespace NativeSsh.Sesion
         {
             long ahora = reloj.GetTimestamp();
             foreach ((string? id, Peticion? peticion) in _peticiones)
-            {
                 if (peticion.IsFinalizada && reloj.GetElapsedTime(peticion.FinTimestamp, ahora) > opciones.RetencionPeticionesFinalizadas)
                     Quitar(id);
-            }
 
             int exceso = _peticiones.Count - opciones.MaxPeticionesRetenidas;
             if (exceso <= 0)

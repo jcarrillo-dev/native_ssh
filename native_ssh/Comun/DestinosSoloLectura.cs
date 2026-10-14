@@ -312,7 +312,6 @@ namespace NativeSsh.Comun
             bool isErrorConfiguracion = false;
             string? entradaNoResuelta = null;
             for (int i = 0; i < resueltas.Length; i++)
-            {
                 if (resueltas[i].Direcciones is not { } deLaEntrada)
                 {
                     // La entrada se nombra solo si su nombre no se resolvió (no si ssh -G no la pudo leer ni si no se llegó a
@@ -325,7 +324,6 @@ namespace NativeSsh.Comun
                     return new ComprobacionSoloLectura(true, null, DireccionConectada: conectada);
                 else if (direcciones is not null && deLaEntrada.Overlaps(direcciones))
                     return new ComprobacionSoloLectura(true, null);
-            }
 
             return new ComprobacionSoloLectura(noResuelto is not null, noResuelto, isCupoLleno, IsErrorConfiguracion: isErrorConfiguracion, Entrada: entradaNoResuelta, Incidencia: incidencia);
         }
@@ -402,12 +400,10 @@ namespace NativeSsh.Comun
             bool isDestinoConocido = TryDireccionesSinRed(servidor, isDestino: true, out HashSet<IPAddress>? direcciones);
             bool isDesconocido = !isDestinoConocido || conectado is { Direccion: null };
             foreach (Entrada entrada in porResolver)
-            {
                 if (entrada.IsIlegible || !TryDireccionesSinRed(entrada.Servidor, isDestino: false, out HashSet<IPAddress>? deLaEntrada))
                     isDesconocido = true;
                 else if ((isDestinoConocido && deLaEntrada!.Overlaps(direcciones!)) || (conectada is not null && deLaEntrada!.Contains(conectada)))
                     return true;
-            }
 
             return isDesconocido ? null : false;
         }
@@ -556,7 +552,6 @@ namespace NativeSsh.Comun
 
             Task<Resolucion>? resolucion;
             lock (_candadoEnCurso)
-            {
                 if (!_enCurso.TryGetValue(servidor, out resolucion))
                 {
                     // En el grupo de hilos (getaddrinfo puede bloquear el hilo que lo llama) y fuera de este candado: su
@@ -568,7 +563,6 @@ namespace NativeSsh.Comun
                     resolucion = Task.Run(() => ResolverEnCursoAsync(servidor, isRecordar: !isDestino, hasRanura));
                     _enCurso[servidor] = resolucion;
                 }
-            }
 
             try
             {

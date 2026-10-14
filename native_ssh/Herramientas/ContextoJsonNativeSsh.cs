@@ -34,13 +34,11 @@ namespace NativeSsh.Herramientas
             };
             bool hasConverter = false;
             foreach (JsonConverter c in opciones.Converters)
-            {
                 if (c is JsonStringEnumConverter<EstadoPeticionEnum>)
                 {
                     hasConverter = true;
                     break;
                 }
-            }
             if (!hasConverter)
                 opciones.Converters.Add(new JsonStringEnumConverter<EstadoPeticionEnum>());
             opciones.TypeInfoResolverChain.Insert(0, Default);

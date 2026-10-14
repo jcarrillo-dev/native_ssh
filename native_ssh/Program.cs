@@ -60,7 +60,6 @@ _ = Arranque.RegistrarServicios(web.Services).WithHttpTransport();
 
 WebApplication app = web.Build();
 if (arranque.Modo == ModoTransporteEnum.HttpLoopback)
-{
     _ = app.Use(async (context, next) =>
     {
         string host = context.Request.Host.Host;
@@ -73,7 +72,6 @@ if (arranque.Modo == ModoTransporteEnum.HttpLoopback)
 
         await next().ConfigureAwait(false);
     });
-}
 
 // Todas las peticiones (POST, GET del flujo SSE, DELETE de la sesión) llevan el token. El rechazo no dice nada del token
 // presentado, ni en la respuesta ni en el log (solo si faltaba la cabecera o no coincidía, y desde dónde). El log de rechazos

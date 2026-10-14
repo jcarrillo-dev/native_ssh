@@ -190,12 +190,10 @@ namespace NativeSsh.Herramientas
                     isSilencioso |= argumento.Contains('n', StringComparison.Ordinal);
                 }
                 else if (!argumento.StartsWith('-'))
-                {
                     if (scripts.Count == 0)
                         scripts.Add(argumento);
                     else
                         archivos.Add(argumento);
-                }
             }
 
             bool isSoloImpresionPorLineas = scripts.Count > 0 && scripts.TrueForAll(s => Array.TrueForAll(s.Split(';', StringSplitOptions.RemoveEmptyEntries), p => RegexImpresionPorLineas().IsMatch(p)));

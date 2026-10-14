@@ -90,13 +90,11 @@ namespace NativeSsh.Protocolo
         {
             TEnumerator enumerator = query.GetEnumerator();
             while (enumerator.MoveNext())
-            {
                 if (predicate.Ejecutar(enumerator.Current, state))
                 {
                     enumerator.Dispose();
                     return true;
                 }
-            }
 
             enumerator.Dispose();
             return false;

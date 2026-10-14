@@ -2911,7 +2911,6 @@ namespace NativeSsh.Herramientas
             int inicios = 0;
             int fines = 0;
             for (int i = 0; i < lineas.Length; i++)
-            {
                 if (lineas[i] == marcaInicio)
                 {
                     inicios++;
@@ -2922,7 +2921,6 @@ namespace NativeSsh.Herramientas
                     fines++;
                     idxFin = i;
                 }
-            }
 
             string sinEscribir = $"No se ha escrito nada en '{ruta}'.";
             if (inicios != 1 || fines != 1 || idxFin < idxInicio)

@@ -265,9 +265,7 @@ namespace NativeSsh.Buffers
                     _retenidos = 0;
                 }
                 else
-                {
                     _retenidos = retenidos;
-                }
 
                 AnadirAColaOriginal(nuevos);
             }
@@ -283,9 +281,7 @@ namespace NativeSsh.Buffers
             byte[] cola = _colaOriginal!;
             int conservados = Math.Min(cola.Length, _longitudColaOriginal + nuevos.Length);
             if (nuevos.Length >= conservados)
-            {
                 nuevos[^conservados..].CopyTo(cola);
-            }
             else
             {
                 int deLaCola = conservados - nuevos.Length;

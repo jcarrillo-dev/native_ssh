@@ -203,10 +203,8 @@ namespace NativeSsh.Protocolo
         {
             ReadOnlySpan<byte> cabecera = MarcadorFin.Cabecera;
             for (int k = Math.Min(cabecera.Length - 1, datos.Length); k > 0; k--)
-            {
                 if (datos[^k..].SequenceEqual(cabecera[..k]))
                     return k;
-            }
 
             return 0;
         }
