@@ -149,8 +149,8 @@ namespace NativeSsh.Herramientas
         // Un tipo desconocido para el validador no rechaza nada: lo decide el SDK.
         // null: el SDK lo enlaza tal cual en un parámetro de tipo referencia (texto, lista u objeto), sea obligatorio u opcional,
         // y lo decide la herramienta (medido con el SDK 2.2.0: 'ruta' null en ssh_find, ssh_list_dir y ssh_search y 'tipo' null
-        // en ssh_find buscan con su valor por defecto; 'contenido' null en ssh_write_file escribe un archivo vacío; 'destino'
-        // null da el error de la herramienta, «Destino '' no válido»). En un entero o un booleano sin "null" en el esquema
+        // en ssh_find buscan con su valor por defecto; 'destino' null da el error de la herramienta, «Destino '' no válido»;
+        // 'contenido' null en ssh_write_file escribía un archivo vacío y ahora lo rechaza la herramienta). En un entero o un booleano sin "null" en el esquema
         // fallaba con el mensaje genérico: aquí se rechaza nombrándolo.
         private static bool IsDelTipo(JsonElement valor, string tipo) => tipo switch
         {

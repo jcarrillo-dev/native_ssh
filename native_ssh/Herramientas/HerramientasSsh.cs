@@ -947,6 +947,12 @@ namespace NativeSsh.Herramientas
             if (string.IsNullOrEmpty(ruta))
                 throw new NativeSshException("La ruta del archivo no puede estar vacía.");
 
+            // El SDK enlaza un null tal cual (ValidadorArgumentos.IsDelTipo) y escribir "nada" vaciaría el archivo con
+            // overwrite=true: un null nunca vacía un archivo, hay que pedirlo con "". Es el único texto obligatorio cuyo null
+            // tiene un efecto destructivo (los demás dan el error de su herramienta sin tocar nada).
+            if (contenido is null)
+                throw new NativeSshException("'contenido' llegó como null: no se ha escrito nada. Para un archivo vacío pasa contenido: \"\".");
+
             if (overwrite && append)
                 throw new NativeSshException("No se puede especificar 'overwrite=true' y 'append=true' simultáneamente.");
 

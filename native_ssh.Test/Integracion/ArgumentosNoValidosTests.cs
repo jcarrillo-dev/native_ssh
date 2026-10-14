@@ -155,6 +155,24 @@ namespace NativeSsh.Test.Integracion
             _ = isError.Should().BeFalse(texto);
         }
 
+        // 'contenido' null en ssh_write_file: el SDK lo enlazaba y la escritura vaciaba el archivo (con overwrite=true). Se
+        // rechaza sin tocarlo: un null no debe vaciar un archivo; para eso, contenido "".
+        [Fact]
+        public async Task ContenidoNullEnWriteFile_SeRechazaSinVaciarElArchivo()
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, "no_vaciar.txt");
+            await File.WriteAllTextAsync(archivo, "importante\n");
+
+            // Act
+            (bool isError, string texto) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = null, ["overwrite"] = true });
+
+            // Assert
+            _ = isError.Should().BeTrue();
+            _ = texto.Should().Contain("'contenido' llegó como null").And.Contain("contenido: \"\"");
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("importante\n");
+        }
+
         [Fact]
         public async Task NullEnUnTextoObligatorio_LoDecideLaHerramienta()
         {
