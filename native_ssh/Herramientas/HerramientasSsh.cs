@@ -2843,11 +2843,15 @@ namespace NativeSsh.Herramientas
         // - Fuera del script, en el shell persistente del usuario, no hay forma completa de evitar sus funciones: printf,
         //   sudo y bash se llaman con 'command' (salta una función con su nombre, no una función 'command'), y lo que llega
         //   por la tubería lo comprueban las escrituras (DefinicionVerificarContenido).
+        // - Tampoco hereda las opciones del shell de la sesión: SHELLOPTS y BASHOPTS exportados (noclobber, errexit, nounset,
+        //   xtrace, noexec; failglob...) y PS4 (que con xtrace ejecutaría lo que lleve con $(…) antes de cada orden) se quitan
+        //   del entorno al lanzarlo (env -u; con noexec heredado no se ejecutaría ni el prólogo), y el prólogo deja además
+        //   xtrace, verbose, noclobber, errexit y nounset desactivadas.
         private const string PrologoSinFunciones = """
             unset -f declare
             for __ns_f in $(declare -F); do case $__ns_f in declare|-f) ;; *) unset -f -- "$__ns_f" ;; esac; done
             unset __ns_f
-            set +o posix
+            set +o posix +o xtrace +o verbose +o noclobber +o errexit +o nounset
             set -o pipefail
 
             """;
@@ -2855,7 +2859,7 @@ namespace NativeSsh.Herramientas
         private static string EnvolverEnBash(string script, bool sudo, string argumentos, string? payloadBase64 = null)
         {
             string entrada = payloadBase64 is null ? string.Empty : $"command printf '%s' '{payloadBase64}' | ";
-            string programa = sudo ? "command sudo bash --posix" : "command bash --posix";
+            string programa = sudo ? "command env -u SHELLOPTS -u BASHOPTS -u PS4 sudo bash --posix" : "command env -u SHELLOPTS -u BASHOPTS -u PS4 bash --posix";
             return PlantillaBash.Crear($$"""
                 (
                 cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~

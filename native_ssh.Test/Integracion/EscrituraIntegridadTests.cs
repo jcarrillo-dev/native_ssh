@@ -138,6 +138,33 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
         }
 
+        // Opciones del shell de la sesión exportadas en SHELLOPTS y BASHOPTS (noclobber, xtrace con un PS4 que ejecuta algo,
+        // failglob) no pasan al script: la escritura sale bien y el PS4 no se ejecuta en el script ($0 = ns; en el shell de la
+        // sesión sí, que es del usuario).
+        [Theory]
+        [InlineData("set -o noclobber; export SHELLOPTS", "set +o noclobber; export -n SHELLOPTS")]
+        [InlineData("shopt -s failglob nullglob; export BASHOPTS", "shopt -u failglob nullglob; export -n BASHOPTS")]
+        [InlineData("export PS4='$([ \"$0\" = ns ] && touch {0})+ '; set -o xtrace; export SHELLOPTS", "set +o xtrace; export -n SHELLOPTS PS4")]
+        public async Task OpcionesExportadasDelShell_NoPasanAlScript(string preparar, string deshacer)
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, $"op_{Guid.NewGuid():N}.txt");
+            string testigo = Path.Combine(_directorio, $"testigo_{Guid.NewGuid():N}");
+            await File.WriteAllTextAsync(archivo, Original);
+            await ExecAsync(preparar.Replace("{0}", testigo, StringComparison.Ordinal) + "; true");
+
+            // Act
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = true });
+            (bool isErrorReplace, string reemplazo) = await _cliente.LlamarAsync("ssh_replace_file_content", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["targetContent"] = "nuevo", ["replacementContent"] = "otro" });
+            await ExecAsync(deshacer + "; true");
+
+            // Assert
+            _ = isError.Should().BeFalse(respuesta);
+            _ = isErrorReplace.Should().BeFalse(reemplazo);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be("PIN=4711\notro\n");
+            _ = File.Exists(testigo).Should().BeFalse("el PS4 heredado no debe ejecutarse en el script");
+        }
+
         // La comprobación de lo decodificado con lo que haya en el servidor: sha256sum o, sin él, cksum; sin ninguno, solo el
         // tamaño, y lo dice (verificacion=tamano). Aquí, en un bash local con un PATH que solo tiene lo que se le da.
         [Theory]
