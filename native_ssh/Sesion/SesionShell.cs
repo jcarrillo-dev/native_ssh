@@ -90,6 +90,16 @@ namespace NativeSsh.Sesion
         // use_pty, que se traga lo que llega mientras tanto. Medido a mano con ssh -tt: con 0,3 s la línea llega al shell.
         private static readonly TimeSpan PausaTrasCtrlC = TimeSpan.FromMilliseconds(300);
 
+        // Lo que ejecuta el shell sin perfil (ssh_reset_shell con sinPerfil=true, RC1) con una petición 'exec' sobre el
+        // pseudoterminal: el servidor lo pasa al shell del usuario con '-c' (sin login, así que sin .profile), y el bash que
+        // queda no lee .bashrc. El resto es igual que con el shell de login: la misma inicialización (su 'exec bash' sustituye
+        // este bash por otro igual), cola, centinela, comprobación del modo solo lectura y guardarSalida. Límites: un
+        // ForceCommand del servidor sustituye el comando (el shell es entonces el de siempre, con su perfil), y un bash
+        // compilado con SSH_SOURCE_BASHRC (Debian) lee .bashrc al ejecutar el '-c' que lanza sshd, como en los canales exec
+        // de las herramientas de lectura: lo que el .bashrc haga antes de su comprobación de shell interactivo también se
+        // ejecuta aquí.
+        public const string ComandoSinPerfil = "exec bash --noediting --norc --noprofile";
+
         private const string DetalleComandoNoEnviado = "el comando no llegó a enviarse.";
         private const string AvisoAperturaShellPendiente = "El servidor aún no ha respondido a la apertura del shell: el siguiente comando esperará a esa misma apertura en lugar de abrir otro canal.";
         private const string DetalleCtrlCEnviado = "se envió Ctrl+C al proceso.";
@@ -127,9 +137,14 @@ namespace NativeSsh.Sesion
         // DisposeAsync cuando el bucle ya terminó).
         private Task<ICanalShell>? _aperturaShell;
         private IConexionSsh? _conexionAperturaShell;
+        private bool _isAperturaSinPerfil;
 
         private volatile Peticion? _peticionActual;
         private volatile bool _isResetSolicitado;
+
+        // Los shells siguientes se abren sin perfil (ssh_reset_shell con sinPerfil=true): hasta otro ssh_reset_shell sin la
+        // opción o el cierre de la sesión (ssh_disconnect), también los que se reabren solos.
+        private volatile bool _isSinPerfil;
         private int _comandosEnCola;
         private long _comandosEjecutados;
         private int _conexionesAbiertas;
@@ -470,11 +485,16 @@ namespace NativeSsh.Sesion
 
         public void SolicitarReset() => _ = SolicitarResetConLimpieza();
 
+        // Los shells de esta sesión se abren sin perfil (IsSinPerfil, ComandoSinPerfil).
+        public bool IsSinPerfil => _isSinPerfil;
+
         // Devuelve los archivos de guardarSalida cuyo borrado lanza (los de todos los shells de la sesión, el actual y los
         // anteriores, que se borran ya; el shell nuevo usará otro directorio) y si el borrado de un ssh_reset_shell anterior
-        // no se completó (sus shells están entre estos).
-        public LimpiezaGuardados SolicitarResetConLimpieza()
+        // no se completó (sus shells están entre estos). isSinPerfil: el shell nuevo, y los siguientes hasta otro reset sin
+        // la opción, sin perfil.
+        public LimpiezaGuardados SolicitarResetConLimpieza(bool isSinPerfil = false)
         {
+            _isSinPerfil = isSinPerfil;
             _isResetSolicitado = true;
             _ = (_peticionActual?.SolicitarCancelacion());
             // La lista, el aviso del borrado anterior y el borrado en curso, juntos: los shells de ese borrado están en lo que se
@@ -1563,9 +1583,10 @@ namespace NativeSsh.Sesion
         private async Task<string?> AbrirShellAsync(IConexionSsh conexion, CancellationToken token)
         {
             ShellAbierto canal;
+            bool isSinPerfil = _isSinPerfil;
             try
             {
-                canal = new ShellAbierto(await ObtenerCanalShellAsync(conexion, token).ConfigureAwait(false));
+                canal = new ShellAbierto(await ObtenerCanalShellAsync(conexion, isSinPerfil, token).ConfigureAwait(false)) { IsSinPerfil = isSinPerfil };
             }
             catch (CanalRechazadoException ex)
             {
@@ -1624,7 +1645,7 @@ namespace NativeSsh.Sesion
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 CerrarCanal(canal);
-                throw new NativeSshException($"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s: el login tardó más que ese plazo, el servidor no respondió o al shell le falta bash, stty o base64 (los necesita el shell de ssh_exec).");
+                throw new NativeSshException(DescribirInicializacionAgotada(isSinPerfil));
             }
             catch
             {
@@ -1633,14 +1654,27 @@ namespace NativeSsh.Sesion
             }
 
             if (codigo == CodigoCanalCerrado)
-                throw new NativeSshException(DescribirCierreEnLaInicializacion(TerminarInicializacion(canal)));
+                throw new NativeSshException(DescribirCierreEnLaInicializacion(TerminarInicializacion(canal), isSinPerfil));
 
             _ = TerminarInicializacion(canal);
 
             bool isRecreado = _isShellInicializadoAlgunaVez;
             _isShellInicializadoAlgunaVez = true;
-            return isRecreado ? "Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido." : null;
+            string? recreado = isRecreado ? "Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido." : null;
+            return isSinPerfil ? Unir(recreado, AvisoShellSinPerfil) : recreado;
         }
+
+        // Lo que lleva la respuesta del primer comando de cada shell sin perfil (RC1).
+        internal const string AvisoShellSinPerfil = "Shell SIN PERFIL (ssh_reset_shell con sinPerfil=true): no se han leído ~/.profile ni ~/.bashrc, así que el entorno no es el del login (PATH por defecto de sshd, sin las variables, alias ni funciones del perfil). Sirve para reparar un perfil roto; ssh_reset_shell sin sinPerfil vuelve al shell de login.";
+
+        // Lo que vale para los dos fallos de la inicialización (plazo agotado o shell cerrado) (RC2, RC2b): qué herramientas
+        // dependen de ese shell, que las de lectura siguen funcionando y, si el perfil puede estar roto, cómo abrir uno sin él.
+        private static string DescribirConsecuenciasInicializacion(bool isSinPerfil) => isSinPerfil
+            ? "Este shell ya era SIN PERFIL (ssh_reset_shell con sinPerfil=true), así que no es cosa de ~/.profile ni de ~/.bashrc (salvo un ForceCommand del servidor, que sustituye la petición sin perfil por el shell de siempre, o un bash que lea ~/.bashrc también en los '-c' de sshd, como el de Debian, con algo antes de su comprobación de shell interactivo). Ese shell lo usan ssh_exec, ssh_write_file y ssh_replace_file_content; las herramientas de lectura (ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat) van por un canal aparte y siguen funcionando."
+            : "Ese shell lo usan ssh_exec, ssh_write_file y ssh_replace_file_content: ninguna funciona hasta que el login termine, y ni ssh_cancel ni ssh_input pueden interrumpirlo (mientras se abre, lo único que se hace es cerrar el canal). Las herramientas de lectura (ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat) van por un canal aparte y siguen funcionando: úsalas para revisar el perfil (~/.profile, ~/.bash_profile, ~/.bashrc). Si el perfil está roto (un 'sleep', un 'read', un 'exit' o algo lento en él), ssh_reset_shell con sinPerfil=true abre un shell sin .profile ni .bashrc para repararlo con ssh_exec, ssh_write_file o ssh_replace_file_content (su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil); después, ssh_reset_shell sin sinPerfil vuelve al login.";
+
+        private string DescribirInicializacionAgotada(bool isSinPerfil) =>
+            $"El shell de {Destino.Clave} no completó la inicialización en {_opciones.TimeoutInicializacionShell.TotalSeconds:0} s: {(isSinPerfil ? "el servidor no respondió" : "el login tardó más que ese plazo (p. ej. algo lento, un 'read' o un 'sleep' en el perfil), el servidor no respondió")} o al shell le falta bash, stty o base64. {DescribirConsecuenciasInicializacion(isSinPerfil)}";
 
         // Con el candado de la bomba, que es quien anota.
         private string TerminarInicializacion(ShellAbierto canal)
@@ -1652,10 +1686,12 @@ namespace NativeSsh.Sesion
         // Lo que escribió el shell al cerrarse durante la inicialización dice por qué: sin bash, la respuesta del shell de
         // login al 'exec bash' (RespuestaSinBash); si no, sus últimas líneas, sin las del propio protocolo (el eco del
         // terminal de lo que se le envió).
-        private string DescribirCierreEnLaInicializacion(string salida)
+        private string DescribirCierreEnLaInicializacion(string salida, bool isSinPerfil)
         {
             if (RespuestaSinBash.BuscarLinea(salida) is { } faltaBash)
                 return RespuestaSinBash.Describir(Destino.Clave, faltaBash);
+
+            string causa = isSinPerfil ? "" : " (p. ej. un 'exit' en el perfil)";
 
             List<string> lineas = [];
             foreach (string linea in salida.Split('\n'))
@@ -1667,23 +1703,25 @@ namespace NativeSsh.Sesion
             }
 
             return lineas.Count == 0
-                ? $"El shell de {Destino.Clave} se cerró durante la inicialización sin escribir nada."
-                : $"El shell de {Destino.Clave} se cerró durante la inicialización; lo último que escribió: «{string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..])}».";
+                ? $"El shell de {Destino.Clave} se cerró durante la inicialización{causa} sin escribir nada. {DescribirConsecuenciasInicializacion(isSinPerfil)}"
+                : $"El shell de {Destino.Clave} se cerró durante la inicialización{causa}; lo último que escribió: «{string.Join(" / ", lineas[^Math.Min(lineas.Count, 3)..])}». {DescribirConsecuenciasInicializacion(isSinPerfil)}";
         }
 
         // La apertura de SSH.NET es síncrona, no atiende ningún token y, sin ConnectionInfo.Timeout, espera a que el servidor
         // responda o a que caiga la conexión: se hace fuera del bucle y el comando la espera hasta su propio límite. Si vence
         // antes, la apertura sigue en curso y el siguiente comando la espera (sobre la misma conexión) en lugar de abrir otro
         // canal, que dejaría en el servidor uno sin usar; si ya no es de la conexión vigente, su canal se cierra al abrirse.
-        private async Task<ICanalShell> ObtenerCanalShellAsync(IConexionSsh conexion, CancellationToken token)
+        // Una apertura pendiente de otro modo (con o sin perfil) no se reutiliza.
+        private async Task<ICanalShell> ObtenerCanalShellAsync(IConexionSsh conexion, bool isSinPerfil, CancellationToken token)
         {
             Task<ICanalShell>? apertura = _aperturaShell;
-            if (apertura is null || apertura.IsFaulted || apertura.IsCanceled || !ReferenceEquals(_conexionAperturaShell, conexion))
+            if (apertura is null || apertura.IsFaulted || apertura.IsCanceled || !ReferenceEquals(_conexionAperturaShell, conexion) || _isAperturaSinPerfil != isSinPerfil)
             {
                 DescartarAperturaShell();
-                apertura = Task.Factory.StartNew(conexion.AbrirShell, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+                apertura = Task.Factory.StartNew(() => conexion.AbrirShell(isSinPerfil), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
                 _aperturaShell = apertura;
                 _conexionAperturaShell = conexion;
+                _isAperturaSinPerfil = isSinPerfil;
             }
 
             try
@@ -1808,6 +1846,10 @@ namespace NativeSsh.Sesion
                     throw new NativeSshException($"El shell de {Destino.Clave} no devolvió su identificador de proceso ni confirmó el testigo de su canal al inicializarse (los necesita ssh_exec para detectar shells anidados o sustituidos con exec): puede que el shell no sea bash o que otro proceso escriba en el terminal. Vuelve a intentarlo; si se repite, ssh_reset_shell abre otro.");
 
                 canal.Identidad = identidad;
+                // El PATH de un shell sin perfil no es el del login: los canales exec siguen con el que tenían (RC1).
+                if (canal.IsSinPerfil)
+                    return codigo;
+
                 if (!TryLeerPath(isCompleta, salida, id, out string? path, out string? motivo))
                     _logger.PathLoginDescartado(Destino.Clave, motivo);
                 _pathLogin = path;
@@ -2142,6 +2184,9 @@ namespace NativeSsh.Sesion
             public Guid IdGuardado { get; } = IdentidadShell.NuevoTestigo();
 
             public bool IsGuardadoAnotado { get; set; }
+
+            // Abierto sin perfil (petición 'exec' con ComandoSinPerfil).
+            public bool IsSinPerfil { get; init; }
 
             public Lock CandadoEscritura { get; } = new();
             public ArrayBufferWriter<byte> Escritor { get; } = new(4096);

@@ -674,6 +674,32 @@ namespace NativeSsh.Test.Herramientas
             _ = estado.Peticiones.Select(p => p.Comando).TakeLast(5).Should().Equal("cmd4", "cmd3", "cmd2", "cmd1", "cmd0");
         }
 
+        // RC1: ssh_reset_shell con sinPerfil=true abre los shells siguientes con la petición 'exec' sin perfil (también sin
+        // sesión previa: la crea), ssh_status lo muestra y el primer comando lo avisa; un reset sin la opción vuelve al login.
+        [Fact]
+        public async Task ResetSinPerfil_AbreLosShellsSinPerfilHastaUnResetNormal()
+        {
+            // Arrange
+            ResultadoAccion sinPerfil = _herramientas.ReiniciarShell("servidor", sinPerfil: true);
+
+            // Act
+            ResultadoComando primero = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
+            ResultadoEstado durante = _herramientas.Estado();
+            _ = await _herramientas.EscribirArchivoAsync("servidor", "f.txt", "x", overwrite: true);
+            ResultadoAccion normal = _herramientas.ReiniciarShell("servidor");
+            ResultadoComando despues = await _herramientas.EjecutarAsync("servidor", "b").ComoComando();
+            ResultadoEstado tras = _herramientas.Estado();
+
+            // Assert
+            _ = (sinPerfil.IsHecho, normal.IsHecho).Should().Be((true, true));
+            _ = sinPerfil.Mensaje.Should().StartWith("El próximo comando usará un shell nuevo SIN PERFIL");
+            _ = primero.Aviso.Should().Contain("Shell SIN PERFIL");
+            _ = durante.Sesiones.Single().IsSinPerfil.Should().BeTrue();
+            _ = despues.Aviso.Should().BeNull();
+            _ = tras.Sesiones.Single().IsSinPerfil.Should().BeNull();
+            _ = (_fabrica.Ultima!.AperturasShell, _fabrica.Ultima.AperturasSinPerfil).Should().Be((2, 1));
+        }
+
         [Fact]
         public async Task Disconnect_YReset()
         {

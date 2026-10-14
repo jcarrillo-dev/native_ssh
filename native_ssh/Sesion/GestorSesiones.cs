@@ -257,14 +257,19 @@ namespace NativeSsh.Sesion
         // Solo la sesión que usaría el próximo comando con ese destino (sus claves actuales). null si no había sesión; si no,
         // los archivos de guardarSalida creados en los shells cuyo borrado se lanza (sin recuento del servidor: el borrado
         // sigue en segundo plano) y si el de un ssh_reset_shell anterior no se completó.
-        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto)
+        // isSinPerfil (RC1): el shell nuevo y los siguientes, sin perfil; si no había sesión, se crea (sin conectar) para que
+        // el primer shell ya se abra así: con un perfil roto, el primero de todos tampoco termina el login.
+        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto, bool isSinPerfil = false)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
             lock (_candado)
                 sesion = _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion;
 
-            return sesion?.SolicitarResetConLimpieza();
+            if (sesion is null && isSinPerfil)
+                sesion = ObtenerOCrear(destino);
+
+            return sesion?.SolicitarResetConLimpieza(isSinPerfil);
         }
 
         // Con resolutor (la configuración de ssh: alias, HostName, User, Port, IdentityFile), el destino que se devuelve, y

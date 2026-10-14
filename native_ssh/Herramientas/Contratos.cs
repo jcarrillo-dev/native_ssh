@@ -57,7 +57,8 @@ namespace NativeSsh.Herramientas
         int CanalesExecActivos,
         IReadOnlyList<string>? Alias = null,
         IReadOnlyList<string>? IdentityFile = null,
-        bool? IsSoloLectura = null);
+        bool? IsSoloLectura = null,
+        bool? IsSinPerfil = null);
 
     public sealed record ResumenPeticion(
         string Id,

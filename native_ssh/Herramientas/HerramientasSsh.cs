@@ -483,7 +483,7 @@ namespace NativeSsh.Herramientas
                 // Con usuario@servidor:puerto se listan las sesiones de ese destino con cualquier lista de claves, pero una
                 // escritura con ese texto solo usa la de sus claves (ClaveSesion): las demás van sin isSoloLectura.
                 bool isOtrasClaves = filtro is { Alias: null } porServidor && !string.Equals(s.Destino.ClaveSesion, porServidor.ClaveSesion, StringComparison.Ordinal);
-                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Count == 0 ? null : alias[i], s.Destino.Identidades, isOtrasClaves ? null : isSoloLectura[i]));
+                sesiones.Add(new EstadoSesion(s.Destino.Clave, s.IsConectada, s.IsShellActivo, s.ComandosEjecutados, s.ConexionesAbiertas, s.ComandosEnCola, s.PeticionActual?.IdTexto, s.CanalesExecActivos, alias[i].Count == 0 ? null : alias[i], s.Destino.Identidades, isOtrasClaves ? null : isSoloLectura[i], s.IsSinPerfil ? true : null));
             }
 
             // ListarPeticiones ya viene ordenada de más reciente a más antigua: basta un contador. De las peticiones de una misma
@@ -760,19 +760,23 @@ namespace NativeSsh.Herramientas
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
-        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd. BORRA del servidor todos los archivos de salida guardados con guardarSalida en esta sesión (de todos sus shells): léelos antes.")]
+        [Description("Descarta el shell actual (variables exportadas incluidas) y abre uno limpio en el próximo comando, sobre la misma conexión. Con sinPerfil=true lo abre SIN ~/.profile ni ~/.bashrc: úsalo cuando el login no termina (un perfil roto con un 'sleep', un 'read' o un 'exit') para repararlo con ssh_exec, ssh_write_file o ssh_replace_file_content. Cancela el comando en ejecución. Conserva el directorio de trabajo fijado con ssh_set_cwd. BORRA del servidor todos los archivos de salida guardados con guardarSalida en esta sesión (de todos sus shells): léelos antes.")]
         public ResultadoAccion ReiniciarShell(
-            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino)
+            [Description("usuario@servidor[:puerto], o un alias de ~/.ssh/config. Usa el mismo destino que en ssh_exec: un alias con otro IdentityFile es otra sesión, con su propio directorio de trabajo.")] string destino,
+            [Description("true: el shell nuevo (y los que se reabran solos) se abre sin perfil, con una petición 'exec' de 'bash --noediting --norc --noprofile' en lugar del login: sin ~/.profile ni ~/.bashrc, con el PATH por defecto de sshd y sin las variables, alias ni funciones del perfil (ssh_status lo muestra con isSinPerfil). Dura hasta otro ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect. Si el servidor tiene un ForceCommand, este sustituye la petición y el shell es el de siempre. Por defecto false.")] bool sinPerfil = false)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino);
+            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil);
             if (limpieza is null)
                 return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
 
             string borrado = limpieza.Creados == 0
                 ? ""
                 : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions) o el borrado falla, se dirá en el siguiente ssh_reset_shell y se volverán a intentar en él o con ssh_disconnect, que dice cuántos quedan.";
-            return new ResultadoAccion(clave, true, $"El próximo comando usará un shell nuevo.{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
+            string shell = sinPerfil
+                ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                : "El próximo comando usará un shell nuevo.";
+            return new ResultadoAccion(clave, true, $"{shell}{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
         }
 
         // ssh_reset_shell: el borrado del anterior (en segundo plano) no se completó; sus shells están entre los de este.

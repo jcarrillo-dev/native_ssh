@@ -152,6 +152,7 @@ namespace NativeSsh.Test.Sesion.Falsos
         private readonly ManualResetEventSlim _liberada = new(false);
         private int _shellsAbiertos;
         private int _aperturasShell;
+        private int _aperturasSinPerfil;
         private int _aperturasShellRetenidas;
         private int _execActivos;
         private int _maxExecSimultaneos;
@@ -186,6 +187,9 @@ namespace NativeSsh.Test.Sesion.Falsos
 
         // Llamadas a AbrirShell (abran o no el canal).
         public int AperturasShell => Volatile.Read(ref _aperturasShell);
+
+        // Aperturas del shell sin perfil (petición 'exec', ssh_reset_shell con sinPerfil=true).
+        public int AperturasSinPerfil => Volatile.Read(ref _aperturasSinPerfil);
         public int SigintsRecibidos => CanalActual?.SigintsRecibidos ?? 0;
 
         // Comandos ejecutados por el shell PTY y scripts de los canales exec (decodificados).
@@ -272,9 +276,11 @@ namespace NativeSsh.Test.Sesion.Falsos
         }
 
         [SuppressMessage("Usage", "CA2208:Instantiate argument exceptions correctly", Justification = "Reproduce el ArgumentNullException de WaitOnHandle de SSH.NET.")]
-        public ICanalShell AbrirShell()
+        public ICanalShell AbrirShell(bool isSinPerfil)
         {
             _ = Interlocked.Increment(ref _aperturasShell);
+            if (isSinPerfil)
+                _ = Interlocked.Increment(ref _aperturasSinPerfil);
             if (!_isConectada)
                 throw new InvalidOperationException("Conexión cerrada.");
 
