@@ -532,6 +532,7 @@ namespace NativeSsh.Herramientas
             {
                 0 when resuelto.Alias is { } alias => $"No había conexión con '{alias}' ({resuelto.Clave}).",
                 0 => "No había conexión con ese destino.",
+                1 when cerradasConLimpieza[0].IsSinConectar => $"Sesión sin conectar descartada: {DescribirCerradas(cerradas, isConDestino: true)}; no llegó a conectarse, así que no había conexión que cerrar.",
                 1 => $"Conexión cerrada: {DescribirCerradas(cerradas, isConDestino: true)}.",
                 // Varias del mismo usuario@servidor:puerto solo pueden diferir en las claves (son sesiones distintas).
                 _ when IsMismoDestino(cerradas) => $"Se cerraron {cerradas.Length} conexiones con {cerradas[0].Clave}, una por cada juego de claves: {DescribirCerradas(cerradas, isConDestino: false)}.",
@@ -780,16 +781,19 @@ namespace NativeSsh.Herramientas
             [Description("true: el shell nuevo (y los que se reabran solos) se abre sin perfil, con una petición 'exec' de 'bash --noediting --norc --noprofile' en lugar del login: sin ~/.profile ni ~/.bashrc, con el PATH por defecto de sshd y sin las variables, alias ni funciones del perfil (ssh_status lo muestra con isSinPerfil). Dura hasta otro ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect. Si el servidor tiene un ForceCommand, este sustituye la petición y el shell es el de siempre. Por defecto false.")] bool sinPerfil = false)
         {
             string clave = gestor.ParsearDestino(destino).Clave;
-            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil);
+            LimpiezaGuardados? limpieza = gestor.ReiniciarShellConLimpieza(destino, sinPerfil, out bool isSesionNueva);
             if (limpieza is null)
                 return new ResultadoAccion(clave, false, "No había sesión con ese destino.");
 
             string borrado = limpieza.Creados == 0
                 ? ""
                 : $" Se borran del servidor, por un canal aparte, los archivos de salida guardados con guardarSalida en esta sesión que sigan ahí (hasta {limpieza.Creados}: los que se crearon, menos los que ya se hubieran borrado); si el servidor no admite otro canal (MaxSessions) o el borrado falla, se dirá en el siguiente ssh_reset_shell y se volverán a intentar en él o con ssh_disconnect, que dice cuántos quedan.";
-            string shell = sinPerfil
-                ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
-                : "El próximo comando usará un shell nuevo.";
+            // Sin sesión, sinPerfil la crea sin conectar (GestorSesiones.ReiniciarShellConLimpieza): no se descartó nada.
+            string shell = isSesionNueva
+                ? "No había sesión con ese destino: no se ha descartado ningún shell. Se ha preparado una sin conectar (ssh_status la muestra con isConectada=false e isSinPerfil=true), que se conectará con el próximo comando y abrirá su shell SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                : sinPerfil
+                    ? "El próximo comando usará un shell nuevo SIN PERFIL (sin ~/.profile ni ~/.bashrc; su entorno no es el del login: PATH por defecto, sin las variables, alias ni funciones del perfil). Lo usan ssh_exec, ssh_write_file y ssh_replace_file_content, y también los shells que se reabran solos, hasta ssh_reset_shell sin sinPerfil (vuelve al login) o ssh_disconnect."
+                    : "El próximo comando usará un shell nuevo.";
             return new ResultadoAccion(clave, true, $"{shell}{borrado}{DescribirBorradoAnteriorFallido(limpieza)}");
         }
 

@@ -693,7 +693,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = (sinPerfil.IsHecho, normal.IsHecho).Should().Be((true, true));
-            _ = sinPerfil.Mensaje.Should().StartWith("El próximo comando usará un shell nuevo SIN PERFIL");
+            _ = sinPerfil.Mensaje.Should().StartWith("No había sesión con ese destino").And.Contain("shell SIN PERFIL");
             _ = primero.Aviso.Should().Contain("Shell SIN PERFIL");
             _ = durante.Sesiones.Single().IsSinPerfil.Should().BeTrue();
             _ = despues.Aviso.Should().BeNull();
@@ -873,6 +873,29 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("No se llegó a ejecutar: 'encolada.txt' no se ha modificado");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
             _ = (await _herramientas.CancelarAsync(colgado.Id).ComoComando()).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+        }
+
+        // ssh_reset_shell con sinPerfil sobre un destino sin sesión: no descarta nada y la prepara sin conectar, y lo dice;
+        // ssh_status la muestra sin conectar y ssh_disconnect la descarta sin decir que cerró una conexión. Con la sesión ya
+        // conectada, el mensaje de siempre.
+        [Fact]
+        public async Task ResetSinPerfil_SinSesion_LoDiceYDisconnectNoCierraNingunaConexion()
+        {
+            // Act
+            ResultadoAccion reset = _herramientas.ReiniciarShell("servidor", sinPerfil: true);
+            EstadoSesion sesion = _herramientas.Estado().Sesiones.Single();
+            ResultadoAccion desconexion = await _herramientas.DesconectarAsync("servidor");
+            _ = await _herramientas.EjecutarAsync("servidor", "echo hola").ComoComando();
+            ResultadoAccion resetConectada = _herramientas.ReiniciarShell("servidor", sinPerfil: true);
+            ResultadoAccion desconexionConectada = await _herramientas.DesconectarAsync("servidor");
+
+            // Assert
+            _ = reset.IsHecho.Should().BeTrue();
+            _ = reset.Mensaje.Should().StartWith("No había sesión con ese destino: no se ha descartado ningún shell.").And.Contain("se conectará con el próximo comando").And.Contain("SIN PERFIL");
+            _ = (sesion.IsConectada, sesion.IsShellActivo, sesion.IsSinPerfil).Should().Be((false, false, true));
+            _ = desconexion.Mensaje.Should().StartWith("Sesión sin conectar descartada: ana@servidor:22").And.NotContain("Conexión cerrada");
+            _ = resetConectada.Mensaje.Should().StartWith("El próximo comando usará un shell nuevo SIN PERFIL");
+            _ = desconexionConectada.Mensaje.Should().StartWith("Conexión cerrada: ana@servidor:22");
         }
 
         [Fact]

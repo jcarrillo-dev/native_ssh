@@ -249,27 +249,28 @@ namespace NativeSsh.Sesion
             foreach (SesionShell sesion in cerradas)
             {
                 await sesion.DisposeAsync().ConfigureAwait(false);
-                resultado.Add(new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar));
+                resultado.Add(new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado));
             }
 
             return resultado;
         }
 
-        public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto) is not null;
+        public bool ReiniciarShell(string destinoTexto) => ReiniciarShellConLimpieza(destinoTexto, isSinPerfil: false, out _) is not null;
 
         // Solo la sesión que usaría el próximo comando con ese destino (sus claves actuales). null si no había sesión; si no,
         // los archivos de guardarSalida creados en los shells cuyo borrado se lanza (sin recuento del servidor: el borrado
         // sigue en segundo plano) y si el de un ssh_reset_shell anterior no se completó.
         // isSinPerfil (RC1): el shell nuevo y los siguientes, sin perfil; si no había sesión, se crea (sin conectar) para que
-        // el primer shell ya se abra así: con un perfil roto, el primero de todos tampoco termina el login.
-        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto, bool isSinPerfil = false)
+        // el primer shell ya se abra así: con un perfil roto, el primero de todos tampoco termina el login (isSesionNueva).
+        public LimpiezaGuardados? ReiniciarShellConLimpieza(string destinoTexto, bool isSinPerfil, out bool isSesionNueva)
         {
             DestinoSsh destino = ParsearDestino(destinoTexto);
             SesionShell? sesion;
             lock (_candado)
                 sesion = _sesiones.GetValueOrDefault(destino.ClaveSesion)?.Sesion;
 
-            if (sesion is null && isSinPerfil)
+            isSesionNueva = sesion is null && isSinPerfil;
+            if (isSesionNueva)
                 sesion = ObtenerOCrear(destino);
 
             return sesion?.SolicitarResetConLimpieza(isSinPerfil);
@@ -392,7 +393,8 @@ namespace NativeSsh.Sesion
     }
 
     // Una sesión cerrada por ssh_disconnect y lo que pasó con sus archivos de guardarSalida.
-    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza);
+    // IsSinConectar: la sesión no llegó a conectarse (SesionShell.HasConectado): no se cerró ninguna conexión.
+    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza, bool IsSinConectar = false);
 
     // Ver GestorSesiones.BuscarPistasAlias. Viejas: las sesiones del alias que la pista nombra (no vacía); IsEnElTope: las
     // de una sesión llena que no guardó el alias (si no, abiertas con él para otro usuario o puerto).

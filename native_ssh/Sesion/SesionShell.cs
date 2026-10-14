@@ -131,6 +131,7 @@ namespace NativeSsh.Sesion
         private BufferSalida? _salidaConCanalCerrado;
 
         private volatile IConexionSsh? _conexion;
+        private volatile bool _hasConectado;
         private bool _isShellInicializadoAlgunaVez;
 
         // Apertura del canal del shell aún en curso (la de un comando que venció antes) y su conexión. Solo el bucle (y
@@ -245,6 +246,10 @@ namespace NativeSsh.Sesion
 
         public DestinoSsh Destino { get; }
         public bool IsConectada => _conexion?.IsConectada ?? false;
+
+        // Llegó a conectarse alguna vez. No, en una sesión que ssh_reset_shell con sinPerfil=true creó sin conectar (o cuya
+        // conexión falló siempre): ssh_disconnect no dice que cerró una conexión.
+        public bool HasConectado => _hasConectado;
 
         // La conexión vigente, si está conectada, con la dirección a la que va su socket (modo solo lectura).
         public ExtremoConectado? Extremo => _conexion is { IsConectada: true } conexion ? new ExtremoConectado(conexion.DireccionRemota) : null;
@@ -1514,6 +1519,7 @@ namespace NativeSsh.Sesion
                 _conexion = null;
                 IConexionSsh nueva = await ConectarAsync(token).ConfigureAwait(false);
                 _conexion = nueva;
+                _hasConectado = true;
                 return nueva;
             }
             finally
