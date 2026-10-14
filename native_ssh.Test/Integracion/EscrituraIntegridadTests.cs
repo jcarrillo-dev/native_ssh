@@ -95,22 +95,29 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Una función exportada con el nombre de una orden interna especial ('set'): el script arranca bash en modo POSIX para
-        // quitar las funciones heredadas, y bash no arranca con ella (código 2): la escritura falla sin tocar el archivo.
-        [Fact]
-        public async Task FuncionHeredadaConNombreDeOrdenEspecial_FallaSinTocarElArchivo()
+        // quitar las funciones heredadas, y bash no arranca con ella (código 2): la escritura, el anexado y el reemplazo fallan
+        // sin tocar el archivo, con un mensaje propio que lo dice (no el texto de bash) y sin el contenido.
+        [Theory]
+        [InlineData("sobrescribir")]
+        [InlineData("anexar")]
+        [InlineData("reemplazar")]
+        public async Task FuncionHeredadaConNombreDeOrdenEspecial_FallaSinTocarElArchivo(string modo)
         {
             // Arrange
-            string archivo = Path.Combine(_directorio, "especial.txt");
+            string archivo = Path.Combine(_directorio, $"especial_{modo}.txt");
             await File.WriteAllTextAsync(archivo, Original);
             await ExecAsync("set() { builtin set \"$@\"; }; export -f set; true");
+            JsonObject argumentos = modo == "reemplazar"
+                ? new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["targetContent"] = "objetivo", ["replacementContent"] = "x" }
+                : new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = modo == "sobrescribir", ["append"] = modo == "anexar" };
 
             // Act
-            (bool isError, string respuesta) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo, ["overwrite"] = true });
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync(modo == "reemplazar" ? "ssh_replace_file_content" : "ssh_write_file", argumentos);
             await ExecAsync("unset -f set; export -n set; true");
 
             // Assert
             _ = isError.Should().BeTrue(respuesta);
-            _ = respuesta.Should().ContainAny("orden interna especial", "special shell builtin", "código 2");
+            _ = respuesta.Should().Contain("bash no llegó a ejecutar el script").And.Contain($"'{archivo}'").And.NotContain("4711").And.NotContain("orden interna especial: ");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
         }
 

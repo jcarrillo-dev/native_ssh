@@ -87,6 +87,10 @@ namespace NativeSsh.Herramientas
         // HerramientasSsh.DefinicionVerificarContenido): sha256, cksum o tamano (solo el tamaño); null si no lo anunció.
         public string? Verificacion { get; init; }
 
+        // El script no anunció nada (ni candado, ni temporal, ni fase, ni su final): no llegó a empezar, o salió antes de
+        // anunciar (p. ej. por un error de sus primeras comprobaciones).
+        public bool IsSinAnuncios => Fase is null && Temporal is null && Copia is null && Capacidad is null && Candado == CandadoEscrituraEnum.SinAnuncio && Limpieza == LimpiezaEscrituraEnum.Desconocida && Verificacion is null;
+
         public static InformeEscritura Leer(string salida, string idMarcas, bool isSalidaCompleta = true)
         {
             string marca = $"{PrefijoMarca}{idMarcas}__ ";

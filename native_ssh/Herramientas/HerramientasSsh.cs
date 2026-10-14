@@ -1064,6 +1064,8 @@ namespace NativeSsh.Herramientas
                 ? throw new NativeSshException(MensajeContenidoNoIntegro(ruta, bytesUtf8.Length, append))
                 : peticion.CodigoSalida == CodigoSinVerificador
                 ? throw new NativeSshException(MensajeSinVerificador(ruta, append))
+                : peticion.CodigoSalida == CodigoBashNoArranco && informe.IsSinAnuncios
+                ? throw new NativeSshException(MensajeBashNoArranco(ruta, append))
                 : peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
@@ -2230,6 +2232,9 @@ namespace NativeSsh.Herramientas
             if (peticionEscritura.CodigoSalida == CodigoSinVerificador)
                 throw new NativeSshException(MensajeSinVerificador(ruta, isAnexar: false));
 
+            if (peticionEscritura.CodigoSalida == CodigoBashNoArranco && informe.IsSinAnuncios)
+                throw new NativeSshException(MensajeBashNoArranco(ruta, isAnexar: false));
+
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
@@ -2575,6 +2580,15 @@ namespace NativeSsh.Herramientas
 
         // Código con el que salen las escrituras cuando el servidor no tiene wc y no se puede comprobar lo decodificado.
         internal const int CodigoSinVerificador = 91;
+
+        // Código con el que sale bash cuando no llega a ejecutar el script: en modo POSIX no arranca con una función exportada
+        // que se llama como una orden interna especial (set, unset, export, exec, eval, trap, times...). Los scripts de
+        // escritura y de lectura no salen nunca con él por su cuenta.
+        internal const int CodigoBashNoArranco = 2;
+
+        // El error de una escritura (o de la lectura previa de replace) que bash no llegó a ejecutar: no se hizo nada.
+        internal static string MensajeBashNoArranco(string ruta, bool isAnexar) =>
+            $"Error: bash no llegó a ejecutar el script de native_ssh (salió con el código 2 sin empezarlo): lo habitual es que el shell de la sesión exporte una función con el nombre de una orden interna especial de bash (set, unset, export, exec, eval, trap, times...), con la que bash en modo POSIX no arranca. {(isAnexar ? $"No se ha anexado nada a '{ruta}'." : $"No se ha modificado '{ruta}'.")} Quítala (unset -f y export -n con su nombre) o usa ssh_reset_shell, y vuelve a intentarlo.";
 
         // El error de una escritura que no pudo comprobar lo decodificado porque el servidor no tiene wc: no se hizo nada.
         internal static string MensajeSinVerificador(string ruta, bool isAnexar) =>
@@ -2948,7 +2962,7 @@ namespace NativeSsh.Herramientas
         // el base64 (o el archivo en claro) sin marcadores. Para los errores conocidos, el mensaje que native_ssh construye
         // con el código y la ruta; para cualquier otro código, el código (con sudo=true, también si sudo no llegó a ejecutar
         // la lectura).
-        internal static string MensajeErrorLecturaReplace(int codigo, string ruta, bool isSudo, long maxBytesEditable) => (CodigoErrorLecturaEnum)codigo switch
+        internal static string MensajeErrorLecturaReplace(int codigo, string ruta, bool isSudo, long maxBytesEditable) => codigo == CodigoBashNoArranco ? MensajeBashNoArranco(ruta, isAnexar: false) : (CodigoErrorLecturaEnum)codigo switch
         {
             CodigoErrorLecturaEnum.NoExiste => $"Error: el archivo no existe: {ruta}",
             CodigoErrorLecturaEnum.SinAcceso => $"Error: sin permiso para acceder a la ruta: {ruta} (algún directorio de la ruta no se puede atravesar; prueba con sudo=true).",
