@@ -51,11 +51,11 @@ namespace NativeSsh.Ssh
         private static readonly Lazy<string?> ProgramaSetsid = new(() => OperatingSystem.IsLinux() ? BuscarPrograma("setsid") : null);
 
         private readonly Lock _candado = new();
-        private List<string>? _identidadesPorDefecto;
+        private string[]? _identidadesPorDefecto;
         private volatile bool _isSinPrograma;
 
         // Repetida: una opción de valor único (hostname, user, port) que salió más de una vez (ssh -G las escribe una sola vez).
-        private sealed record ConfiguracionLeida(string? Servidor, string? Usuario, string? Puerto, List<string> Identidades, string? Salto, string? Repetida);
+        private sealed record ConfiguracionLeida(string? Servidor, string? Usuario, string? Puerto, string[] Identidades, string? Salto, string? Repetida);
 
         public DestinoSsh Resolver(DestinoSsh destino, bool isUsuarioExplicito, bool isPuertoExplicito)
         {
@@ -141,7 +141,7 @@ namespace NativeSsh.Ssh
             string? puerto = null;
             string? salto = null;
             string? repetida = null;
-            List<string> identidades = [];
+            using PooledListRef<string> identidades = new();
             foreach (string linea in salida.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
                 int espacio = linea.IndexOf(' ', StringComparison.Ordinal);
@@ -178,13 +178,13 @@ namespace NativeSsh.Ssh
                 }
             }
 
-            return new ConfiguracionLeida(servidor, usuario, puerto, identidades, salto, repetida);
+            return new ConfiguracionLeida(servidor, usuario, puerto, identidades.Span.ToArray(), salto, repetida);
         }
 
         // Las claves por defecto de ssh (las que lista sin ningún IdentityFile), leídas una vez con 'ssh -G -F none'.
-        private bool IsListaPorDefecto(List<string> identidades, string servidor)
+        private bool IsListaPorDefecto(string[] identidades, string servidor)
         {
-            List<string> porDefecto;
+            string[] porDefecto;
             lock (_candado)
             {
                 if (_identidadesPorDefecto is null)
@@ -198,10 +198,10 @@ namespace NativeSsh.Ssh
                 porDefecto = _identidadesPorDefecto;
             }
 
-            if (identidades.Count != porDefecto.Count)
+            if (identidades.Length != porDefecto.Length)
                 return false;
 
-            for (int i = 0; i < identidades.Count; i++)
+            for (int i = 0; i < identidades.Length; i++)
                 if (!string.Equals(identidades[i], porDefecto[i], StringComparison.Ordinal))
                     return false;
 
@@ -209,7 +209,7 @@ namespace NativeSsh.Ssh
         }
 
         // Sin repetidas, en su orden. Se guardan en el destino (DestinoSsh.Identidades): array del tamaño justo.
-        private static string[] Expandir(List<string> identidades, string alias, string servidor, string usuario, int puerto)
+        private static string[] Expandir(string[] identidades, string alias, string servidor, string usuario, int puerto)
         {
             string casa = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             using PooledListRef<string> rutas = new();
