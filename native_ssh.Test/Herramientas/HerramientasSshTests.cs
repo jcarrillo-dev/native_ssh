@@ -1925,6 +1925,23 @@ namespace NativeSsh.Test.Herramientas
             _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("readlink --", StringComparison.Ordinal));
         }
 
+        // La descripción de ssh_set_cwd (la herramienta y su parámetro) no puede prometer que null vuelve a $HOME: se rechaza;
+        // solo "" lo hace.
+        [Fact]
+        public void DescripcionSetCwd_NoDiceQueNullVuelveAHome()
+        {
+            // Arrange
+            System.Reflection.MethodInfo metodo = typeof(HerramientasSsh).GetMethod(nameof(HerramientasSsh.FijarDirectorioAsync))!;
+
+            // Act
+            string herramienta = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>(metodo)!.Description;
+            string parametro = System.Reflection.CustomAttributeExtensions.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>(metodo.GetParameters().Single(p => p.Name == "ruta"))!.Description;
+
+            // Assert
+            _ = herramienta.Should().NotContain("null").And.Contain("ruta \"\"");
+            _ = parametro.Should().NotContain("null").And.Contain("Obligatoria");
+        }
+
         [Fact]
         public async Task SetCwd_RutaVacia_RestableceHome()
         {
