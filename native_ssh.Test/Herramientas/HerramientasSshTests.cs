@@ -793,8 +793,21 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = error.Message.Should().MatchRegex("^La operación no se completó \\(estado: TiempoAgotado; petición [0-9a-f]{32}\\)\\. ")
-                .And.EndWith("No se ha modificado 'colgado_r.txt'.");
+                .And.EndWith("No se ha modificado 'colgado_r.txt'.").And.NotContain("parcial", "la salida de la lectura previa es el archivo en base64: no se da nunca");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
+        }
+
+        // La validación de ssh_set_cwd no termina: el error lleva lo que escribió (ssh_output no da la salida de una petición
+        // interna).
+        [Fact]
+        public async Task SetCwd_ValidacionConTiempoAgotado_DaLaSalidaDelScript()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => HerramientasConTimeoutCorto().FijarDirectorioAsync("servidor", "/srv/colgado_cwd"))
+                .Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().StartWith("La operación no se completó (estado: TiempoAgotado;").And.Contain(" Salida del script: parcial");
         }
 
         // Cancelada con el token durante la lectura previa: la OperationCanceledException también dice que no se tocó.

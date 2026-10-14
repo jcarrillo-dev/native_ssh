@@ -2134,7 +2134,7 @@ namespace NativeSsh.Herramientas
             string sinModificar = $"No se ha modificado '{ruta}'.";
             Guid grupo = Guid.NewGuid();
             Peticion peticionLectura = await EjecutarHerramientaAsync(destino, comandoLectura, "ssh_replace_file_content", DescribirHerramienta("ssh_replace_file_content", ruta, "lectura"), grupo, TimeoutLecturaSegundos, _ => sinModificar, cancellationToken).ConfigureAwait(false);
-            ExigirCompletada(peticionLectura, _ => sinModificar);
+            ExigirCompletada(peticionLectura, _ => sinModificar, isConSalida: false);
 
             if (peticionLectura.CodigoSalida != 0)
             {
@@ -3147,16 +3147,30 @@ namespace NativeSsh.Herramientas
         private const string NoEnviadaAlShell = "el comando no llegó a ejecutarse (no se envió al shell de ssh_exec: no se pudo abrir —conexión, inicio de sesión o inicialización— o la sesión ya estaba cerrada).";
 
         // La sesión finaliza la petición (TiempoAgotado tras el Ctrl+C, Cancelado al cerrarse la sesión, ShellPerdido) antes de
-        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id (el de ssh_status; su salida no se da).
+        // que venza la espera de EjecutarHerramientaAsync: el error lleva también el id (el de ssh_status) y, con isConSalida, lo
+        // que escribió el script (sin las líneas de sus marcadores), ya que ssh_output no da la salida de una petición interna.
+        // isConSalida=false en la lectura previa de ssh_replace_file_content: su salida es el archivo en base64.
         // 'consecuencia' solo se calcula si la petición no se completó.
-        private static void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null)
+        private void ExigirCompletada(Peticion peticion, Func<Peticion, string>? consecuencia = null, bool isConSalida = true)
         {
             if (IsNoEnviadaAlShell(peticion))
                 throw new NativeSshException($"La operación no se hizo: {NoEnviadaAlShell} {peticion.Aviso}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
 
             EstadoPeticionEnum estado = peticion.Estado;
             if (estado != EstadoPeticionEnum.Completado)
-                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}).{(AvisoConTecleado(peticion) is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}");
+                throw new NativeSshException($"La operación no se completó (estado: {estado}; petición {peticion.IdTexto}).{(AvisoConTecleado(peticion) is { Length: > 0 } aviso ? " " + aviso : string.Empty)}{(consecuencia is null ? string.Empty : " " + consecuencia(peticion))}{(isConSalida ? SalidaSinMarcadores(peticion) : string.Empty)}");
+        }
+
+        // La salida de una petición interna de ssh_set_cwd para su error, sin las líneas de los marcadores del script; vacía si
+        // no escribió nada más.
+        private string SalidaSinMarcadores(Peticion peticion)
+        {
+            StringBuilder texto = new();
+            foreach (string linea in ReconstruirSalida(peticion, out _).Split('\n'))
+                if (!linea.Contains("__NS_", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(linea))
+                    _ = texto.Append(texto.Length == 0 ? string.Empty : "\n").Append(linea.TrimEnd());
+
+            return texto.Length == 0 ? string.Empty : InformeEscritura.DescribirSalidaDelScript(texto.ToString());
         }
 
         private static async Task EsperarAsync(Task tarea, int segundos, CancellationToken cancellationToken)

@@ -186,8 +186,10 @@ namespace NativeSsh.Test.Herramientas
             _ = mensaje.Should().EndWith("No se llegó a ejecutar: 'f.txt' no se ha modificado. Cancelada antes de empezar.");
         }
 
+        // La salida del script (sin sus anuncios) va en el error también con una fase anunciada: ssh_output no da la de una
+        // petición interna, así que es el único sitio donde se ve (p. ej. «No space left on device»).
         [Fact]
-        public void MensajeInterrupcion_AnadeElAvisoDeLaPeticionYLaSalidaSiNoSeAnuncioNada()
+        public void MensajeInterrupcion_AnadeElAvisoDeLaPeticionYLaSalidaDelScript()
         {
             // Act
             string sinAnuncios = InformeEscritura.Leer("[sudo] password for ana: \n", Id).MensajeInterrupcion("f.txt", EstadoPeticionEnum.Cancelado, Id, "Cancelado: se envió Ctrl+C al proceso.", isEjecutada: true);
@@ -195,7 +197,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = sinAnuncios.Should().EndWith($"No consta ninguna modificación de 'f.txt'.{NoConfirmado} Cancelado: se envió Ctrl+C al proceso. Salida del script: [sudo] password for ana:");
-            _ = conAnuncios.Should().EndWith("'f.txt' ya tiene el contenido nuevo completo (renombrado atómico).");
+            _ = conAnuncios.Should().EndWith("'f.txt' ya tiene el contenido nuevo completo (renombrado atómico). Salida del script: Error: x");
         }
 
         // Lo que el núcleo quita al escribir en el sitio y no se pudo devolver se dice explícitamente, con el valor original

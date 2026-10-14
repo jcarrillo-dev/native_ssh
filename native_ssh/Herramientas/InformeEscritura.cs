@@ -229,7 +229,9 @@ namespace NativeSsh.Herramientas
 
             if (aviso is { Length: > 0 })
                 _ = mensaje.Append(' ').Append(aviso);
-            if (Fase is null && Texto.Length > 0)
+            // También con una fase anunciada: ssh_output no da la salida de una petición interna y esta es la única vía para ver,
+            // p. ej., el error de cp o de cat que hizo fallar la escritura. Nunca lleva el contenido (va por stdin).
+            if (Texto.Length > 0)
                 _ = mensaje.Append(SalidaDelScript);
             return mensaje.ToString();
         }
@@ -241,9 +243,12 @@ namespace NativeSsh.Herramientas
         private bool IsFinalConfirmado => !IsSalidaIncompleta && IsFinalRecibido;
 
         // La salida del script (sin los anuncios) en un error, acotada a su final.
-        private string SalidaDelScript => Texto.Length <= MaxCaracteresSalidaEnError
-            ? $" Salida del script: {Texto}"
-            : $" Salida del script (sus últimos {MaxCaracteresSalidaEnError} caracteres): …{Texto.AsSpan(Texto.Length - MaxCaracteresSalidaEnError)}";
+        private string SalidaDelScript => DescribirSalidaDelScript(Texto);
+
+        // " Salida del script: …" con 'texto' acotado a su final (también la de ssh_set_cwd, HerramientasSsh.ExigirCompletada).
+        internal static string DescribirSalidaDelScript(string texto) => texto.Length <= MaxCaracteresSalidaEnError
+            ? $" Salida del script: {texto}"
+            : $" Salida del script (sus últimos {MaxCaracteresSalidaEnError} caracteres): …{texto.AsSpan(texto.Length - MaxCaracteresSalidaEnError)}";
 
         // isScriptTerminado: el script ya no corre (terminó con un código), en lugar de quedar en marcha tras la interrupción.
         private string DescribirArchivo(string ruta, bool isScriptTerminado) => Fase switch

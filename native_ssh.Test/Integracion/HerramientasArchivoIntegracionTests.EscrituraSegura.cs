@@ -433,6 +433,8 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(copia)).Should().Be("original completo\n");
             _ = (await File.ReadAllTextAsync(nuevo)).Should().Be("nuevo contenido\n");
             _ = error.Message.Should().Contain("TiempoAgotado").And.Contain("a medio escribir").And.Contain($"'{copia}'").And.Contain($"'{nuevo}'").And.NotContain("__NS_");
+            // La salida del script va en el error, pero nunca el contenido ni su base64.
+            _ = error.Message.Should().NotContain("nuevo contenido").And.NotContain("original completo").And.NotContain(Convert.ToBase64String("nuevo contenido\n"u8.ToArray())[..12]);
             _ = salida.Estado.Should().Be(EstadoPeticionEnum.TiempoAgotado);
             _ = siguiente.Salida.Should().Be("vivo\n");
         }
