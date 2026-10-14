@@ -32,10 +32,8 @@ namespace NativeSsh.Test.Protocolo
         private static (bool IsCompleto, int Codigo) Alimentar(EscanerMarcador escaner, BufferSalida salida, params string[] bloques)
         {
             foreach (string bloque in bloques)
-            {
                 if (escaner.Procesar(Encoding.UTF8.GetBytes(bloque), salida, out int codigo))
                     return (true, codigo);
-            }
 
             return (false, 0);
         }

@@ -152,10 +152,8 @@ namespace NativeSsh.Test.Integracion
                 RedirectStandardError = true
             };
             if (entorno is not null)
-            {
                 foreach ((string clave, string valor) in entorno)
                     inicio.Environment[clave] = valor;
-            }
 
             using Process proceso = Process.Start(inicio)!;
             Task<string> errores = proceso.StandardError.ReadToEndAsync();

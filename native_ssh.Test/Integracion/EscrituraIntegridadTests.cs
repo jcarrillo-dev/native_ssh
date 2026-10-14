@@ -89,9 +89,7 @@ namespace NativeSsh.Test.Integracion
                 _ = despues.Should().Be(modo == "crear" ? null : Original, respuesta);
             }
             else
-            {
                 _ = despues.Should().Be(esperado, respuesta);
-            }
         }
 
         // Una función exportada con el nombre de una orden interna especial ('set'): el script arranca bash en modo POSIX para

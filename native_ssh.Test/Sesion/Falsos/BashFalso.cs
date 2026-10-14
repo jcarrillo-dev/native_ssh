@@ -636,9 +636,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                         _linea.Clear();
                     }
                     else
-                    {
                         _linea.Add(actual);
-                    }
                 }
             }
         }
@@ -671,10 +669,8 @@ namespace NativeSsh.Test.Sesion.Falsos
         public void Cerrar()
         {
             lock (_candado)
-            {
                 if (!IsCerrado)
                     _salida.CompleteAdding();
-            }
         }
 
         public void Dispose()
@@ -836,9 +832,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _ = _base64.Append(linea, 8, linea.Length - 9);
             }
             else if (linea.StartsWith("__ns_b+='", StringComparison.Ordinal))
-            {
                 _ = _base64.Append(linea, 9, linea.Length - 10);
-            }
             else if (linea.StartsWith("__ns_rc=997;", StringComparison.Ordinal))
             {
                 // Solo ejecuta el comando si llegaron todas las líneas del base64 (su longitud va en la línea).

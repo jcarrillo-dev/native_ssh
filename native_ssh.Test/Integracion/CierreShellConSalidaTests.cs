@@ -69,7 +69,6 @@ namespace NativeSsh.Test.Integracion
 
             // Act
             foreach (CierreEnum cierre in Enum.GetValues<CierreEnum>())
-            {
                 for (int ronda = 0; ronda < rondasPorCierre; ronda++)
                 {
                     ResultadoComando chorro = await herramientas.EjecutarAsync(destino, Chorro, timeoutSegundos: 60, esperarSegundos: 0).ComoComando();
@@ -92,7 +91,6 @@ namespace NativeSsh.Test.Integracion
                     if (!isCerrado || !isTerminado || vivo.Salida != "vivo\n")
                         fallos.Add($"{cierre} ronda {ronda}: cierre vuelto={isCerrado}, comando terminado={isTerminado} ({peticion.Estado}), siguiente={vivo.Estado} '{vivo.Salida.Trim()}' '{vivo.Aviso}'");
                 }
-            }
 
             salida.WriteLine($"{3 * rondasPorCierre} cierres con salida en curso en {total.Elapsed.TotalSeconds:0} s; el peor (cierre + comando siguiente) {peor.TotalSeconds:0.0} s; fallos {fallos.Count}");
 

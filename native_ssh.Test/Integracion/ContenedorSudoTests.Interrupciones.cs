@@ -288,9 +288,7 @@ namespace NativeSsh.Test.Integracion
             // Assert: o la segunda se rechazó por el candado (y queda el original), o se confirmó y su contenido es el que
             // queda: una escritura confirmada como correcta nunca puede perderse.
             if (errorSegunda is null)
-            {
                 _ = contenido.Should().Be("segunda\n", "la segunda escritura se confirmó como correcta");
-            }
             else
             {
                 _ = errorSegunda.Message.Should().Contain("candado");

@@ -104,12 +104,10 @@ namespace NativeSsh.Test.Integracion
             // Assert
             List<string> mensajes = [];
             foreach (RespuestaMcp respuesta in respuestas)
-            {
                 if (respuesta.Herramienta.StartsWith("ssh_exec", StringComparison.Ordinal))
                     mensajes.Add($"{respuesta.Herramienta}: {JsonNode.Parse(respuesta.Texto)!["aviso"]}");
                 else if (respuesta.IsError)
                     mensajes.Add($"{respuesta.Herramienta}: {respuesta.Texto}");
-            }
 
             _ = mensajes.Should().HaveCount(10);
             _ = mensajes.Should().OnlyContain(m => MensajeSinBash().IsMatch(m), "el LLM debe saber que el servidor no tiene bash y que native_ssh lo necesita");

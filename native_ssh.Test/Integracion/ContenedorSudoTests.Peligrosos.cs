@@ -15,13 +15,9 @@ namespace NativeSsh.Test.Integracion
         {
             TheoryData<string, string, string> casos = [];
             foreach (string distro in new[] { ContenedorSudo.Debian, ContenedorSudo.Alpine })
-            {
                 foreach (string objetivo in new[] { "/dev/null", "/dev/zero", "enlace_null", "fifo", "enlace_fifo" })
-                {
                     foreach (string operacion in new[] { "sobrescribir", "anexar", "reemplazar" })
                         casos.Add(distro, objetivo, operacion);
-                }
-            }
 
             return casos;
         }

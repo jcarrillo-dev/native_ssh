@@ -43,12 +43,10 @@ namespace NativeSsh.Test.Protocolo
             string nonce = string.Concat("\n", texto.AsSpan(inicio, 32));
             StringBuilder base64 = new();
             foreach (string linea in texto.Split('\n'))
-            {
                 if (linea.StartsWith("__ns_b='", StringComparison.Ordinal))
                     _ = base64.Append(linea[8..^1]);
                 else if (linea.StartsWith("__ns_b+='", StringComparison.Ordinal))
                     _ = base64.Append(linea[9..^1]);
-            }
 
             string decodificado = Encoding.UTF8.GetString(Convert.FromBase64String(base64.ToString()));
             _ = decodificado.Should().EndWith(nonce);

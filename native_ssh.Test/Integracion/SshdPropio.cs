@@ -43,14 +43,12 @@ namespace NativeSsh.Test.Integracion
         {
             int abiertas = 0;
             foreach (string linea in File.ReadLines(Sshd.RutaLog))
-            {
                 if (linea.Contains("Accepted publickey", StringComparison.Ordinal))
                     abiertas = 0;
                 else if (linea.Contains("new session [server-session]", StringComparison.Ordinal))
                     abiertas++;
                 else if (linea.Contains("free: server-session", StringComparison.Ordinal))
                     abiertas--;
-            }
 
             return abiertas;
         }
