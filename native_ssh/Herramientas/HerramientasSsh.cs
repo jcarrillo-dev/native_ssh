@@ -2864,7 +2864,7 @@ namespace NativeSsh.Herramientas
             // Se lee el estado antes que la salida: si ya era final, la salida está completa.
             EstadoPeticionEnum estado = peticion.Estado;
             TimeSpan? tiempoSinSalida = peticion.TiempoSinSalida;
-            PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal());
+            PaginaSalida pagina = PaginadorSalida.Leer(peticion.Salida, desdeByte, opciones.MaxBytesPorRespuesta, estado.IsFinal(), isComoTerminal: true);
 
             // El aviso de las líneas tecleadas descartadas sale una sola vez: en el final de este comando o, si nadie lo ha leído
             // aún (p. ej. se lanzó con esperarSegundos=0 y después otro ssh_exec), en la primera respuesta de un comando

@@ -109,6 +109,27 @@ namespace NativeSsh.Test.Integracion
             _ = r.Aviso.Should().StartWith($"Salida completa guardada en {r.Archivo}").And.Contain("Sugerencia de rendimiento");
         }
 
+        // RC3: una barra de progreso con '\r' se ve como en un terminal (lo último que mostró), en la vista previa de
+        // guardarSalida y sin guardarSalida, aunque la línea pase del recorte de la vista previa; el archivo guarda los bytes
+        // tal cual.
+        [Fact]
+        public async Task BarraDeProgreso_SeVeComoEnUnTerminalYElArchivoTalCual()
+        {
+            // Arrange
+            HerramientasSsh h = Herramientas();
+            const string Comando = "printf 'a 10%%\\rb 20%%\\rc 30%%\\n'; for i in $(seq 1 200); do printf 'progreso %d%%\\r' $i; done; printf '\\r\\nfin\\n'";
+
+            // Act
+            ResultadoComando guardada = await EsperarFinAsync(h, await GuardarAsync(h, Comando));
+            ResultadoComando directa = await h.EjecutarAsync(Destino, Comando, esperarSegundos: 30).ComoComando();
+
+            // Assert
+            _ = guardada.Salida.Should().Be("c 30%\nprogreso 200%\nfin\n");
+            _ = directa.Salida.Should().Be("c 30%\nprogreso 200%\nfin\n");
+            string archivo = await File.ReadAllTextAsync(guardada.Archivo!);
+            _ = archivo.Should().StartWith("a 10%\rb 20%\rc 30%\nprogreso 1%\rprogreso 2%\r").And.EndWith("progreso 200%\r\r\nfin\n");
+        }
+
         // El comando se evalúa byte a byte como sin guardarSalida: comillas simples y dobles, varias líneas y un heredoc.
         [Fact]
         public async Task ComandoConComillasYHeredoc_SeEjecutaTalCual()

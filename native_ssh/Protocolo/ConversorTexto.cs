@@ -37,11 +37,20 @@ namespace NativeSsh.Protocolo
             return datos.Length;
         }
 
-        // Quita secuencias CSI/OSC/charset, BEL y el CR de los CRLF. Un CR suelto se conserva.
-        public static int LimpiarAnsi(Span<byte> datos)
+        // Quita secuencias CSI/OSC/charset, BEL y el CR de los CRLF. Un CR suelto se conserva, salvo con isComoTerminal (RC3,
+        // lo que ve el LLM de ssh_exec): entonces se trata como en un terminal, y lo que se escribe tras él en la misma línea
+        // sustituye a lo anterior (las barras de progreso de apt, dpkg o curl daban líneas de miles de caracteres). Un CR suelto
+        // al final de los datos o seguido del salto de línea no borra nada (se quita): si lo que lo sigue llega en otro trozo,
+        // no se puede deshacer lo ya entregado. No es un terminal completo: un texto más corto que el anterior no deja a la
+        // vista el resto de este.
+        public static int LimpiarAnsi(Span<byte> datos, bool isComoTerminal = false)
         {
             int escritura = 0;
             int lectura = 0;
+            int inicioLinea = 0;
+            // Con isComoTerminal, un CR suelto deja el cursor al principio de la línea: lo siguiente que se escriba en ella la
+            // sustituye; si lo siguiente es el salto de línea (p. ej. '\r\r\n'), la línea queda como estaba.
+            bool isAlPrincipio = false;
             while (lectura < datos.Length)
             {
                 int tramo = datos[lectura..].IndexOfAny(Especiales);
@@ -50,16 +59,28 @@ namespace NativeSsh.Protocolo
 
                 if (tramo > 0)
                 {
+                    if (isAlPrincipio && datos[lectura] != (byte)'\n')
+                        escritura = inicioLinea;
+                    isAlPrincipio = false;
                     datos.Slice(lectura, tramo).CopyTo(datos[escritura..]);
+                    int salto = datos.Slice(escritura, tramo).LastIndexOf((byte)'\n');
+                    if (salto >= 0)
+                        inicioLinea = escritura + salto + 1;
                     escritura += tramo;
                     lectura += tramo;
                     continue;
                 }
 
                 byte actual = datos[lectura];
+                bool isRetornoSuelto = actual == (byte)'\r' && (lectura + 1 >= datos.Length || datos[lectura + 1] != (byte)'\n');
                 if (actual == 0x1B)
                     lectura = SaltarEscape(datos, lectura);
-                else if (actual == (byte)'\r' && (lectura + 1 >= datos.Length || datos[lectura + 1] != (byte)'\n'))
+                else if (isRetornoSuelto && isComoTerminal)
+                {
+                    isAlPrincipio = true;
+                    lectura++;
+                }
+                else if (isRetornoSuelto)
                     datos[escritura++] = datos[lectura++];
                 else
                     lectura++;

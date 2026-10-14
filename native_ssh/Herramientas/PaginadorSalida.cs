@@ -8,10 +8,13 @@ namespace NativeSsh.Herramientas
         public bool HasMas => Siguiente < Fin;
     }
 
-    // Convierte un tramo del BufferSalida en texto: sin caracteres UTF-8 partidos y sin secuencias ANSI.
+    // Convierte un tramo del BufferSalida en texto: sin caracteres UTF-8 partidos y sin secuencias ANSI. isComoTerminal: un
+    // '\r' suelto se trata como en un terminal (ConversorTexto.LimpiarAnsi), para lo que ve el LLM de ssh_exec, ssh_output,
+    // ssh_input y ssh_cancel; no para la salida de las herramientas por el shell, que se interpreta. Una línea partida entre
+    // dos páginas no se colapsa entera: cada página trata lo suyo.
     public static class PaginadorSalida
     {
-        public static PaginaSalida Leer(BufferSalida salida, long desde, int maxBytes, bool isFinalizada)
+        public static PaginaSalida Leer(BufferSalida salida, long desde, int maxBytes, bool isFinalizada, bool isComoTerminal = false)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(maxBytes, 4);
             using BufferAlquilado buffer = new(maxBytes);
@@ -28,7 +31,7 @@ namespace NativeSsh.Herramientas
                 utiles = datos.Length;
 
             long siguiente = lectura.Desde + saltados + utiles;
-            int longitud = ConversorTexto.LimpiarAnsi(datos[..utiles]);
+            int longitud = ConversorTexto.LimpiarAnsi(datos[..utiles], isComoTerminal);
             return new PaginaSalida(ConversorTexto.ATexto(datos[..longitud]), lectura.Desde, siguiente, lectura.Fin, lectura.HasDatosDescartados);
         }
     }
