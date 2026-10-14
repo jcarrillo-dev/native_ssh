@@ -106,15 +106,29 @@ namespace NativeSsh.Ssh
         private bool TryLeerConfiguracion(string configuracion, string? usuario, string servidor, int? puerto, [NotNullWhen(true)] out ConfiguracionLeida? leida)
         {
             leida = null;
-            List<string> argumentos = ["-G"];
+            using PooledListRef<string> argumentos = new();
+            argumentos.Add("-G");
             if (configuracion.Length > 0)
-                argumentos.AddRange(["-F", configuracion]);
+            {
+                argumentos.Add("-F");
+                argumentos.Add(configuracion);
+            }
+
             if (usuario is not null)
-                argumentos.AddRange(["-l", usuario]);
+            {
+                argumentos.Add("-l");
+                argumentos.Add(usuario);
+            }
+
             if (puerto is { } conPuerto)
-                argumentos.AddRange(["-p", conPuerto.ToString(CultureInfo.InvariantCulture)]);
-            argumentos.AddRange(["--", servidor]);
-            if (!TryEjecutar(argumentos, servidor, out string? salida))
+            {
+                argumentos.Add("-p");
+                argumentos.Add(conPuerto.ToString(CultureInfo.InvariantCulture));
+            }
+
+            argumentos.Add("--");
+            argumentos.Add(servidor);
+            if (!TryEjecutar(argumentos.Span, servidor, out string? salida))
                 return false;
 
             leida = Leer(salida);
@@ -309,28 +323,33 @@ namespace NativeSsh.Ssh
         // Lo propio del sistema para el que se compila (sin fichero de ese sistema, nada): las opciones de ssh, delante de las
         // demás, y el fichero adonde ssh escribe sus mensajes en lugar de su salida de errores (registro; null si no hay); los
         // mensajes de ese fichero, detrás de los de la salida de errores; y borrar el fichero.
-        static partial void AnadirOpcionesDelSistema(List<string> argumentos, ref string? registro);
+        static partial void AnadirOpcionesDelSistema(scoped ref PooledListRef<string> argumentos, ref string? registro);
 
         static partial void LeerRegistroDelSistema(string? registro, ref string errores);
 
         static partial void BorrarRegistroDelSistema(string? registro);
 
         // false: no existe el programa ssh (desde entonces, los destinos se usan tal cual). Lanza si ssh falla o no termina.
-        private bool TryEjecutar(List<string> argumentos, string servidor, [NotNullWhen(true)] out string? salida)
+        // Las opciones del sistema van delante de 'argumentos', en una lista rentada con try/finally: AnadirOpcionesDelSistema
+        // la recibe por ref, y una variable de un 'using' no se puede pasar así.
+        private bool TryEjecutar(ReadOnlySpan<string> argumentos, string servidor, [NotNullWhen(true)] out string? salida)
         {
             string? registro = null;
-            AnadirOpcionesDelSistema(argumentos, ref registro);
+            PooledListRef<string> completos = new();
             try
             {
-                return TryEjecutar(argumentos, servidor, registro, out salida);
+                AnadirOpcionesDelSistema(ref completos, ref registro);
+                completos.AddRange(argumentos);
+                return TryEjecutar(completos.Span, servidor, registro, out salida);
             }
             finally
             {
+                completos.Dispose();
                 BorrarRegistroDelSistema(registro);
             }
         }
 
-        private bool TryEjecutar(List<string> argumentos, string servidor, string? registro, [NotNullWhen(true)] out string? salida)
+        private bool TryEjecutar(ReadOnlySpan<string> argumentos, string servidor, string? registro, [NotNullWhen(true)] out string? salida)
         {
             salida = null;
             // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid.
@@ -343,9 +362,9 @@ namespace NativeSsh.Ssh
 
             string? setsid = ProgramaSetsid.Value;
             bool isGrupoPropio = setsid is not null;
-            if (isGrupoPropio)
-                argumentos.Insert(0, programa);
-            ProcessStartInfo inicio = new(setsid ?? programa, argumentos)
+            // ProcessStartInfo pide un IEnumerable<string>: un array de tamaño justo (con setsid, el programa delante).
+            string[] argumentosProceso = isGrupoPropio ? [programa, .. argumentos] : argumentos.ToArray();
+            ProcessStartInfo inicio = new(setsid ?? programa, argumentosProceso)
             {
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,

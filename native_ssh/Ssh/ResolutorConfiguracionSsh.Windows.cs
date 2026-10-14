@@ -1,3 +1,5 @@
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
+
 namespace NativeSsh.Ssh
 {
     // Lo de Windows de 'ssh -G' (solo se compila para Windows: ver NativeSshSistema en Directory.Build.props).
@@ -13,10 +15,13 @@ namespace NativeSsh.Ssh
     // ese orden entre los dos no se puede saber y sale detrás).
     public sealed partial class ResolutorConfiguracionSsh
     {
-        static partial void AnadirOpcionesDelSistema(List<string> argumentos, ref string? registro)
+        // Se llama con la lista vacía: lo que añade va delante de las demás opciones.
+        static partial void AnadirOpcionesDelSistema(scoped ref PooledListRef<string> argumentos, ref string? registro)
         {
             registro = Path.Combine(Path.GetTempPath(), $"native_ssh_g_{Guid.NewGuid():N}.log");
-            argumentos.InsertRange(0, ["-T", "-E", registro]);
+            argumentos.Add("-T");
+            argumentos.Add("-E");
+            argumentos.Add(registro);
         }
 
         static partial void LeerRegistroDelSistema(string? registro, ref string errores)
