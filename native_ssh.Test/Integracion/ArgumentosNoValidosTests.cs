@@ -125,5 +125,51 @@ namespace NativeSsh.Test.Integracion
             _ = texto.Should().Contain("hola");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be("UNO\n");
         }
+
+        // null en un argumento de texto: el SDK lo enlazaba (como null) en cualquiera, obligatorio u opcional, y lo decidía la
+        // herramienta: en los opcionales, su valor por defecto; en los obligatorios, su propio error. El filtro no lo rechaza.
+        [Theory]
+        [InlineData("ssh_list_dir", "ruta")]
+        [InlineData("ssh_find", "ruta")]
+        [InlineData("ssh_find", "tipo")]
+        [InlineData("ssh_search", "ruta")]
+        public async Task NullEnUnTextoOpcional_UsaElValorPorDefecto(string herramienta, string argumento)
+        {
+            // Arrange
+            JsonObject argumentos = herramienta switch
+            {
+                "ssh_list_dir" => new JsonObject { ["destino"] = Destino },
+                "ssh_find" => new JsonObject { ["destino"] = Destino, ["patron"] = "*", ["ruta"] = _directorio },
+                _ => new JsonObject { ["destino"] = Destino, ["patron"] = $"no_esta_{Guid.NewGuid():N}" }
+            };
+            argumentos[argumento] = null;
+            // Sin ruta, la del directorio de trabajo: el de la prueba, no $HOME.
+            (bool isErrorCwd, string cwd) = await _cliente!.LlamarAsync("ssh_set_cwd", new JsonObject { ["destino"] = Destino, ["ruta"] = _directorio });
+            _ = isErrorCwd.Should().BeFalse(cwd);
+
+            // Act
+            (bool isError, string texto) = await _cliente.LlamarAsync(herramienta, argumentos);
+
+            // Assert
+            _ = texto.Should().NotContain("Argumentos no válidos");
+            _ = isError.Should().BeFalse(texto);
+        }
+
+        [Fact]
+        public async Task NullEnUnTextoObligatorio_LoDecideLaHerramienta()
+        {
+            // Act
+            (bool isErrorDestino, string destino) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = null, ["comando"] = "echo hola" });
+            (bool isErrorRuta, string ruta) = await _cliente.LlamarAsync("ssh_stat", new JsonObject { ["destino"] = Destino, ["ruta"] = null });
+            (bool isErrorId, string id) = await _cliente.LlamarAsync("ssh_output", new JsonObject { ["id"] = null });
+            (bool isErrorEntero, string entero) = await _cliente.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = "echo hola", ["esperarSegundos"] = null });
+
+            // Assert
+            _ = (isErrorDestino, isErrorRuta, isErrorId, isErrorEntero).Should().Be((true, true, true, true));
+            _ = destino.Should().Contain("Destino '' no válido").And.NotContain("Argumentos no válidos");
+            _ = ruta.Should().Contain("La ruta no puede estar vacía").And.NotContain("Argumentos no válidos");
+            _ = id.Should().Contain("'id' llegó como null").And.NotContain("Argumentos no válidos");
+            _ = entero.Should().Contain("'esperarSegundos' llegó como null y debe ser un entero");
+        }
     }
 }

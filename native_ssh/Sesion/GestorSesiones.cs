@@ -65,8 +65,11 @@ namespace NativeSsh.Sesion
             ObtenerOCrear(ParsearDestino(destinoTexto)).DirectorioTrabajo = directorio;
         }
 
-        public Peticion BuscarPeticion(string id) =>
-            registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
+        // id null: el SDK lo enlaza tal cual (ValidadorArgumentos.IsDelTipo); sin esto, el modelo solo vería el error genérico.
+        public Peticion BuscarPeticion(string? id) =>
+            id is null
+                ? throw new NativeSshException("'id' llegó como null: usa el id que devolvió ssh_exec (ssh_status lista los comandos recientes con el suyo).")
+                : registro.Buscar(id.Trim()) ?? throw new NativeSshException($"No existe la petición '{id}'. Puede que haya caducado; usa ssh_status para ver las recientes.");
 
         // isSecreto: el texto no debe quedar en ningún sitio (ssh_input con secreto=true): la salida de la petición ya lo
         // enmascara (BufferSalida.RegistrarSecreto, antes de llamar aquí) y la sesión borra su copia tras enviarlo.
