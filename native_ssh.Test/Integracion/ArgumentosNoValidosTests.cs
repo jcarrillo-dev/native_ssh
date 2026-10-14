@@ -183,6 +183,9 @@ namespace NativeSsh.Test.Integracion
             const string Pregunta = "read -r -p 'Borrar todo? [S/n] ' r; echo \"respuesta=[$r]\"";
             (_, string exec) = await _cliente!.LlamarAsync("ssh_exec", new JsonObject { ["destino"] = Destino, ["comando"] = Pregunta, ["esperarSegundos"] = 1 });
             string id = JsonNode.Parse(exec[..(exec.IndexOf('}', StringComparison.Ordinal) + 1)])!["id"]!.GetValue<string>();
+            // La pregunta ya está en la salida (con carga, el shell puede tardar en abrirse y en recibir el comando).
+            for (int i = 0; i < 100 && !(await _cliente.LlamarAsync("ssh_output", new JsonObject { ["id"] = id })).Texto.Contains("[S/n]", StringComparison.Ordinal); i++)
+                await Task.Delay(100);
 
             // Act
             (bool isErrorNull, string conNull) = await _cliente.LlamarAsync("ssh_input", new JsonObject { ["id"] = id, ["texto"] = null, ["esperarSegundos"] = 1 });

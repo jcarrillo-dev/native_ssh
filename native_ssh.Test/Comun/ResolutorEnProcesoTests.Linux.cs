@@ -56,6 +56,23 @@ namespace NativeSsh.Test.Comun
             }
         }
 
+        // Los que siguen sin terminar, cuando queden 'esperados' (.NET recoge al hijo muerto en segundo plano: con carga,
+        // un momento después de que desaparezca de /proc), o los que haya a los 10 s.
+        private static async Task<List<string>> SinTerminarCuandoQuedenAsync(ResolutorEnProceso resolutor, int esperados)
+        {
+            List<string> textos = [];
+            for (int i = 0; i < 200; i++)
+            {
+                textos.Clear();
+                resolutor.AnadirSinTerminar(textos);
+                if (textos.Count == esperados)
+                    break;
+                await Task.Delay(50);
+            }
+
+            return textos;
+        }
+
         [Fact]
         public async Task FamiliaColgada_DnsRecuperado_LaSiguienteVuelveAResolver()
         {
@@ -117,8 +134,7 @@ namespace NativeSsh.Test.Comun
                 List<string> enEstado = [];
                 resolutor.AnadirSinTerminar(enEstado);
                 MatarDeVerdad(hijos[..1]);
-                List<string> trasMorirUno = [];
-                resolutor.AnadirSinTerminar(trasMorirUno);
+                List<string> trasMorirUno = await SinTerminarCuandoQuedenAsync(resolutor, ResolutorEnProceso.MaxSinTerminar - 1);
 
                 // Assert
                 for (int i = 0; i < sinTerminar.Length; i++)
@@ -169,6 +185,7 @@ namespace NativeSsh.Test.Comun
                 NativeSshException error = (await FluentActions.Awaiting(() => herramientas.EjecutarAsync("prod", "echo hola")).Should().ThrowAsync<NativeSshException>()).Which;
                 ResultadoEstado estado = herramientas.Estado();
                 MatarDeVerdad(hijos);
+                _ = await SinTerminarCuandoQuedenAsync(resolutor, 0);
                 ResultadoEstado despues = herramientas.Estado();
 
                 // Assert
