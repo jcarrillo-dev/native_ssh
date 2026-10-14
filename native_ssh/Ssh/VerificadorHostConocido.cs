@@ -75,7 +75,7 @@ namespace NativeSsh.Ssh
                 if (marcador is not null and not "@revoked")
                     continue;
 
-                if (campos.Length < indice + 3 || !CoincideHost(campos[indice], nombre))
+                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
                     continue;
 
                 if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
@@ -121,7 +121,7 @@ namespace NativeSsh.Ssh
                 if (marcador is not null and not "@revoked")
                     continue;
 
-                if (campos.Length < indice + 3 || !CoincideHost(campos[indice], nombre))
+                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
                     continue;
 
                 if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
@@ -158,16 +158,16 @@ namespace NativeSsh.Ssh
             return longitud is > 0 and <= 64 && blob.Length >= 4 + longitud ? Encoding.ASCII.GetString(blob.Slice(4, longitud)) : null;
         }
 
-        private static bool CoincideHost(string patrones, string nombre)
+        private static bool IsCoincideHost(string patrones, string nombre)
         {
             if (patrones.StartsWith("|1|", StringComparison.Ordinal))
-                return CoincideHasheado(patrones, nombre);
+                return IsCoincideHasheado(patrones, nombre);
 
             bool isCoincide = false;
             foreach (string patron in patrones.Split(','))
             {
                 bool isNegado = patron.StartsWith('!');
-                if (!CoincideComodin(isNegado ? patron[1..] : patron, nombre))
+                if (!IsCoincideComodin(isNegado ? patron[1..] : patron, nombre))
                     continue;
                 if (isNegado)
                     return false;
@@ -178,7 +178,7 @@ namespace NativeSsh.Ssh
         }
 
         [SuppressMessage("Security", "CA5350:Do Not Use Weak Cryptographic Algorithms", Justification = "HMAC-SHA1 es el formato de las entradas hasheadas de known_hosts (|1|sal|hash); no se elige el algoritmo.")]
-        private static bool CoincideHasheado(string entrada, string nombre)
+        private static bool IsCoincideHasheado(string entrada, string nombre)
         {
             string[] partes = entrada.Split('|');
             if (partes.Length != 4 || !TryDecodificar(partes[2], out byte[] sal) || !TryDecodificar(partes[3], out byte[] hash))
@@ -189,7 +189,7 @@ namespace NativeSsh.Ssh
         }
 
         // '*' = cualquier secuencia, '?' = un carácter. Sin distinguir mayúsculas, como OpenSSH.
-        private static bool CoincideComodin(ReadOnlySpan<char> patron, ReadOnlySpan<char> texto)
+        private static bool IsCoincideComodin(ReadOnlySpan<char> patron, ReadOnlySpan<char> texto)
         {
             int p = 0, t = 0, estrella = -1, marca = 0;
             while (t < texto.Length)

@@ -351,14 +351,14 @@ namespace NativeSsh.Ssh
             // HostKeyAlgorithms es un IDictionary de SSH.NET: su recorrido sigue siendo por la interfaz.
             using PooledListRef<string> noCompatibles = new();
             foreach (string algo in info.HostKeyAlgorithms.Keys)
-                if (!EsAlgoritmoCompatible(algo, tiposConocidos))
+                if (!IsAlgoritmoCompatible(algo, tiposConocidos))
                     noCompatibles.Add(algo);
 
             foreach (string algo in noCompatibles)
                 _ = info.HostKeyAlgorithms.Remove(algo);
         }
 
-        private static bool EsAlgoritmoCompatible(string algo, HashSet<string> tiposConocidos)
+        private static bool IsAlgoritmoCompatible(string algo, HashSet<string> tiposConocidos)
         {
             foreach (string tipo in tiposConocidos)
             {
