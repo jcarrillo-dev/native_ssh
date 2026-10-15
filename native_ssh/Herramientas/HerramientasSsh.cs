@@ -824,6 +824,9 @@ namespace NativeSsh.Herramientas
             int enCola = sesion.ComandosEnCola;
             if (enCola > 0)
                 _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"{enCola} en cola");
+            int lecturas = sesion.CanalesExecActivos;
+            if (lecturas > 0)
+                _ = texto.Append(texto.Length > 0 ? "; " : "").Append($"{lecturas} canal(es) exec en curso (lecturas por canal aparte o tareas de native_ssh)");
         }
 
         [McpServerTool(Name = "ssh_reset_shell", Destructive = true, Idempotent = true)]
@@ -880,7 +883,7 @@ namespace NativeSsh.Herramientas
             string motivo = limpieza.SinBorrarAnterior switch
             {
                 0 => "sus salidas de guardarSalida sí se borraron, pero el directorio de algún shell no se pudo quitar: p. ej. sin permiso de escritura en el directorio que lo contiene (/tmp/native_ssh-<usuario>), y queda vacío, o con otras cosas que dejó un comando dentro",
-                int quedan => $"no se pudieron borrar {quedan} archivo(s) de salida guardados con guardarSalida (p. ej. un directorio sin permiso de escritura: arréglalo con 'chmod u+w')",
+                int quedan => $"no se pudieron borrar {quedan} archivo(s) de salida guardados con guardarSalida (p. ej. un directorio sin permiso de escritura: arréglalo con 'chmod u+w' por ssh_exec o, en un destino de solo lectura, pídeselo al usuario)",
                 null => "sin conexión, el servidor no admitió otro canal, falló en el servidor o no se pudo listar algún directorio"
             };
             return $" Ojo: el borrado del ssh_reset_shell anterior no se completó ({motivo}); se vuelve a intentar ahora con el resto, y lo que no se pueda borrar lo dirá el siguiente ssh_reset_shell o ssh_disconnect.";
@@ -890,11 +893,11 @@ namespace NativeSsh.Herramientas
         // quedó si algún directorio no se pudo borrar, o que no se pudo comprobar nada.
         private static string DescribirBorradoAlDesconectar(LimpiezaGuardados limpieza)
         {
-            const string Quitar = "siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('chmod -R u+w -- <directorio>' y 'rm -r -- <directorio>') si contienen datos sensibles.";
+            const string Quitar = "siguen en /tmp/native_ssh-<usuario> del servidor hasta que el barrido de 24 h de otra sesión los quite; bórralos con ssh_exec ('chmod -R u+w -- <directorio>' y 'rm -r -- <directorio>') si contienen datos sensibles (en un destino de solo lectura ssh_exec se rechaza: pídeselo al usuario).";
             bool isSinNada = limpieza.Creados == 0 && limpieza.Contados is null or 0 && !limpieza.IsFallida && !limpieza.IsSinComprobar;
             return isSinNada ? ""
-                : limpieza.IsSinComprobar ? $" No se pudo comprobar en el servidor si quedaban archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados) y no se ha borrado nada: el directorio /tmp/native_ssh-<usuario> no estaba, no era un directorio propio (o era un enlace) o no se pudo saber el usuario. Si lo moviste o lo sustituiste, revisa tú lo que contenga."
-                : limpieza is { IsFallida: true, Contados: { } contados, Quedan: 0, Otros: { } otros } ? $"{DescribirBorradas(contados)}, pero el directorio de algún shell {(otros == 0 ? "quedó vacío y no se pudo quitar (p. ej. el directorio que lo contiene, /tmp/native_ssh-<usuario>, no tiene permiso de escritura): quítalo con ssh_exec ('chmod u+w' sobre ese directorio y 'rmdir' sobre el del shell)" : $"no se pudo borrar del todo: tiene {otros} entrada(s) que no son salidas de guardarSalida")}."
+                : limpieza.IsSinComprobar ? $" No se pudo comprobar en el servidor si quedaban archivos de salida guardados con guardarSalida en esta sesión{(limpieza.Creados > 0 ? $" (hasta {limpieza.Creados} creados)" : string.Empty)} y no se ha borrado nada: el directorio /tmp/native_ssh-<usuario> no estaba, no era un directorio propio (o era un enlace) o no se pudo saber el usuario. Si lo moviste o lo sustituiste, revisa tú lo que contenga."
+                : limpieza is { IsFallida: true, Contados: { } contados, Quedan: 0, Otros: { } otros } ? $"{DescribirBorradas(contados)}, pero el directorio de algún shell {(otros == 0 ? "quedó vacío y no se pudo quitar (p. ej. el directorio que lo contiene, /tmp/native_ssh-<usuario>, no tiene permiso de escritura): quítalo con ssh_exec ('chmod u+w' sobre ese directorio y 'rmdir' sobre el del shell; en un destino de solo lectura ssh_exec se rechaza: pídeselo al usuario)" : $"no se pudo borrar del todo: tiene {otros} entrada(s) que no son salidas de guardarSalida")}."
                 : limpieza is { IsFallida: true, Contados: { } antes, Quedan: { } quedan } ? $" NO se pudieron borrar {quedan} de los {antes} archivo(s) de salida guardados con guardarSalida que quedaban de esta sesión{(antes > quedan ? $" (los otros {antes - quedan} sí se borraron)" : "")}: el directorio de su shell no se pudo borrar (p. ej. sin permiso de escritura); {Quitar}"
                 : limpieza.IsFallida ? $" NO se pudieron borrar los archivos de salida guardados con guardarSalida en esta sesión (hasta {limpieza.Creados} creados; sin conexión o falló la limpieza, sin saber cuántos quedan): {Quitar}"
                 : limpieza.Contados switch
@@ -1714,7 +1717,7 @@ namespace NativeSsh.Herramientas
                   sin_acceso {{rutaEscapada}} || printf 'Error: la ruta de búsqueda no existe: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                # find descarta sus errores: sin poder leer y recorrer el directorio, "No se encontraron" engañaría.
+                # Sin poder leer y recorrer el directorio, find no encontraría nada y "No se encontraron" engañaría: error claro.
                 if [ -d {{rutaEscapada}} ] && { [ ! -r {{rutaEscapada}} ] || [ ! -x {{rutaEscapada}} ]; }; then
                   printf 'Error: sin permiso para recorrer la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
                   exit 1
@@ -2989,7 +2992,7 @@ namespace NativeSsh.Herramientas
             CodigoErrorLecturaEnum.Candado => $"Error: hay otra escritura, reemplazo o restauración en curso sobre {ruta} (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.",
             CodigoErrorLecturaEnum.Sustituido => $"Error: {ruta} se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.",
             CodigoErrorLecturaEnum.SinTamano => $"Error: no se pudo obtener el tamaño de: {ruta}",
-            CodigoErrorLecturaEnum.DemasiadoGrande => $"Error: el archivo {ruta} supera el máximo editable con ssh_replace_file_content ({maxBytesEditable} bytes). No se ha modificado.",
+            CodigoErrorLecturaEnum.DemasiadoGrande => $"Error: el archivo {ruta} supera el máximo editable con ssh_replace_file_content ({maxBytesEditable} bytes, límite fijo). No se ha modificado. Para un archivo mayor, escríbelo entero por partes con ssh_write_file (la primera con overwrite=true y las demás con append=true, sin atomicidad), edítalo con herramientas del servidor por ssh_exec o transfiérelo con rsync o sftp.",
             CodigoErrorLecturaEnum.NoLeido => $"Error: no se pudo leer {ruta} (cat o base64 fallaron). No se ha modificado.",
             _ => $"Error al leer el archivo para reemplazo (código {codigo}{(isSudo ? "; con sudo=true, también si sudo no llegó a ejecutar la lectura: contraseña incorrecta o sin permiso de sudo" : string.Empty)}). No se muestra la salida de la lectura, que puede ser el archivo. No se ha modificado '{ruta}'."
         };
@@ -3167,7 +3170,7 @@ namespace NativeSsh.Herramientas
                 long lineas = informe.Lineas ?? 0;
                 bool isSinVista = isSecreto || (lineas > 0 && informe.VistaPrevia is null);
                 string cuenta = $"{lineas} líneas, {informe.Bytes} bytes; aquí solo {(isSinVista ? "el control" : $"sus {Math.Min(lineas, SalidaGuardada.LineasVistaPrevia)} primeras líneas")}";
-                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo); NO la vuelques entera con cat. {ReglaBorradoGuardado}";
+                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo, o su directorio para buscar en todas las salidas guardadas de este shell); NO la vuelques entera con cat. {ReglaBorradoGuardado} Ese directorio es de native_ssh: no lo borres a mano.";
                 if (isSecreto)
                     aviso += " Sin vista previa: se envió un secreto con ssh_input y el archivo no pasa por el enmascarado (tiene lo que imprimió el programa).";
                 else if (isSinVista)

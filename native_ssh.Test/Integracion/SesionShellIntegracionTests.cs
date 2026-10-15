@@ -202,7 +202,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         [Fact]
-        public async Task HostDesconocido_SeRechazaConInstrucciones()
+        public async Task HostDesconocido_SeRechazaYPideAlUsuarioQueGuardeLaHuella()
         {
             // Arrange
             OpcionesNativeSsh opciones = sshd.Opciones();
@@ -214,7 +214,8 @@ namespace NativeSsh.Test.Integracion
             NativeSshException error = (await FluentActions.Awaiting(() => fabrica.ConectarAsync(sshd.Destino, CancellationToken.None)).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain("ssh-keyscan -p");
+            _ = error.Message.Should().Contain("native_ssh no acepta claves de host nuevas").And.Contain($"se conecte una vez a mano con 'ssh -p {sshd.Puerto} ")
+                .And.Contain("no desactives la comprobación de la clave del host").And.NotContain("ssh-keyscan");
             _ = error.Message.Should().Contain("SHA256:");
         }
 

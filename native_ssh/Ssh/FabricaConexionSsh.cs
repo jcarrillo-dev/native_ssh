@@ -339,9 +339,9 @@ namespace NativeSsh.Ssh
             string puerto = destino.Puerto == DestinoSsh.PuertoPorDefecto ? "" : $"-p {destino.Puerto} ";
             return resultado switch
             {
-                ResultadoHostEnum.ClaveDistinta => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) NO coincide con la guardada en {archivos}. Posible suplantación: no se ha conectado. Si el cambio es legítimo, actualiza known_hosts manualmente.",
+                ResultadoHostEnum.ClaveDistinta => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) NO coincide con la guardada en {archivos}. Posible suplantación: no se ha conectado. Díselo al usuario: si el cambio es legítimo, es él quien debe comprobar la huella nueva y actualizar known_hosts; no desactives la comprobación de la clave del host.",
                 ResultadoHostEnum.Revocado => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) está marcada como @revoked en {archivos}. No se ha conectado.",
-                ResultadoHostEnum.Desconocido => $"{destino.Servidor}:{destino.Puerto} no está en {archivos} (clave {tipo} SHA256:{huella}). Comprueba la huella y añádelo con: ssh-keyscan {puerto}{destino.Servidor} >> ~/.ssh/known_hosts",
+                ResultadoHostEnum.Desconocido => $"{destino.Servidor}:{destino.Puerto} no está en {archivos} (clave {tipo} SHA256:{huella}): no se ha conectado, porque native_ssh no acepta claves de host nuevas. Pide al usuario que compruebe esa huella y se conecte una vez a mano con 'ssh {puerto}{destino.Usuario}@{destino.Servidor}', con el mismo usuario y en la misma máquina que native_ssh, para guardarla (native_ssh la busca en {archivos}); no desactives la comprobación de la clave del host ni añadas la clave sin que el usuario haya comprobado la huella.",
                 ResultadoHostEnum.Conocido => throw new UnreachableException("Un host conocido no se rechaza."),
                 _ => throw new ArgumentOutOfRangeException(nameof(resultado), resultado, null)
             };

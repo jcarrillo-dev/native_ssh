@@ -2,6 +2,8 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
@@ -1621,9 +1623,17 @@ namespace NativeSsh.Sesion
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 _limitador.RegistrarFallo(Destino.ClaveServidor);
-                throw new NativeSshException($"No se pudo conectar a {Destino.Clave}: {ex.Message}", ex);
+                throw new NativeSshException($"No se pudo conectar a {Destino.Clave}: {ex.Message}{PistaNombreNoResuelto(ex)}", ex);
             }
         }
+
+        // Un nombre que no se resuelve y que no llegó como alias resuelto: si es un alias de la configuración de ssh, esta no se
+        // pudo leer (p. ej. sin el programa ssh en el PATH de native_ssh, que solo lo dice en su log) y se usó tal cual. Sin
+        // configuración de ssh (NATIVE_SSH_CONFIG_SSH=none) los alias no existen: nada que añadir.
+        private string PistaNombreNoResuelto(Exception ex) =>
+            ex is SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain } && Destino.Alias is null && _opciones.ConfiguracionSsh is not null && !IPAddress.TryParse(Destino.Servidor, out _)
+                ? $" No se encontró la dirección de '{Destino.Servidor}'. Si es un alias de la configuración de ssh, native_ssh no la pudo leer con 'ssh -G' (p. ej. el programa ssh no está en su PATH; su log lo dice) y lo usó tal cual como nombre."
+                : string.Empty;
 
         private async Task<string?> AbrirShellAsync(IConexionSsh conexion, CancellationToken token)
         {

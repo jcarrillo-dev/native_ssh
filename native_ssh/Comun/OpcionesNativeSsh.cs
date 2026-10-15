@@ -42,7 +42,7 @@ namespace NativeSsh.Comun
         // Destinos en modo solo lectura (DestinosSoloLectura, NATIVE_SSH_SOLO_LECTURA).
         public DestinosSoloLectura SoloLectura { get; init; } = DestinosSoloLectura.Ninguno;
 
-        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas por ':'), NATIVE_SSH_PASSWORD,
+        /// Variables: NATIVE_SSH_DIRECTORIO_SSH, NATIVE_SSH_IDENTIDADES (separadas como el PATH: ':' en Linux y macOS, ';' en Windows), NATIVE_SSH_PASSWORD,
         /// NATIVE_SSH_PASSPHRASE y NATIVE_SSH_PASSPHRASE_FICHERO (la passphrase de las claves cifradas: FabricaConexionSsh),
         /// NATIVE_SSH_CONFIG_SSH (ruta o 'none') y NATIVE_SSH_SOLO_LECTURA (si no se entiende, native_ssh no arranca). Sin
         /// NATIVE_SSH_CONFIG_SSH: con NATIVE_SSH_DIRECTORIO_SSH, el fichero 'config' de ese directorio si existe al arrancar

@@ -1919,6 +1919,29 @@ namespace NativeSsh.Test.Sesion
             _ = fabrica.Conexiones.Should().Be(1);
         }
 
+        // Un nombre que no se resuelve con la configuración de ssh activa: el error dice que, si era un alias, no se pudo leer
+        // la configuración (p. ej. sin ssh en el PATH, que antes solo decía el log) y se usó tal cual. Sin configuración de ssh
+        // (los alias no existen) o con otro fallo de conexión, nada más.
+        [Theory]
+        [InlineData(true, true)]
+        [InlineData(false, false)]
+        public async Task NombreNoResuelto_ConConfiguracionSsh_DiceQueUnAliasNoSePudoLeer(bool isConConfiguracion, bool isConPista)
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { ErrorAlConectar = new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound) };
+            await using SesionShell sesion = Crear(fabrica, Opciones() with { ConfiguracionSsh = isConConfiguracion ? "" : null });
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = peticion.Estado.Should().Be(EstadoPeticionEnum.Error);
+            _ = peticion.Aviso.Should().Contain("No se pudo conectar a prueba@servidor:22");
+            _ = isConPista
+                ? peticion.Aviso.Should().Contain("No se encontró la dirección de 'servidor'. Si es un alias de la configuración de ssh, native_ssh no la pudo leer con 'ssh -G'")
+                : peticion.Aviso.Should().NotContain("alias");
+        }
+
         [Fact]
         public async Task ErrorAlConectar_PenalizaElSiguienteIntento()
         {

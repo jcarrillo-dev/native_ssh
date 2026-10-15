@@ -358,7 +358,8 @@ namespace NativeSsh.Comun
         }
 
         // Para ssh_status, sin esperar al DNS: true o false si ya se sabe (texto del destino o de los alias, IP, loopback,
-        // la dirección conectada o direcciones ya resueltas); null si depende de algo que aún no se sabe (un nombre sin
+        // la dirección conectada o, de las entradas, las direcciones ya resueltas y aún recordadas; las del destino nunca se
+        // toman de lo recordado); null si depende de algo que aún no se sabe (un nombre sin
         // resolver, o una sesión conectada sin dirección conocida). alias: los textos pedidos que cuentan (null: el alias
         // del propio destino).
         public bool? IsSoloLecturaSinRed(DestinoSsh destino, ExtremoConectado? conectado = null, string[]? alias = null) =>

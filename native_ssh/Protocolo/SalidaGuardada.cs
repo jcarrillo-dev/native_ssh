@@ -80,8 +80,9 @@ namespace NativeSsh.Protocolo
         // El nonce no está en ninguna variable que el comando pueda ver (ni en el nombre ni en el valor; tampoco sus hijos con
         // 'set -a'): solo en los argumentos de los printf de las marcas. Empieza quitando __ns_k y __ns_b, las variables de
         // ConstructorComando con el texto que se evalúa (lleva el nonce); las del envoltorio llevan el token en el nombre y el
-        // comando y la ruta en el valor. Así el comando no puede imitar una marca (y FiltroMarcasGuardado solo aplica las que
-        // siguen el orden del envoltorio).
+        // comando y la ruta en el valor. Así el comando no encuentra el nonce en ninguna variable (y FiltroMarcasGuardado solo aplica
+        // las marcas que siguen el orden del envoltorio). No lo protege de lo que un comando anterior dejó en el shell: con
+        // 'set -x', 'set -v', un 'trap DEBUG' o 'CHLD' o el historial activo, el envoltorio, con el nonce, puede quedar a la vista.
         // El resumen no depende de nada que el comando pueda cambiar en el shell: el nombre de las variables del envoltorio es
         // otro en cada petición (un 'readonly' de un comando anterior no impide asignarlas) y, después del comando, solo se
         // usan para borrarlas (sin error si no se puede); el código de salida y el recuento los saca una subshell con
