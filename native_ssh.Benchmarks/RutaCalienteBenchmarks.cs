@@ -40,7 +40,9 @@ namespace NativeSsh.Benchmarks
         {
             _bloque = CrearBloque("linea de salida normal con __ algo ñ\n"u8);
             byte[] marcador = Encoding.UTF8.GetBytes($"__NSX_{Id:N}_0__\n");
-            _bloqueConMarcador = [.. _bloque];
+            // CopyTo y no [.. _bloque], que aquí se compila a Enumerable.ToArray.
+            _bloqueConMarcador = new byte[_bloque.Length];
+            _bloque.CopyTo(_bloqueConMarcador, 0);
             marcador.CopyTo(_bloqueConMarcador, _bloqueConMarcador.Length - marcador.Length);
 
             _bloqueAnsi = CrearBloque("\u001b[32mverde\u001b[0m texto\r\n"u8);

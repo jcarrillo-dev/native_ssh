@@ -106,7 +106,15 @@ namespace NativeSsh.Sesion
         public string[] AliasDe(SesionShell sesion)
         {
             lock (_candado)
-                return _sesiones.TryGetValue(sesion.Destino.ClaveSesion, out EntradaSesion? entrada) && ReferenceEquals(entrada.Sesion, sesion) ? [.. entrada.Alias] : [];
+            {
+                if (!_sesiones.TryGetValue(sesion.Destino.ClaveSesion, out EntradaSesion? entrada) || !ReferenceEquals(entrada.Sesion, sesion))
+                    return [];
+
+                // CopyTo y no [.. entrada.Alias]: con un HashSet, la expresión de colección se compila a Enumerable.ToArray.
+                string[] alias = new string[entrada.Alias.Count];
+                entrada.Alias.CopyTo(alias);
+                return alias;
+            }
         }
 
         // Las sesiones a las que se refiere un destino ya resuelto (ParsearDestino), para ssh_disconnect y ssh_status:

@@ -516,8 +516,7 @@ namespace NativeSsh.Sesion
             int? sinBorrarAnterior;
             lock (_candadoGuardados)
             {
-                shells = [.. _shellsConGuardado];
-                _shellsConGuardado.Clear();
+                shells = VaciarShellsConGuardado();
                 isAnteriorFallido = _isBorradoAnteriorFallido;
                 sinBorrarAnterior = _archivosSinBorrarAnterior;
                 _isBorradoAnteriorFallido = false;
@@ -1206,15 +1205,23 @@ namespace NativeSsh.Sesion
                 {
                     bool isSinOtroBorrado = ReferenceEquals(enCurso, _borradosEnCurso) || _borradosEnCurso.IsCompleted;
                     if (isSinOtroBorrado || tope.IsCompleted)
-                    {
-                        KeyValuePair<Guid, int>[] tomados = [.. _shellsConGuardado];
-                        _shellsConGuardado.Clear();
-                        return tomados;
-                    }
+                        return VaciarShellsConGuardado();
 
                     enCurso = _borradosEnCurso;
                 }
             }
+        }
+
+        // Bajo _candadoGuardados: los shells con salidas guardadas y sus archivos, y la lista vacía. Con un bucle y no
+        // [.. _shellsConGuardado], que con un Dictionary se compila a Enumerable.ToArray.
+        private KeyValuePair<Guid, int>[] VaciarShellsConGuardado()
+        {
+            KeyValuePair<Guid, int>[] shells = new KeyValuePair<Guid, int>[_shellsConGuardado.Count];
+            int i = 0;
+            foreach (KeyValuePair<Guid, int> shell in _shellsConGuardado)
+                shells[i++] = shell;
+            _shellsConGuardado.Clear();
+            return shells;
         }
 
         // Tras cerrar la sesión, lo que se sabe del borrado de las salidas de guardarSalida (lo que dice ssh_disconnect): los

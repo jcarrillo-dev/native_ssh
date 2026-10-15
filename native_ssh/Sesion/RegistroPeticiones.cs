@@ -20,7 +20,11 @@ namespace NativeSsh.Sesion
 
         public Peticion[] ListarRecientes()
         {
-            Peticion[] peticiones = [.. _peticiones.Values];
+            // Values es una instantánea tomada bajo todos los candados del diccionario (el tipo ICollection lo impone su API).
+            // CopyTo y no [.. _peticiones.Values], que se compila a Enumerable.ToArray.
+            ICollection<Peticion> valores = _peticiones.Values;
+            Peticion[] peticiones = new Peticion[valores.Count];
+            valores.CopyTo(peticiones, 0);
             Array.Sort(peticiones, static (a, b) => b.CreadoTimestamp.CompareTo(a.CreadoTimestamp));
             return peticiones;
         }
