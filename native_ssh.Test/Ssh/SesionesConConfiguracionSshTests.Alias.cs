@@ -53,7 +53,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.Destino.Should().Be("root@127.0.0.1:2222");
-            _ = resultado.Mensaje.Should().StartWith("Conexión cerrada: root@127.0.0.1:2222 (IdentityFile /k/a). ")
+            _ = resultado.Mensaje.Should().StartWith($"Conexión cerrada: root@127.0.0.1:2222 (IdentityFile {IdentidadA}). ")
                 .And.Contain("deploy@127.0.0.1:2222, que se cierra con deploy@prod:2222");
             _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Clave.Should().Be("deploy@127.0.0.1:2222");
         }
@@ -90,7 +90,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = estado.Sesiones.Should().ContainSingle().Which.Destino.Should().Be("deploy@localhost:2222");
             _ = estado.Peticiones.Should().ContainSingle().Which.Destino.Should().Be("deploy@localhost:2222");
-            _ = resultado.Mensaje.Should().Be("Conexión cerrada: deploy@localhost:2222 (IdentityFile /k/a).");
+            _ = resultado.Mensaje.Should().Be($"Conexión cerrada: deploy@localhost:2222 (IdentityFile {IdentidadA}).");
             _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Clave.Should().Be("deploy@127.0.0.1:2222");
         }
 
@@ -108,7 +108,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = _fabrica.Conexiones.Should().Be(2);
-            _ = _gestor.ListarSesiones().Select(s => string.Join(",", s.Destino.Identidades!)).Should().BeEquivalentTo(["/k/a,/k/b", "/k/b,/k/a"]);
+            _ = _gestor.ListarSesiones().Select(s => string.Join(",", s.Destino.Identidades!)).Should().BeEquivalentTo([$"{IdentidadA},{IdentidadB}", $"{IdentidadB},{IdentidadA}"]);
         }
 
         // ssh_status con un alias cuya configuración cambió con la sesión viva muestra también la sesión y las peticiones de
@@ -143,7 +143,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.Destino.Should().Be("deploy@127.0.0.1:2222");
-            _ = resultado.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
+            _ = resultado.Mensaje.Should().Be($"Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile {IdentidadA}).");
         }
 
         // Dos sesiones del mismo alias con las mismas claves (antes y después de cambiar su HostName): el mensaje nombra las
@@ -163,7 +163,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = resultado.IsHecho.Should().BeTrue();
             _ = resultado.Mensaje.Should().NotContain("juego de claves").And.Contain("Se cerraron 2 conexiones")
-                .And.Contain("deploy@127.0.0.1:2222 (IdentityFile /k/a)").And.Contain("deploy@localhost:2222 (IdentityFile /k/a)");
+                .And.Contain($"deploy@127.0.0.1:2222 (IdentityFile {IdentidadA})").And.Contain($"deploy@localhost:2222 (IdentityFile {IdentidadA})");
             _ = _gestor.ListarSesiones().Should().BeEmpty();
         }
 

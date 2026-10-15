@@ -34,7 +34,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = pista.Mensaje.Should().NotContain(SinPistaExacta)
                 .And.Contain("ni deploy@prod:2222 ni deploy@127.0.0.1:2222 la cierran sola")
-                .And.Contain($"la cierran sola: los dos cerrarían también deploy@127.0.0.1:2222 (IdentityFile /k/b; alias otra; comando en curso {largoOtra.Id} «largo»)");
+                .And.Contain($"la cierran sola: los dos cerrarían también deploy@127.0.0.1:2222 (IdentityFile {IdentidadB}; alias otra; comando en curso {largoOtra.Id} «largo»)");
             _ = siguiendo.Mensaje.Should().StartWith("Se cerraron 2 conexiones con deploy@127.0.0.1:2222");
             _ = _gestor.ListarSesiones().Should().BeEmpty();
             _ = _gestor.BuscarPeticion(largoOtra.Id).Estado.Should().Be(EstadoPeticionEnum.Cancelado);
@@ -57,7 +57,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = pista.Mensaje.Should().Contain("deploy@127.0.0.1:2222, que se cierra con deploy@127.0.0.1:2222").And.NotContain("deploy@prod:2222");
-            _ = siguiendo.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
+            _ = siguiendo.Mensaje.Should().Be($"Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile {IdentidadA}).");
             _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().StartWith("deploy@127.0.0.5:2222");
         }
 
@@ -104,7 +104,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = pista.Mensaje.Should().Contain($"{TopeAlias} alias").And.NotContain(SinPistaExacta)
-                .And.Contain("deploy@127.0.0.1:2222 no la cierra sola: cerraría también deploy@127.0.0.1:2222 (IdentityFile /k/b; alias kb)");
+                .And.Contain($"deploy@127.0.0.1:2222 no la cierra sola: cerraría también deploy@127.0.0.1:2222 (IdentityFile {IdentidadB}; alias kb)");
             _ = siguiendo.Mensaje.Should().StartWith("Se cerraron 2 conexiones con deploy@127.0.0.1:2222");
         }
 

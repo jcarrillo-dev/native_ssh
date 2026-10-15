@@ -164,43 +164,6 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = isDeMsys.Should().Be(hasRuntime);
         }
-
-        // Un Match exec cuyo padre termina antes que él (en el ssh de Git for Windows, el sh de MSYS que lo lanza sale en
-        // cuanto lo arranca; aquí, un cmd intermedio lanzado con 'start /b' que sale al instante) no cuelga de ssh en el
-        // árbol de procesos: al agotarse el plazo también se mata, y deja de escribir en su marca.
-        [Fact]
-        public void PlazoAgotado_MataLoQueLanzoElMatchExecAunqueSuPadreHayaTerminado()
-        {
-            // Arrange
-            string marca = Path.Combine(_directorio, "marca");
-            string bucle = Path.Combine(_directorio, "bucle.cmd");
-            string intermedio = Path.Combine(_directorio, "intermedio.cmd");
-            string lanzar = Path.Combine(_directorio, "lanzar.cmd");
-            File.WriteAllText(bucle, $"@for /l %%i in (1,1,60) do @(echo x>>\"{marca}\" & ping -n 2 127.0.0.1 >nul)\r\n");
-            File.WriteAllText(intermedio, $"@start \"\" /b cmd /c \"{bucle}\"\r\n");
-            File.WriteAllText(lanzar, $"@start \"\" /b cmd /c \"{intermedio}\"\r\n@ping -n 30 127.0.0.1 >nul\r\n");
-            string configuracion = Path.Combine(_directorio, "config");
-            File.WriteAllText(configuracion, $"Match exec \"{lanzar.Replace('\\', '/')}\"\n  Port 9\nHost web\n  HostName 127.0.0.1\n");
-            _ = DestinoSsh.TryParse("web", Environment.UserName, out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
-            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh
-            {
-                UsuarioPorDefecto = Environment.UserName,
-                ConfiguracionSsh = configuracion,
-                BinarioSsh = "ssh",
-                TimeoutConfiguracionSsh = TimeSpan.FromSeconds(3)
-            }, new LoggerDe<ResolutorConfiguracionSsh>(_log));
-
-            // Act
-            Action resolver = () => resolutor.Resolver(destino, isUsuario, isPuerto);
-
-            // Assert
-            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó");
-            _ = File.Exists(marca).Should().BeTrue("el Match exec llegó a lanzar el bucle antes del plazo");
-            Thread.Sleep(500);
-            long tamanoTrasMatar = new FileInfo(marca).Length;
-            Thread.Sleep(3000);
-            _ = new FileInfo(marca).Length.Should().Be(tamanoTrasMatar, "lo que lanzó el Match exec sigue vivo y escribiendo");
-        }
     }
 
     // Lo de Windows de 'ssh -G' que no puede ir en paralelo con otras pruebas (colección sin paralelismo): cambia variables
@@ -211,10 +174,17 @@ namespace NativeSsh.Test.Ssh
         private static readonly string[] Variables = ["NATIVE_SSH_PASSWORD", "NATIVE_SSH_PASSPHRASE", "NATIVE_SSH_TOKEN_HTTP"];
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfgw_env_{Guid.NewGuid():N}")).FullName;
         private readonly Dictionary<string, string?> _anteriores = Variables.ToDictionary(v => v, Environment.GetEnvironmentVariable);
+        private readonly string? _shellAnterior = Environment.GetEnvironmentVariable("SHELL");
         private readonly LoggerPrueba _log = new();
+
+        // El ssh de Git for Windows (MSYS) ejecuta el Match exec con $SHELL; en una sesión del sshd de Windows vale
+        // c:\windows\system32\cmd.exe, que no entiende '-c' y devuelve al instante (el Match no espera y el plazo no se
+        // agota). Sin SHELL, usa su sh, como en una consola normal. El ssh de OpenSSH para Windows no la mira.
+        public ResolutorConfiguracionSshWindowsEntornoTests() => Environment.SetEnvironmentVariable("SHELL", null);
 
         public void Dispose()
         {
+            Environment.SetEnvironmentVariable("SHELL", _shellAnterior);
             foreach ((string variable, string? valor) in _anteriores)
                 Environment.SetEnvironmentVariable(variable, valor);
             _log.Dispose();
@@ -236,9 +206,13 @@ namespace NativeSsh.Test.Ssh
         public void MatchExecConCmd_NoVeLosSecretosDeNativeSsh()
         {
             // Arrange
+            // El volcado va en un .cmd que el Match exec lanza por su ruta: con el ssh de MSYS, el '/c' de 'cmd /c' en la línea
+            // del Match exec se convertiría en la ruta 'C:/'.
             string volcado = Path.Combine(_directorio, "entorno");
+            string volcar = Path.Combine(_directorio, "volcar.cmd");
+            File.WriteAllText(volcar, $"@set > \"{volcado}\"\r\n");
             string configuracion = Path.Combine(_directorio, "config");
-            File.WriteAllText(configuracion, $"Match exec \"cmd /c set > {volcado}\"\n  Port 9\n");
+            File.WriteAllText(configuracion, $"Match exec \"{volcar.Replace('\\', '/')}\"\n  Port 9\n");
             foreach (string variable in Variables)
                 Environment.SetEnvironmentVariable(variable, "Canario-secreto-entorno");
             _ = DestinoSsh.TryParse("web", "ana", out DestinoSsh destino);
@@ -311,6 +285,88 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = resuelto.Clave.Should().Be("ana@web:22");
             _ = _log.Entradas.Should().Contain(e => e.Mensaje.Contains($"No se encontró el programa '{nombre}'", StringComparison.Ordinal));
+        }
+        // Un Match exec cuyo padre termina antes que él (en el ssh de Git for Windows, el sh de MSYS que lo lanza sale en
+        // cuanto lo arranca; aquí, un cmd intermedio lanzado con 'start /b' que sale al instante) no cuelga de ssh en el
+        // árbol de procesos: al agotarse el plazo también se mata, y deja de escribir en su marca. En esta colección porque
+        // la clase quita SHELL del entorno del proceso.
+        [Fact]
+        public void PlazoAgotado_MataLoQueLanzoElMatchExecAunqueSuPadreHayaTerminado()
+        {
+            // Arrange
+            string marca = Path.Combine(_directorio, "marca");
+            string bucle = Path.Combine(_directorio, "bucle.cmd");
+            string intermedio = Path.Combine(_directorio, "intermedio.cmd");
+            string lanzar = Path.Combine(_directorio, "lanzar.cmd");
+            File.WriteAllText(bucle, $"@for /l %%i in (1,1,60) do @(echo x>>\"{marca}\" & ping -n 2 127.0.0.1 >nul)\r\n");
+            File.WriteAllText(intermedio, $"@start \"\" /b cmd /c \"{bucle}\"\r\n");
+            File.WriteAllText(lanzar, $"@start \"\" /b cmd /c \"{intermedio}\"\r\n@ping -n 30 127.0.0.1 >nul\r\n");
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, $"Match exec \"{lanzar.Replace('\\', '/')}\"\n  Port 9\nHost web\n  HostName 127.0.0.1\n");
+            _ = DestinoSsh.TryParse("web", Environment.UserName, out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh
+            {
+                UsuarioPorDefecto = Environment.UserName,
+                ConfiguracionSsh = configuracion,
+                BinarioSsh = "ssh",
+                TimeoutConfiguracionSsh = TimeSpan.FromSeconds(3)
+            }, new LoggerDe<ResolutorConfiguracionSsh>(_log));
+
+            // Act
+            Action resolver = () => resolutor.Resolver(destino, isUsuario, isPuerto);
+
+            // Assert
+            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó");
+            _ = File.Exists(marca).Should().BeTrue("el Match exec llegó a lanzar el bucle antes del plazo");
+            Thread.Sleep(500);
+            long tamanoTrasMatar = new FileInfo(marca).Length;
+            Thread.Sleep(3000);
+            _ = new FileInfo(marca).Length.Should().Be(tamanoTrasMatar, "lo que lanzó el Match exec sigue vivo y escribiendo");
+        }
+
+        // Lo mismo con el ssh de MSYS (Git for Windows) primero en PATH, el caso para el que entra ssh en un job object: su sh
+        // ejecuta el Match exec y, con 'exec', el programa (otro sh de MSYS, con el bucle que escribe en la marca) sustituye
+        // al sh, cuyo proceso de Windows termina; el bucle queda sin padre en el árbol de procesos y ssh lo sigue esperando.
+        [FactSshDeMsys]
+        public void PlazoAgotado_ConElSshDeMsys_MataElProgramaDelMatchExecQueSeQuedoSinPadre()
+        {
+            // Arrange
+            string marca = Path.Combine(_directorio, "marca");
+            string bucle = Path.Combine(_directorio, "bucle.sh");
+            File.WriteAllText(bucle, $"while :; do echo x >> '{RutaMsys(marca)}'; sleep 0.3; done\n");
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, $"Match exec \"exec sh '{RutaMsys(bucle)}'\"\n  Port 9\nHost web\n  HostName 127.0.0.1\n");
+            _ = DestinoSsh.TryParse("web", Environment.UserName, out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
+            ResolutorConfiguracionSsh resolutor = Resolutor(configuracion, TimeSpan.FromSeconds(3));
+
+            // Act
+            Action resolver = () => resolutor.Resolver(destino, isUsuario, isPuerto);
+
+            // Assert
+            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó");
+            _ = File.Exists(marca).Should().BeTrue("el Match exec llegó a lanzar el bucle antes del plazo");
+            Thread.Sleep(500);
+            long tamanoTrasMatar = new FileInfo(marca).Length;
+            Thread.Sleep(3000);
+            _ = new FileInfo(marca).Length.Should().Be(tamanoTrasMatar, "lo que lanzó el Match exec sigue vivo y escribiendo");
+        }
+
+        // 'C:\a\b' como la escribe MSYS: '/c/a/b'.
+        private static string RutaMsys(string ruta) => "/" + char.ToLowerInvariant(ruta[0]) + ruta[2..].Replace('\\', '/');
+    }
+
+    // Solo si el ssh que se resuelve (el primero de PATH) es de MSYS, como el de Git for Windows.
+    public sealed class FactSshDeMsysAttribute : FactAttribute
+    {
+        private static readonly Lazy<string?> Motivo = new(() =>
+            new ResolutorConfiguracionSsh(new OpcionesNativeSsh { UsuarioPorDefecto = "ana" }, Microsoft.Extensions.Logging.Abstractions.NullLogger<ResolutorConfiguracionSsh>.Instance).IsSshDeMsys()
+                ? null
+                : "El ssh del PATH no es de MSYS (Git for Windows): pon C:\\Program Files\\Git\\usr\\bin delante en PATH para esta prueba.");
+
+        public override string? Skip
+        {
+            get => base.Skip ?? Motivo.Value;
+            set => base.Skip = value;
         }
     }
 }

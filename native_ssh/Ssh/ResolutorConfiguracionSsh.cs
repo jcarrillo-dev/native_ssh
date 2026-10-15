@@ -227,7 +227,7 @@ namespace NativeSsh.Ssh
         }
 
         // Si el ssh que lee la configuración es de MSYS: sus rutas de unidad ('/c/…') se leen como 'C:\…' (RutaDelSistema).
-        private bool IsSshDeMsys()
+        internal bool IsSshDeMsys()
         {
             bool isDeMsys = false;
             SshDeMsysDelSistema(opciones.BinarioSsh, ref isDeMsys);

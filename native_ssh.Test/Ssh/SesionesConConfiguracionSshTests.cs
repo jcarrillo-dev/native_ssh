@@ -18,6 +18,13 @@ namespace NativeSsh.Test.Ssh
     public sealed partial class SesionesConConfiguracionSshTests : IDisposable
     {
         private static readonly TimeSpan Limite = TimeSpan.FromSeconds(10);
+
+        // Los IdentityFile '/k/…' de las configuraciones de estas pruebas, como los lee native_ssh con el ssh que resuelve: en
+        // Windows, con el ssh de MSYS (Git for Windows) primero en PATH, '/k/a' es 'K:\a'; con los demás, tal cual.
+        private static readonly bool IsSshDeMsys = new ResolutorConfiguracionSsh(new OpcionesNativeSsh { UsuarioPorDefecto = "ana" }, NullLogger<ResolutorConfiguracionSsh>.Instance).IsSshDeMsys();
+        private static readonly string IdentidadA = ComoLaLee("/k/a");
+        private static readonly string IdentidadB = ComoLaLee("/k/b");
+        private static readonly string IdentidadNueva = ComoLaLee("/k/nueva");
         private readonly string _directorio = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ns_cfg_ses_{Guid.NewGuid():N}")).FullName;
         private readonly FabricaFalsa _fabrica = new(comando => comando switch
         {
@@ -43,6 +50,9 @@ namespace NativeSsh.Test.Ssh
             _gestor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             Directory.Delete(_directorio, recursive: true);
         }
+
+        private static string ComoLaLee(string identidad) =>
+            ResolutorConfiguracionSsh.TryExpandir(identidad, "/casa", "h", "h", "ana", 22, IsSshDeMsys, out string? ruta, out string? motivo) ? ruta : throw new InvalidOperationException(motivo);
 
         // Dos alias al mismo deploy@127.0.0.1:2222 con IdentityFile distintos, y un tercero sin IdentityFile.
         private void EscribirConfiguracion(string claveA = "/k/a", string servidorA = "127.0.0.1") =>
@@ -88,7 +98,7 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = _fabrica.Conexiones.Should().Be(3);
             _ = _gestor.ListarSesiones().Select(s => s.Destino.Identidades is null ? "por defecto" : string.Join(",", s.Destino.Identidades))
-                .Should().BeEquivalentTo(["/k/a", "/k/b", "por defecto"]);
+                .Should().BeEquivalentTo([IdentidadA, IdentidadB, "por defecto"]);
             _ = _gestor.ListarSesiones().Should().OnlyContain(s => s.Destino.Clave == "deploy@127.0.0.1:2222");
         }
 
@@ -107,7 +117,7 @@ namespace NativeSsh.Test.Ssh
             await peticion.Finalizacion.WaitAsync(Limite);
 
             // Assert
-            _ = peticion.Destino.Identidades.Should().Equal("/k/nueva");
+            _ = peticion.Destino.Identidades.Should().Equal(IdentidadNueva);
             _ = _fabrica.Conexiones.Should().Be(2);
             _ = _gestor.ListarSesiones().Should().HaveCount(2);
         }
@@ -125,8 +135,8 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.IsHecho.Should().BeTrue();
-            _ = resultado.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
-            _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Identidades.Should().Equal("/k/b");
+            _ = resultado.Mensaje.Should().Be($"Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile {IdentidadA}).");
+            _ = _gestor.ListarSesiones().Should().ContainSingle().Which.Destino.Identidades.Should().Equal(IdentidadB);
         }
 
         // ssh_disconnect con usuario@servidor:puerto cierra todas las sesiones de ese destino, sean de las claves que sean, y
@@ -143,7 +153,7 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.IsHecho.Should().BeTrue();
-            _ = resultado.Mensaje.Should().StartWith("Se cerraron 3 conexiones con deploy@127.0.0.1:2222").And.Contain("/k/a").And.Contain("/k/b");
+            _ = resultado.Mensaje.Should().StartWith("Se cerraron 3 conexiones con deploy@127.0.0.1:2222").And.Contain(IdentidadA).And.Contain(IdentidadB);
             _ = _gestor.ListarSesiones().Should().BeEmpty();
         }
 
@@ -180,8 +190,8 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = todas.Sesiones.Should().HaveCount(2);
             _ = todas.Sesiones.Select(s => (s.Destino, s.Alias?.Single(), s.IdentityFile?.Single()))
-                .Should().BeEquivalentTo([("deploy@127.0.0.1:2222", "cuenta-a", "/k/a"), ("deploy@127.0.0.1:2222", "cuenta-b", "/k/b")]);
-            _ = deB.Sesiones.Should().ContainSingle().Which.IdentityFile.Should().Equal("/k/b");
+                .Should().BeEquivalentTo([("deploy@127.0.0.1:2222", "cuenta-a", IdentidadA), ("deploy@127.0.0.1:2222", "cuenta-b", IdentidadB)]);
+            _ = deB.Sesiones.Should().ContainSingle().Which.IdentityFile.Should().Equal(IdentidadB);
             _ = deB.Peticiones.Should().ContainSingle();
         }
 

@@ -41,10 +41,10 @@ namespace NativeSsh.Test.Ssh
 
             // Assert
             _ = resultado.IsHecho.Should().BeTrue(resultado.Mensaje);
-            _ = resultado.Mensaje.Should().StartWith("Conexión cerrada: root@127.0.0.1:2222 (IdentityFile /k/a).")
+            _ = resultado.Mensaje.Should().StartWith($"Conexión cerrada: root@127.0.0.1:2222 (IdentityFile {IdentidadA}).")
                 .And.Contain($"deploy@127.0.0.1:2222 (comando en curso {largo.Id} «largo»), que se cierra con deploy@prod:2222");
             _ = _gestor.BuscarPeticion(largo.Id).Estado.Should().Be(EstadoPeticionEnum.Ejecutando);
-            _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().Be("deploy@127.0.0.1:2222|/k/a");
+            _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().Be($"deploy@127.0.0.1:2222|{IdentidadA}");
         }
 
         // La pista sugiere usuario@alias:puerto y no el servidor real: seguirla cierra solo la sesión vieja de 'prod', no la de
@@ -66,8 +66,8 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = pista.IsHecho.Should().BeFalse();
             _ = pista.Mensaje.Should().Contain("deploy@127.0.0.1:2222").And.Contain("deploy@prod:2222").And.NotContain("usuario@servidor:puerto");
-            _ = siguiendo.Mensaje.Should().Be("Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile /k/a).");
-            _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().EndWith("/k/b");
+            _ = siguiendo.Mensaje.Should().Be($"Conexión cerrada: deploy@127.0.0.1:2222 (IdentityFile {IdentidadA}).");
+            _ = ClavesYIdentidades().Should().ContainSingle().Which.Should().EndWith(IdentidadB);
         }
 
         // ssh_status con el alias también nombra las sesiones del alias para otro usuario o puerto, con cómo cerrarlas.
