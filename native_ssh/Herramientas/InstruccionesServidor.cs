@@ -16,6 +16,7 @@ namespace NativeSsh.Herramientas
             "- crear o sobrescribir un archivo: ssh_write_file; editar parte de un archivo: ssh_replace_file_content (nunca sed -i, echo > ni heredocs);\n" +
             "- fijar el directorio de trabajo: ssh_set_cwd (nunca cd … &&); los comandos y las rutas relativas parten de él;\n" +
             "- servicios, procesos, paquetes, git, docker, compilaciones y lo demás: ssh_exec; grep solo para filtrar en una tubería la salida de otro comando.\n" +
+            "Archivo con secretos (.env, credenciales) del que solo necesitas nombres o recuentos: sácalos con ssh_exec filtrando en el servidor (p. ej. los nombres de las variables), NUNCA con ssh_read_file ni ssh_search, que devolverían los valores.\n" +
             "Salida grande o de tamaño desconocido (logs, consultas SQL, volcados, listados): ssh_exec con guardarSalida=true y después ssh_read_file por tramos o ssh_search sobre el archivo que indica la respuesta.\n" +
             "Interrumpir un comando: ssh_cancel, NUNCA Ctrl+C por ssh_input. Contraseñas, tokens y otros secretos: ssh_input con secreto=true.\n" +
             "Esperar a una condición, nunca con un sleep fijo: 'until <condición>; do sleep 2; done' para esperar a que algo empiece a cumplirse y 'while <condición>; do sleep 2; done' para esperar a que algo deje de estar activo, los dos dentro de timeout <s> bash -c '…'. Una orden ya lanzada que sigue en ejecución se espera con ssh_output.\n" +

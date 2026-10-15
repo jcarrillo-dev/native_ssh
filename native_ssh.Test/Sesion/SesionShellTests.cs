@@ -1978,6 +1978,32 @@ namespace NativeSsh.Test.Sesion
             _ = fabrica.Ultima!.ShellsAbiertos.Should().Be(2);
         }
 
+        // Lo que dice la descripción de ssh_reset_shell: cancela el comando en ejecución, y el que espera en la cola no se
+        // cancela y se ejecuta en el shell nuevo.
+        [Fact]
+        public async Task Reset_CancelaElEnEjecucion_YElEncoladoSeEjecutaEnElShellNuevo()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion);
+            await using SesionShell sesion = Crear(fabrica);
+            Peticion colgado = Nueva("colgado");
+            Peticion encolada = Nueva("hola");
+            sesion.Encolar(colgado);
+            await EsperasPrueba.EsperarHastaAsync(() => Texto(colgado).Contains("empezando"));
+            sesion.Encolar(encolada);
+
+            // Act
+            sesion.SolicitarReset();
+            await colgado.Finalizacion.WaitAsync(Limite);
+            await encolada.Finalizacion.WaitAsync(Limite);
+
+            // Assert
+            _ = colgado.Estado.Should().Be(EstadoPeticionEnum.Cancelado);
+            _ = encolada.Estado.Should().Be(EstadoPeticionEnum.Completado);
+            _ = Texto(encolada).Should().Be("eco:hola\n");
+            _ = fabrica.Ultima!.ShellsAbiertos.Should().BeGreaterThanOrEqualTo(2);
+        }
+
         [Fact]
         public async Task Dispose_CancelaLoPendiente()
         {

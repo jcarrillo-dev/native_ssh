@@ -70,6 +70,7 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("guardarSalida=true")]
         [InlineData("ssh_cancel, NUNCA Ctrl+C por ssh_input")]
         [InlineData("secreto=true")]
+        [InlineData("NUNCA con ssh_read_file ni ssh_search, que devolverían los valores")]
         public void Enrutamiento_DiceLaHerramientaYLoQueSustituye(string esperado) =>
             _ = Texto.Should().Contain(esperado);
 
