@@ -277,6 +277,28 @@ namespace NativeSsh.Test.Herramientas
             _ = resultado.SegundosSinSalida.Should().BeNull();
         }
 
+        // El aviso de espera fija es solo un mensaje: con 'sleep 60' y con 'sleep 06' (mismo largo, por debajo del umbral) el
+        // bloque de control es el mismo JSON salvo el id y el aviso, y la salida es la misma.
+        [Fact]
+        public async Task Exec_EsperaFijaEncadenada_SoloAnadeElAviso()
+        {
+            // Act
+            CallToolResult largo = await _herramientas.EjecutarAsync("servidor", "sleep 60; echo fin");
+            CallToolResult corto = await _herramientas.EjecutarAsync("servidor", "sleep 06; echo fin");
+
+            // Assert
+            string controlLargo = ((TextContentBlock)largo.Content[0]).Text;
+            string controlCorto = ((TextContentBlock)corto.Content[0]).Text;
+            using JsonDocument documentoLargo = JsonDocument.Parse(controlLargo);
+            using JsonDocument documentoCorto = JsonDocument.Parse(controlCorto);
+            _ = documentoLargo.RootElement.GetProperty("aviso").GetString().Should().StartWith("Sugerencia de rendimiento: Has esperado un tiempo fijo con 'sleep'");
+            _ = documentoCorto.RootElement.TryGetProperty("aviso", out _).Should().BeFalse();
+            string[] camposLargo = [.. documentoLargo.RootElement.EnumerateObject().Where(p => p.Name is not ("id" or "aviso")).Select(p => p.ToString())];
+            string[] camposCorto = [.. documentoCorto.RootElement.EnumerateObject().Where(p => p.Name != "id").Select(p => p.ToString())];
+            _ = camposLargo.Should().Equal(camposCorto);
+            _ = ((TextContentBlock)largo.Content[1]).Text.Replace("60", "06", StringComparison.Ordinal).Should().Be(((TextContentBlock)corto.Content[1]).Text);
+        }
+
         [Fact]
         public async Task Exec_SinEsperar_DevuelveEjecutando_YLuegoSePuedeCancelar()
         {

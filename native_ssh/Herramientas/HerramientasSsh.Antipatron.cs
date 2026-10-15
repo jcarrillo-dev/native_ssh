@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -39,15 +40,25 @@ namespace NativeSsh.Herramientas
 
             using PooledListRef<string> avisos = new();
             OrdenSimple? anterior = null;
-            foreach (OrdenSimple orden in SepararOrdenes(comando))
+            ReadOnlySpan<OrdenSimple> ordenes = CollectionsMarshal.AsSpan(SepararOrdenes(comando));
+            int profundidadBucles = 0;
+            for (int i = 0; i < ordenes.Length; i++)
             {
+                OrdenSimple orden = ordenes[i];
+                // Bucles until/while/for/select: lo que va dentro (sleep entre comprobaciones) es el patrón bueno.
+                if (orden.Programa is "until" or "while" or "for" or "select")
+                    profundidadBucles++;
+                else if (orden.Programa == "done" && profundidadBucles > 0)
+                    profundidadBucles--;
+                bool isEsperaEncadenada = profundidadBucles == 0 && i + 1 < ordenes.Length && orden.SeparadorSiguiente is ";" or "&&" or "\n";
+
                 // El productor de una tubería (echo … | tee) es el segmento anterior si este lee de él.
                 OrdenSimple? productor = orden.IsTuberiaDeEntrada ? anterior : null;
                 // Rama de respaldo (RC6 a): lo que sigue a '||', y lo que va en tubería detrás, solo se ejecuta si falló lo
                 // anterior, y desde aquí no se sabe: el aviso se condiciona en vez de afirmar que se ejecutó. Un '&&' o un ';'
                 // posterior ya no es de la rama ('a || b && cat x' ejecuta cat si a o b terminan bien).
                 orden.IsRespaldo = orden.SeparadorPrevio == "||" || (orden.IsTuberiaDeEntrada && anterior?.IsRespaldo == true);
-                string? aviso = AvisoDeOrden(orden, productor);
+                string? aviso = AvisoDeOrden(orden, productor, isEsperaEncadenada);
                 if (aviso is not null && orden.IsRespaldo)
                     aviso = PrefijoRespaldo + aviso;
                 if (aviso is not null && !avisos.Span.Contains(aviso))
@@ -70,7 +81,14 @@ namespace NativeSsh.Herramientas
 
         private const string PrefijoRespaldo = "Solo si llegó a ejecutarse la rama de respaldo tras '||' (desde aquí no se sabe): ";
 
-        private static string? AvisoDeOrden(OrdenSimple orden, OrdenSimple? productor)
+        // Espera fija (sleep N; comprobación): a partir de 10 s. Por debajo están las pausas cortas tras reiniciar un servicio
+        // (sleep 2 && systemctl status), que no merecen un bucle; 10 s es la mitad de la espera por defecto de ssh_exec (20 s).
+        private const double UmbralEsperaFijaSegundos = 10;
+
+        private const string AvisoEsperaFija = "Sugerencia de rendimiento: Has esperado un tiempo fijo con 'sleep' antes de otra orden vía ssh_exec. Para esperar a una condición, usa un bucle que la compruebe: 'until <condición>; do sleep 2; done' para esperar a que algo empiece a cumplirse (un puerto que escucha, un archivo que aparece) y 'while <condición>; do sleep 2; done' para esperar a que algo deje de estar activo (un proceso, un archivo de bloqueo), los dos dentro de timeout <s> bash -c '…' para que la espera tenga límite. Para una orden larga ya lanzada, usa 'ssh_output' en lugar de esperar con 'sleep'.";
+
+        // isEsperaEncadenada: la orden va fuera de un bucle y le sigue otra con ';', '&&' o un salto de línea.
+        private static string? AvisoDeOrden(OrdenSimple orden, OrdenSimple? productor, bool isEsperaEncadenada)
         {
             if (orden.Programa is null || orden.HasAyuda)
                 return null;
@@ -92,6 +110,7 @@ namespace NativeSsh.Herramientas
                 "sed" => AvisoSed(orden, isSalidaAlLlm),
                 "perl" => IsEdicionEnSitio(orden.Argumentos, PerlOpcionesConValor) ? AvisoEdicionEnSitio("perl -i") : null,
                 "tee" => IsEscrituraTee(orden, productor) ? AvisoEscrituraArchivo("tee") : null,
+                "sleep" => isEsperaEncadenada && SegundosDeSleep(orden.Argumentos) >= UmbralEsperaFijaSegundos ? AvisoEsperaFija : null,
                 _ => null
             };
         }
@@ -129,6 +148,30 @@ namespace NativeSsh.Herramientas
             }
 
             return !(hasTamano && hasTipoDirectorio);
+        }
+
+        // Segundos que espera 'sleep' con estos argumentos: la suma de todos (GNU), cada uno un número con sufijo s, m, h o d
+        // opcional, o infinity. Con un argumento que no se entiende ($VAR, una opción) o sin argumentos, 0: no se avisa.
+        private static double SegundosDeSleep(string[] argumentos)
+        {
+            double total = 0;
+            foreach (string argumento in argumentos)
+            {
+                if (argumento is "inf" or "infinity")
+                    return double.PositiveInfinity;
+
+                ReadOnlySpan<char> texto = argumento;
+                double factor = texto.Length > 0 ? texto[^1] switch { 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, _ => 0 } : 0;
+                if (factor > 0)
+                    texto = texto[..^1];
+                else
+                    factor = 1;
+                if (!double.TryParse(texto, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out double valor))
+                    return 0;
+                total += valor * factor;
+            }
+
+            return total;
         }
 
         // cat: con heredoc o herestring y la salida a un archivo es una escritura (cat > f <<EOF); con archivos y la salida al
