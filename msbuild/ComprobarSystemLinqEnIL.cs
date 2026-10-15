@@ -1,7 +1,7 @@
-// Tarea de MSBuild (RoslynCodeTaskFactory, desde Directory.Build.props): falla si el ensamblado compilado hace referencia a
-// System.Linq o a un espacio de nombres bajo él. Mira el resultado y no el fuente, así que no importa cómo se escribió ni si
-// lo generó el compilador ([.. hashSet] se compila a Enumerable.ToArray; una lambda convertida en árbol de expresión, a
-// System.Linq.Expressions). No es parte de ningún proyecto: no está bajo la carpeta de ninguno.
+// Tarea de MSBuild (compilada en un ensamblado por el target NativeSshCompilarTareaLinq de Directory.Build.props): falla si
+// el ensamblado compilado hace referencia a System.Linq o a un espacio de nombres bajo él. Mira el resultado y no el fuente,
+// así que no importa cómo se escribió ni si lo generó el compilador ([.. hashSet] se compila a Enumerable.ToArray; una
+// lambda convertida en árbol de expresión, a System.Linq.Expressions). No es parte de ningún proyecto: no está bajo la carpeta de ninguno.
 //
 // Qué se comprueba:
 // - cada TypeRef (también los anidados, por el espacio de nombres del tipo exterior): cualquier uso de un tipo de otro
