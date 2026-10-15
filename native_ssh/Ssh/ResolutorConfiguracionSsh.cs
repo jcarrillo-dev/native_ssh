@@ -28,7 +28,8 @@ namespace NativeSsh.Ssh
     //   claves por defecto (~/.ssh/id_*), que se reconocen comparándolas con las de 'ssh -G -F none' (una vez) y se dejan
     //   en las de native_ssh (las de NATIVE_SSH_DIRECTORIO_SSH). ssh -G no expande las rutas: aquí se expanden '~' inicial,
     //   %d, %u, %h, %r, %p, %n, %% y ${VAR}; cualquier otro token, '~usuario', una variable sin definir o una ruta relativa
-    //   (relativa al directorio de trabajo de native_ssh, que no es el del usuario) es un error del destino, como en ssh.
+    //   (relativa al directorio de trabajo de native_ssh, que no es el del usuario) es un error del destino, como en ssh. En
+    //   Windows, si el ssh que la lee es el de MSYS (Git for Windows), una ruta de unidad '/c/…' se lee como 'C:\…'.
     // - Plazo (TimeoutConfiguracionSsh, 5 s): un 'Match exec' o una búsqueda DNS de CanonicalizeHostname que se cuelga no
     //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice.
     // - En Linux, ssh se lanza con 'setsid' (si existe) en su propio grupo de procesos: un 'Match exec' que deja algo en
@@ -81,7 +82,7 @@ namespace NativeSsh.Ssh
 
             string[]? identidades = null;
             if (!opciones.IsRutasIdentidadExplicitas && !IsListaPorDefecto(leida.Identidades, servidor))
-                identidades = Expandir(leida.Identidades, servidor, real, usuario, puerto);
+                identidades = Expandir(leida.Identidades, servidor, real, usuario, puerto, IsSshDeMsys());
 
             string? alias = string.Equals(servidor, real, StringComparison.OrdinalIgnoreCase) ? null : servidor;
             DestinoSsh resuelto = DestinoSsh.Resuelto(usuario, real, puerto, identidades, alias);
@@ -223,14 +224,22 @@ namespace NativeSsh.Ssh
             return true;
         }
 
+        // Si el ssh que lee la configuración es de MSYS: sus rutas de unidad ('/c/…') se leen como 'C:\…' (RutaDelSistema).
+        private bool IsSshDeMsys()
+        {
+            bool isDeMsys = false;
+            SshDeMsysDelSistema(opciones.BinarioSsh, ref isDeMsys);
+            return isDeMsys;
+        }
+
         // Sin repetidas, en su orden. Se guardan en el destino (DestinoSsh.Identidades): array del tamaño justo.
-        private static string[] Expandir(string[] identidades, string alias, string servidor, string usuario, int puerto)
+        private static string[] Expandir(string[] identidades, string alias, string servidor, string usuario, int puerto, bool isSshDeMsys)
         {
             string casa = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             using PooledListRef<string> rutas = new();
             foreach (string identidad in identidades)
             {
-                if (!TryExpandir(identidad, casa, alias, servidor, usuario, puerto, out string? ruta, out string? motivo))
+                if (!TryExpandir(identidad, casa, alias, servidor, usuario, puerto, isSshDeMsys, out string? ruta, out string? motivo))
                     throw new NativeSshException($"El IdentityFile '{identidad}' de la configuración de ssh de '{alias}' {motivo}. Corrígelo, o define NATIVE_SSH_IDENTIDADES (manda sobre los IdentityFile).");
 
                 if (rutas.IndexOf(ruta) < 0)
@@ -240,7 +249,7 @@ namespace NativeSsh.Ssh
             return rutas.Span.ToArray();
         }
 
-        internal static bool TryExpandir(string identidad, string casa, string alias, string servidor, string usuario, int puerto, [NotNullWhen(true)] out string? ruta, [NotNullWhen(false)] out string? motivo)
+        internal static bool TryExpandir(string identidad, string casa, string alias, string servidor, string usuario, int puerto, bool isSshDeMsys, [NotNullWhen(true)] out string? ruta, [NotNullWhen(false)] out string? motivo)
         {
             ruta = null;
             StringBuilder texto = new(identidad.Length + casa.Length);
@@ -310,6 +319,7 @@ namespace NativeSsh.Ssh
             }
 
             string expandida = texto.ToString();
+            RutaDelSistema(ref expandida, isSshDeMsys);
             if (!Path.IsPathRooted(expandida))
             {
                 motivo = $"es una ruta relativa ('{expandida}'): usa una absoluta o que empiece por '~/'";
@@ -335,6 +345,12 @@ namespace NativeSsh.Ssh
 
         // Una entrada de PATH donde buscar el programa, o null para saltarla.
         static partial void DirectorioDePathDelSistema(ref string? directorio);
+
+        // Si el ssh que lee la configuración es de MSYS (en Windows, el de Git for Windows).
+        static partial void SshDeMsysDelSistema(string binario, ref bool isDeMsys);
+
+        // Un IdentityFile ya expandido, como ruta del sistema (en Windows, con el ssh de MSYS, '/c/…' como 'C:\…').
+        static partial void RutaDelSistema(ref string ruta, bool isSshDeMsys);
 
         // false: no existe el programa ssh (desde entonces, los destinos se usan tal cual). Lanza si ssh falla o no termina.
         // Las opciones del sistema van delante de 'argumentos', en una lista rentada con try/finally: AnadirOpcionesDelSistema

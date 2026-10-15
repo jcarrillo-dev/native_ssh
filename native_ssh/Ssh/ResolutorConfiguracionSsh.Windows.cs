@@ -58,6 +58,26 @@ namespace NativeSsh.Ssh
             directorio = Path.IsPathFullyQualified(sinComillas) ? sinComillas : null;
         }
 
+        // El ssh de Git for Windows (MSYS) entiende una ruta de unidad '/c/…' como 'C:\…' y conecta con un IdentityFile así
+        // (medido con OpenSSH_10.5p1 de Git 2.55); el de OpenSSH para Windows la lee como '\c\…' de la unidad actual
+        // («no such identity» si no existe). ssh -G la da tal cual, así que native_ssh la lee como el ssh que leyó la
+        // configuración: como 'C:\…' solo si ese ssh es de MSYS. Solo la forma '/' + una letra + '/' o fin; lo demás que
+        // empieza por '/' (p. ej. '/etc/…', que en MSYS cuelga de la carpeta de Git) sigue igual.
+        static partial void SshDeMsysDelSistema(string binario, ref bool isDeMsys) =>
+            isDeMsys = BuscarPrograma(binario) is { } programa && IsProgramaDeMsys(programa);
+
+        static partial void RutaDelSistema(ref string ruta, bool isSshDeMsys)
+        {
+            bool isUnidadMsys = isSshDeMsys && ruta.Length >= 2 && ruta[0] == '/' && char.IsAsciiLetter(ruta[1]) && (ruta.Length == 2 || ruta[2] == '/');
+            if (isUnidadMsys)
+                ruta = string.Concat(char.ToUpperInvariant(ruta[1]).ToString(), @":\", ruta.Length > 3 ? ruta[3..].Replace('/', '\\') : "");
+        }
+
+        // Un programa de MSYS (el ssh de Git for Windows, los de MSYS2) lleva su runtime, msys-2.0.dll, en su misma carpeta
+        // (Git\usr\bin; System32\OpenSSH no la tiene).
+        internal static bool IsProgramaDeMsys(string programa) =>
+            Path.GetDirectoryName(programa) is { Length: > 0 } carpeta && File.Exists(Path.Combine(carpeta, "msys-2.0.dll"));
+
         static partial void BorrarRegistroDelSistema(string? registro)
         {
             try

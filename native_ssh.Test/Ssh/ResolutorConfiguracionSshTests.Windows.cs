@@ -120,6 +120,50 @@ namespace NativeSsh.Test.Ssh
             _ = delMatchExec.Should().BeGreaterThan(0, mensaje);
             _ = deSsh.Should().BeGreaterThan(delMatchExec, mensaje);
         }
+
+        // El ssh de Git for Windows (MSYS) lee '/c/…' como 'C:\…' y conecta con un IdentityFile así; native_ssh usa la misma
+        // clave. Solo la forma de unidad ('/' + una letra + '/' o fin) y solo si el ssh que leyó la configuración es de MSYS:
+        // el de OpenSSH para Windows la lee como una ruta de la unidad actual, y native_ssh también.
+        [Theory]
+        [InlineData(true, "/c/Users/ana/.ssh/id_ed25519", @"C:\Users\ana\.ssh\id_ed25519")]
+        [InlineData(true, "/D/claves/id", @"D:\claves\id")]
+        [InlineData(true, "/c", @"C:\")]
+        [InlineData(true, "/c/", @"C:\")]
+        [InlineData(true, "C:/Users/ana/.ssh/id", "C:/Users/ana/.ssh/id")]
+        [InlineData(true, @"C:\Users\ana\.ssh\id", @"C:\Users\ana\.ssh\id")]
+        [InlineData(true, "/etc/ssh/id", "/etc/ssh/id")]
+        [InlineData(true, "/cc/id", "/cc/id")]
+        [InlineData(true, "/1/id", "/1/id")]
+        [InlineData(false, "/c/Users/ana/.ssh/id_ed25519", "/c/Users/ana/.ssh/id_ed25519")]
+        [InlineData(false, "/k/a", "/k/a")]
+        public void TryExpandir_RutaDeUnidadDeMsys_ComoRutaDeWindowsSoloConElSshDeMsys(bool isSshDeMsys, string identidad, string esperada)
+        {
+            // Act
+            bool isExpandida = ResolutorConfiguracionSsh.TryExpandir(identidad, @"C:\Users\ana", "web", "web", "ana", 22, isSshDeMsys, out string? ruta, out string? motivo);
+
+            // Assert
+            _ = isExpandida.Should().BeTrue(motivo);
+            _ = ruta.Should().Be(esperada);
+        }
+
+        // El ssh de MSYS se reconoce por su runtime (msys-2.0.dll) en la misma carpeta que ssh.exe.
+        [Theory]
+        [InlineData(true)]
+        [InlineData(false)]
+        public void IsProgramaDeMsys_PorElRuntimeEnSuCarpeta(bool hasRuntime)
+        {
+            // Arrange
+            string programa = Path.Combine(_directorio, "ssh.exe");
+            File.WriteAllText(programa, "");
+            if (hasRuntime)
+                File.WriteAllText(Path.Combine(_directorio, "msys-2.0.dll"), "");
+
+            // Act
+            bool isDeMsys = ResolutorConfiguracionSsh.IsProgramaDeMsys(programa);
+
+            // Assert
+            _ = isDeMsys.Should().Be(hasRuntime);
+        }
     }
 
     // Lo de Windows de 'ssh -G' que no puede ir en paralelo con otras pruebas (colección sin paralelismo): cambia variables
