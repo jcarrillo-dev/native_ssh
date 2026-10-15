@@ -7,10 +7,13 @@
 // - cada TypeRef (también los anidados, por el espacio de nombres del tipo exterior): cualquier uso de un tipo de otro
 //   ensamblado (llamada, campo, firma, local, base, restricción, atributo, TypeSpec y MethodSpec) pasa por uno;
 // - los tipos propios declarados en System.Linq o bajo él;
-// - los typeof de los argumentos de los atributos, que se guardan como un nombre de tipo serializado (sin TypeRef).
+// - los typeof de los argumentos de los atributos, que se guardan como un nombre de tipo serializado (sin TypeRef);
+// - los nombres de tipo en string de UnsafeAccessorTypeAttribute y DynamicDependencyAttribute: el runtime, el trimmer y AOT
+//   los resuelven como una referencia al tipo (sin TypeRef);
+// - los ExportedType (reenvíos de tipo, TypeForwardedTo) a System.Linq o bajo él.
 // Para el mensaje se busca dónde se usa (método con su fichero y línea si hay PDB portable, firma, campo, propiedad, evento,
 // base, restricción o atributo); si no se encuentra, el error nombra el tipo igualmente. La reflexión (un nombre de tipo en un
-// string) queda fuera.
+// string fuera de esos dos atributos) queda fuera.
 //
 // Se compila contra el netstandard.dll de MSBuild: las referencias son las builds para .NET Framework de
 // System.Reflection.Metadata y System.Collections.Immutable que trae el SDK (Sdks/Microsoft.NET.Sdk/tools/net472); las del
@@ -199,6 +202,13 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
                     Anotar(NombreTipo(tipo), "su propio espacio de nombres (" + _md.GetString(definicion.Namespace) + ")");
             }
 
+            foreach (ExportedTypeHandle exportado in _md.ExportedTypes)
+            {
+                string espacio = EspacioExportado(exportado);
+                if (IsEspacioLinq(espacio))
+                    Anotar("el ensamblado (reenvío de tipo)", espacio + "." + _md.GetString(_md.GetExportedType(exportado).Name));
+            }
+
             int antesDeAtributos = _hallazgos.Count;
             RevisarAtributos();
             if (_deLinq.Count == 0)
@@ -223,6 +233,15 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
             TypeReference tipo = _md.GetTypeReference(referencia);
             while (tipo.ResolutionScope.Kind == HandleKind.TypeReference)
                 tipo = _md.GetTypeReference((TypeReferenceHandle)tipo.ResolutionScope);
+            return _md.GetString(tipo.Namespace);
+        }
+
+        // Espacio de nombres de un ExportedType (el del exterior si está anidado).
+        private string EspacioExportado(ExportedTypeHandle exportado)
+        {
+            ExportedType tipo = _md.GetExportedType(exportado);
+            while (tipo.Implementation.Kind == HandleKind.ExportedType)
+                tipo = _md.GetExportedType((ExportedTypeHandle)tipo.Implementation);
             return _md.GetString(tipo.Namespace);
         }
 
@@ -451,6 +470,7 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
                 string? encontrado = _deLinq.Count > 0 ? DeLinq(atributo.Constructor) : null;
                 if (encontrado != null)
                     Anotar(donde, encontrado);
+                bool isConNombreDeTipo = IsAtributoConNombreDeTipo(TipoDelAtributo(atributo.Constructor));
 
                 // Las apariciones de «System.Linq.» en los bytes del valor tienen que quedar explicadas por un argumento string
                 // decodificado; si no (no se pudo decodificar, o una enumeración de otro ensamblado que no es int desalineó la
@@ -462,9 +482,9 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
                 {
                     CustomAttributeValue<string> valor = atributo.DecodeValue(proveedor);
                     foreach (CustomAttributeTypedArgument<string> argumento in valor.FixedArguments)
-                        tipoEnArgumento ??= TipoLinqEnArgumento(argumento.Type, argumento.Value, ref explicadas);
+                        tipoEnArgumento ??= TipoLinqEnArgumento(argumento.Type, argumento.Value, isConNombreDeTipo, ref explicadas);
                     foreach (CustomAttributeNamedArgument<string> argumento in valor.NamedArguments)
-                        tipoEnArgumento ??= TipoLinqEnArgumento(argumento.Type, argumento.Value, ref explicadas);
+                        tipoEnArgumento ??= TipoLinqEnArgumento(argumento.Type, argumento.Value, isConNombreDeTipo, ref explicadas);
                 }
                 catch (Exception excepcion) when (excepcion is BadImageFormatException || excepcion is InvalidOperationException || excepcion is ArgumentException)
                 {
@@ -475,18 +495,42 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
                     tipoEnArgumento = "System.Linq (nombre de tipo en el valor)";
 
                 if (tipoEnArgumento != null)
-                    Anotar(donde + " (typeof en un argumento)", tipoEnArgumento);
+                    Anotar(donde + " (tipo en un argumento)", tipoEnArgumento);
             }
         }
 
-        // explicadas: cuántas «System.Linq.» hay en los argumentos string que no son nombres de tipo.
-        private static string? TipoLinqEnArgumento(string tipo, object? valor, ref int explicadas)
+        // Atributos cuyos argumentos string son nombres de tipo que el runtime, el trimmer y AOT resuelven: cuentan como una
+        // referencia al tipo. Por el nombre completo, también si el ensamblado declara su propia copia.
+        private static bool IsAtributoConNombreDeTipo(string? nombre) =>
+            nombre == "System.Runtime.CompilerServices.UnsafeAccessorTypeAttribute" || nombre == "System.Diagnostics.CodeAnalysis.DynamicDependencyAttribute";
+
+        // Nombre completo del tipo del atributo, desde su constructor (MemberRef sobre un TypeRef, o método propio).
+        private string? TipoDelAtributo(EntityHandle constructor)
+        {
+            EntityHandle tipo = constructor.Kind == HandleKind.MemberReference
+                ? _md.GetMemberReference((MemberReferenceHandle)constructor).Parent
+                : constructor.Kind == HandleKind.MethodDefinition ? _md.GetMethodDefinition((MethodDefinitionHandle)constructor).GetDeclaringType() : default;
+            if (tipo.Kind == HandleKind.TypeReference)
+            {
+                TypeReference referencia = _md.GetTypeReference((TypeReferenceHandle)tipo);
+                return _md.GetString(referencia.Namespace) + "." + _md.GetString(referencia.Name);
+            }
+
+            if (tipo.Kind != HandleKind.TypeDefinition || tipo.IsNil)
+                return null;
+            TypeDefinition definicion = _md.GetTypeDefinition((TypeDefinitionHandle)tipo);
+            return _md.GetString(definicion.Namespace) + "." + _md.GetString(definicion.Name);
+        }
+
+        // explicadas: cuántas «System.Linq.» hay en los argumentos string que no son nombres de tipo. Con isConNombreDeTipo
+        // (UnsafeAccessorType, DynamicDependency), un string que nombra un tipo de System.Linq o de debajo cuenta como referencia.
+        private static string? TipoLinqEnArgumento(string tipo, object? valor, bool isConNombreDeTipo, ref int explicadas)
         {
             if (valor is ImmutableArray<CustomAttributeTypedArgument<string>> elementos)
             {
                 foreach (CustomAttributeTypedArgument<string> elemento in elementos)
                 {
-                    string? encontrado = TipoLinqEnArgumento(elemento.Type, elemento.Value, ref explicadas);
+                    string? encontrado = TipoLinqEnArgumento(elemento.Type, elemento.Value, isConNombreDeTipo, ref explicadas);
                     if (encontrado != null)
                         return encontrado;
                 }
@@ -498,6 +542,8 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
                 return null;
             if (tipo != ProveedorAtributos.TipoSystemType)
             {
+                if (isConNombreDeTipo && NombraTipoLinq(nombre))
+                    return nombre + " (nombre de tipo en un string)";
                 explicadas += ContarNombreLinq(System.Text.Encoding.UTF8.GetBytes(nombre));
                 return null;
             }
@@ -507,6 +553,28 @@ public sealed class NativeSshComprobarSystemLinqEnIL : Task
             string sinEnsamblado = coma >= 0 ? nombre.Substring(0, coma) : nombre;
             bool isLinq = sinEnsamblado.StartsWith("System.Linq.", StringComparison.Ordinal) || nombre.IndexOf("[System.Linq.", StringComparison.Ordinal) >= 0;
             return isLinq ? sinEnsamblado + " (typeof)" : null;
+        }
+
+        // Un nombre de tipo («Espacio.Tipo, Ensamblado», con argumentos genéricos entre corchetes) con algún tipo de System.Linq
+        // o de debajo: «System.Linq.» al principio, tras un corchete o tras una coma, con espacios o sin ellos (el nombre del
+        // ensamblado, «, System.Linq» sin punto detrás, no cuenta).
+        private static bool NombraTipoLinq(string nombre)
+        {
+            int desde = 0;
+            while (true)
+            {
+                int posicion = nombre.IndexOf("System.Linq", desde, StringComparison.Ordinal);
+                if (posicion < 0)
+                    return false;
+                int fin = posicion + "System.Linq".Length;
+                int previo = posicion - 1;
+                while (previo >= 0 && char.IsWhiteSpace(nombre[previo]))
+                    previo--;
+                bool isInicioDeNombre = previo < 0 || nombre[previo] == '[' || nombre[previo] == ',';
+                if (isInicioDeNombre && fin < nombre.Length && nombre[fin] == '.')
+                    return true;
+                desde = fin;
+            }
         }
 
         private static int ContarNombreLinq(byte[] bytes)
