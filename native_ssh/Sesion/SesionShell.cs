@@ -1947,8 +1947,8 @@ namespace NativeSsh.Sesion
             hilo.Start(canal);
         }
 
-        // Hilo dedicado: ICanalShell.Leer es bloqueante. Un bloque del pool por canal, reutilizado; vuelve con
-        // a cero lo que Leer pudo escribir (nunca más de TamanoBloqueLectura).
+        // Hilo dedicado: ICanalShell.Leer es bloqueante. Un bloque del pool por canal, reutilizado; vuelve al pool con lo
+        // que Leer pudo escribir (nunca más de TamanoBloqueLectura) a cero.
         private void Bombear(object? estado)
         {
             ShellAbierto canal = (ShellAbierto)estado!;
