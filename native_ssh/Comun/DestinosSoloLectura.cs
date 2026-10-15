@@ -386,9 +386,15 @@ namespace NativeSsh.Comun
             if (isCoincideSinRed)
                 return true;
 
-            foreach (string texto in alias ?? (destino.Alias is { } propio ? [propio] : []))
-                if (IsAliasCoincidente(porResolver, texto))
-                    return true;
+            // Los alias con que se usó la sesión o, sin ellos, el del propio destino (sin crear un array para uno solo).
+            if (alias is not null)
+            {
+                foreach (string texto in alias)
+                    if (IsAliasCoincidente(porResolver, texto))
+                        return true;
+            }
+            else if (destino.Alias is { } propio && IsAliasCoincidente(porResolver, propio))
+                return true;
 
             if (porResolver.Length == 0)
                 return false;
