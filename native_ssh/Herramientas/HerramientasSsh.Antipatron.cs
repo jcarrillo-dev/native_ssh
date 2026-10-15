@@ -60,7 +60,8 @@ namespace NativeSsh.Herramientas
 
             // Mismo orden que antes de C10 (grep, find, cd) y después los demás, en el orden en que aparecen.
             using PooledListRef<string> ordenados = new();
-            foreach (string primero in (string[])[AvisoGrepDisco, AvisoFindDisco, AvisoCdEncadenado])
+            ReadOnlySpan<string> primeros = [AvisoGrepDisco, AvisoFindDisco, AvisoCdEncadenado];
+            foreach (string primero in primeros)
                 if (avisos.Remove(primero))
                     ordenados.Add(primero);
             ordenados.AddRange(avisos.Span);
