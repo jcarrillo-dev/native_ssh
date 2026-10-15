@@ -151,6 +151,121 @@ namespace NativeSsh.Test.Ssh
             }
         }
 
+        // Bordes de la lectura de un fichero (el búfer inicial es de 4096 caracteres y crece doblando): ficheros de esas
+        // longitudes y alrededor, la línea de la clave al final, con o sin salto final y con cada tipo de salto.
+        [Theory]
+        [InlineData(4095, "\n", true)]
+        [InlineData(4096, "\n", true)]
+        [InlineData(4096, "\n", false)]
+        [InlineData(4097, "\r\n", true)]
+        [InlineData(8192, "\r", true)]
+        [InlineData(8193, "\r", false)]
+        [InlineData(20000, "\r\n", false)]
+        public void Fichero_LongitudesDelBuffer_LeeHastaLaUltimaLinea(int longitud, string salto, bool hasSaltoFinal)
+        {
+            // Arrange
+            string ultima = $"h ssh-ed25519 {ClaveB64}";
+            string texto = Relleno(longitud - ultima.Length - (hasSaltoFinal ? salto.Length : 0), salto) + ultima + (hasSaltoFinal ? salto : "");
+            _ = texto.Length.Should().Be(longitud);
+
+            // Act & Assert
+            ConFichero(texto, verificador =>
+            {
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Conocido);
+                _ = verificador.ObtenerTiposClave("h", 22).Should().ContainSingle().Which.Should().Be("ssh-ed25519");
+            });
+        }
+
+        // La línea de la clave (y la que la revoca) empieza antes del carácter 4096 y termina después: cruza el final del búfer
+        // inicial y el de un bloque de lectura.
+        [Theory]
+        [InlineData(4096 - 10)]
+        [InlineData(4096 - 1)]
+        [InlineData(8192 - 20)]
+        public void Linea_QueCruzaElLimiteDeLectura(int inicio)
+        {
+            // Arrange
+            string conocida = $"h ssh-ed25519 {ClaveB64}\n";
+            string revocada = $"@revoked h ssh-ed25519 {ClaveB64}\n";
+
+            // Act & Assert
+            ConFichero(Relleno(inicio, "\n") + conocida, verificador =>
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Conocido));
+            ConFichero(Relleno(inicio, "\n") + revocada + conocida, verificador =>
+            {
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Revocado);
+                _ = verificador.ObtenerTiposClave("h", 22).Should().BeEmpty();
+            });
+        }
+
+        // Un carácter de dos bytes en UTF-8 que cae a caballo del byte 4096 (y una clave después) se decodifica entero.
+        [Fact]
+        public void Fichero_ConCaracteresMultibyteEnElLimite()
+        {
+            // Arrange
+            string texto = "#" + new string('a', 4094) + "ñ\n" + $"h ssh-ed25519 {ClaveB64}";
+
+            // Act & Assert
+            ConFichero(texto, verificador => _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Conocido));
+        }
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("﻿")]
+        [InlineData("\n")]
+        [InlineData("\r\n\r\n")]
+        public void Fichero_VacioOSinLineasUtiles(string texto) =>
+            ConFichero(texto, verificador =>
+            {
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Desconocido);
+                _ = verificador.ObtenerTiposClave("h", 22).Should().BeEmpty();
+            });
+
+        [Theory]
+        [InlineData("")]
+        [InlineData("﻿")]
+        public void Fichero_SinSaltoFinal(string prefijo) =>
+            ConFichero($"{prefijo}otro ssh-rsa {OtraB64}\nh ssh-ed25519 {ClaveB64}", verificador =>
+            {
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Conocido);
+                _ = verificador.ObtenerTiposClave("h", 22).Should().ContainSingle().Which.Should().Be("ssh-ed25519");
+            });
+
+        // Líneas de comentario hasta la longitud pedida, cada una terminada en el salto dado.
+        private static string Relleno(int longitud, string salto)
+        {
+            StringBuilder texto = new();
+            while (texto.Length < longitud)
+            {
+                int resto = longitud - texto.Length;
+                int cuerpo = Math.Min(resto - salto.Length, 70);
+                if (cuerpo < 1)
+                {
+                    // No cabe un comentario y su salto: se completa con saltos solos (líneas vacías).
+                    _ = texto.Append('\n', resto);
+                    break;
+                }
+
+                _ = texto.Append('#').Append('x', cuerpo - 1).Append(salto);
+            }
+
+            return texto.ToString();
+        }
+
+        private static void ConFichero(string texto, Action<VerificadorHostConocido> comprobar)
+        {
+            string ruta = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+            File.WriteAllText(ruta, texto, new UTF8Encoding(false));
+            try
+            {
+                comprobar(new VerificadorHostConocido([ruta]));
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
         [Fact]
         public void LeerTipo_DelBlob()
         {
