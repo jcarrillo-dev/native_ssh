@@ -23,6 +23,7 @@ namespace NativeSsh.Benchmarks
     //   (VerificadorHostConocidoSpans).
     // - Delay: ValueLINQ Delay con procesadores struct, fichero a fichero (VerificadorHostConocidoDelay).
     // - PorFichero: el producto, pero fichero a fichero (VerificadorHostConocidoPorFichero).
+    // - SpansDelay: el lector por spans con el recorrido en ValueLINQ Delay (VerificadorHostConocidoSpansDelay).
     public class GeneracionesKnownHostsBenchmarks
     {
         private const int Lineas = 200;
@@ -37,6 +38,7 @@ namespace NativeSsh.Benchmarks
         private VerificadorHostConocidoSpans _spans = null!;
         private VerificadorHostConocidoDelay _delay = null!;
         private VerificadorHostConocidoPorFichero _porFichero = null!;
+        private VerificadorHostConocidoSpansDelay _spansDelay = null!;
         private string[] _lineasPreexistentes = [];
         private byte[] _clave = [];
 
@@ -56,11 +58,13 @@ namespace NativeSsh.Benchmarks
             _spans = new VerificadorHostConocidoSpans([_ruta]);
             _delay = new VerificadorHostConocidoDelay([_ruta]);
             _porFichero = new VerificadorHostConocidoPorFichero([_ruta]);
+            _spansDelay = new VerificadorHostConocidoSpansDelay([_ruta]);
             _lineasPreexistentes = File.ReadAllLines(_ruta);
             bool isTodasConocen = _verificador.Verificar(Servidor, Puerto, Tipo, _clave) == ResultadoHostEnum.Conocido
                 && _antes.Verificar(Servidor, Puerto, Tipo, _clave) == ResultadoHostEnum.Conocido
                 && Actual_PooledListRef256() == ResultadoHostEnum.Conocido
                 && Spans() == ResultadoHostEnum.Conocido && Delay() == ResultadoHostEnum.Conocido && PorFichero() == ResultadoHostEnum.Conocido
+                && SpansDelay() == ResultadoHostEnum.Conocido && TiposClave_SpansDelay() == 1
                 && TiposClave_Spans() == 1 && TiposClave_Delay() == 1 && TiposClave_Actual_PooledListRef() == 1;
             if (!isTodasConocen)
                 throw new InvalidOperationException("El escenario no reconoce la clave conocida.");
@@ -101,6 +105,12 @@ namespace NativeSsh.Benchmarks
 
         [Benchmark]
         public ResultadoHostEnum PorFichero() => _porFichero.Verificar(Servidor, Puerto, Tipo, _clave);
+
+        [Benchmark]
+        public ResultadoHostEnum SpansDelay() => _spansDelay.Verificar(Servidor, Puerto, Tipo, _clave);
+
+        [Benchmark]
+        public int TiposClave_SpansDelay() => _spansDelay.ObtenerTiposClave(Servidor, Puerto).Count;
 
         [Benchmark]
         public int TiposClave_Spans() => _spans.ObtenerTiposClave(Servidor, Puerto).Count;

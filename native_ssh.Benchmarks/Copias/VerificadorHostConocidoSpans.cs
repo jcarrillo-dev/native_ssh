@@ -118,7 +118,7 @@ namespace NativeSsh.Benchmarks.Copias
             return tipos;
         }
 
-        private enum ResultadoClaveEnum
+        internal enum ResultadoClaveEnum
         {
             Invalida,
             Igual,
@@ -127,7 +127,7 @@ namespace NativeSsh.Benchmarks.Copias
 
         // Los campos de una línea que cuenta (como el producto): al menos 3, el primero sin '#', el marcador solo @revoked, al
         // menos 3 tras él y el host coincide. Marcador vacío = sin marcador.
-        private static bool TryCampos(ReadOnlySpan<char> linea, out ReadOnlySpan<char> marcador, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64, string nombre)
+        internal static bool TryCampos(ReadOnlySpan<char> linea, out ReadOnlySpan<char> marcador, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64, string nombre)
         {
             marcador = tipo = base64 = default;
             ReadOnlySpan<char> resto = linea;
@@ -156,7 +156,7 @@ namespace NativeSsh.Benchmarks.Copias
             return true;
         }
 
-        private static int ContarCampos(ReadOnlySpan<char> resto)
+        internal static int ContarCampos(ReadOnlySpan<char> resto)
         {
             int total = 0;
             while (!SiguienteCampo(ref resto).IsEmpty)
@@ -166,7 +166,7 @@ namespace NativeSsh.Benchmarks.Copias
 
         // Campos separados por cualquier char.IsWhiteSpace, sin vacíos (string.Split((char[]?)null, RemoveEmptyEntries)); vacío
         // si no quedan.
-        private static ReadOnlySpan<char> SiguienteCampo(scoped ref ReadOnlySpan<char> resto)
+        internal static ReadOnlySpan<char> SiguienteCampo(scoped ref ReadOnlySpan<char> resto)
         {
             int inicio = 0;
             while (inicio < resto.Length && char.IsWhiteSpace(resto[inicio]))
@@ -180,7 +180,7 @@ namespace NativeSsh.Benchmarks.Copias
         }
 
         // Como StreamReader.ReadLine: '\n', '\r' o "\r\n"; la última línea sin salto también cuenta, un salto final no.
-        private static bool TrySiguienteLinea(ref ReadOnlySpan<char> resto, out ReadOnlySpan<char> linea)
+        internal static bool TrySiguienteLinea(ref ReadOnlySpan<char> resto, out ReadOnlySpan<char> linea)
         {
             linea = default;
             if (resto.IsEmpty)
@@ -201,7 +201,7 @@ namespace NativeSsh.Benchmarks.Copias
         }
 
         // El fichero entero en un búfer de caracteres rentado (se devuelve a cero), decodificado como File.ReadLines.
-        private static char[] LeerTexto(string ruta, out int longitud)
+        internal static char[] LeerTexto(string ruta, out int longitud)
         {
             using StreamReader lector = new(ruta, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
             char[] texto = ArrayPool<char>.Shared.Rent(4096);
@@ -223,7 +223,7 @@ namespace NativeSsh.Benchmarks.Copias
             }
         }
 
-        private static ResultadoClaveEnum CompararClave(ReadOnlySpan<char> base64, ReadOnlySpan<byte> clave)
+        internal static ResultadoClaveEnum CompararClave(ReadOnlySpan<char> base64, ReadOnlySpan<byte> clave)
         {
             int maximo = (base64.Length + 3) / 4 * 3;
             byte[]? alquilado = maximo > 1024 ? ArrayPool<byte>.Shared.Rent(maximo) : null;
@@ -241,7 +241,7 @@ namespace NativeSsh.Benchmarks.Copias
             }
         }
 
-        private static bool IsCoincideHost(ReadOnlySpan<char> patrones, string nombre)
+        internal static bool IsCoincideHost(ReadOnlySpan<char> patrones, string nombre)
         {
             if (patrones.StartsWith("|1|"))
                 return IsCoincideHasheado(patrones, nombre);
@@ -313,7 +313,7 @@ namespace NativeSsh.Benchmarks.Copias
             return p == patron.Length;
         }
 
-        private static bool TryDecodificar(ReadOnlySpan<char> base64, out byte[] datos)
+        internal static bool TryDecodificar(ReadOnlySpan<char> base64, out byte[] datos)
         {
             byte[] destino = new byte[(base64.Length + 3) / 4 * 3];
             if (!Convert.TryFromBase64Chars(base64, destino, out int escritos))
