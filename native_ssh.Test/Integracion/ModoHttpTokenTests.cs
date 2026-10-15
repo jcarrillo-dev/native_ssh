@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.Versioning;
@@ -180,6 +181,29 @@ namespace NativeSsh.Test.Integracion
             _ = textoCorrecto.Should().Contain("\"native_ssh\"");
             _ = errores.Should().Contain("dbug:", "los logs están en Trace (y Debug)").And.Contain("Petición HTTP rechazada desde 127.0.0.1: token incorrecto");
             _ = errores.Should().NotContain(Token).And.NotContain(TokenIncorrecto);
+        }
+
+        // Por HTTP, la respuesta a initialize lleva las mismas instrucciones del servidor que por stdio (puede llegar como un
+        // evento SSE: se toma el JSON de su línea 'data:').
+        [Fact]
+        public async Task ConToken_InitializeLlevaLasInstrucciones()
+        {
+            // Arrange
+            int puerto = PuertosPruebas.Libre();
+            Process proceso = Arrancar(puerto, new() { [TokenHttp.VariableToken] = Token });
+            await EsperarEscuchaAsync(puerto);
+
+            // Act
+            using HttpResponseMessage respuesta = await _http.SendAsync(Inicializar(puerto, $"Bearer {Token}"));
+            string texto = await respuesta.Content.ReadAsStringAsync();
+            proceso.Kill(entireProcessTree: true);
+            await proceso.WaitForExitAsync();
+            string json = texto.TrimStart().StartsWith('{') ? texto : texto.Split('\n').Single(l => l.StartsWith("data:", StringComparison.Ordinal))["data:".Length..];
+            string? instrucciones = JsonNode.Parse(json)!["result"]?["instructions"]?.GetValue<string>();
+
+            // Assert
+            _ = respuesta.StatusCode.Should().Be(HttpStatusCode.OK);
+            _ = instrucciones.Should().Be(NativeSsh.Herramientas.InstruccionesServidor.Texto);
         }
 
         // Una ráfaga de peticiones rechazadas no llena el log: como mucho 10 avisos por minuto (CB2d; antes, uno por petición).

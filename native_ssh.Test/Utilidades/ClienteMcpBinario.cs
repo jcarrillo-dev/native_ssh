@@ -26,6 +26,9 @@ namespace NativeSsh.Test.Utilidades
         // Todo lo que el servidor escribió en stdout hasta ahora (una línea JSON-RPC por mensaje).
         public string Salida => _salida.ToString();
 
+        // El campo 'instructions' de la respuesta a initialize (null si no vino).
+        public string? Instrucciones { get; private set; }
+
         public static async Task<ClienteMcpBinario> IniciarAsync(IReadOnlyDictionary<string, string> entorno)
         {
             ProcessStartInfo inicio = new(RutaBinario)
@@ -51,6 +54,8 @@ namespace NativeSsh.Test.Utilidades
             });
             if (inicializacion["result"]?["serverInfo"]?["name"]?.GetValue<string>() != "native_ssh")
                 throw new InvalidOperationException($"initialize inesperado: {inicializacion.ToJsonString()}");
+
+            cliente.Instrucciones = inicializacion["result"]?["instructions"]?.GetValue<string>();
 
             await cliente.EscribirAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "notifications/initialized" });
             return cliente;
