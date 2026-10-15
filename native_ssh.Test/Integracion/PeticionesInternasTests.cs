@@ -173,7 +173,7 @@ namespace NativeSsh.Test.Integracion
         [InlineData("fifo", "Error: {0} no es un archivo regular (es una FIFO, un socket o un dispositivo)")]
         [InlineData("privado", "Error: sin permiso de lectura: {0} (prueba con sudo=true).")]
         [InlineData("cerrado/f", "Error: sin permiso para acceder a la ruta: {0}")]
-        [InlineData("grande", "supera el máximo editable con ssh_replace_file_content (773184 bytes)")]
+        [InlineData("grande", "supera el máximo editable con ssh_replace_file_content (773184 bytes, límite fijo). No se ha modificado. Para un archivo mayor, escríbelo entero por partes con ssh_write_file")]
         [InlineData("ocupado", "Error: hay otra escritura, reemplazo o restauración en curso sobre {0}")]
         public async Task LecturaDeReplace_ErroresConocidos_DicenLaCausaConLaRuta(string nombre, string esperado)
         {
