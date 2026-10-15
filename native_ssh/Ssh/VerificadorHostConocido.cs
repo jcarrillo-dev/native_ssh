@@ -5,6 +5,7 @@ using System.Text;
 using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
 using JCarrillo.AOT.Core.Extensiones.ValueLINQ.Delay;
 using JCarrillo.AOT.Core.ValueLINQ.Interfaces;
+using NativeSsh.Comun;
 
 namespace NativeSsh.Ssh
 {
@@ -31,6 +32,10 @@ namespace NativeSsh.Ssh
     {
         // Caracteres del búfer inicial; si el fichero no cabe, se dobla.
         private const int CapacidadInicial = 4096;
+
+        // Lo más que se lee de un known_hosts, o que se junta de líneas ya leídas: 2^30 caracteres (el búfer dobla desde 4096 y
+        // el siguiente, 2^31, no es un tamaño de array).
+        internal const int MaximoCaracteres = 1 << 30;
 
         // Bytes de una clave decodificada que van en la pila; una mayor se decodifica en un array rentado.
         private const int MaximoClaveEnPila = 1024;
@@ -59,7 +64,7 @@ namespace NativeSsh.Ssh
                     if (!File.Exists(ruta))
                         continue;
 
-                    char[] texto = LeerTexto(ruta, out int longitud);
+                    char[] texto = LeerTexto(ruta, MaximoCaracteres, out int longitud);
                     try
                     {
                         ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
@@ -96,7 +101,7 @@ namespace NativeSsh.Ssh
                     if (!File.Exists(ruta))
                         continue;
 
-                    char[] texto = LeerTexto(ruta, out int longitud);
+                    char[] texto = LeerTexto(ruta, MaximoCaracteres, out int longitud);
                     try
                     {
                         ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
@@ -125,15 +130,17 @@ namespace NativeSsh.Ssh
             PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
             PooledListRef<byte[]> revocadas = new();
             PooledListRef<Linea> apuntadas = new();
-            char[] texto = Juntar(lineas, ref apuntadas);
+            char[]? texto = null;
             try
             {
+                Juntar(lineas, ref texto, ref apuntadas);
                 AcumularClaves(texto, apuntadas.Span, nombre, ref conocidas, ref revocadas);
                 return TiposNoRevocados(conocidas.Span, revocadas.Span);
             }
             finally
             {
-                ArrayPool<char>.Shared.Return(texto);
+                if (texto is not null)
+                    ArrayPool<char>.Shared.Return(texto);
                 apuntadas.Dispose();
                 revocadas.Dispose();
                 conocidas.Dispose();
@@ -146,16 +153,18 @@ namespace NativeSsh.Ssh
             bool hasMismoTipo = false;
             bool isConocido = false;
             PooledListRef<Linea> apuntadas = new();
-            char[] texto = Juntar(lineas, ref apuntadas);
+            char[]? texto = null;
             try
             {
+                Juntar(lineas, ref texto, ref apuntadas);
                 return IsRevocadaAcumulando(texto, apuntadas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido)
                     ? ResultadoHostEnum.Revocado
                     : Resultado(hasMismoTipo, isConocido);
             }
             finally
             {
-                ArrayPool<char>.Shared.Return(texto);
+                if (texto is not null)
+                    ArrayPool<char>.Shared.Return(texto);
                 apuntadas.Dispose();
             }
         }
@@ -254,13 +263,11 @@ namespace NativeSsh.Ssh
             }
         }
 
-        // Las líneas ya leídas, seguidas en un búfer rentado (se devuelve al llamador), cada una apuntada entera.
-        private static char[] Juntar(ReadOnlySpan<string> lineas, scoped ref PooledListRef<Linea> apuntadas)
+        // Las líneas ya leídas, seguidas en un búfer rentado, cada una apuntada entera. El búfer queda en 'texto' en cuanto se
+        // renta: el llamador lo devuelve en su finally aunque apuntar lance.
+        private static void Juntar(ReadOnlySpan<string> lineas, [NotNull] ref char[]? texto, scoped ref PooledListRef<Linea> apuntadas)
         {
-            int total = 0;
-            foreach (string linea in lineas)
-                total += linea.Length;
-            char[] texto = ArrayPool<char>.Shared.Rent(total);
+            texto = ArrayPool<char>.Shared.Rent(LongitudJuntada(lineas, MaximoCaracteres));
             int inicio = 0;
             foreach (string linea in lineas)
             {
@@ -268,9 +275,19 @@ namespace NativeSsh.Ssh
                 apuntadas.Add(new Linea(inicio, linea.Length));
                 inicio += linea.Length;
             }
-
-            return texto;
         }
+
+        // Lo que suman las líneas (en long: no se desborda), si es menos que 'maximo'.
+        internal static int LongitudJuntada(ReadOnlySpan<string> lineas, int maximo)
+        {
+            long total = 0;
+            foreach (string linea in lineas)
+                total += linea.Length;
+            return total < maximo ? (int)total : throw DemasiadoGrande("las líneas de known_hosts", maximo);
+        }
+
+        private static NativeSshException DemasiadoGrande(string origen, int maximo) =>
+            new($"No se puede leer {origen}: tiene {maximo} caracteres o más, más de lo que native_ssh lee de un known_hosts.");
 
         private readonly record struct Linea(int Inicio, int Longitud);
 
@@ -391,7 +408,8 @@ namespace NativeSsh.Ssh
 
         // El fichero entero en un búfer de caracteres rentado, decodificado como File.ReadLines (UTF-8 y BOM). La capacidad
         // es la pedida, no el Length del array (Rent puede dar uno mayor). Si la lectura lanza, el búfer vuelve antes.
-        private static char[] LeerTexto(string ruta, out int longitud)
+        // Lanza NativeSshException si el fichero tiene 'maximo' caracteres o más (no cabría al doblar el búfer).
+        internal static char[] LeerTexto(string ruta, int maximo, out int longitud)
         {
             int capacidad = CapacidadInicial;
             char[] texto = ArrayPool<char>.Shared.Rent(capacidad);
@@ -406,6 +424,8 @@ namespace NativeSsh.Ssh
                     if (longitud < capacidad)
                         continue;
 
+                    if (capacidad > maximo / 2)
+                        throw DemasiadoGrande($"'{ruta}'", maximo);
                     capacidad *= 2;
                     char[] mayor = ArrayPool<char>.Shared.Rent(capacidad);
                     texto.AsSpan(0, longitud).CopyTo(mayor);

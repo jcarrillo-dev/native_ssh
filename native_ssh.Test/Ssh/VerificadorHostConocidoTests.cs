@@ -301,5 +301,50 @@ namespace NativeSsh.Test.Ssh
             _ = infoEcdsa.HostKeyAlgorithms.Keys.Should().AllSatisfy(k => k.Should().StartWith("ecdsa-sha2-"));
             _ = infoVacio.HostKeyAlgorithms.Count.Should().Be(totalInicial);
         }
+
+        // Un known_hosts que no cabe en el búfer máximo (2^30 caracteres en el producto; aquí 8192 para no escribir 1 GiB) da un
+        // mensaje que lo dice, en lugar del ArgumentOutOfRangeException de rentar un búfer de tamaño negativo.
+        [Theory]
+        [InlineData(8191, false)]
+        [InlineData(8192, true)]
+        [InlineData(20000, true)]
+        public void LeerTexto_FicheroMayorQueElMaximo_DaUnMensajeClaro(int caracteres, bool isDemasiadoGrande)
+        {
+            // Arrange
+            string ruta = Path.Combine(Path.GetTempPath(), $"ns_kh_grande_{Guid.NewGuid():N}");
+            File.WriteAllText(ruta, new string('a', caracteres));
+            try
+            {
+                // Act
+                Func<int> leer = () =>
+                {
+                    char[] texto = VerificadorHostConocido.LeerTexto(ruta, 8192, out int longitud);
+                    System.Buffers.ArrayPool<char>.Shared.Return(texto);
+                    return longitud;
+                };
+
+                // Assert
+                if (isDemasiadoGrande)
+                    _ = leer.Should().Throw<NativeSsh.Comun.NativeSshException>().WithMessage($"*'{ruta}'*8192 caracteres o más*");
+                else
+                    _ = leer().Should().Be(caracteres);
+            }
+            finally
+            {
+                File.Delete(ruta);
+            }
+        }
+
+        // Las sobrecargas sobre líneas ya leídas: si juntas suman el máximo o más, el mismo mensaje.
+        [Fact]
+        public void LongitudJuntada_LineasQueSumanElMaximo_DaUnMensajeClaro()
+        {
+            // Act
+            Func<int> juntar = () => VerificadorHostConocido.LongitudJuntada([new string('a', 5000), new string('b', 5000)], 8192);
+
+            // Assert
+            _ = juntar.Should().Throw<NativeSsh.Comun.NativeSshException>().WithMessage("*líneas de known_hosts*8192 caracteres o más*");
+            _ = VerificadorHostConocido.LongitudJuntada(["abc", "de"], 8192).Should().Be(5);
+        }
     }
 }
