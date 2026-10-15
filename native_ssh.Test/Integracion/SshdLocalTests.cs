@@ -128,6 +128,26 @@ namespace NativeSsh.Test.Integracion
             _ = rango.Should().Throw<InvalidOperationException>().WithMessage($"*NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas}*0nn*");
         }
 
+        // Con un bloque de 65000 o más, el rango manual (y los derivados de 65535 en adelante) pasaría del último puerto, 65535.
+        [Theory]
+        [InlineData(65022)]
+        [InlineData(65099)]
+        [InlineData(65435)]
+        public void BloqueDePuertos_QuePasaDe65535_FallaConUnMensajeClaro(int puertoPruebas)
+        {
+            // Act
+            Action derivar = () => PuertosPruebas.PuertoColeccion(null, puertoPruebas, PuertosPruebas.DesplazamientoLento);
+            Action rango = () => PuertosPruebas.RangoManualDe(puertoPruebas);
+
+            // Assert
+            _ = derivar.Should().Throw<InvalidOperationException>().WithMessage($"*NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas}*65535*");
+            _ = rango.Should().Throw<InvalidOperationException>().WithMessage($"*NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas}*65535*");
+        }
+
+        [Fact]
+        public void BloqueDePuertos_UltimoBloqueQueCabe_SeAdmite() =>
+            _ = PuertosPruebas.RangoManualDe(64022).Should().Be((64400, 64999));
+
         // Con su variable fijada, el puerto de la colección no se deriva y no depende del bloque.
         [Fact]
         public void BloqueDePuertos_ConLaVariableDeLaColeccion_NoSeComprueba() =>

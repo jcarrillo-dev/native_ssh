@@ -22,6 +22,7 @@ namespace NativeSsh.Test.Utilidades
 
         private const int InicioManuales = 400;
         private const int FinManuales = 999;
+        private const int UltimoPuerto = 65535;
         private const int Intentos = 50;
 
         public static int PuertoPruebas =>
@@ -55,9 +56,13 @@ namespace NativeSsh.Test.Utilidades
 
         // El puerto de pruebas y sus derivados (X+50 español, X+100 HTTP de los humos, X+200 lento, X+300 restringido) deben
         // quedar por debajo del rango manual X400–X999 de su bloque: si no, un sshd de colección y uno manual pueden caer en el
-        // mismo puerto. Solo se cumple con las tres últimas cifras entre 000 y 099 (X0nn).
+        // mismo puerto. Solo se cumple con las tres últimas cifras entre 000 y 099 (X0nn). Además, el bloque entero (hasta X999)
+        // tiene que caber por debajo de 65536: con 65000 o más, el rango manual pasaría del último puerto.
         private static void ComprobarBloque(int puertoPruebas)
         {
+            int finBloque = (puertoPruebas / 1000 * 1000) + FinManuales;
+            if (finBloque > UltimoPuerto)
+                throw new InvalidOperationException($"NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas} no es válido: el rango {InicioManuales}–{FinManuales} de su bloque de mil, del que se eligen los sshd manuales, llegaría a {finBloque} y el último puerto es {UltimoPuerto}. Usa un valor por debajo de 65000 con las tres últimas cifras entre 000 y 099 (convención X0nn, p. ej. 64022).");
             if ((puertoPruebas % 1000) + DesplazamientoRestringido < InicioManuales)
                 return;
             throw new InvalidOperationException($"NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas} no es válido: sus puertos derivados (+{DesplazamientoIdioma} español, +100 HTTP, +{DesplazamientoLento} lento, +{DesplazamientoRestringido} restringido) caerían en el rango {InicioManuales}–{FinManuales} de su bloque de mil, del que se eligen los sshd manuales. Usa un valor con las tres últimas cifras entre 000 y 099 (convención X0nn, p. ej. {(puertoPruebas / 1000 * 1000) + 22}).");
