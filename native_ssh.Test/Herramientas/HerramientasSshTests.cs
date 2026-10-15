@@ -278,7 +278,8 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // El aviso de espera fija es solo un mensaje: con 'sleep 60' y con 'sleep 06' (mismo largo, por debajo del umbral) el
-        // bloque de control es el mismo JSON salvo el id y el aviso, y la salida es la misma.
+        // bloque de control es el mismo JSON salvo el id, los tiempos medidos (redondeados a 0,1 s, pueden caer a cada lado) y
+        // el aviso, y la salida es la misma.
         [Fact]
         public async Task Exec_EsperaFijaEncadenada_SoloAnadeElAviso()
         {
@@ -293,8 +294,8 @@ namespace NativeSsh.Test.Herramientas
             using JsonDocument documentoCorto = JsonDocument.Parse(controlCorto);
             _ = documentoLargo.RootElement.GetProperty("aviso").GetString().Should().StartWith("Sugerencia de rendimiento: Has esperado un tiempo fijo con 'sleep'");
             _ = documentoCorto.RootElement.TryGetProperty("aviso", out _).Should().BeFalse();
-            string[] camposLargo = [.. documentoLargo.RootElement.EnumerateObject().Where(p => p.Name is not ("id" or "aviso")).Select(p => p.ToString())];
-            string[] camposCorto = [.. documentoCorto.RootElement.EnumerateObject().Where(p => p.Name != "id").Select(p => p.ToString())];
+            string[] camposLargo = [.. documentoLargo.RootElement.EnumerateObject().Where(p => p.Name is not ("id" or "aviso" or "segundosEjecucion" or "segundosSinSalida")).Select(p => p.ToString())];
+            string[] camposCorto = [.. documentoCorto.RootElement.EnumerateObject().Where(p => p.Name is not ("id" or "segundosEjecucion" or "segundosSinSalida")).Select(p => p.ToString())];
             _ = camposLargo.Should().Equal(camposCorto);
             _ = ((TextContentBlock)largo.Content[1]).Text.Replace("60", "06", StringComparison.Ordinal).Should().Be(((TextContentBlock)corto.Content[1]).Text);
         }
