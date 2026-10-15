@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
@@ -15,88 +16,173 @@ namespace NativeSsh.Ssh
 
     // Comprueba la clave del servidor contra known_hosts (OpenSSH): patrones planos, comodines,
     // negaciones, '[host]:puerto', entradas hasheadas '|1|sal|hash' y el marcador @revoked.
+    // Cada fichero se lee entero en un búfer de caracteres rentado, uno cada vez, y sus líneas y campos se recorren como
+    // ReadOnlySpan<char>: solo se crea lo que sale (los tipos de ObtenerTiposClave) y las claves que hay que guardar; las
+    // claves y las entradas hasheadas se comparan en la pila. Cada línea se filtra primero por su campo de hosts. El búfer
+    // vuelve al pool sin limpiar (known_hosts solo tiene claves públicas y nombres de host); se lee solo lo escrito, hasta la
+    // longitud propia, nunca hasta el Length del array rentado. Mismo resultado que leyendo con File.ReadLines y partiendo con
+    // string.Split: el texto se decodifica con un StreamReader (UTF-8 con detección de BOM), las líneas se cortan como
+    // ReadLine ('\n', '\r' o "\r\n"; U+2028 no corta) y los campos con cualquier char.IsWhiteSpace, sin vacíos. Las piezas
+    // internal (lectura, líneas, campos, hosts y claves) también las usa la variante con ValueLINQ Delay de native_ssh.Benchmarks.
     public sealed class VerificadorHostConocido(string[] rutas)
     {
+        // Caracteres del búfer inicial; si el fichero no cabe, se dobla.
+        private const int CapacidadInicial = 4096;
+
+        // Bytes de una clave decodificada que van en la pila; una mayor se decodifica en un array rentado.
+        private const int MaximoClaveEnPila = 1024;
+
+        // Entradas hasheadas calculadas en la pila: sal y hash en base64 de hasta 64 caracteres (48 bytes; OpenSSH usa 20) y
+        // nombres de hasta 256 caracteres.
+        private const int MaximoBase64Hasheado = 64;
+        private const int MaximoBytesHasheado = MaximoBase64Hasheado / 4 * 3;
+        private const int MaximoNombreEnPila = 256;
+
         public string[] Rutas { get; } = rutas;
 
-        // Fichero a fichero, como cuando se leían con un iterador: una clave revocada responde sin abrir los siguientes, así que
-        // un fichero posterior que no se puede leer no convierte la revocación en una excepción. Las líneas de cada fichero van
-        // en una lista rentada que se vacía para el siguiente y se devuelve al salir.
+        // Fichero a fichero: una clave revocada responde sin abrir los siguientes, así que un fichero posterior que no se puede
+        // leer no convierte la revocación en una excepción.
         public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
         {
             string nombre = NombreHost(servidor, puerto);
             bool hasMismoTipo = false;
             bool isConocido = false;
-            using PooledListRef<string> lineas = new();
             foreach (string ruta in Rutas)
             {
                 if (!File.Exists(ruta))
                     continue;
-                lineas.Clear();
-                foreach (string linea in File.ReadLines(ruta))
-                    lineas.Add(linea);
-                if (IsRevocadaAcumulando(lineas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
-                    return ResultadoHostEnum.Revocado;
+
+                char[] texto = LeerTexto(ruta, out int longitud);
+                try
+                {
+                    ReadOnlySpan<char> resto = texto.AsSpan(0, longitud);
+                    while (TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
+                        if (IsRevocadaAcumulando(linea, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
+                            return ResultadoHostEnum.Revocado;
+                }
+                finally
+                {
+                    ArrayPool<char>.Shared.Return(texto);
+                }
             }
 
             return Resultado(hasMismoTipo, isConocido);
         }
 
+        // Necesita todos los ficheros (un @revoked de uno anula la clave de otro): uno que no se puede leer lanza.
         public HashSet<string> ObtenerTiposClave(string servidor, int puerto)
         {
-            PooledListRef<string> lineas = new();
+            string nombre = NombreHost(servidor, puerto);
+            // Las claves de cada línea son arrays propios (TryDecodificar): las listas rentadas solo guardan referencias, que se
+            // limpian al devolverlas. Un 'using' no se puede pasar por ref: se devuelven en el finally.
+            PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
+            PooledListRef<byte[]> revocadas = new();
             try
             {
-                LeerLineas(ref lineas);
-                return ObtenerTiposClave(lineas.Span, servidor, puerto);
+                foreach (string ruta in Rutas)
+                {
+                    if (!File.Exists(ruta))
+                        continue;
+
+                    char[] texto = LeerTexto(ruta, out int longitud);
+                    try
+                    {
+                        ReadOnlySpan<char> resto = texto.AsSpan(0, longitud);
+                        while (TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
+                            AcumularClave(linea, nombre, ref conocidas, ref revocadas);
+                    }
+                    finally
+                    {
+                        ArrayPool<char>.Shared.Return(texto);
+                    }
+                }
+
+                return TiposNoRevocados(conocidas.Span, revocadas.Span);
             }
             finally
             {
-                lineas.Dispose();
+                revocadas.Dispose();
+                conocidas.Dispose();
             }
-        }
-
-        // Todas las líneas de los known_hosts que existen, en orden (para los tipos de clave, que necesitan todas: un fichero
-        // que no se puede leer lanza, igual que con el iterador de antes).
-        private void LeerLineas(scoped ref PooledListRef<string> lineas)
-        {
-            foreach (string ruta in Rutas)
-                if (File.Exists(ruta))
-                    foreach (string linea in File.ReadLines(ruta))
-                        lineas.Add(linea);
         }
 
         public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
         {
             string nombre = NombreHost(servidor, puerto);
-            // Las claves de cada línea son arrays propios (TryDecodificar): las listas rentadas solo guardan referencias, que se
-            // limpian al devolverlas.
-            using PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
-            using PooledListRef<byte[]> revocadas = new();
-
-            foreach (string linea in lineas)
+            PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
+            PooledListRef<byte[]> revocadas = new();
+            try
             {
-                string[] campos = linea.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-                if (campos.Length < 3 || campos[0].StartsWith('#'))
-                    continue;
-
-                int indice = 0;
-                string? marcador = campos[0].StartsWith('@') ? campos[indice++] : null;
-                if (marcador is not null and not "@revoked")
-                    continue;
-
-                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
-                    continue;
-
-                if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
-                    continue;
-
-                if (marcador == "@revoked")
-                    revocadas.Add(claveLinea);
-                else
-                    conocidas.Add((campos[indice + 1], claveLinea));
+                foreach (string linea in lineas)
+                    AcumularClave(linea, nombre, ref conocidas, ref revocadas);
+                return TiposNoRevocados(conocidas.Span, revocadas.Span);
             }
+            finally
+            {
+                revocadas.Dispose();
+                conocidas.Dispose();
+            }
+        }
 
+        public static ResultadoHostEnum Verificar(ReadOnlySpan<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        {
+            string nombre = NombreHost(servidor, puerto);
+            bool hasMismoTipo = false;
+            bool isConocido = false;
+            foreach (string linea in lineas)
+                if (IsRevocadaAcumulando(linea, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
+                    return ResultadoHostEnum.Revocado;
+
+            return Resultado(hasMismoTipo, isConocido);
+        }
+
+        private static string NombreHost(string servidor, int puerto) => puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
+
+        private static ResultadoHostEnum Resultado(bool hasMismoTipo, bool isConocido) =>
+            isConocido ? ResultadoHostEnum.Conocido
+                : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
+                : ResultadoHostEnum.Desconocido;
+
+        // Una línea: true si revoca la clave; si no, acumula si es una entrada del mismo tipo y si es la clave (el resultado
+        // de varias líneas o ficheros es el de todas seguidas).
+        private static bool IsRevocadaAcumulando(ReadOnlySpan<char> linea, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
+        {
+            if (!TryCampos(linea, nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64))
+                return false;
+
+            // Una entrada de otro tipo no cuenta, sea válida o no su clave (@revoked sí: revoca la clave sea cual sea el tipo
+            // escrito): no se decodifica.
+            if (!isRevocada && !tipo.SequenceEqual(tipoClave))
+                return false;
+
+            ResultadoClaveEnum resultado = CompararClave(base64, clave);
+            if (resultado == ResultadoClaveEnum.Invalida)
+                return false;
+
+            bool isMismaClave = resultado == ResultadoClaveEnum.Igual;
+            if (isRevocada)
+                return isMismaClave;
+
+            hasMismoTipo = true;
+            isConocido |= isMismaClave;
+            return false;
+        }
+
+        // Una línea del host con clave válida: a las revocadas o, con su tipo, a las conocidas.
+        private static void AcumularClave(scoped ReadOnlySpan<char> linea, string nombre, scoped ref PooledListRef<(string Tipo, byte[] Clave)> conocidas, scoped ref PooledListRef<byte[]> revocadas)
+        {
+            if (!TryCampos(linea, nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64)
+                || !TryDecodificar(base64, out byte[] claveLinea))
+                return;
+
+            if (isRevocada)
+                revocadas.Add(claveLinea);
+            else
+                conocidas.Add((tipo.ToString(), claveLinea));
+        }
+
+        private static HashSet<string> TiposNoRevocados(ReadOnlySpan<(string Tipo, byte[] Clave)> conocidas, ReadOnlySpan<byte[]> revocadas)
+        {
             HashSet<string> tipos = new(StringComparer.Ordinal);
             foreach ((string tipo, byte[] claveValida) in conocidas)
             {
@@ -115,59 +201,129 @@ namespace NativeSsh.Ssh
             return tipos;
         }
 
-        public static ResultadoHostEnum Verificar(ReadOnlySpan<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        // Los campos de una línea que cuenta, del filtro más restrictivo al más permisivo y sin mirar más de lo necesario: el
+        // campo de hosts (el primero, si no empieza por '#'; o el segundo tras @revoked, el único marcador que cuenta)
+        // coincide con el nombre, y tras él están el tipo y la clave. El resto (el comentario) no se mira. Es lo mismo que
+        // exigir antes al menos 3 campos (4 con @revoked): las condiciones son puras y la línea cuenta si se cumplen todas.
+        private static bool TryCampos(ReadOnlySpan<char> linea, string nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64)
         {
-            bool hasMismoTipo = false;
-            bool isConocido = false;
-            return IsRevocadaAcumulando(lineas, NombreHost(servidor, puerto), tipoClave, clave, ref hasMismoTipo, ref isConocido)
-                ? ResultadoHostEnum.Revocado
-                : Resultado(hasMismoTipo, isConocido);
-        }
+            isRevocada = false;
+            tipo = base64 = default;
+            ReadOnlySpan<char> resto = linea;
+            ReadOnlySpan<char> hosts = SiguienteCampo(ref resto);
+            if (hosts.IsEmpty || hosts[0] == '#')
+                return false;
 
-        private static string NombreHost(string servidor, int puerto) => puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
-
-        private static ResultadoHostEnum Resultado(bool hasMismoTipo, bool isConocido) =>
-            isConocido ? ResultadoHostEnum.Conocido
-                : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
-                : ResultadoHostEnum.Desconocido;
-
-        // Recorre las líneas: true en cuanto una revoca la clave; si no, acumula si hay una entrada del mismo tipo y si alguna
-        // es la clave (el resultado de varios ficheros es el de sus líneas seguidas).
-        private static bool IsRevocadaAcumulando(ReadOnlySpan<string> lineas, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
-        {
-            foreach (string linea in lineas)
+            if (hosts[0] == '@')
             {
-                string[] campos = linea.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-                if (campos.Length < 3 || campos[0].StartsWith('#'))
-                    continue;
-
-                int indice = 0;
-                string? marcador = campos[0].StartsWith('@') ? campos[indice++] : null;
-                if (marcador is not null and not "@revoked")
-                    continue;
-
-                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
-                    continue;
-
-                if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
-                    continue;
-
-                bool isMismaClave = clave.SequenceEqual(claveLinea);
-                if (marcador == "@revoked")
-                {
-                    if (isMismaClave)
-                        return true;
-                    continue;
-                }
-
-                if (!string.Equals(campos[indice + 1], tipoClave, StringComparison.Ordinal))
-                    continue;
-
-                hasMismoTipo = true;
-                isConocido |= isMismaClave;
+                if (!hosts.SequenceEqual("@revoked"))
+                    return false;
+                isRevocada = true;
+                hosts = SiguienteCampo(ref resto);
             }
 
-            return false;
+            if (!IsCoincideHost(hosts, nombre))
+                return false;
+
+            tipo = SiguienteCampo(ref resto);
+            base64 = SiguienteCampo(ref resto);
+            return !base64.IsEmpty;
+        }
+
+        // Campos separados por cualquier char.IsWhiteSpace, sin vacíos (como string.Split((char[]?)null,
+        // RemoveEmptyEntries)); vacío si no quedan.
+        internal static ReadOnlySpan<char> SiguienteCampo(scoped ref ReadOnlySpan<char> resto)
+        {
+            int inicio = 0;
+            while (inicio < resto.Length && char.IsWhiteSpace(resto[inicio]))
+                inicio++;
+            int fin = inicio;
+            while (fin < resto.Length && !char.IsWhiteSpace(resto[fin]))
+                fin++;
+            ReadOnlySpan<char> campo = resto[inicio..fin];
+            resto = resto[fin..];
+            return campo;
+        }
+
+        // Como StreamReader.ReadLine: '\n', '\r' o "\r\n"; la última línea sin salto también cuenta, un salto final no.
+        internal static bool TrySiguienteLinea(ref ReadOnlySpan<char> resto, out ReadOnlySpan<char> linea)
+        {
+            linea = default;
+            if (resto.IsEmpty)
+                return false;
+
+            int salto = resto.IndexOfAny('\r', '\n');
+            if (salto < 0)
+            {
+                linea = resto;
+                resto = [];
+                return true;
+            }
+
+            linea = resto[..salto];
+            bool isCrLf = resto[salto] == '\r' && salto + 1 < resto.Length && resto[salto + 1] == '\n';
+            resto = resto[(salto + (isCrLf ? 2 : 1))..];
+            return true;
+        }
+
+        // El fichero entero en un búfer de caracteres rentado, decodificado como File.ReadLines (UTF-8 y BOM). La capacidad
+        // es la pedida, no el Length del array (Rent puede dar uno mayor). Si la lectura lanza, el búfer vuelve antes.
+        internal static char[] LeerTexto(string ruta, out int longitud)
+        {
+            int capacidad = CapacidadInicial;
+            char[] texto = ArrayPool<char>.Shared.Rent(capacidad);
+            longitud = 0;
+            try
+            {
+                using StreamReader lector = new(ruta, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                int leidos;
+                while ((leidos = lector.ReadBlock(texto.AsSpan(longitud, capacidad - longitud))) > 0)
+                {
+                    longitud += leidos;
+                    if (longitud < capacidad)
+                        continue;
+
+                    capacidad *= 2;
+                    char[] mayor = ArrayPool<char>.Shared.Rent(capacidad);
+                    texto.AsSpan(0, longitud).CopyTo(mayor);
+                    ArrayPool<char>.Shared.Return(texto);
+                    texto = mayor;
+                }
+
+                return texto;
+            }
+            catch
+            {
+                ArrayPool<char>.Shared.Return(texto);
+                throw;
+            }
+        }
+
+        internal enum ResultadoClaveEnum
+        {
+            Invalida,
+            Igual,
+            Distinta
+        }
+
+        // La clave de la línea comparada con la del servidor sin crear un array por línea: en la pila o, si es grande, en un
+        // array rentado del que solo se usa lo pedido.
+        internal static ResultadoClaveEnum CompararClave(ReadOnlySpan<char> base64, ReadOnlySpan<byte> clave)
+        {
+            int maximo = (base64.Length + 3) / 4 * 3;
+            byte[]? alquilado = maximo > MaximoClaveEnPila ? ArrayPool<byte>.Shared.Rent(maximo) : null;
+            Span<byte> destino = alquilado is null ? stackalloc byte[MaximoClaveEnPila] : alquilado.AsSpan(0, maximo);
+            try
+            {
+                return !Convert.TryFromBase64Chars(base64, destino, out int escritos) ? ResultadoClaveEnum.Invalida
+                    : clave.SequenceEqual(destino[..escritos]) ? ResultadoClaveEnum.Igual
+                    : ResultadoClaveEnum.Distinta;
+            }
+            finally
+            {
+                if (alquilado is not null)
+                    ArrayPool<byte>.Shared.Return(alquilado);
+            }
         }
 
         // Tipo de clave leído del propio blob (string SSH inicial). SSH.NET informa del algoritmo de firma
@@ -181,30 +337,70 @@ namespace NativeSsh.Ssh
             return longitud is > 0 and <= 64 && blob.Length >= 4 + longitud ? Encoding.ASCII.GetString(blob.Slice(4, longitud)) : null;
         }
 
-        private static bool IsCoincideHost(string patrones, string nombre)
+        internal static bool IsCoincideHost(ReadOnlySpan<char> patrones, string nombre)
         {
-            if (patrones.StartsWith("|1|", StringComparison.Ordinal))
+            if (patrones.StartsWith("|1|"))
                 return IsCoincideHasheado(patrones, nombre);
 
             bool isCoincide = false;
-            foreach (string patron in patrones.Split(','))
+            ReadOnlySpan<char> resto = patrones;
+            while (true)
             {
-                bool isNegado = patron.StartsWith('!');
-                if (!IsCoincideComodin(isNegado ? patron[1..] : patron, nombre))
-                    continue;
-                if (isNegado)
-                    return false;
-                isCoincide = true;
-            }
+                int coma = resto.IndexOf(',');
+                ReadOnlySpan<char> patron = coma < 0 ? resto : resto[..coma];
+                bool isNegado = !patron.IsEmpty && patron[0] == '!';
+                if (IsCoincideComodin(isNegado ? patron[1..] : patron, nombre))
+                {
+                    if (isNegado)
+                        return false;
+                    isCoincide = true;
+                }
 
-            return isCoincide;
+                if (coma < 0)
+                    return isCoincide;
+                resto = resto[(coma + 1)..];
+            }
+        }
+
+        private static bool IsCoincideHasheado(ReadOnlySpan<char> entrada, string nombre)
+        {
+            // "|1|sal|hash": exactamente 4 partes separadas por '|' (la primera vacía), como entrada.Split('|').Length == 4.
+            ReadOnlySpan<char> resto = entrada[3..];
+            int barra = resto.IndexOf('|');
+            if (barra < 0)
+                return false;
+            ReadOnlySpan<char> sal64 = resto[..barra];
+            ReadOnlySpan<char> hash64 = resto[(barra + 1)..];
+            if (hash64.Contains('|'))
+                return false;
+
+            // Lo de OpenSSH (sal y hash de 20 bytes) con un nombre corto se calcula en la pila, sin crear nada por línea; lo que
+            // no cabe, creando los arrays, con el mismo resultado.
+            bool isEnPila = sal64.Length <= MaximoBase64Hasheado && hash64.Length <= MaximoBase64Hasheado && nombre.Length <= MaximoNombreEnPila;
+            return isEnPila ? IsCoincideHasheadoEnPila(sal64, hash64, nombre) : IsCoincideHasheadoCreando(sal64, hash64, nombre);
         }
 
         [SuppressMessage("Security", "CA5350:Do Not Use Weak Cryptographic Algorithms", Justification = "HMAC-SHA1 es el formato de las entradas hasheadas de known_hosts (|1|sal|hash); no se elige el algoritmo.")]
-        private static bool IsCoincideHasheado(string entrada, string nombre)
+        private static bool IsCoincideHasheadoEnPila(ReadOnlySpan<char> sal64, ReadOnlySpan<char> hash64, string nombre)
         {
-            string[] partes = entrada.Split('|');
-            if (partes.Length != 4 || !TryDecodificar(partes[2], out byte[] sal) || !TryDecodificar(partes[3], out byte[] hash))
+            Span<byte> sal = stackalloc byte[MaximoBytesHasheado];
+            Span<byte> hash = stackalloc byte[MaximoBytesHasheado];
+            if (!Convert.TryFromBase64Chars(sal64, sal, out int bytesSal) || !Convert.TryFromBase64Chars(hash64, hash, out int bytesHash))
+                return false;
+
+            Span<char> minusculas = stackalloc char[MaximoNombreEnPila];
+            int caracteres = nombre.AsSpan().ToLowerInvariant(minusculas);
+            Span<byte> utf8 = stackalloc byte[MaximoNombreEnPila * 3];
+            int bytesNombre = Encoding.UTF8.GetBytes(minusculas[..caracteres], utf8);
+            Span<byte> calculado = stackalloc byte[HMACSHA1.HashSizeInBytes];
+            _ = HMACSHA1.HashData(sal[..bytesSal], utf8[..bytesNombre], calculado);
+            return CryptographicOperations.FixedTimeEquals(calculado, hash[..bytesHash]);
+        }
+
+        [SuppressMessage("Security", "CA5350:Do Not Use Weak Cryptographic Algorithms", Justification = "HMAC-SHA1 es el formato de las entradas hasheadas de known_hosts (|1|sal|hash); no se elige el algoritmo.")]
+        private static bool IsCoincideHasheadoCreando(ReadOnlySpan<char> sal64, ReadOnlySpan<char> hash64, string nombre)
+        {
+            if (!TryDecodificar(sal64, out byte[] sal) || !TryDecodificar(hash64, out byte[] hash))
                 return false;
 
             byte[] calculado = HMACSHA1.HashData(sal, Encoding.UTF8.GetBytes(nombre.ToLowerInvariant()));
@@ -239,17 +435,23 @@ namespace NativeSsh.Ssh
             return p == patron.Length;
         }
 
-        private static bool TryDecodificar(string base64, out byte[] datos)
+        // La clave decodificada en un array propio del tamaño exacto (se guarda): se decodifica antes en la pila o en un array
+        // rentado del que solo se usa lo pedido.
+        internal static bool TryDecodificar(ReadOnlySpan<char> base64, out byte[] datos)
         {
+            int maximo = (base64.Length + 3) / 4 * 3;
+            byte[]? alquilado = maximo > MaximoClaveEnPila ? ArrayPool<byte>.Shared.Rent(maximo) : null;
+            Span<byte> destino = alquilado is null ? stackalloc byte[MaximoClaveEnPila] : alquilado.AsSpan(0, maximo);
             try
             {
-                datos = Convert.FromBase64String(base64);
-                return true;
+                bool isValida = Convert.TryFromBase64Chars(base64, destino, out int escritos);
+                datos = isValida ? destino[..escritos].ToArray() : [];
+                return isValida;
             }
-            catch (FormatException)
+            finally
             {
-                datos = [];
-                return false;
+                if (alquilado is not null)
+                    ArrayPool<byte>.Shared.Return(alquilado);
             }
         }
     }
