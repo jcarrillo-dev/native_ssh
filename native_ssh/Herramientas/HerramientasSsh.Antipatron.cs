@@ -25,8 +25,43 @@ namespace NativeSsh.Herramientas
         private static string AvisoEdicionEnSitio(string orden) => $"Sugerencia de seguridad: Has editado un archivo en el sitio con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_replace_file_content' (varias ediciones en una llamada con 'ediciones', sudo=true para archivos de root): escribe de forma atómica o con copia de seguridad, con candado y comprobando que nadie cambió el archivo entretanto.";
         private static string AvisoEscrituraArchivo(string orden) => $"Sugerencia de seguridad: Has escrito un archivo con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_write_file' (contenido sin problemas de comillas ni de expansión de variables, escritura atómica con candado, append=true para anexar y sudo=true para archivos de root).";
 
-        [GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", RegexOptions.CultureInvariant)]
-        private static partial Regex RegexFlagsRecursivosGrep();
+        // Opción recursiva de grep en el texto de los argumentos: al principio o tras un espacio, '--recursive' o un grupo de
+        // opciones cortas ('-r', '-rn', '-iR'), seguido del final o de algo que no es letra, cifra ni '_'. Es lo mismo que la
+        // regex (?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b, que es cuadrática ('-rrr…r_' de 25 000 caracteres tardaba
+        // 12 s) y esto corre en cada respuesta: aquí cada carácter se mira una vez (las letras de un grupo no empiezan otro).
+        internal static bool HasFlagRecursivoGrep(string texto)
+        {
+            int i = 0;
+            while (i < texto.Length)
+            {
+                bool isInicio = texto[i] == '-' && (i == 0 || char.IsWhiteSpace(texto[i - 1]));
+                if (!isInicio)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (texto.AsSpan(i).StartsWith("--recursive", StringComparison.Ordinal) && IsFinDePalabra(texto, i + "--recursive".Length))
+                    return true;
+
+                int j = i + 1;
+                bool hasR = false;
+                for (; j < texto.Length && char.IsAsciiLetter(texto[j]); j++)
+                    hasR |= texto[j] is 'r' or 'R';
+                if (hasR && IsFinDePalabra(texto, j))
+                    return true;
+                i = j;
+            }
+
+            return false;
+        }
+
+        // \b tras una letra: el final del texto o un carácter que no es de palabra para \b de .NET (letra, cifra decimal, marca
+        // sin espacio, conector, y U+200C y U+200D).
+        private static bool IsFinDePalabra(string texto, int posicion) => posicion >= texto.Length || !IsCaracterDePalabra(texto[posicion]);
+
+        private static bool IsCaracterDePalabra(char c) =>
+            char.IsLetter(c) || c is '\u200C' or '\u200D' || char.GetUnicodeCategory(c) is UnicodeCategory.DecimalDigitNumber or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.NonSpacingMark;
 
         // Script de sed que solo imprime líneas por su número ('5p', '10,20p', '$p', '1~2p', '3,+4p'; varios con ';'): es una
         // lectura. Cualquier otro (s///, y///, direcciones con regex...) es una transformación y no avisa.
@@ -102,7 +137,7 @@ namespace NativeSsh.Herramientas
             {
                 "cd" => orden.SeparadorSiguiente == "&&" ? AvisoCdEncadenado : null,
                 "find" => orden.IsTuberiaDeEntrada || !IsFindQueHaceSshFind(orden) ? null : AvisoFindDisco,
-                "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || RegexFlagsRecursivosGrep().IsMatch(orden.TextoArgumentos) ? AvisoGrepDisco : null,
+                "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || HasFlagRecursivoGrep(orden.TextoArgumentos) ? AvisoGrepDisco : null,
                 "rg" or "ag" or "ack" or "ack-grep" => orden.IsTuberiaDeEntrada ? null : AvisoBusquedaRg(programa),
                 "ls" or "tree" or "exa" or "eza" => isSalidaAlLlm ? AvisoListado(programa) : null,
                 "stat" => isSalidaAlLlm && orden.Operandos.Length > 0 ? AvisoMetadatos : null,

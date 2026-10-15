@@ -6,7 +6,7 @@ namespace NativeSsh.Test.Herramientas
     // Avisos de antipatrón de ssh_exec ampliados (C10): cada uso que tiene herramienta especializada avisa de ella, y cada
     // falso positivo conocido (tuberías, tail -f, redirecciones a /dev/null y 2>&1, --help, transformaciones en el
     // servidor, heredocs y sustituciones) no avisa de nada.
-    public sealed class AvisosAntipatronTests
+    public sealed partial class AvisosAntipatronTests
     {
         [Theory]
         [InlineData("cat /etc/nginx/nginx.conf", "'cat'")]
@@ -267,5 +267,55 @@ namespace NativeSsh.Test.Herramientas
         [InlineData("<<<")]
         public void EntradaMalformada_NoLanzaNiAvisa(string comando) =>
             _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().BeNull();
+
+        // Opciones recursivas de grep (-r, -R, -rn, --recursive) en el texto de los argumentos: la misma respuesta que la regex
+        // de antes, (?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b, en textos al azar cortos (la regex es cuadrática y aquí
+        // solo sirve de oráculo).
+        [System.Text.RegularExpressions.GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", System.Text.RegularExpressions.RegexOptions.CultureInvariant)]
+        private static partial System.Text.RegularExpressions.Regex RegexAnterior();
+
+        [Fact]
+        public void FlagRecursivoGrep_IgualQueLaRegexDeAntes()
+        {
+            // Arrange
+            // Con los bordes de \s y \b: no separables, separador de línea, U+200D, marcas con y sin espacio, cifra árabe y '‿'.
+            const string Alfabeto = "-rRnxi_5 \t=ñé.\u00A0\u2028\u200D\u0903\u0301\u0663\u203F";
+            Random azar = new(20261016);
+            int distintas = 0;
+
+            // Act
+            for (int n = 0; n < 200_000; n++)
+            {
+                char[] texto = new char[azar.Next(0, 16)];
+                for (int i = 0; i < texto.Length; i++)
+                    texto[i] = Alfabeto[azar.Next(Alfabeto.Length)];
+                string candidato = azar.Next(10) == 0 ? " --recursive" + new string(texto) : new string(texto);
+                if (HerramientasSsh.HasFlagRecursivoGrep(candidato) != RegexAnterior().IsMatch(candidato))
+                    distintas++;
+            }
+
+            // Assert
+            _ = distintas.Should().Be(0);
+        }
+
+        // La comprobación corre en cada respuesta de ssh_exec y ssh_output: con una opción enorme (la regex de antes tardaba 12 s
+        // con 25 000 caracteres y crecía con el cuadrado), tiempo acotado.
+        [Theory]
+        [InlineData(25_000)]
+        [InlineData(1_000_000)]
+        public void GrepConOpcionEnorme_TiempoAcotado(int letras)
+        {
+            // Arrange
+            string comando = "cat f | grep -" + new string('r', letras) + "_ x";
+            System.Diagnostics.Stopwatch reloj = System.Diagnostics.Stopwatch.StartNew();
+
+            // Act
+            string? aviso = HerramientasSsh.DetectarAvisoAntipatron(comando);
+
+            // Assert
+            reloj.Stop();
+            _ = aviso.Should().BeNull();
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(1));
+        }
     }
 }
