@@ -1,0 +1,239 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text;
+using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
+using NativeSsh.Ssh;
+
+namespace NativeSsh.Benchmarks.Copias
+{
+    // Copia de VerificadorHostConocido tal como estaba en d64a784 (las líneas de cada known_hosts como string en una lista
+    // rentada, antes de pasar a leer el fichero en un búfer de caracteres y recorrerlo por spans): solo para medir en la misma
+    // tanda el antes y el después (GeneracionesKnownHostsBenchmarks) y para comparar resultados. Sin LeerTipo, que no cambia.
+    public sealed class VerificadorHostConocidoListaRentada(string[] rutas)
+    {
+        public string[] Rutas { get; } = rutas;
+
+        // Fichero a fichero, como cuando se leían con un iterador: una clave revocada responde sin abrir los siguientes, así que
+        // un fichero posterior que no se puede leer no convierte la revocación en una excepción. Las líneas de cada fichero van
+        // en una lista rentada que se vacía para el siguiente y se devuelve al salir.
+        public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        {
+            string nombre = NombreHost(servidor, puerto);
+            bool hasMismoTipo = false;
+            bool isConocido = false;
+            using PooledListRef<string> lineas = new();
+            foreach (string ruta in Rutas)
+            {
+                if (!File.Exists(ruta))
+                    continue;
+                lineas.Clear();
+                foreach (string linea in File.ReadLines(ruta))
+                    lineas.Add(linea);
+                if (IsRevocadaAcumulando(lineas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
+                    return ResultadoHostEnum.Revocado;
+            }
+
+            return Resultado(hasMismoTipo, isConocido);
+        }
+
+        public HashSet<string> ObtenerTiposClave(string servidor, int puerto)
+        {
+            PooledListRef<string> lineas = new();
+            try
+            {
+                LeerLineas(ref lineas);
+                return ObtenerTiposClave(lineas.Span, servidor, puerto);
+            }
+            finally
+            {
+                lineas.Dispose();
+            }
+        }
+
+        // Todas las líneas de los known_hosts que existen, en orden (para los tipos de clave, que necesitan todas: un fichero
+        // que no se puede leer lanza, igual que con el iterador de antes).
+        private void LeerLineas(scoped ref PooledListRef<string> lineas)
+        {
+            foreach (string ruta in Rutas)
+                if (File.Exists(ruta))
+                    foreach (string linea in File.ReadLines(ruta))
+                        lineas.Add(linea);
+        }
+
+        public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
+        {
+            string nombre = NombreHost(servidor, puerto);
+            // Las claves de cada línea son arrays propios (TryDecodificar): las listas rentadas solo guardan referencias, que se
+            // limpian al devolverlas.
+            using PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
+            using PooledListRef<byte[]> revocadas = new();
+
+            foreach (string linea in lineas)
+            {
+                string[] campos = linea.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (campos.Length < 3 || campos[0].StartsWith('#'))
+                    continue;
+
+                int indice = 0;
+                string? marcador = campos[0].StartsWith('@') ? campos[indice++] : null;
+                if (marcador is not null and not "@revoked")
+                    continue;
+
+                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
+                    continue;
+
+                if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
+                    continue;
+
+                if (marcador == "@revoked")
+                    revocadas.Add(claveLinea);
+                else
+                    conocidas.Add((campos[indice + 1], claveLinea));
+            }
+
+            HashSet<string> tipos = new(StringComparer.Ordinal);
+            foreach ((string tipo, byte[] claveValida) in conocidas)
+            {
+                bool isRevocada = false;
+                foreach (byte[] rev in revocadas)
+                    if (claveValida.AsSpan().SequenceEqual(rev))
+                    {
+                        isRevocada = true;
+                        break;
+                    }
+
+                if (!isRevocada)
+                    _ = tipos.Add(tipo);
+            }
+
+            return tipos;
+        }
+
+        public static ResultadoHostEnum Verificar(ReadOnlySpan<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
+        {
+            bool hasMismoTipo = false;
+            bool isConocido = false;
+            return IsRevocadaAcumulando(lineas, NombreHost(servidor, puerto), tipoClave, clave, ref hasMismoTipo, ref isConocido)
+                ? ResultadoHostEnum.Revocado
+                : Resultado(hasMismoTipo, isConocido);
+        }
+
+        private static string NombreHost(string servidor, int puerto) => puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
+
+        private static ResultadoHostEnum Resultado(bool hasMismoTipo, bool isConocido) =>
+            isConocido ? ResultadoHostEnum.Conocido
+                : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
+                : ResultadoHostEnum.Desconocido;
+
+        // Recorre las líneas: true en cuanto una revoca la clave; si no, acumula si hay una entrada del mismo tipo y si alguna
+        // es la clave (el resultado de varios ficheros es el de sus líneas seguidas).
+        private static bool IsRevocadaAcumulando(ReadOnlySpan<string> lineas, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
+        {
+            foreach (string linea in lineas)
+            {
+                string[] campos = linea.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+                if (campos.Length < 3 || campos[0].StartsWith('#'))
+                    continue;
+
+                int indice = 0;
+                string? marcador = campos[0].StartsWith('@') ? campos[indice++] : null;
+                if (marcador is not null and not "@revoked")
+                    continue;
+
+                if (campos.Length < indice + 3 || !IsCoincideHost(campos[indice], nombre))
+                    continue;
+
+                if (!TryDecodificar(campos[indice + 2], out byte[] claveLinea))
+                    continue;
+
+                bool isMismaClave = clave.SequenceEqual(claveLinea);
+                if (marcador == "@revoked")
+                {
+                    if (isMismaClave)
+                        return true;
+                    continue;
+                }
+
+                if (!string.Equals(campos[indice + 1], tipoClave, StringComparison.Ordinal))
+                    continue;
+
+                hasMismoTipo = true;
+                isConocido |= isMismaClave;
+            }
+
+            return false;
+        }
+
+        private static bool IsCoincideHost(string patrones, string nombre)
+        {
+            if (patrones.StartsWith("|1|", StringComparison.Ordinal))
+                return IsCoincideHasheado(patrones, nombre);
+
+            bool isCoincide = false;
+            foreach (string patron in patrones.Split(','))
+            {
+                bool isNegado = patron.StartsWith('!');
+                if (!IsCoincideComodin(isNegado ? patron[1..] : patron, nombre))
+                    continue;
+                if (isNegado)
+                    return false;
+                isCoincide = true;
+            }
+
+            return isCoincide;
+        }
+
+        [SuppressMessage("Security", "CA5350:Do Not Use Weak Cryptographic Algorithms", Justification = "HMAC-SHA1 es el formato de las entradas hasheadas de known_hosts (|1|sal|hash); no se elige el algoritmo.")]
+        private static bool IsCoincideHasheado(string entrada, string nombre)
+        {
+            string[] partes = entrada.Split('|');
+            if (partes.Length != 4 || !TryDecodificar(partes[2], out byte[] sal) || !TryDecodificar(partes[3], out byte[] hash))
+                return false;
+
+            byte[] calculado = HMACSHA1.HashData(sal, Encoding.UTF8.GetBytes(nombre.ToLowerInvariant()));
+            return CryptographicOperations.FixedTimeEquals(calculado, hash);
+        }
+
+        // '*' = cualquier secuencia, '?' = un carácter. Sin distinguir mayúsculas, como OpenSSH.
+        private static bool IsCoincideComodin(ReadOnlySpan<char> patron, ReadOnlySpan<char> texto)
+        {
+            int p = 0, t = 0, estrella = -1, marca = 0;
+            while (t < texto.Length)
+                if (p < patron.Length && (patron[p] == '?' || char.ToLowerInvariant(patron[p]) == char.ToLowerInvariant(texto[t])))
+                {
+                    p++;
+                    t++;
+                }
+                else if (p < patron.Length && patron[p] == '*')
+                {
+                    estrella = p++;
+                    marca = t;
+                }
+                else if (estrella >= 0)
+                {
+                    p = estrella + 1;
+                    t = ++marca;
+                }
+                else
+                    return false;
+
+            while (p < patron.Length && patron[p] == '*')
+                p++;
+            return p == patron.Length;
+        }
+
+        private static bool TryDecodificar(string base64, out byte[] datos)
+        {
+            try
+            {
+                datos = Convert.FromBase64String(base64);
+                return true;
+            }
+            catch (FormatException)
+            {
+                datos = [];
+                return false;
+            }
+        }
+    }
+}

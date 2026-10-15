@@ -6,7 +6,8 @@ using NativeSsh.Ssh;
 namespace NativeSsh.Benchmarks
 {
     // Comprobación de la clave del servidor contra un known_hosts de 200 líneas (una vez por conexión): la clave conocida
-    // está al final, así que se recorren todas. Mide el paso de las líneas leídas con un iterador a una lista rentada.
+    // está al final, así que se recorren todas. El antes y el después de cada cambio se comparan con bench.sh (el mismo
+    // fichero sobre otro commit); las variantes, en la misma tanda, en GeneracionesKnownHostsBenchmarks.
     public class KnownHostsBenchmarks
     {
         private const int Lineas = 200;

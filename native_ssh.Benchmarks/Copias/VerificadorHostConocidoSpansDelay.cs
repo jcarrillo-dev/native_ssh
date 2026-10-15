@@ -6,13 +6,17 @@ using NativeSsh.Ssh;
 
 namespace NativeSsh.Benchmarks.Copias
 {
-    // Solo para medir (GeneracionesKnownHostsBenchmarks): el lector por spans (VerificadorHostConocidoSpans: un fichero cada
-    // vez en un búfer de caracteres rentado, sin un string por línea) con el recorrido y el filtrado en ValueLINQ Delay y
-    // procesadores struct. El motor Delay solo admite como origen un array o un span de T, y T no puede ser ReadOnlySpan<char>
-    // (no hay span de spans; el enumerador de origen no admite ref struct): las líneas de cada fichero se apuntan antes como
-    // (inicio, longitud) en una lista rentada de structs sin referencias (Linea). Select<Partir, Campos> parte cada línea
-    // en sus campos (Campos es un ref struct con ReadOnlySpan<char> sobre el búfer) y Where<DelHost, string> se queda con las
-    // del host. Mismos campos, mismas reglas y mismo orden que el producto.
+    // Solo para medir (GeneracionesKnownHostsBenchmarks): la lectura del producto (VerificadorHostConocido: un fichero cada vez
+    // en un búfer de caracteres rentado, líneas y campos como ReadOnlySpan<char>) con el recorrido en ValueLINQ Delay y
+    // procesadores struct, con la disciplina de ValueLINQ: primero los Where, del más restrictivo al más permisivo, sobre la
+    // línea cruda, y al final un solo Select para pasar de un struct a otro.
+    // - Where<DelHost>: solo el campo de hosts (el primero, o el segundo tras @revoked) frente al nombre, sin partir el resto;
+    //   de paso descarta las líneas vacías, los comentarios y otros marcadores. Deja pasar muy pocas líneas.
+    // - Where<ConCampos>: tras los hosts están el tipo y la clave (al menos 3 campos, 4 con @revoked).
+    // - Select<Partir, Campos>: el tipo, la clave en base64 y si es @revoked, como spans sobre el búfer.
+    // El motor Delay solo admite como origen un array o un span de T, y T no puede ser ReadOnlySpan<char> (no hay span de
+    // spans): las líneas de cada fichero se apuntan antes como (inicio, longitud) en una lista rentada de structs sin
+    // referencias (Linea). Mismas piezas, mismas reglas y mismo orden que el producto.
     public sealed class VerificadorHostConocidoSpansDelay(string[] rutas)
     {
         public string[] Rutas { get; } = rutas;
@@ -26,23 +30,30 @@ namespace NativeSsh.Benchmarks.Copias
             PooledListRef<Linea> lineas = new();
             try
             {
-                foreach (ref readonly string ruta in Rutas.ToValueDelayQuery().Where(default(Existe)))
+                foreach (string ruta in Rutas)
                 {
-                    char[] texto = VerificadorHostConocidoSpans.LeerTexto(ruta, out int longitud);
+                    if (!File.Exists(ruta))
+                        continue;
+
+                    char[] texto = VerificadorHostConocido.LeerTexto(ruta, out int longitud);
                     try
                     {
                         ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
+                        DelHost delHost = new(texto);
                         Partir partir = new(texto);
-                        DelHost delHost = default;
                         foreach (ref readonly Campos campos in ((ReadOnlySpan<Linea>)lineas.Span).ToValueDelayQuery()
-                            .Select<Partir, Campos>(ref partir)
-                            .Where(nombre, ref delHost))
+                            .Where(nombre, ref delHost)
+                            .Where(new ConCampos(texto))
+                            .Select<Partir, Campos>(ref partir))
                         {
-                            VerificadorHostConocidoSpans.ResultadoClaveEnum resultado = VerificadorHostConocidoSpans.CompararClave(campos.Base64, clave);
-                            if (resultado == VerificadorHostConocidoSpans.ResultadoClaveEnum.Invalida)
+                            if (!campos.IsRevocada && !campos.Tipo.SequenceEqual(tipoClave))
                                 continue;
 
-                            bool isMismaClave = resultado == VerificadorHostConocidoSpans.ResultadoClaveEnum.Igual;
+                            VerificadorHostConocido.ResultadoClaveEnum resultado = VerificadorHostConocido.CompararClave(campos.Base64, clave);
+                            if (resultado == VerificadorHostConocido.ResultadoClaveEnum.Invalida)
+                                continue;
+
+                            bool isMismaClave = resultado == VerificadorHostConocido.ResultadoClaveEnum.Igual;
                             if (campos.IsRevocada)
                             {
                                 if (isMismaClave)
@@ -50,16 +61,13 @@ namespace NativeSsh.Benchmarks.Copias
                                 continue;
                             }
 
-                            if (!campos.Tipo.SequenceEqual(tipoClave))
-                                continue;
-
                             hasMismoTipo = true;
                             isConocido |= isMismaClave;
                         }
                     }
                     finally
                     {
-                        ArrayPool<char>.Shared.Return(texto, clearArray: true);
+                        ArrayPool<char>.Shared.Return(texto);
                     }
                 }
             }
@@ -82,19 +90,23 @@ namespace NativeSsh.Benchmarks.Copias
             PooledListRef<Linea> lineas = new();
             try
             {
-                foreach (ref readonly string ruta in Rutas.ToValueDelayQuery().Where(default(Existe)))
+                foreach (string ruta in Rutas)
                 {
-                    char[] texto = VerificadorHostConocidoSpans.LeerTexto(ruta, out int longitud);
+                    if (!File.Exists(ruta))
+                        continue;
+
+                    char[] texto = VerificadorHostConocido.LeerTexto(ruta, out int longitud);
                     try
                     {
                         ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
+                        DelHost delHost = new(texto);
                         Partir partir = new(texto);
-                        DelHost delHost = default;
                         foreach (ref readonly Campos campos in ((ReadOnlySpan<Linea>)lineas.Span).ToValueDelayQuery()
-                            .Select<Partir, Campos>(ref partir)
-                            .Where(nombre, ref delHost))
+                            .Where(nombre, ref delHost)
+                            .Where(new ConCampos(texto))
+                            .Select<Partir, Campos>(ref partir))
                         {
-                            if (!VerificadorHostConocidoSpans.TryDecodificar(campos.Base64, out byte[] claveLinea))
+                            if (!VerificadorHostConocido.TryDecodificar(campos.Base64, out byte[] claveLinea))
                                 continue;
 
                             if (campos.IsRevocada)
@@ -105,7 +117,7 @@ namespace NativeSsh.Benchmarks.Copias
                     }
                     finally
                     {
-                        ArrayPool<char>.Shared.Return(texto, clearArray: true);
+                        ArrayPool<char>.Shared.Return(texto);
                     }
                 }
             }
@@ -138,7 +150,7 @@ namespace NativeSsh.Benchmarks.Copias
             lineas.Clear();
             ReadOnlySpan<char> resto = texto;
             int inicio = 0;
-            while (VerificadorHostConocidoSpans.TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
+            while (VerificadorHostConocido.TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
             {
                 lineas.Add(new Linea(inicio, linea.Length));
                 inicio = texto.Length - resto.Length;
@@ -147,15 +159,51 @@ namespace NativeSsh.Benchmarks.Copias
 
         private readonly record struct Linea(int Inicio, int Longitud);
 
-        // Los campos de una línea sobre el búfer; IsValida falso si la línea no cuenta (menos de 3 campos, comentario, otro
-        // marcador).
-        private readonly ref struct Campos(bool isValida, ReadOnlySpan<char> hosts, ReadOnlySpan<char> tipo, ReadOnlySpan<char> base64, bool isRevocada)
+        // Los campos que se usan de una línea que ya pasó los filtros, sobre el búfer.
+        private readonly ref struct Campos(ReadOnlySpan<char> tipo, ReadOnlySpan<char> base64, bool isRevocada)
         {
-            public bool IsValida { get; } = isValida;
-            public ReadOnlySpan<char> Hosts { get; } = hosts;
             public ReadOnlySpan<char> Tipo { get; } = tipo;
             public ReadOnlySpan<char> Base64 { get; } = base64;
             public bool IsRevocada { get; } = isRevocada;
+        }
+
+        // El campo de hosts (sin comentario ni otro marcador que @revoked) coincide con el nombre.
+        private readonly struct DelHost(char[] texto) : IWhereDelegado<Linea, string>
+        {
+            private readonly char[] _texto = texto;
+
+            public bool Ejecutar(Linea objetoLista, string otro)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> hosts = VerificadorHostConocido.SiguienteCampo(ref resto);
+                if (hosts.IsEmpty || hosts[0] == '#')
+                    return false;
+
+                if (hosts[0] == '@')
+                {
+                    if (!hosts.SequenceEqual("@revoked"))
+                        return false;
+                    hosts = VerificadorHostConocido.SiguienteCampo(ref resto);
+                }
+
+                return VerificadorHostConocido.IsCoincideHost(hosts, otro);
+            }
+        }
+
+        // Tras el campo de hosts (y el marcador, si lo hay) están el tipo y la clave: al menos 3 campos, o 4 con marcador.
+        private readonly struct ConCampos(char[] texto) : IWhereDelegado<Linea>
+        {
+            private readonly char[] _texto = texto;
+
+            public bool Ejecutar(Linea objetoLista)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> primero = VerificadorHostConocido.SiguienteCampo(ref resto);
+                if (!primero.IsEmpty && primero[0] == '@')
+                    _ = VerificadorHostConocido.SiguienteCampo(ref resto);
+                _ = VerificadorHostConocido.SiguienteCampo(ref resto);
+                return !VerificadorHostConocido.SiguienteCampo(ref resto).IsEmpty;
+            }
         }
 
         private readonly struct Partir(char[] texto) : ISelectDelegado<Linea, Campos>
@@ -165,33 +213,13 @@ namespace NativeSsh.Benchmarks.Copias
             public Campos Ejecutar(Linea objetoLista)
             {
                 ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
-                ReadOnlySpan<char> primero = VerificadorHostConocidoSpans.SiguienteCampo(ref resto);
-                if (primero.IsEmpty || primero[0] == '#')
-                    return default;
-
-                int restantes = VerificadorHostConocidoSpans.ContarCampos(resto);
-                if (restantes < 2)
-                    return default;
-
+                ReadOnlySpan<char> primero = VerificadorHostConocido.SiguienteCampo(ref resto);
                 bool isRevocada = primero[0] == '@';
-                if (isRevocada && (!primero.SequenceEqual("@revoked") || restantes < 3))
-                    return default;
-
-                ReadOnlySpan<char> hosts = isRevocada ? VerificadorHostConocidoSpans.SiguienteCampo(ref resto) : primero;
-                ReadOnlySpan<char> tipo = VerificadorHostConocidoSpans.SiguienteCampo(ref resto);
-                ReadOnlySpan<char> base64 = VerificadorHostConocidoSpans.SiguienteCampo(ref resto);
-                return new Campos(true, hosts, tipo, base64, isRevocada);
+                if (isRevocada)
+                    _ = VerificadorHostConocido.SiguienteCampo(ref resto);
+                ReadOnlySpan<char> tipo = VerificadorHostConocido.SiguienteCampo(ref resto);
+                return new Campos(tipo, VerificadorHostConocido.SiguienteCampo(ref resto), isRevocada);
             }
-        }
-
-        private struct DelHost : IWhereDelegado<Campos, string>
-        {
-            public readonly bool Ejecutar(Campos objetoLista, string otro) => objetoLista.IsValida && VerificadorHostConocidoSpans.IsCoincideHost(objetoLista.Hosts, otro);
-        }
-
-        private struct Existe : IWhereDelegado<string>
-        {
-            public readonly bool Ejecutar(string objetoLista) => File.Exists(objetoLista);
         }
     }
 }
