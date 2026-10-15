@@ -88,11 +88,18 @@ namespace NativeSsh.Ssh
         // Matar termina el job entero. Sin JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, como en Linux: si ssh -G termina bien, lo que
         // dejó en segundo plano sin retener su salida sigue vivo. Límites: lo que ssh lanzara entre su arranque y la
         // asignación (unos microsegundos, antes de leer la configuración) quedaría fuera; si no se puede crear o asignar el
-        // job (ssh ya terminado), Matar hace lo de antes (el árbol de procesos).
-        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo)
+        // job (ssh ya terminado), Matar hace lo de antes (el árbol de procesos) y queda en el registro.
+        // Sin JOB_OBJECT_LIMIT_BREAKAWAY_OK: con él, lo que lanza el ssh de Git for Windows (MSYS) no muere con el job (medido: con
+        // ese ssh primero en PATH, el bucle de las pruebas de plazo agotado seguía vivo; con el del sistema, no), justo lo que
+        // el job debe alcanzar. Un programa que pida CREATE_BREAKAWAY_FROM_JOB falla con acceso denegado.
+        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo, ref int error)
         {
             TrabajoWindows trabajo = TrabajoWindows.Crear();
-            if (!trabajo.IsInvalid && TrabajoWindows.Asignar(trabajo, proceso.SafeHandle))
+            if (trabajo.IsInvalid)
+                error = Marshal.GetLastPInvokeError();
+            else if (!TrabajoWindows.Asignar(trabajo, proceso.SafeHandle))
+                error = Marshal.GetLastPInvokeError();
+            else
             {
                 grupo = trabajo;
                 return;
@@ -133,11 +140,11 @@ namespace NativeSsh.Ssh
 
         protected override bool ReleaseHandle() => CloseHandle(handle);
 
-        [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW")]
+        [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW", SetLastError = true)]
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         private static partial TrabajoWindows CreateJobObject(IntPtr atributos, IntPtr nombre);
 
-        [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject")]
+        [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject", SetLastError = true)]
         [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static partial bool Asignar(TrabajoWindows trabajo, SafeProcessHandle proceso);

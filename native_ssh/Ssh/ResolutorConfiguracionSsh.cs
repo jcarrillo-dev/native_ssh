@@ -349,8 +349,8 @@ namespace NativeSsh.Ssh
         static partial void DirectorioDePathDelSistema(ref string? directorio);
 
         // Lo que lance ssh, en un grupo del sistema que Matar puede matar entero aunque el padre de algo ya no exista (en
-        // Windows, un job object); null si no hay.
-        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo);
+        // Windows, un job object); null si no hay. error: el del sistema si se intentó y no se pudo (0 si no).
+        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo, ref int error);
 
         static partial void MatarGrupoDelSistema(SafeHandle? grupo);
 
@@ -422,7 +422,10 @@ namespace NativeSsh.Ssh
 
             using Process ejecucion = proceso ?? throw new NativeSshException($"No se pudo ejecutar '{opciones.BinarioSsh}' para leer la configuración de ssh de '{servidor}'.");
             SafeHandle? grupo = null;
-            AgruparDelSistema(ejecucion, ref grupo);
+            int errorGrupo = 0;
+            AgruparDelSistema(ejecucion, ref grupo, ref errorGrupo);
+            if (errorGrupo != 0)
+                logger.GrupoSshNoAsignado(servidor, errorGrupo);
             using SafeHandle? grupoDelSistema = grupo;
             ejecucion.StandardInput.Close();
             Task<string> lectura = Leer(ejecucion.StandardOutput);

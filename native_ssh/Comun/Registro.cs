@@ -90,5 +90,8 @@ namespace NativeSsh.Comun
 
         [LoggerMessage(EventId = 67, Level = LogLevel.Debug, Message = "'{Servidor}' resuelto con la configuración de ssh: {Destino} ({Claves}).")]
         public static partial void DestinoResuelto(this ILogger logger, string servidor, string destino, string claves);
+
+        [LoggerMessage(EventId = 68, Level = LogLevel.Warning, Message = "No se pudo meter 'ssh -G' de '{Servidor}' en un job object propio (error {Error} de Windows): si se agota el plazo, se mata su árbol de procesos, que no alcanza lo que lanzó un Match exec cuyo padre ya terminó.")]
+        public static partial void GrupoSshNoAsignado(this ILogger logger, string servidor, int error);
     }
 }
