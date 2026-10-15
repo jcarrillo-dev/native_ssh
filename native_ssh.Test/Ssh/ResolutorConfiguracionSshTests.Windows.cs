@@ -192,5 +192,44 @@ namespace NativeSsh.Test.Ssh
             _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
             _ = Directory.GetFiles(Path.GetTempPath(), "native_ssh_g_*").Except(registrosAntes).Should().BeEmpty();
         }
+
+        // CreateProcess busca un programa sin ruta en el directorio de native_ssh y en el directorio actual antes que en PATH:
+        // un ssh.exe dejado en la carpeta desde la que se lanza native_ssh (la del proyecto que abre el cliente MCP) se
+        // ejecutaría. El programa se busca solo en PATH: aquí, un ejecutable con ese nombre solo en el directorio actual (una
+        // copia de whoami.exe, que falla con las opciones de ssh) no se ejecuta, y el destino se usa tal cual, como sin ssh.
+        // Cambia el directorio actual del proceso: en esta colección, sin paralelismo.
+        [Fact]
+        public void ProgramaSoloEnElDirectorioActual_NoSeEjecuta()
+        {
+            // Arrange
+            string nombre = $"ns_ssh_plantado_{Guid.NewGuid():N}";
+            File.Copy(Path.Combine(Environment.SystemDirectory, "whoami.exe"), Path.Combine(_directorio, nombre + ".exe"));
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, "Host web\n  HostName 127.0.0.1\n  Port 2222\n");
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh
+            {
+                UsuarioPorDefecto = "ana",
+                ConfiguracionSsh = configuracion,
+                BinarioSsh = nombre,
+                TimeoutConfiguracionSsh = TimeSpan.FromSeconds(5)
+            }, new LoggerDe<ResolutorConfiguracionSsh>(_log));
+            _ = DestinoSsh.TryParse("web", "ana", out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
+            string anterior = Environment.CurrentDirectory;
+            Environment.CurrentDirectory = _directorio;
+            DestinoSsh resuelto;
+            try
+            {
+                // Act
+                resuelto = resolutor.Resolver(destino, isUsuario, isPuerto);
+            }
+            finally
+            {
+                Environment.CurrentDirectory = anterior;
+            }
+
+            // Assert
+            _ = resuelto.Clave.Should().Be("ana@web:22");
+            _ = _log.Entradas.Should().Contain(e => e.Mensaje.Contains($"No se encontró el programa '{nombre}'", StringComparison.Ordinal));
+        }
     }
 }

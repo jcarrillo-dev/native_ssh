@@ -42,7 +42,8 @@ namespace NativeSsh.Ssh
     // - La entrada de ssh es una tubería que se cierra nada más arrancar (fin de fichero, como /dev/null o NUL): nunca la
     //   heredada, que es el canal MCP de native_ssh en modo stdio. Process de .NET no permite darle NUL sin redirigirla.
     // - Lo que cambia por sistema va en ResolutorConfiguracionSsh.<Sistema>.cs, compilado solo para el suyo (NativeSshSistema
-    //   en Directory.Build.props): solo Windows tiene (el registro de ssh a un fichero con -E, y -T).
+    //   en Directory.Build.props): solo Windows tiene (el registro de ssh a un fichero con -E, y -T; ssh buscado solo en
+    //   PATH, nunca en el directorio actual).
     public sealed partial class ResolutorConfiguracionSsh(OpcionesNativeSsh opciones, ILogger<ResolutorConfiguracionSsh> logger) : IResolutorDestino
     {
         private const int ErrorNoExiste = 2; // ENOENT
@@ -329,6 +330,12 @@ namespace NativeSsh.Ssh
 
         static partial void BorrarRegistroDelSistema(string? registro);
 
+        // El nombre del programa como lo busca el sistema (en Windows, con .exe si no lleva extensión, como CreateProcess).
+        static partial void NombreDelSistema(ref string programa);
+
+        // Una entrada de PATH donde buscar el programa, o null para saltarla.
+        static partial void DirectorioDePathDelSistema(ref string? directorio);
+
         // false: no existe el programa ssh (desde entonces, los destinos se usan tal cual). Lanza si ssh falla o no termina.
         // Las opciones del sistema van delante de 'argumentos', en una lista rentada con try/finally: AnadirOpcionesDelSistema
         // la recibe por ref, y una variable de un 'using' no se puede pasar así.
@@ -352,8 +359,9 @@ namespace NativeSsh.Ssh
         private bool TryEjecutar(ReadOnlySpan<string> argumentos, string servidor, string? registro, [NotNullWhen(true)] out string? salida)
         {
             salida = null;
-            // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid.
-            string? programa = OperatingSystem.IsWindows() ? opciones.BinarioSsh : BuscarPrograma(opciones.BinarioSsh);
+            // La ruta se busca aquí: lanzado por setsid, un ssh que no existe no daría ENOENT al arrancar, sino un error de setsid;
+            // y en Windows, CreateProcess buscaría un nombre sin ruta también en el directorio actual (BuscarPrograma).
+            string? programa = BuscarPrograma(opciones.BinarioSsh);
             if (programa is null)
             {
                 MarcarSinPrograma();
@@ -440,14 +448,22 @@ namespace NativeSsh.Ssh
             _isSinPrograma = true;
         }
 
-        // Como execvp: una ruta con '/' se usa tal cual; si no, el primer fichero ejecutable con ese nombre en PATH.
+        // Como execvp: una ruta (con un separador de directorios) se usa tal cual; si no, el primer fichero ejecutable con ese
+        // nombre en PATH. Lo propio del sistema (en Windows, la extensión .exe y las entradas de PATH que no son absolutas) en
+        // NombreDelSistema y DirectorioDePathDelSistema.
         private static string? BuscarPrograma(string programa)
         {
-            if (programa.Contains('/'))
+            NombreDelSistema(ref programa);
+            if (programa.Contains(Path.DirectorySeparatorChar) || programa.Contains(Path.AltDirectorySeparatorChar))
                 return IsEjecutable(programa) ? programa : null;
 
-            foreach (string directorio in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            foreach (string entrada in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
             {
+                string? directorio = entrada;
+                DirectorioDePathDelSistema(ref directorio);
+                if (directorio is null)
+                    continue;
+
                 string ruta = Path.Combine(directorio, programa);
                 if (IsEjecutable(ruta))
                     return ruta;

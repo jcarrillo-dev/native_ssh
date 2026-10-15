@@ -40,6 +40,24 @@ namespace NativeSsh.Ssh
             }
         }
 
+        // CreateProcess, con un nombre sin ruta, busca el programa en el directorio de native_ssh y en el directorio actual
+        // antes que en PATH: un ssh.exe en la carpeta desde la que se lanza native_ssh (la del proyecto que abre el cliente
+        // MCP, que puede venir de un repositorio ajeno) se ejecutaría al leer la configuración. Por eso el programa se busca
+        // aquí, solo en PATH, y se lanza por su ruta completa; como CreateProcess, con .exe si el nombre no lleva extensión.
+        static partial void NombreDelSistema(ref string programa)
+        {
+            if (!Path.HasExtension(programa))
+                programa += ".exe";
+        }
+
+        // Una entrada de PATH entre comillas se usa sin ellas; una que no es absoluta (vacía, '.', una relativa) se salta:
+        // sería relativa al directorio actual, justo lo que se evita.
+        static partial void DirectorioDePathDelSistema(ref string? directorio)
+        {
+            string sinComillas = directorio!.Trim().Trim('"');
+            directorio = Path.IsPathFullyQualified(sinComillas) ? sinComillas : null;
+        }
+
         static partial void BorrarRegistroDelSistema(string? registro)
         {
             try
