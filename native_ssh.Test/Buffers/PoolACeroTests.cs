@@ -13,7 +13,8 @@ namespace NativeSsh.Test.Buffers
     // probado, la prueba lo siembra: alquila en su hilo un array del mismo tamaño, lo rellena y lo devuelve sin limpiar; el
     // pool compartido guarda lo último devuelto en la caché del hilo y lo vuelve a dar en el siguiente alquiler del mismo
     // tamaño en ese hilo, así que el código probado recibe ese array, y el alquiler de después del Act tiene que ser el
-    // mismo (si no, la prueba no demostraría nada) y estar a cero.
+    // mismo (si no, la prueba no demostraría nada) y tener a cero el tramo que el código pudo escribir (Rent puede dar un
+    // array mayor: lo de después no se toca y conserva el relleno de la siembra).
     public sealed class PoolACeroTests
     {
         private const byte Relleno = 0x5A;
@@ -48,7 +49,7 @@ namespace NativeSsh.Test.Buffers
 
             // Assert
             _ = siguiente.Should().BeSameAs(sembrado);
-            _ = siguiente.Should().OnlyContain(b => b == 0);
+            _ = siguiente[..100].Should().OnlyContain(b => b == 0);
         }
 
         // La ventana que junta lo retenido (el principio de una marca) con lo que llega después lleva salida del comando.
@@ -65,9 +66,10 @@ namespace NativeSsh.Test.Buffers
             filtro.Escribir(resto);
             byte[] siguiente = Realquilar(128);
 
-            // Assert
+            // Assert: lo retenido ("__NSG_0123") más lo nuevo, a cero; detrás, solo el relleno de la siembra.
             _ = siguiente.Should().BeSameAs(sembrado);
-            _ = siguiente.Should().OnlyContain(b => b == 0);
+            _ = siguiente[..("__NSG_0123".Length + resto.Length)].Should().OnlyContain(b => b == 0);
+            _ = siguiente.Should().OnlyContain(b => b == 0 || b == Relleno);
         }
 
         // El bloque con el que el canal exec lee stdout y stderr del comando (CanalExecSshNet.Leer, privado: por reflexión).

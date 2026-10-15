@@ -1,9 +1,10 @@
 using System.Buffers;
+using System.Security.Cryptography;
 
 namespace NativeSsh.Buffers
 {
-    // Buffer temporal del pool para usar con 'using' (Dispose por patrón, sin interfaz ni boxing). Vuelve al pool a cero:
-    // lleva el comando, lo tecleado o una página de la salida.
+    // Buffer temporal del pool para usar con 'using' (Dispose por patrón, sin interfaz ni boxing). Vuelve al pool con el
+    // tramo usado a cero: lleva el comando, lo tecleado o una página de la salida.
     public ref struct BufferAlquilado
     {
         private byte[]? _array;
@@ -25,7 +26,9 @@ namespace NativeSsh.Buffers
                 return;
 
             _array = null;
-            ArrayPool<byte>.Shared.Return(array, clearArray: true);
+            // Solo el tramo que se pudo escribir (Span): Rent puede dar un array mayor.
+            CryptographicOperations.ZeroMemory(array.AsSpan(0, _longitud));
+            ArrayPool<byte>.Shared.Return(array);
         }
     }
 }

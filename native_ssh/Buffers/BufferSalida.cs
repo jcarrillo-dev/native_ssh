@@ -170,8 +170,10 @@ namespace NativeSsh.Buffers
 
                 while (_finAbsoluto - _inicioAbsoluto - TamanoSegmento >= CapacidadMaxima)
                 {
-                    // Como al liberar: a cero (lleva la salida remota y, con secretos, pudo tener uno antes de enmascararlo).
-                    ArrayPool<byte>.Shared.Return(_segmentos[0], clearArray: true);
+                    // Como al liberar: a cero lo que se escribe en un segmento (como mucho TamanoSegmento; lleva la salida remota y,
+                    // con secretos, pudo tener uno antes de enmascararlo).
+                    CryptographicOperations.ZeroMemory(_segmentos[0].AsSpan(0, TamanoSegmento));
+                    ArrayPool<byte>.Shared.Return(_segmentos[0]);
                     _segmentos.RemoveAt(0);
                     _inicioAbsoluto += TamanoSegmento;
                 }
@@ -213,7 +215,10 @@ namespace NativeSsh.Buffers
 
                 _isLiberado = true;
                 foreach (byte[] segmento in _segmentos)
-                    ArrayPool<byte>.Shared.Return(segmento, clearArray: true);
+                {
+                    CryptographicOperations.ZeroMemory(segmento.AsSpan(0, TamanoSegmento));
+                    ArrayPool<byte>.Shared.Return(segmento);
+                }
                 _segmentos.Clear();
                 _inicioAbsoluto = _finAbsoluto;
                 _retenidos = 0;
@@ -271,7 +276,8 @@ namespace NativeSsh.Buffers
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(ventana, clearArray: true);
+                CryptographicOperations.ZeroMemory(ventana.AsSpan(0, longitud));
+                ArrayPool<byte>.Shared.Return(ventana);
             }
         }
 

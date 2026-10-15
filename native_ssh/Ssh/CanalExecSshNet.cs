@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Security.Cryptography;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 using NativeSsh.Sesion;
@@ -158,7 +159,9 @@ namespace NativeSsh.Ssh
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(bloque, clearArray: true);
+                // Read nunca escribe más de TamanoBloque: solo ese tramo, aunque Rent diera un array mayor.
+                CryptographicOperations.ZeroMemory(bloque.AsSpan(0, TamanoBloque));
+                ArrayPool<byte>.Shared.Return(bloque);
             }
 
             return destino;

@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Channels;
 using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
@@ -1946,7 +1947,8 @@ namespace NativeSsh.Sesion
             hilo.Start(canal);
         }
 
-        // Hilo dedicado: ICanalShell.Leer es bloqueante. Un bloque del pool por canal, reutilizado, que vuelve a cero.
+        // Hilo dedicado: ICanalShell.Leer es bloqueante. Un bloque del pool por canal, reutilizado; vuelve con
+        // a cero lo que Leer pudo escribir (nunca más de TamanoBloqueLectura).
         private void Bombear(object? estado)
         {
             ShellAbierto canal = (ShellAbierto)estado!;
@@ -1968,7 +1970,8 @@ namespace NativeSsh.Sesion
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(bloque, clearArray: true);
+                CryptographicOperations.ZeroMemory(bloque.AsSpan(0, TamanoBloqueLectura));
+                ArrayPool<byte>.Shared.Return(bloque);
                 CerrarCanal(canal);
             }
         }

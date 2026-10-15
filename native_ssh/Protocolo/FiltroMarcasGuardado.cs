@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Security.Cryptography;
 using System.Text;
 using NativeSsh.Buffers;
 
@@ -85,7 +86,8 @@ namespace NativeSsh.Protocolo
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(ventana, clearArray: true);
+                CryptographicOperations.ZeroMemory(ventana.AsSpan(0, total));
+                ArrayPool<byte>.Shared.Return(ventana);
             }
         }
 
