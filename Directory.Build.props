@@ -58,48 +58,21 @@
     </ItemGroup>
   </Target>
 
-  <!-- Solo las pruebas pueden usar System.Linq (exentos y comprobación semántica, más abajo). Búsqueda por texto en cada
-       fuente a compilar (también los generados, como el de los global using), sin contar lo que va tras '//' en la línea:
-       System.Linq en un using (normal, global, static o alias) o con el nombre completo, el identificador RS0030 y un
-       '#pragma warning disable' sin identificadores. Tarea
-       en línea de MSBuild (sin paquetes ni órdenes del shell): igual en Linux y en Windows. El SSH.NET del submódulo tiene
-       su propio Directory.Build.props y no pasa por aquí. -->
-  <UsingTask TaskName="NativeSshBuscarSystemLinq" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+  <!-- Solo las pruebas pueden usar System.Linq (exentos, más abajo). La comprobación definitiva mira el ensamblado compilado
+       (msbuild/ComprobarSystemLinqEnIL.cs, tarea en línea de MSBuild con System.Reflection.Metadata, sin paquetes ni órdenes
+       del shell: igual en Linux y en Windows). El SSH.NET del submódulo tiene su propio Directory.Build.props y no pasa por
+       aquí. Las referencias son las builds para .NET Framework que trae el SDK: la tarea se compila contra el netstandard.dll
+       de MSBuild y las del paquete de referencia de net10.0 no casan con él; si faltan, la tarea no compila y el build falla. -->
+  <UsingTask TaskName="NativeSshComprobarSystemLinqEnIL" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
-      <Fuentes ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <Ensamblado ParameterType="System.String" Required="true" />
+      <Simbolos ParameterType="System.String" />
       <Analizadores ParameterType="Microsoft.Build.Framework.ITaskItem[]" />
     </ParameterGroup>
     <Task>
-      <Using Namespace="System.IO" />
-      <Using Namespace="System.Text.RegularExpressions" />
-      <Code Type="Fragment" Language="cs"><![CDATA[
-        bool hasAnalizador = false;
-        foreach (ITaskItem analizador in Analizadores ?? new ITaskItem[0])
-            if (string.Equals(analizador.GetMetadata("Filename"), "Microsoft.CodeAnalysis.CSharp.BannedApiAnalyzers", StringComparison.OrdinalIgnoreCase))
-                hasAnalizador = true;
-        if (!hasAnalizador)
-            Log.LogError(null, "NSLINQ", null, null, 0, 0, 0, 0, "Falta el analizador Microsoft.CodeAnalysis.CSharp.BannedApiAnalyzers, que prohíbe System.Linq (RS0030).");
-        // Además de System.Linq, lo que suprimiría RS0030 en el fuente: el identificador (#pragma, SuppressMessage) y un
-        // '#pragma warning disable' sin identificadores.
-        Regex patron = new Regex(@"\busing\s+(global::)?System\.Linq\b|\busing\s+static\s+(global::)?System\.Linq\.|\busing\s+\w+\s*=\s*(global::)?System\.Linq\b|(global::|[^\w.])System\.Linq\.|\bRS0030\b|#\s*pragma\s+warning\s+disable\s*$", RegexOptions.CultureInvariant);
-        foreach (ITaskItem fuente in Fuentes)
-        {
-            string ruta = fuente.GetMetadata("FullPath");
-            if (!File.Exists(ruta))
-                continue;
-            int numero = 0;
-            foreach (string linea in File.ReadLines(ruta))
-            {
-                numero++;
-                int comentario = linea.IndexOf("//", StringComparison.Ordinal);
-                string codigo = comentario >= 0 ? linea.Substring(0, comentario) : linea;
-                Match coincidencia = patron.Match(" " + codigo);
-                if (coincidencia.Success)
-                    Log.LogError(null, "NSLINQ", null, ruta, numero, coincidencia.Index, 0, 0, "System.Linq solo se puede usar en las pruebas (native_ssh.Test), y su prohibición (RS0030) no se suprime: '{0}'.", linea.Trim());
-            }
-        }
-        Success = !Log.HasLoggedErrors;
-      ]]></Code>
+      <Reference Include="$(MSBuildSDKsPath)/Microsoft.NET.Sdk/tools/net472/System.Reflection.Metadata.dll" />
+      <Reference Include="$(MSBuildSDKsPath)/Microsoft.NET.Sdk/tools/net472/System.Collections.Immutable.dll" />
+      <Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs" />
     </Task>
   </UsingTask>
 
@@ -111,16 +84,16 @@
          bin/<configuración>/<marco>/<proyecto>-<job>-<n>/; bin/ no se versiona).
        En Windows las rutas se comparan sin distinguir mayúsculas (su sistema de archivos tampoco), en los demás tal cual.
        Los no exentos llevan dos comprobaciones:
-       - Semántica: el analizador BannedApiAnalyzers con BannedSymbols.txt (N:System.Linq) y RS0030 como error
-         (sinlinq.globalconfig). Ve cualquier uso de un miembro de System.Linq, se escriba como se escriba: comentarios
-         dentro del nombre, partido en líneas, alias por partes, 'namespace System { using Linq; }', un espacio de nombres
-         bajo System.Linq, métodos de extensión. No ve un tipo de System.Linq que solo aparece en una firma ni la reflexión.
-       - Por texto, como red de seguridad (NativeSshBuscarSystemLinq, en cada build, sin marca incremental): los usings y el
-         nombre completo aunque no se usen, lo que suprimiría RS0030 en el fuente (su identificador o un '#pragma warning
-         disable' sin identificadores) y que el analizador esté referenciado.
-       Desactivarlas a propósito con opciones de build (-p: o variables de entorno de MSBuild, un .rsp, redefinir los
-       targets o quitar el paquete en un .csproj o en otro fichero de MSBuild) queda fuera: se ve en la línea de órdenes o
-       en el diff. -->
+       - La definitiva, sobre el ensamblado compilado (NativeSshComprobarSystemLinqEnIL, más abajo): cualquier TypeRef de
+         System.Linq o de un espacio bajo él (también anidados, genéricos instanciados, firmas, atributos y typeof en sus
+         argumentos), se escribiera como se escribiera o lo generara el compilador ([.. hashSet] es Enumerable.ToArray; una
+         lambda a Expression, System.Linq.Expressions); suprimir RS0030 no la afecta. El error dice el método (con fichero
+         y línea si hay PDB) o el tipo que lo usa.
+       - Aviso temprano en el editor: el analizador BannedApiAnalyzers con BannedSymbols.txt (N:System.Linq) y RS0030 como
+         error (sinlinq.globalconfig). La tarea comprueba que esté referenciado.
+       Fuera de alcance: desactivarlas a propósito con opciones de build (-p: o variables de entorno de MSBuild, un .rsp,
+       redefinir los targets, quitar el paquete, un .editorconfig o .globalconfig) y la reflexión (un nombre de tipo en un
+       string); se ve en la línea de órdenes o en el diff. -->
   <Choose>
     <When Condition="!(($([System.String]::Equals('$(MSBuildProjectName)', 'native_ssh.Test'))
             and (($([MSBuild]::IsOSPlatform('Windows')) and $([System.String]::Equals($([MSBuild]::NormalizePath('$(MSBuildProjectFullPath)').ToUpperInvariant()),
@@ -139,8 +112,12 @@
     </When>
   </Choose>
 
-  <Target Name="NativeSshProhibirSystemLinq" BeforeTargets="CoreCompile" Condition="'@(_NativeSshSinLinq)' != ''">
-    <NativeSshBuscarSystemLinq Fuentes="@(Compile)" Analizadores="@(Analyzer)" />
+  <!-- Tras CoreCompile, también cuando no recompila (la tarea no tiene marca incremental: lee el ensamblado en cada build, unos
+       milisegundos, así que un ensamblado que cambió o una marca con fecha futura no la saltan). Si falla, el build se para antes
+       de copiar el ensamblado a bin. No corre en los builds de diseño del IDE ni cuando el compilador no escribe el ensamblado
+       (SkipCompilerExecution, solo el de referencia). -->
+  <Target Name="NativeSshProhibirSystemLinq" AfterTargets="CoreCompile" Condition="'@(_NativeSshSinLinq)' != '' and '$(DesignTimeBuild)' != 'true' and '$(SkipCompilerExecution)' != 'true' and '$(ProduceOnlyReferenceAssembly)' != 'true'">
+    <NativeSshComprobarSystemLinqEnIL Ensamblado="@(IntermediateAssembly->'%(FullPath)')" Simbolos="$([MSBuild]::NormalizePath('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', '$(TargetName).pdb'))" Analizadores="@(Analyzer)" />
   </Target>
 
 </Project>
