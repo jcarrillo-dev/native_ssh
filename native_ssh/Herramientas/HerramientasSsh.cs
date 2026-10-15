@@ -349,8 +349,14 @@ namespace NativeSsh.Herramientas
             if (secreto)
             {
                 byte[] bytesSecreto = Encoding.UTF8.GetBytes(texto);
-                peticion.Salida.RegistrarSecreto(bytesSecreto);
-                CryptographicOperations.ZeroMemory(bytesSecreto);
+                try
+                {
+                    peticion.Salida.RegistrarSecreto(bytesSecreto);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(bytesSecreto);
+                }
             }
 
             long desde = peticion.Salida.Longitud;
