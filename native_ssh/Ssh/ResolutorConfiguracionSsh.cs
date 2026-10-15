@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Text;
 using NativeSsh.Comun;
 using NativeSsh.Sesion;
@@ -31,7 +32,8 @@ namespace NativeSsh.Ssh
     //   (relativa al directorio de trabajo de native_ssh, que no es el del usuario) es un error del destino, como en ssh. En
     //   Windows, si el ssh que la lee es el de MSYS (Git for Windows), una ruta de unidad '/c/…' se lee como 'C:\…'.
     // - Plazo (TimeoutConfiguracionSsh, 5 s): un 'Match exec' o una búsqueda DNS de CanonicalizeHostname que se cuelga no
-    //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice.
+    //   bloquea la llamada: se mata ssh (y lo que lanzó) y el destino da un error que lo dice. En Windows, lo que lanzó se
+    //   alcanza por el job object en que entra ssh al arrancar (AgruparDelSistema), no por el árbol de procesos.
     // - En Linux, ssh se lanza con 'setsid' (si existe) en su propio grupo de procesos: un 'Match exec' que deja algo en
     //   segundo plano con la salida de ssh abierta no retiene la lectura (ssh ya terminó con toda su salida: se mata el
     //   grupo y el destino se resuelve), ni queda huérfano al vencer el plazo. Si lo que deja escribe en la salida de ssh
@@ -346,6 +348,12 @@ namespace NativeSsh.Ssh
         // Una entrada de PATH donde buscar el programa, o null para saltarla.
         static partial void DirectorioDePathDelSistema(ref string? directorio);
 
+        // Lo que lance ssh, en un grupo del sistema que Matar puede matar entero aunque el padre de algo ya no exista (en
+        // Windows, un job object); null si no hay.
+        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo);
+
+        static partial void MatarGrupoDelSistema(SafeHandle? grupo);
+
         // Si el ssh que lee la configuración es de MSYS (en Windows, el de Git for Windows).
         static partial void SshDeMsysDelSistema(string binario, ref bool isDeMsys);
 
@@ -413,12 +421,15 @@ namespace NativeSsh.Ssh
             }
 
             using Process ejecucion = proceso ?? throw new NativeSshException($"No se pudo ejecutar '{opciones.BinarioSsh}' para leer la configuración de ssh de '{servidor}'.");
+            SafeHandle? grupo = null;
+            AgruparDelSistema(ejecucion, ref grupo);
+            using SafeHandle? grupoDelSistema = grupo;
             ejecucion.StandardInput.Close();
             Task<string> lectura = Leer(ejecucion.StandardOutput);
             Task<string> errores = Leer(ejecucion.StandardError);
             bool isTerminado = ejecucion.WaitForExit(opciones.TimeoutConfiguracionSsh);
             if (!isTerminado)
-                Matar(ejecucion, isGrupoPropio);
+                Matar(ejecucion, isGrupoPropio, grupoDelSistema);
 
             // Un proceso que lanzó ssh (Match exec) puede seguir con la salida abierta: la espera de la lectura tiene plazo, y
             // al vencer se mata su grupo, que cierra la salida (lo que ssh escribió antes de terminar ya está en ella).
@@ -427,7 +438,7 @@ namespace NativeSsh.Ssh
             {
                 // Con ssh ya terminado, su pid solo sigue reservado mientras su grupo tenga algún miembro: si ya existe
                 // otro proceso con ese pid, el grupo quedó vacío y el número es de otro, al que no se toca.
-                Matar(ejecucion, isGrupoPropio && (!isTerminado || !Directory.Exists($"/proc/{ejecucion.Id}")));
+                Matar(ejecucion, isGrupoPropio && (!isTerminado || !Directory.Exists($"/proc/{ejecucion.Id}")), grupoDelSistema);
                 isLeido = Task.WaitAll([lectura, errores], EsperaLectura);
             }
 
@@ -503,10 +514,12 @@ namespace NativeSsh.Ssh
 
         // isGrupoPropio: ssh se lanzó con setsid y es el líder de su grupo (su pid es el del grupo): se mata el grupo entero,
         // también lo que ya quedó huérfano al terminar ssh. Después, el árbol (lo que siga colgando de ssh si salió del grupo).
-        private static void Matar(Process proceso, bool isGrupoPropio)
+        private static void Matar(Process proceso, bool isGrupoPropio, SafeHandle? grupoDelSistema)
         {
             if (isGrupoPropio && OperatingSystem.IsLinux())
                 _ = InteropLinux.MatarGrupo(proceso.Id);
+
+            MatarGrupoDelSistema(grupoDelSistema);
 
             try
             {

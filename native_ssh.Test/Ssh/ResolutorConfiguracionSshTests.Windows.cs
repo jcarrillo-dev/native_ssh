@@ -164,6 +164,43 @@ namespace NativeSsh.Test.Ssh
             // Assert
             _ = isDeMsys.Should().Be(hasRuntime);
         }
+
+        // Un Match exec cuyo padre termina antes que él (en el ssh de Git for Windows, el sh de MSYS que lo lanza sale en
+        // cuanto lo arranca; aquí, un cmd intermedio lanzado con 'start /b' que sale al instante) no cuelga de ssh en el
+        // árbol de procesos: al agotarse el plazo también se mata, y deja de escribir en su marca.
+        [Fact]
+        public void PlazoAgotado_MataLoQueLanzoElMatchExecAunqueSuPadreHayaTerminado()
+        {
+            // Arrange
+            string marca = Path.Combine(_directorio, "marca");
+            string bucle = Path.Combine(_directorio, "bucle.cmd");
+            string intermedio = Path.Combine(_directorio, "intermedio.cmd");
+            string lanzar = Path.Combine(_directorio, "lanzar.cmd");
+            File.WriteAllText(bucle, $"@for /l %%i in (1,1,60) do @(echo x>>\"{marca}\" & ping -n 2 127.0.0.1 >nul)\r\n");
+            File.WriteAllText(intermedio, $"@start \"\" /b cmd /c \"{bucle}\"\r\n");
+            File.WriteAllText(lanzar, $"@start \"\" /b cmd /c \"{intermedio}\"\r\n@ping -n 30 127.0.0.1 >nul\r\n");
+            string configuracion = Path.Combine(_directorio, "config");
+            File.WriteAllText(configuracion, $"Match exec \"{lanzar.Replace('\\', '/')}\"\n  Port 9\nHost web\n  HostName 127.0.0.1\n");
+            _ = DestinoSsh.TryParse("web", Environment.UserName, out DestinoSsh destino, out bool isUsuario, out bool isPuerto).Should().BeTrue();
+            ResolutorConfiguracionSsh resolutor = new(new OpcionesNativeSsh
+            {
+                UsuarioPorDefecto = Environment.UserName,
+                ConfiguracionSsh = configuracion,
+                BinarioSsh = "ssh",
+                TimeoutConfiguracionSsh = TimeSpan.FromSeconds(3)
+            }, new LoggerDe<ResolutorConfiguracionSsh>(_log));
+
+            // Act
+            Action resolver = () => resolutor.Resolver(destino, isUsuario, isPuerto);
+
+            // Assert
+            _ = resolver.Should().Throw<NativeSshException>().Which.Message.Should().Contain("no terminó");
+            _ = File.Exists(marca).Should().BeTrue("el Match exec llegó a lanzar el bucle antes del plazo");
+            Thread.Sleep(500);
+            long tamanoTrasMatar = new FileInfo(marca).Length;
+            Thread.Sleep(3000);
+            _ = new FileInfo(marca).Length.Should().Be(tamanoTrasMatar, "lo que lanzó el Match exec sigue vivo y escribiendo");
+        }
     }
 
     // Lo de Windows de 'ssh -G' que no puede ir en paralelo con otras pruebas (colección sin paralelismo): cambia variables

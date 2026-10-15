@@ -1,4 +1,7 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
+using Microsoft.Win32.SafeHandles;
 
 namespace NativeSsh.Ssh
 {
@@ -78,6 +81,32 @@ namespace NativeSsh.Ssh
         internal static bool IsProgramaDeMsys(string programa) =>
             Path.GetDirectoryName(programa) is { Length: > 0 } carpeta && File.Exists(Path.Combine(carpeta, "msys-2.0.dll"));
 
+        // Un Match exec que lanza el ssh de Git for Windows no cuelga de ssh en el árbol de procesos: el sh de MSYS que lo
+        // ejecuta sale en cuanto arranca el programa (medido: con 'sleep 120', a los 2 s el padre de sleep.exe ya no existía),
+        // así que Kill(entireProcessTree) no lo alcanzaba y seguía vivo tras el plazo (y tras «mantiene abierta su salida»,
+        // con 'sleep 90 &'). Por eso ssh entra al arrancar en un job object propio: lo que lanza entra en él al crearse, y
+        // Matar termina el job entero. Sin JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, como en Linux: si ssh -G termina bien, lo que
+        // dejó en segundo plano sin retener su salida sigue vivo. Límites: lo que ssh lanzara entre su arranque y la
+        // asignación (unos microsegundos, antes de leer la configuración) quedaría fuera; si no se puede crear o asignar el
+        // job (ssh ya terminado), Matar hace lo de antes (el árbol de procesos).
+        static partial void AgruparDelSistema(Process proceso, ref SafeHandle? grupo)
+        {
+            TrabajoWindows trabajo = TrabajoWindows.Crear();
+            if (!trabajo.IsInvalid && TrabajoWindows.Asignar(trabajo, proceso.SafeHandle))
+            {
+                grupo = trabajo;
+                return;
+            }
+
+            trabajo.Dispose();
+        }
+
+        static partial void MatarGrupoDelSistema(SafeHandle? grupo)
+        {
+            if (grupo is TrabajoWindows trabajo)
+                _ = TrabajoWindows.Terminar(trabajo, 1);
+        }
+
         static partial void BorrarRegistroDelSistema(string? registro)
         {
             try
@@ -90,5 +119,37 @@ namespace NativeSsh.Ssh
                 // Queda en la carpeta temporal del usuario.
             }
         }
+    }
+
+    // Job object de kernel32 (LibraryImport, compatible con AOT) para ssh -G y lo que lance.
+    internal sealed partial class TrabajoWindows : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        public TrabajoWindows()
+            : base(ownsHandle: true)
+        {
+        }
+
+        public static TrabajoWindows Crear() => CreateJobObject(IntPtr.Zero, IntPtr.Zero);
+
+        protected override bool ReleaseHandle() => CloseHandle(handle);
+
+        [LibraryImport("kernel32.dll", EntryPoint = "CreateJobObjectW")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        private static partial TrabajoWindows CreateJobObject(IntPtr atributos, IntPtr nombre);
+
+        [LibraryImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool Asignar(TrabajoWindows trabajo, SafeProcessHandle proceso);
+
+        [LibraryImport("kernel32.dll", EntryPoint = "TerminateJobObject")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static partial bool Terminar(TrabajoWindows trabajo, uint codigo);
+
+        [LibraryImport("kernel32.dll", EntryPoint = "CloseHandle")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool CloseHandle(IntPtr manejador);
     }
 }
