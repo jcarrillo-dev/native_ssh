@@ -71,6 +71,18 @@ namespace NativeSsh.Test.Ssh
             }
         }
 
+        // Lanza 'largo' sin esperar y espera a que esté en ejecución: Encolar lo deja en la cola y el bucle de la sesión lo saca
+        // después en el pool de hilos; con el pool ocupado, lo que se pida antes lo vería aún en cola.
+        private async Task<ResultadoComando> LanzarLargoEnEjecucionAsync(string destino)
+        {
+            ResultadoComando largo = await Herramientas.EjecutarAsync(destino, "largo", esperarSegundos: 0).ComoComando();
+            Peticion peticion = _gestor.BuscarPeticion(largo.Id);
+            using CancellationTokenSource plazo = new(Limite);
+            while (peticion.Estado != EstadoPeticionEnum.Ejecutando)
+                await Task.Delay(10, plazo.Token);
+            return largo;
+        }
+
         // Un alias y su usuario@HostName:Port comparten sesión si resuelven a las mismas claves.
         [Fact]
         public async Task AliasYDestinoRealConLasMismasClaves_CompartenSesion()

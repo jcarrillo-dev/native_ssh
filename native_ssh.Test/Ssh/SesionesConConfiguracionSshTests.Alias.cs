@@ -2,7 +2,6 @@ using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
-using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Ssh
 {
@@ -29,7 +28,7 @@ namespace NativeSsh.Test.Ssh
         {
             // Arrange
             EscribirProd();
-            ResultadoComando largo = await Herramientas.EjecutarAsync("prod", "largo", esperarSegundos: 0).ComoComando();
+            ResultadoComando largo = await LanzarLargoEnEjecucionAsync("prod");
 
             // Act
             ResultadoAccion resultado = await Herramientas.DesconectarAsync(otro);

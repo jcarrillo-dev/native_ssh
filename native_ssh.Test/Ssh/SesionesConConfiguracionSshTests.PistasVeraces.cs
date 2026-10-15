@@ -2,7 +2,6 @@ using System.Linq;
 using FluentAssertions;
 using NativeSsh.Comun;
 using NativeSsh.Herramientas;
-using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Ssh
 {
@@ -24,7 +23,7 @@ namespace NativeSsh.Test.Ssh
             // Arrange
             EscribirProdCambiado(extra: Otra);
             await Ejecutar("prod");
-            ResultadoComando largoOtra = await Herramientas.EjecutarAsync("otra", "largo", esperarSegundos: 0).ComoComando();
+            ResultadoComando largoOtra = await LanzarLargoEnEjecucionAsync("otra");
             File.WriteAllText(_configuracion, "Host prod\n  HostName 127.0.0.1\n  User root\n  Port 2222\n  IdentityFile /k/b\n" + Otra);
 
             // Act
