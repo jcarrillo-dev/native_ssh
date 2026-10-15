@@ -105,6 +105,33 @@ namespace NativeSsh.Test.Ssh
             _ = tipos.Should().ContainSingle().Which.Should().Be("ssh-rsa");
         }
 
+        // Una clave revocada en un fichero responde sin abrir los siguientes, como cuando se leían con un iterador: un
+        // known_hosts2 que existe pero no se puede leer no convierte la revocación en una excepción.
+        [Fact]
+        [Trait("Categoria", "SoloLinux")]
+        [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+        public void Revocada_EnUnFichero_NoLeeLosSiguientes()
+        {
+            // Arrange
+            string ruta = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+            string ilegible = ruta + "2";
+            File.WriteAllText(ruta, $"@revoked h ssh-ed25519 {ClaveB64}\n");
+            File.WriteAllText(ilegible, $"h ssh-ed25519 {ClaveB64}\n");
+            File.SetUnixFileMode(ilegible, UnixFileMode.None);
+            try
+            {
+                VerificadorHostConocido verificador = new([ruta, ilegible]);
+
+                // Act & Assert
+                _ = verificador.Verificar("h", 22, "ssh-ed25519", Clave).Should().Be(ResultadoHostEnum.Revocado);
+            }
+            finally
+            {
+                File.Delete(ruta);
+                File.Delete(ilegible);
+            }
+        }
+
         [Fact]
         public void Fichero_InexistenteSeIgnora()
         {

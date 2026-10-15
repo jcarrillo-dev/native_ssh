@@ -19,19 +19,27 @@ namespace NativeSsh.Ssh
     {
         public string[] Rutas { get; } = rutas;
 
-        // Las líneas van en una lista rentada que se devuelve al salir (un 'using' no se puede pasar por ref a LeerLineas).
+        // Fichero a fichero, como cuando se leían con un iterador: una clave revocada responde sin abrir los siguientes, así que
+        // un fichero posterior que no se puede leer no convierte la revocación en una excepción. Las líneas de cada fichero van
+        // en una lista rentada que se vacía para el siguiente y se devuelve al salir.
         public ResultadoHostEnum Verificar(string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
         {
-            PooledListRef<string> lineas = new();
-            try
+            string nombre = NombreHost(servidor, puerto);
+            bool hasMismoTipo = false;
+            bool isConocido = false;
+            using PooledListRef<string> lineas = new();
+            foreach (string ruta in Rutas)
             {
-                LeerLineas(ref lineas);
-                return Verificar(lineas.Span, servidor, puerto, tipoClave, clave);
+                if (!File.Exists(ruta))
+                    continue;
+                lineas.Clear();
+                foreach (string linea in File.ReadLines(ruta))
+                    lineas.Add(linea);
+                if (IsRevocadaAcumulando(lineas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
+                    return ResultadoHostEnum.Revocado;
             }
-            finally
-            {
-                lineas.Dispose();
-            }
+
+            return Resultado(hasMismoTipo, isConocido);
         }
 
         public HashSet<string> ObtenerTiposClave(string servidor, int puerto)
@@ -48,8 +56,8 @@ namespace NativeSsh.Ssh
             }
         }
 
-        // Todas las líneas de los known_hosts que existen, en orden (antes se leían a demanda con un iterador; el resultado de
-        // la comprobación es el mismo, porque la de @revoked solo adelanta la respuesta).
+        // Todas las líneas de los known_hosts que existen, en orden (para los tipos de clave, que necesitan todas: un fichero
+        // que no se puede leer lanza, igual que con el iterador de antes).
         private void LeerLineas(scoped ref PooledListRef<string> lineas)
         {
             foreach (string ruta in Rutas)
@@ -60,7 +68,7 @@ namespace NativeSsh.Ssh
 
         public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
         {
-            string nombre = puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
+            string nombre = NombreHost(servidor, puerto);
             // Las claves de cada línea son arrays propios (TryDecodificar): las listas rentadas solo guardan referencias, que se
             // limpian al devolverlas.
             using PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
@@ -109,9 +117,24 @@ namespace NativeSsh.Ssh
 
         public static ResultadoHostEnum Verificar(ReadOnlySpan<string> lineas, string servidor, int puerto, string tipoClave, ReadOnlySpan<byte> clave)
         {
-            string nombre = puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
             bool hasMismoTipo = false;
             bool isConocido = false;
+            return IsRevocadaAcumulando(lineas, NombreHost(servidor, puerto), tipoClave, clave, ref hasMismoTipo, ref isConocido)
+                ? ResultadoHostEnum.Revocado
+                : Resultado(hasMismoTipo, isConocido);
+        }
+
+        private static string NombreHost(string servidor, int puerto) => puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
+
+        private static ResultadoHostEnum Resultado(bool hasMismoTipo, bool isConocido) =>
+            isConocido ? ResultadoHostEnum.Conocido
+                : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
+                : ResultadoHostEnum.Desconocido;
+
+        // Recorre las líneas: true en cuanto una revoca la clave; si no, acumula si hay una entrada del mismo tipo y si alguna
+        // es la clave (el resultado de varios ficheros es el de sus líneas seguidas).
+        private static bool IsRevocadaAcumulando(ReadOnlySpan<string> lineas, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
+        {
             foreach (string linea in lineas)
             {
                 string[] campos = linea.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
@@ -133,7 +156,7 @@ namespace NativeSsh.Ssh
                 if (marcador == "@revoked")
                 {
                     if (isMismaClave)
-                        return ResultadoHostEnum.Revocado;
+                        return true;
                     continue;
                 }
 
@@ -144,9 +167,7 @@ namespace NativeSsh.Ssh
                 isConocido |= isMismaClave;
             }
 
-            return isConocido ? ResultadoHostEnum.Conocido
-                : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
-                : ResultadoHostEnum.Desconocido;
+            return false;
         }
 
         // Tipo de clave leído del propio blob (string SSH inicial). SSH.NET informa del algoritmo de firma
