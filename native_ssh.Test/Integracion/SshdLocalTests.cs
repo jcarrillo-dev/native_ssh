@@ -92,6 +92,47 @@ namespace NativeSsh.Test.Integracion
             _ = otros.Should().NotContain(puerto);
         }
 
+        // Los puertos derivados de NATIVE_SSH_PUERTO_PRUEBAS (X: X+50 español, X+100 HTTP, X+200 lento, X+300 restringido) solo
+        // quedan fuera del rango manual X400–X999 si las tres últimas cifras de X están entre 000 y 099 (convención X0nn).
+        [Theory]
+        [InlineData(22022)]
+        [InlineData(26022)]
+        [InlineData(28072)]
+        [InlineData(22099)]
+        public void BloqueDePuertos_ConX0nn_SeAdmite(int puertoPruebas)
+        {
+            // Act
+            Action derivar = () =>
+            {
+                _ = PuertosPruebas.PuertoColeccion(null, puertoPruebas, PuertosPruebas.DesplazamientoRestringido);
+                _ = PuertosPruebas.RangoManualDe(puertoPruebas);
+            };
+
+            // Assert
+            _ = derivar.Should().NotThrow();
+        }
+
+        [Theory]
+        [InlineData(22100)]
+        [InlineData(22360)]
+        [InlineData(24542)]
+        [InlineData(22950)]
+        public void BloqueDePuertos_ConDerivadosEnElRangoManual_FallaConUnMensajeClaro(int puertoPruebas)
+        {
+            // Act
+            Action derivarLento = () => PuertosPruebas.PuertoColeccion(null, puertoPruebas, PuertosPruebas.DesplazamientoLento);
+            Action rango = () => PuertosPruebas.RangoManualDe(puertoPruebas);
+
+            // Assert
+            _ = derivarLento.Should().Throw<InvalidOperationException>().WithMessage($"*NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas}*0nn*");
+            _ = rango.Should().Throw<InvalidOperationException>().WithMessage($"*NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas}*0nn*");
+        }
+
+        // Con su variable fijada, el puerto de la colección no se deriva y no depende del bloque.
+        [Fact]
+        public void BloqueDePuertos_ConLaVariableDeLaColeccion_NoSeComprueba() =>
+            _ = PuertosPruebas.PuertoColeccion("25022", 22360, PuertosPruebas.DesplazamientoLento).Should().Be("25022");
+
         [Fact]
         [Trait("Categoria", "SoloLinux")]
         public void PuertoLibre_EsDelRangoManualDelBloqueDeLasPruebasYNoEsEfimero()

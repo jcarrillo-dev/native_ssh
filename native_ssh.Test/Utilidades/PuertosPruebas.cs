@@ -35,16 +35,32 @@ namespace NativeSsh.Test.Utilidades
         public static string PuertoColeccion(string variable, int desplazamiento) =>
             PuertoColeccion(Environment.GetEnvironmentVariable(variable), PuertoPruebas, desplazamiento);
 
-        internal static string PuertoColeccion(string? valorVariable, int puertoPruebas, int desplazamiento) =>
-            valorVariable is { Length: > 0 } ? valorVariable : (puertoPruebas + desplazamiento).ToString(CultureInfo.InvariantCulture);
-
-        public static (int Inicio, int Fin) RangoManual
+        internal static string PuertoColeccion(string? valorVariable, int puertoPruebas, int desplazamiento)
         {
-            get
-            {
-                int bloque = PuertoPruebas / 1000 * 1000;
-                return (bloque + InicioManuales, bloque + FinManuales);
-            }
+            if (valorVariable is { Length: > 0 })
+                return valorVariable;
+
+            ComprobarBloque(puertoPruebas);
+            return (puertoPruebas + desplazamiento).ToString(CultureInfo.InvariantCulture);
+        }
+
+        public static (int Inicio, int Fin) RangoManual => RangoManualDe(PuertoPruebas);
+
+        internal static (int Inicio, int Fin) RangoManualDe(int puertoPruebas)
+        {
+            ComprobarBloque(puertoPruebas);
+            int bloque = puertoPruebas / 1000 * 1000;
+            return (bloque + InicioManuales, bloque + FinManuales);
+        }
+
+        // El puerto de pruebas y sus derivados (X+50 español, X+100 HTTP de los humos, X+200 lento, X+300 restringido) deben
+        // quedar por debajo del rango manual X400–X999 de su bloque: si no, un sshd de colección y uno manual pueden caer en el
+        // mismo puerto. Solo se cumple con las tres últimas cifras entre 000 y 099 (X0nn).
+        private static void ComprobarBloque(int puertoPruebas)
+        {
+            if ((puertoPruebas % 1000) + DesplazamientoRestringido < InicioManuales)
+                return;
+            throw new InvalidOperationException($"NATIVE_SSH_PUERTO_PRUEBAS={puertoPruebas} no es válido: sus puertos derivados (+{DesplazamientoIdioma} español, +100 HTTP, +{DesplazamientoLento} lento, +{DesplazamientoRestringido} restringido) caerían en el rango {InicioManuales}–{FinManuales} de su bloque de mil, del que se eligen los sshd manuales. Usa un valor con las tres últimas cifras entre 000 y 099 (convención X0nn, p. ej. {(puertoPruebas / 1000 * 1000) + 22}).");
         }
 
         // Un puerto del rango manual en el que ahora no escucha nadie, elegido al azar para que dos pruebas seguidas no
