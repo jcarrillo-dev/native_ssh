@@ -354,6 +354,18 @@ namespace NativeSsh.Ssh
 
         static partial void MatarGrupoDelSistema(SafeHandle? grupo);
 
+        // El grupo del sistema de 'proceso' (null si no hay); si se intentó crear o asignar y no se pudo, queda en el registro
+        // (EventId 68) con el error del sistema.
+        internal static SafeHandle? Agrupar(Process proceso, string servidor, ILogger logger)
+        {
+            SafeHandle? grupo = null;
+            int error = 0;
+            AgruparDelSistema(proceso, ref grupo, ref error);
+            if (error != 0)
+                logger.GrupoSshNoAsignado(servidor, error);
+            return grupo;
+        }
+
         // Si el ssh que lee la configuración es de MSYS (en Windows, el de Git for Windows).
         static partial void SshDeMsysDelSistema(string binario, ref bool isDeMsys);
 
@@ -421,12 +433,7 @@ namespace NativeSsh.Ssh
             }
 
             using Process ejecucion = proceso ?? throw new NativeSshException($"No se pudo ejecutar '{opciones.BinarioSsh}' para leer la configuración de ssh de '{servidor}'.");
-            SafeHandle? grupo = null;
-            int errorGrupo = 0;
-            AgruparDelSistema(ejecucion, ref grupo, ref errorGrupo);
-            if (errorGrupo != 0)
-                logger.GrupoSshNoAsignado(servidor, errorGrupo);
-            using SafeHandle? grupoDelSistema = grupo;
+            using SafeHandle? grupoDelSistema = Agrupar(ejecucion, servidor, logger);
             ejecucion.StandardInput.Close();
             Task<string> lectura = Leer(ejecucion.StandardOutput);
             Task<string> errores = Leer(ejecucion.StandardError);

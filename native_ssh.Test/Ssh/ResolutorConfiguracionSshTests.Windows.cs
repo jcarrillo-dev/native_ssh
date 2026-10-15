@@ -286,6 +286,23 @@ namespace NativeSsh.Test.Ssh
             _ = resuelto.Clave.Should().Be("ana@web:22");
             _ = _log.Entradas.Should().Contain(e => e.Mensaje.Contains($"No se encontró el programa '{nombre}'", StringComparison.Ordinal));
         }
+        // Si el job object no se puede asignar (aquí, a un proceso que ya terminó), queda un aviso en el registro (EventId 68)
+        // con el error de Windows, y no hay grupo: Matar mata solo el árbol de procesos.
+        [Fact]
+        public void JobNoAsignado_AvisaEnElRegistroConElErrorDeWindows()
+        {
+            // Arrange
+            using Process terminado = Process.Start(new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c exit 0") { UseShellExecute = false, CreateNoWindow = true })!;
+            terminado.WaitForExit();
+
+            // Act
+            using System.Runtime.InteropServices.SafeHandle? grupo = ResolutorConfiguracionSsh.Agrupar(terminado, "web", new LoggerDe<ResolutorConfiguracionSsh>(_log));
+
+            // Assert
+            _ = grupo.Should().BeNull();
+            _ = _log.Entradas.Should().ContainSingle(e => e.Evento == 68).Which.Mensaje.Should().StartWith("No se pudo meter 'ssh -G' de 'web' en un job object propio (error ").And.NotContain("error 0 ");
+        }
+
         // Un Match exec cuyo padre termina antes que él (en el ssh de Git for Windows, el sh de MSYS que lo lanza sale en
         // cuanto lo arranca; aquí, un cmd intermedio lanzado con 'start /b' que sale al instante) no cuelga de ssh en el
         // árbol de procesos: al agotarse el plazo también se mata, y deja de escribir en su marca. En esta colección porque
