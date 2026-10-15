@@ -3,6 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using JCarrillo.AOT.Core.Colecciones.Pooled.Ref;
+using JCarrillo.AOT.Core.Extensiones.ValueLINQ.Delay;
+using JCarrillo.AOT.Core.ValueLINQ.Interfaces;
 
 namespace NativeSsh.Ssh
 {
@@ -16,14 +18,15 @@ namespace NativeSsh.Ssh
 
     // Comprueba la clave del servidor contra known_hosts (OpenSSH): patrones planos, comodines,
     // negaciones, '[host]:puerto', entradas hasheadas '|1|sal|hash' y el marcador @revoked.
-    // Cada fichero se lee entero en un búfer de caracteres rentado, uno cada vez, y sus líneas y campos se recorren como
-    // ReadOnlySpan<char>: solo se crea lo que sale (los tipos de ObtenerTiposClave) y las claves que hay que guardar; las
-    // claves y las entradas hasheadas se comparan en la pila. Cada línea se filtra primero por su campo de hosts. El búfer
-    // vuelve al pool sin limpiar (known_hosts solo tiene claves públicas y nombres de host); se lee solo lo escrito, hasta la
-    // longitud propia, nunca hasta el Length del array rentado. Mismo resultado que leyendo con File.ReadLines y partiendo con
-    // string.Split: el texto se decodifica con un StreamReader (UTF-8 con detección de BOM), las líneas se cortan como
-    // ReadLine ('\n', '\r' o "\r\n"; U+2028 no corta) y los campos con cualquier char.IsWhiteSpace, sin vacíos. Las piezas
-    // internal (lectura, líneas, campos, hosts y claves) también las usa la variante con ValueLINQ Delay de native_ssh.Benchmarks.
+    // Cada fichero se lee entero en un búfer de caracteres rentado, uno cada vez; sus líneas se apuntan como (inicio, longitud)
+    // y se recorren con ValueLINQ Delay y procesadores struct: primero los Where, del más restrictivo al más permisivo, sobre
+    // la línea cruda (el campo de hosts; en Verificar, el tipo; que estén el tipo y la clave) y al final un solo Select al
+    // struct de campos (spans sobre el búfer). Solo se crea lo que sale (los tipos de ObtenerTiposClave) y las claves que hay
+    // que guardar; las claves y las entradas hasheadas se comparan en la pila. El búfer vuelve al pool sin limpiar
+    // (known_hosts solo tiene claves públicas y nombres de host); se lee solo lo escrito, hasta la longitud propia, nunca
+    // hasta el Length del array rentado. Mismo resultado que leyendo con File.ReadLines y partiendo con string.Split: el texto
+    // se decodifica con un StreamReader (UTF-8 con detección de BOM), las líneas se cortan como ReadLine ('\n', '\r' o
+    // "\r\n"; U+2028 no corta) y los campos con cualquier char.IsWhiteSpace, sin vacíos.
     public sealed class VerificadorHostConocido(string[] rutas)
     {
         // Caracteres del búfer inicial; si el fichero no cabe, se dobla.
@@ -47,23 +50,31 @@ namespace NativeSsh.Ssh
             string nombre = NombreHost(servidor, puerto);
             bool hasMismoTipo = false;
             bool isConocido = false;
-            foreach (string ruta in Rutas)
+            // Un 'using' no se puede pasar por ref: se devuelve en el finally.
+            PooledListRef<Linea> lineas = new();
+            try
             {
-                if (!File.Exists(ruta))
-                    continue;
+                foreach (string ruta in Rutas)
+                {
+                    if (!File.Exists(ruta))
+                        continue;
 
-                char[] texto = LeerTexto(ruta, out int longitud);
-                try
-                {
-                    ReadOnlySpan<char> resto = texto.AsSpan(0, longitud);
-                    while (TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
-                        if (IsRevocadaAcumulando(linea, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
+                    char[] texto = LeerTexto(ruta, out int longitud);
+                    try
+                    {
+                        ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
+                        if (IsRevocadaAcumulando(texto, lineas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
                             return ResultadoHostEnum.Revocado;
+                    }
+                    finally
+                    {
+                        ArrayPool<char>.Shared.Return(texto);
+                    }
                 }
-                finally
-                {
-                    ArrayPool<char>.Shared.Return(texto);
-                }
+            }
+            finally
+            {
+                lineas.Dispose();
             }
 
             return Resultado(hasMismoTipo, isConocido);
@@ -77,6 +88,7 @@ namespace NativeSsh.Ssh
             // limpian al devolverlas. Un 'using' no se puede pasar por ref: se devuelven en el finally.
             PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
             PooledListRef<byte[]> revocadas = new();
+            PooledListRef<Linea> lineas = new();
             try
             {
                 foreach (string ruta in Rutas)
@@ -87,9 +99,8 @@ namespace NativeSsh.Ssh
                     char[] texto = LeerTexto(ruta, out int longitud);
                     try
                     {
-                        ReadOnlySpan<char> resto = texto.AsSpan(0, longitud);
-                        while (TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
-                            AcumularClave(linea, nombre, ref conocidas, ref revocadas);
+                        ApuntarLineas(texto.AsSpan(0, longitud), ref lineas);
+                        AcumularClaves(texto, lineas.Span, nombre, ref conocidas, ref revocadas);
                     }
                     finally
                     {
@@ -101,24 +112,29 @@ namespace NativeSsh.Ssh
             }
             finally
             {
+                lineas.Dispose();
                 revocadas.Dispose();
                 conocidas.Dispose();
             }
         }
 
+        // Sobre líneas ya leídas: cada una es una línea entera (no se vuelve a cortar por saltos), juntas en un búfer rentado.
         public static HashSet<string> ObtenerTiposClave(ReadOnlySpan<string> lineas, string servidor, int puerto)
         {
             string nombre = NombreHost(servidor, puerto);
             PooledListRef<(string Tipo, byte[] Clave)> conocidas = new();
             PooledListRef<byte[]> revocadas = new();
+            PooledListRef<Linea> apuntadas = new();
+            char[] texto = Juntar(lineas, ref apuntadas);
             try
             {
-                foreach (string linea in lineas)
-                    AcumularClave(linea, nombre, ref conocidas, ref revocadas);
+                AcumularClaves(texto, apuntadas.Span, nombre, ref conocidas, ref revocadas);
                 return TiposNoRevocados(conocidas.Span, revocadas.Span);
             }
             finally
             {
+                ArrayPool<char>.Shared.Return(texto);
+                apuntadas.Dispose();
                 revocadas.Dispose();
                 conocidas.Dispose();
             }
@@ -129,11 +145,19 @@ namespace NativeSsh.Ssh
             string nombre = NombreHost(servidor, puerto);
             bool hasMismoTipo = false;
             bool isConocido = false;
-            foreach (string linea in lineas)
-                if (IsRevocadaAcumulando(linea, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido))
-                    return ResultadoHostEnum.Revocado;
-
-            return Resultado(hasMismoTipo, isConocido);
+            PooledListRef<Linea> apuntadas = new();
+            char[] texto = Juntar(lineas, ref apuntadas);
+            try
+            {
+                return IsRevocadaAcumulando(texto, apuntadas.Span, nombre, tipoClave, clave, ref hasMismoTipo, ref isConocido)
+                    ? ResultadoHostEnum.Revocado
+                    : Resultado(hasMismoTipo, isConocido);
+            }
+            finally
+            {
+                ArrayPool<char>.Shared.Return(texto);
+                apuntadas.Dispose();
+            }
         }
 
         private static string NombreHost(string servidor, int puerto) => puerto == 22 ? servidor : $"[{servidor}]:{puerto}";
@@ -143,42 +167,57 @@ namespace NativeSsh.Ssh
                 : hasMismoTipo ? ResultadoHostEnum.ClaveDistinta
                 : ResultadoHostEnum.Desconocido;
 
-        // Una línea: true si revoca la clave; si no, acumula si es una entrada del mismo tipo y si es la clave (el resultado
-        // de varias líneas o ficheros es el de todas seguidas).
-        private static bool IsRevocadaAcumulando(ReadOnlySpan<char> linea, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
+        // Las líneas de un fichero: true en cuanto una revoca la clave; si no, acumula si hay una entrada del mismo tipo y si
+        // alguna es la clave (el resultado de varios ficheros es el de sus líneas seguidas). Los Where dejan las del host, del
+        // tipo pedido (o @revoked, que revoca la clave sea cual sea su tipo) y con tipo y clave; solo esas se decodifican.
+        private static bool IsRevocadaAcumulando(char[] texto, ReadOnlySpan<Linea> lineas, string nombre, string tipoClave, ReadOnlySpan<byte> clave, ref bool hasMismoTipo, ref bool isConocido)
         {
-            if (!TryCampos(linea, nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64))
-                return false;
+            DelHost delHost = new(texto);
+            DelTipo delTipo = new(texto);
+            Partir partir = new(texto);
+            foreach (ref readonly Campos campos in lineas.ToValueDelayQuery()
+                .Where(nombre, ref delHost)
+                .Where(tipoClave, ref delTipo)
+                .Where(new ConTipoYClave(texto))
+                .Select<Partir, Campos>(ref partir))
+            {
+                ResultadoClaveEnum resultado = CompararClave(campos.Base64, clave);
+                if (resultado == ResultadoClaveEnum.Invalida)
+                    continue;
 
-            // Una entrada de otro tipo no cuenta, sea válida o no su clave (@revoked sí: revoca la clave sea cual sea el tipo
-            // escrito): no se decodifica.
-            if (!isRevocada && !tipo.SequenceEqual(tipoClave))
-                return false;
+                bool isMismaClave = resultado == ResultadoClaveEnum.Igual;
+                if (campos.IsRevocada)
+                {
+                    if (isMismaClave)
+                        return true;
+                    continue;
+                }
 
-            ResultadoClaveEnum resultado = CompararClave(base64, clave);
-            if (resultado == ResultadoClaveEnum.Invalida)
-                return false;
+                hasMismoTipo = true;
+                isConocido |= isMismaClave;
+            }
 
-            bool isMismaClave = resultado == ResultadoClaveEnum.Igual;
-            if (isRevocada)
-                return isMismaClave;
-
-            hasMismoTipo = true;
-            isConocido |= isMismaClave;
             return false;
         }
 
-        // Una línea del host con clave válida: a las revocadas o, con su tipo, a las conocidas.
-        private static void AcumularClave(scoped ReadOnlySpan<char> linea, string nombre, scoped ref PooledListRef<(string Tipo, byte[] Clave)> conocidas, scoped ref PooledListRef<byte[]> revocadas)
+        // Las líneas del host con clave válida: a las revocadas o, con su tipo, a las conocidas.
+        private static void AcumularClaves(char[] texto, ReadOnlySpan<Linea> lineas, string nombre, scoped ref PooledListRef<(string Tipo, byte[] Clave)> conocidas, scoped ref PooledListRef<byte[]> revocadas)
         {
-            if (!TryCampos(linea, nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64)
-                || !TryDecodificar(base64, out byte[] claveLinea))
-                return;
+            DelHost delHost = new(texto);
+            Partir partir = new(texto);
+            foreach (ref readonly Campos campos in lineas.ToValueDelayQuery()
+                .Where(nombre, ref delHost)
+                .Where(new ConTipoYClave(texto))
+                .Select<Partir, Campos>(ref partir))
+            {
+                if (!TryDecodificar(campos.Base64, out byte[] claveLinea))
+                    continue;
 
-            if (isRevocada)
-                revocadas.Add(claveLinea);
-            else
-                conocidas.Add((tipo.ToString(), claveLinea));
+                if (campos.IsRevocada)
+                    revocadas.Add(claveLinea);
+                else
+                    conocidas.Add((campos.Tipo.ToString(), claveLinea));
+            }
         }
 
         private static HashSet<string> TiposNoRevocados(ReadOnlySpan<(string Tipo, byte[] Clave)> conocidas, ReadOnlySpan<byte[]> revocadas)
@@ -201,38 +240,122 @@ namespace NativeSsh.Ssh
             return tipos;
         }
 
-        // Los campos de una línea que cuenta, del filtro más restrictivo al más permisivo y sin mirar más de lo necesario: el
-        // campo de hosts (el primero, si no empieza por '#'; o el segundo tras @revoked, el único marcador que cuenta)
-        // coincide con el nombre, y tras él están el tipo y la clave. El resto (el comentario) no se mira. Es lo mismo que
-        // exigir antes al menos 3 campos (4 con @revoked): las condiciones son puras y la línea cuenta si se cumplen todas.
-        private static bool TryCampos(ReadOnlySpan<char> linea, string nombre, out bool isRevocada, out ReadOnlySpan<char> tipo, out ReadOnlySpan<char> base64)
+        // Las líneas del texto como (inicio, longitud), con la misma partición que ReadLine, en la lista vaciada. El motor Delay
+        // solo admite como origen un array o un span de T, y T no puede ser ReadOnlySpan<char> (no hay span de spans).
+        private static void ApuntarLineas(ReadOnlySpan<char> texto, scoped ref PooledListRef<Linea> lineas)
         {
-            isRevocada = false;
-            tipo = base64 = default;
-            ReadOnlySpan<char> resto = linea;
-            ReadOnlySpan<char> hosts = SiguienteCampo(ref resto);
-            if (hosts.IsEmpty || hosts[0] == '#')
-                return false;
-
-            if (hosts[0] == '@')
+            lineas.Clear();
+            ReadOnlySpan<char> resto = texto;
+            int inicio = 0;
+            while (TrySiguienteLinea(ref resto, out ReadOnlySpan<char> linea))
             {
-                if (!hosts.SequenceEqual("@revoked"))
-                    return false;
-                isRevocada = true;
-                hosts = SiguienteCampo(ref resto);
+                lineas.Add(new Linea(inicio, linea.Length));
+                inicio = texto.Length - resto.Length;
+            }
+        }
+
+        // Las líneas ya leídas, seguidas en un búfer rentado (se devuelve al llamador), cada una apuntada entera.
+        private static char[] Juntar(ReadOnlySpan<string> lineas, scoped ref PooledListRef<Linea> apuntadas)
+        {
+            int total = 0;
+            foreach (string linea in lineas)
+                total += linea.Length;
+            char[] texto = ArrayPool<char>.Shared.Rent(total);
+            int inicio = 0;
+            foreach (string linea in lineas)
+            {
+                linea.CopyTo(texto.AsSpan(inicio, linea.Length));
+                apuntadas.Add(new Linea(inicio, linea.Length));
+                inicio += linea.Length;
             }
 
-            if (!IsCoincideHost(hosts, nombre))
-                return false;
+            return texto;
+        }
 
-            tipo = SiguienteCampo(ref resto);
-            base64 = SiguienteCampo(ref resto);
-            return !base64.IsEmpty;
+        private readonly record struct Linea(int Inicio, int Longitud);
+
+        // Los campos que se usan de una línea que ya pasó los filtros, como spans sobre el búfer.
+        private readonly ref struct Campos(ReadOnlySpan<char> tipo, ReadOnlySpan<char> base64, bool isRevocada)
+        {
+            public ReadOnlySpan<char> Tipo { get; } = tipo;
+            public ReadOnlySpan<char> Base64 { get; } = base64;
+            public bool IsRevocada { get; } = isRevocada;
+        }
+
+        // El más restrictivo: el campo de hosts (el primero si no empieza por '#'; el segundo tras @revoked, el único marcador
+        // que cuenta) coincide con el nombre. No mira el resto de la línea.
+        private readonly struct DelHost(char[] texto) : IWhereDelegado<Linea, string>
+        {
+            private readonly char[] _texto = texto;
+
+            public bool Ejecutar(Linea objetoLista, string otro)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> hosts = SiguienteCampo(ref resto);
+                if (hosts.IsEmpty || hosts[0] == '#')
+                    return false;
+
+                if (hosts[0] == '@')
+                {
+                    if (!hosts.SequenceEqual("@revoked"))
+                        return false;
+                    hosts = SiguienteCampo(ref resto);
+                }
+
+                return IsCoincideHost(hosts, otro);
+            }
+        }
+
+        // Tras DelHost: una entrada del tipo pedido, o @revoked (revoca la clave sea cual sea el tipo escrito).
+        private readonly struct DelTipo(char[] texto) : IWhereDelegado<Linea, string>
+        {
+            private readonly char[] _texto = texto;
+
+            public bool Ejecutar(Linea objetoLista, string otro)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> primero = SiguienteCampo(ref resto);
+                return (!primero.IsEmpty && primero[0] == '@') || SiguienteCampo(ref resto).SequenceEqual(otro);
+            }
+        }
+
+        // El más permisivo: tras el campo de hosts (y el marcador) están el tipo y la clave; es lo mismo que exigir al menos 3
+        // campos, o 4 con @revoked.
+        private readonly struct ConTipoYClave(char[] texto) : IWhereDelegado<Linea>
+        {
+            private readonly char[] _texto = texto;
+
+            public bool Ejecutar(Linea objetoLista)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> primero = SiguienteCampo(ref resto);
+                if (!primero.IsEmpty && primero[0] == '@')
+                    _ = SiguienteCampo(ref resto);
+                _ = SiguienteCampo(ref resto);
+                return !SiguienteCampo(ref resto).IsEmpty;
+            }
+        }
+
+        // El único Select: de la línea que pasó los filtros a sus campos.
+        private readonly struct Partir(char[] texto) : ISelectDelegado<Linea, Campos>
+        {
+            private readonly char[] _texto = texto;
+
+            public Campos Ejecutar(Linea objetoLista)
+            {
+                ReadOnlySpan<char> resto = _texto.AsSpan(objetoLista.Inicio, objetoLista.Longitud);
+                ReadOnlySpan<char> primero = SiguienteCampo(ref resto);
+                bool isRevocada = primero[0] == '@';
+                if (isRevocada)
+                    _ = SiguienteCampo(ref resto);
+                ReadOnlySpan<char> tipo = SiguienteCampo(ref resto);
+                return new Campos(tipo, SiguienteCampo(ref resto), isRevocada);
+            }
         }
 
         // Campos separados por cualquier char.IsWhiteSpace, sin vacíos (como string.Split((char[]?)null,
         // RemoveEmptyEntries)); vacío si no quedan.
-        internal static ReadOnlySpan<char> SiguienteCampo(scoped ref ReadOnlySpan<char> resto)
+        private static ReadOnlySpan<char> SiguienteCampo(scoped ref ReadOnlySpan<char> resto)
         {
             int inicio = 0;
             while (inicio < resto.Length && char.IsWhiteSpace(resto[inicio]))
@@ -246,7 +369,7 @@ namespace NativeSsh.Ssh
         }
 
         // Como StreamReader.ReadLine: '\n', '\r' o "\r\n"; la última línea sin salto también cuenta, un salto final no.
-        internal static bool TrySiguienteLinea(ref ReadOnlySpan<char> resto, out ReadOnlySpan<char> linea)
+        private static bool TrySiguienteLinea(ref ReadOnlySpan<char> resto, out ReadOnlySpan<char> linea)
         {
             linea = default;
             if (resto.IsEmpty)
@@ -268,7 +391,7 @@ namespace NativeSsh.Ssh
 
         // El fichero entero en un búfer de caracteres rentado, decodificado como File.ReadLines (UTF-8 y BOM). La capacidad
         // es la pedida, no el Length del array (Rent puede dar uno mayor). Si la lectura lanza, el búfer vuelve antes.
-        internal static char[] LeerTexto(string ruta, out int longitud)
+        private static char[] LeerTexto(string ruta, out int longitud)
         {
             int capacidad = CapacidadInicial;
             char[] texto = ArrayPool<char>.Shared.Rent(capacidad);
@@ -299,7 +422,7 @@ namespace NativeSsh.Ssh
             }
         }
 
-        internal enum ResultadoClaveEnum
+        private enum ResultadoClaveEnum
         {
             Invalida,
             Igual,
@@ -308,7 +431,7 @@ namespace NativeSsh.Ssh
 
         // La clave de la línea comparada con la del servidor sin crear un array por línea: en la pila o, si es grande, en un
         // array rentado del que solo se usa lo pedido.
-        internal static ResultadoClaveEnum CompararClave(ReadOnlySpan<char> base64, ReadOnlySpan<byte> clave)
+        private static ResultadoClaveEnum CompararClave(ReadOnlySpan<char> base64, ReadOnlySpan<byte> clave)
         {
             int maximo = (base64.Length + 3) / 4 * 3;
             byte[]? alquilado = maximo > MaximoClaveEnPila ? ArrayPool<byte>.Shared.Rent(maximo) : null;
@@ -337,7 +460,7 @@ namespace NativeSsh.Ssh
             return longitud is > 0 and <= 64 && blob.Length >= 4 + longitud ? Encoding.ASCII.GetString(blob.Slice(4, longitud)) : null;
         }
 
-        internal static bool IsCoincideHost(ReadOnlySpan<char> patrones, string nombre)
+        private static bool IsCoincideHost(ReadOnlySpan<char> patrones, string nombre)
         {
             if (patrones.StartsWith("|1|"))
                 return IsCoincideHasheado(patrones, nombre);
@@ -437,7 +560,7 @@ namespace NativeSsh.Ssh
 
         // La clave decodificada en un array propio del tamaño exacto (se guarda): se decodifica antes en la pila o en un array
         // rentado del que solo se usa lo pedido.
-        internal static bool TryDecodificar(ReadOnlySpan<char> base64, out byte[] datos)
+        private static bool TryDecodificar(ReadOnlySpan<char> base64, out byte[] datos)
         {
             int maximo = (base64.Length + 3) / 4 * 3;
             byte[]? alquilado = maximo > MaximoClaveEnPila ? ArrayPool<byte>.Shared.Rent(maximo) : null;

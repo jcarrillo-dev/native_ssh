@@ -8,14 +8,13 @@ using NativeSsh.Ssh;
 
 namespace NativeSsh.Benchmarks
 {
-    // known_hosts antes y después de leerlo por spans (C1-quater), en la misma tanda, con Gen1 (el de la lista rentada salía de
+    // known_hosts antes y después de leerlo por spans y recorrerlo con ValueLINQ Delay (C1-quater), en la misma tanda, con Gen1 (el de la lista rentada salía de
     // tener vivas a la vez las ~200 líneas como string). Mismo known_hosts de 200 líneas y la clave conocida al final, con
     // los nombres en claro o hasheados (IsHasheado: |1|sal|hash, como lo deja OpenSSH con HashKnownHosts yes).
     // - Antes_Iterador: el código de 7ffba5c (las líneas se leen a demanda con un iterador y mueren una a una).
     // - ListaRentada: el código de d64a784 (las líneas de cada fichero como string en una lista rentada; el antes inmediato).
-    // - Producto: VerificadorHostConocido (el fichero en un búfer de caracteres rentado, líneas y campos como spans).
-    // - SpansDelay: las mismas piezas que el producto con el recorrido en ValueLINQ Delay, los Where primero
-    //   (VerificadorHostConocidoSpansDelay).
+    // - Bucle: el código de 4809fd5 (el fichero en un búfer rentado, líneas y campos como spans, con un bucle a mano).
+    // - Producto: VerificadorHostConocido (lo mismo con el recorrido en ValueLINQ Delay, los Where primero).
     public class GeneracionesKnownHostsBenchmarks
     {
         private const int Lineas = 200;
@@ -27,7 +26,7 @@ namespace NativeSsh.Benchmarks
         private VerificadorHostConocido _producto = null!;
         private VerificadorHostConocidoAntes _antes = null!;
         private VerificadorHostConocidoListaRentada _listaRentada = null!;
-        private VerificadorHostConocidoSpansDelay _spansDelay = null!;
+        private VerificadorHostConocidoBucle _bucle = null!;
         private byte[] _clave = [];
 
         [Params(false, true)]
@@ -47,10 +46,10 @@ namespace NativeSsh.Benchmarks
             _producto = new VerificadorHostConocido([ruta]);
             _antes = new VerificadorHostConocidoAntes([ruta]);
             _listaRentada = new VerificadorHostConocidoListaRentada([ruta]);
-            _spansDelay = new VerificadorHostConocidoSpansDelay([ruta]);
+            _bucle = new VerificadorHostConocidoBucle([ruta]);
             bool isTodasConocen = Antes_Iterador() == ResultadoHostEnum.Conocido && ListaRentada() == ResultadoHostEnum.Conocido
-                && Producto() == ResultadoHostEnum.Conocido && SpansDelay() == ResultadoHostEnum.Conocido
-                && TiposClave_Antes_Iterador() == 1 && TiposClave_ListaRentada() == 1 && TiposClave_Producto() == 1 && TiposClave_SpansDelay() == 1;
+                && Producto() == ResultadoHostEnum.Conocido && Bucle() == ResultadoHostEnum.Conocido
+                && TiposClave_Antes_Iterador() == 1 && TiposClave_ListaRentada() == 1 && TiposClave_Producto() == 1 && TiposClave_Bucle() == 1;
             if (!isTodasConocen)
                 throw new InvalidOperationException("El escenario no reconoce la clave conocida.");
         }
@@ -65,7 +64,7 @@ namespace NativeSsh.Benchmarks
         public ResultadoHostEnum Producto() => _producto.Verificar(Servidor, Puerto, Tipo, _clave);
 
         [Benchmark]
-        public ResultadoHostEnum SpansDelay() => _spansDelay.Verificar(Servidor, Puerto, Tipo, _clave);
+        public ResultadoHostEnum Bucle() => _bucle.Verificar(Servidor, Puerto, Tipo, _clave);
 
         [Benchmark]
         public int TiposClave_Antes_Iterador() => _antes.ObtenerTiposClave(Servidor, Puerto).Count;
@@ -77,7 +76,7 @@ namespace NativeSsh.Benchmarks
         public int TiposClave_Producto() => _producto.ObtenerTiposClave(Servidor, Puerto).Count;
 
         [Benchmark]
-        public int TiposClave_SpansDelay() => _spansDelay.ObtenerTiposClave(Servidor, Puerto).Count;
+        public int TiposClave_Bucle() => _bucle.ObtenerTiposClave(Servidor, Puerto).Count;
 
         [GlobalCleanup]
         public void Limpiar()
