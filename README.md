@@ -21,7 +21,7 @@ Los parámetros sin valor por defecto son obligatorios. Las cifras fuera de rang
 | `ssh_status` | `destino` (null) | las 20 peticiones más recientes | — | `ResultadoEstado` |
 | `ssh_disconnect` | `destino` | — | — | `ResultadoAccion` |
 | `ssh_reset_shell` | `destino`, `sinPerfil` (false) | — | — | `ResultadoAccion` |
-| `ssh_set_cwd` | `destino`, `ruta` | 30 s; ruta resuelta de hasta 1024 bytes | shell | `ResultadoDirectorioTrabajo` |
+| `ssh_set_cwd` | `destino`, `ruta` | 30 s por paso (validación y exportación); ruta resuelta de hasta 1024 bytes | shell | `ResultadoDirectorioTrabajo` |
 | `ssh_write_file` | `destino`, `ruta`, `contenido`, `overwrite` (false), `append` (false), `sudo` (false) | 60 s | shell | `ResultadoEscritura` |
 | `ssh_replace_file_content` | `destino`, `ruta`, `targetContent` (null), `replacementContent` (null), `lineaInicio` (null), `lineaFin` (null), `allowMultiple` (false), `sudo` (false), `ediciones` (null) | archivo de hasta 773184 bytes; 60 s la lectura y 60 s la escritura | shell | `ResultadoEscritura` |
 | `ssh_read_file` | `destino`, `ruta`, `lineaInicio` (1), `lineaFin` (null) | 800 líneas sin `lineaFin`; 1 MiB por respuesta; 60 s | exec | texto |
@@ -147,7 +147,7 @@ El directorio de trabajo de cada sesión lo guarda **native_ssh**, no el shell. 
 - **Cabecera:** la respuesta empieza por `[Líneas X-Y de Total]`; `Total` cuenta también una última línea sin salto final.
 - **Contenido fiel:** llega byte a byte, sin pasar por un terminal: conserva los `\r` de CRLF y las secuencias de escape. Si no es UTF-8 válido, los bytes inválidos se sustituyen por U+FFFD y la respuesta termina con `[aviso: contenido no UTF-8; bytes inválidos sustituidos por U+FFFD]`.
 - **Sin datos parciales:** si lo leído supera 1 MiB, la respuesta es un error (lee un rango menor), nunca un trozo.
-- **Errores:** distingue si el archivo no existe, si un directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Una ruta que no es un archivo regular (FIFO, socket, dispositivo) da error al momento; los archivos de `/proc` y `/sys` sí se leen. Una ruta vacía, con un carácter NUL o con un sustituto UTF-16 suelto se rechaza sin enviar nada.
+- **Errores:** distingue si el archivo no existe, si un directorio de la ruta no se puede atravesar (y cuál) o si no hay permiso de lectura. Una ruta que no es un archivo regular (FIFO, socket, dispositivo) da error al momento; los archivos de `/proc` y `/sys` sí se leen. Una ruta vacía, con un carácter NUL o con un sustituto UTF-16 suelto se rechaza sin enviar nada; una de solo blancos (`"  "`) es literal: se busca un archivo con ese nombre (igual en las demás herramientas, también en los patrones).
 - **Archivos con secretos** (`.env`, credenciales): si solo hacen falta los nombres o un recuento, se sacan con `ssh_exec` filtrando en el servidor (p. ej. `cut -d= -f1 .env`); `ssh_read_file` y `ssh_search` devolverían los valores.
 
 ### Búsqueda de texto (`ssh_search`)
