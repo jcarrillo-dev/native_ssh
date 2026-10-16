@@ -541,7 +541,7 @@ namespace NativeSsh.Herramientas
             // Palabra reservada que gobierna el programa: if, elif, while o until (es su condición); null si no la hay.
             public string? Condicion { get; set; }
 
-            // Empieza otra rama del if (else, elif) o, tras ';;' o ';;&', otra cláusula del case.
+            // Empieza otra rama del if (else, elif) o, tras ';;', otra cláusula del case.
             public bool IsRamaAlternativa { get; set; }
             public bool IsClausulaCase { get; set; }
 
@@ -602,7 +602,8 @@ namespace NativeSsh.Herramientas
             // del patrón en 'palabras' (las de antes son la cabecera 'case x in').
             bool isPatronCase = false;
             int indicePatron = 0;
-            // La siguiente orden empieza otra cláusula del case (tras ';;' o ';;&', aunque haya saltos de línea en medio).
+            // La siguiente orden empieza otra cláusula del case que no se ejecuta (tras ';;', aunque haya saltos de línea en
+            // medio).
             bool isClausulaCase = false;
             // Palabras reservadas seguidas al principio de la orden actual ('! if …'), para IsCabeceraCase.
             int reservadasIniciales = 0;
@@ -818,8 +819,10 @@ namespace NativeSsh.Herramientas
 
                 if (c == ';')
                 {
-                    // ';;' y ';;&' terminan una cláusula de case (lo siguiente es otro patrón y después otra cláusula o esac); ';&'
-                    // sigue en el cuerpo de la cláusula siguiente. Un '&>' detrás de ';' es una redirección, no ';&'.
+                    // ';;' termina una cláusula de case (lo siguiente es otro patrón y después otra cláusula o esac, que no se
+                    // ejecuta); ';&' sigue en el cuerpo de la cláusula siguiente, y ';;&' prueba los patrones siguientes, así
+                    // que la cláusula siguiente puede ejecutarse: las dos cuentan como ';'. Un '&>' detrás de ';' es una
+                    // redirección, no ';&'.
                     bool isDoble = siguiente == ';';
                     int largo = isDoble ? 2 : 1;
                     bool isConAmpersand = i + largo < longitud && comando[i + largo] == '&' && (i + largo + 1 >= longitud || comando[i + largo + 1] != '>');
@@ -830,7 +833,7 @@ namespace NativeSsh.Herramientas
                         indicePatron = 0;
                     }
 
-                    isClausulaCase |= isDoble;
+                    isClausulaCase |= isDoble && !isConAmpersand;
                     i += largo + (isConAmpersand ? 1 : 0);
                     continue;
                 }
