@@ -24,7 +24,7 @@ namespace NativeSsh.Test.Ssh
         private IEnumerable<string> ClavesYIdentidades() =>
             _gestor.ListarSesiones().Select(s => $"{s.Destino.Clave}|{string.Join(",", s.Destino.Identidades ?? [])}");
 
-        // Tras cambiar el User de 'prod' con su sesión viva, el LLM vuelve a usar 'prod' (sesión nueva de root): ssh_disconnect
+        // Tras cambiar el User de 'prod' con su sesión viva, el cliente vuelve a usar 'prod' (sesión nueva de root): ssh_disconnect
         // prod cierra la de root y dice que sigue la de deploy, con su comando.
         [Fact]
         public async Task CambioDeUserYSesionNueva_DisconnectDelAliasNombraLaAnterior()
@@ -145,7 +145,7 @@ namespace NativeSsh.Test.Ssh
             _ = _gestor.ListarSesiones().Should().BeEmpty();
         }
 
-        // Una sesión llegó al tope de alias (y olvidó uno) y el LLM pide ssh_disconnect de un alias que nunca usó, a otro
+        // Una sesión llegó al tope de alias (y olvidó uno) y el cliente pide ssh_disconnect de un alias que nunca usó, a otro
         // servidor: el mensaje no le habla del tope.
         [Fact]
         public async Task TopeDeOtraSesion_NoSeMencionaParaUnAliasNuncaUsado()

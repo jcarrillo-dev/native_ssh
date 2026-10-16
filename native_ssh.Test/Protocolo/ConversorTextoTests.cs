@@ -46,7 +46,7 @@ namespace NativeSsh.Test.Protocolo
             _ = Encoding.UTF8.GetString(bytes, 0, longitud).Should().Be(esperado);
         }
 
-        // RC3: lo que ve el LLM de ssh_exec trata un '\r' suelto como un terminal: lo escrito tras el último '\r' de la línea
+        // RC3: lo que ve el cliente de ssh_exec trata un '\r' suelto como un terminal: lo escrito tras el último '\r' de la línea
         // sustituye a lo anterior (barras de progreso de apt, dpkg o curl). Un '\r' al final de los datos o de la línea no
         // borra nada; el CRLF sigue siendo un salto.
         [Theory]

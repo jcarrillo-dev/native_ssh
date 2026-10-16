@@ -539,7 +539,7 @@ namespace NativeSsh.Test.Integracion
 
         private static string GrupoSecundario() => Bash("id -Gn | tr ' ' '\\n' | grep -vx \"$(id -gn)\" | head -n 1");
 
-        // Caso del auditor: certificado 0600/0640 root:ssl-cert en un directorio que el usuario no puede atravesar,
+        // Caso de la revisión: certificado 0600/0640 root:ssl-cert en un directorio que el usuario no puede atravesar,
         // editado a través de un enlace con sudo=true. Las comprobaciones sin sudo veían "no existe".
         // Con el grupo primario (mapeado en la simulación) se recorre la rama atómica de producción: chown/chmod --reference
         // y mv como root. Con un grupo secundario la simulación no puede hacer chown y cae a la escritura en el sitio.

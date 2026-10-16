@@ -281,7 +281,7 @@ namespace NativeSsh.Test.Sesion
         [InlineData(true)]
         public async Task CtrlCAUnShellAnidado_CierraElCanalLoDiceYElSiguienteNoSeEjecutaDentro(bool isPlazo)
         {
-            // Arrange: B1 de la auditoría del E-septies (Z06). El comando deja un shell interactivo anidado (sudo -i, su -,
+            // Arrange: B1 de la revisión del E-septies (Z06). El comando deja un shell interactivo anidado (sudo -i, su -,
             // ssh a otra máquina, bash -i) que no muere con Ctrl+C: la línea de recuperación la ejecuta él.
             FabricaFalsa fabrica = new(Guion);
             await using SesionShell sesion = Crear(fabrica);
@@ -366,7 +366,7 @@ namespace NativeSsh.Test.Sesion
             _ = siguiente.Aviso.Should().Contain("recreado");
         }
 
-        // B1 de la auditoría del E-octies: el shell que recibe Ctrl+C tiene el mismo $$ y $PPID que el de la sesión (un shell en
+        // B1 de la revisión del E-octies: el shell que recibe Ctrl+C tiene el mismo $$ y $PPID que el de la sesión (un shell en
         // un contenedor gemelo, al que se entró con ssh -tt, o el programa que deja un exec), pero no el testigo del canal.
         [Theory]
         [InlineData(false)]
@@ -445,7 +445,7 @@ namespace NativeSsh.Test.Sesion
             _ = segundo.Split(' ')[2].Should().MatchRegex("^[0-9a-f]{32}$").And.NotBe(primero.Split(' ')[2]);
         }
 
-        // A05 de la auditoría del E-octies: el aviso dice si el servidor confirmó el cierre del canal o no.
+        // A05 de la revisión del E-octies: el aviso dice si el servidor confirmó el cierre del canal o no.
         [Fact]
         public async Task CtrlCAUnShellAnidado_ConElCierreSinConfirmar_LoDiceSinAfirmarQueTermino()
         {
@@ -1547,7 +1547,7 @@ namespace NativeSsh.Test.Sesion
         [Fact]
         public async Task RechazoDelServidorConUnShellAbandonado_ElShellYLasLecturasLoNombranYNoMandanEsperarALecturasQueNoHay()
         {
-            // Arrange: Z01 de la auditoría del E-septies. Un shell abandonado (entrada retenida) ocupa una sesión y el
+            // Arrange: Z01 de la revisión del E-septies. Un shell abandonado (entrada retenida) ocupa una sesión y el
             // servidor rechaza los canales nuevos (MaxSessions), sin ninguna lectura en curso.
             FabricaFalsa fabrica = new(Guion);
             await using SesionShell sesion = Crear(fabrica);

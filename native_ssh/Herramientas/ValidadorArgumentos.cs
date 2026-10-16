@@ -27,7 +27,7 @@ namespace NativeSsh.Herramientas
                 ? ValueTask.FromResult(new CallToolResult { IsError = true, Content = [new TextContentBlock { Text = error }] })
                 : siguiente(contexto, token);
 
-        // null si los argumentos valen; si no, el error para el modelo.
+        // null si los argumentos valen; si no, el error para el cliente.
         internal static string? Validar(string herramienta, JsonElement esquema, IDictionary<string, JsonElement>? argumentos)
         {
             if (esquema.ValueKind != JsonValueKind.Object || !esquema.TryGetProperty("properties", out JsonElement propiedades))

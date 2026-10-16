@@ -233,7 +233,7 @@ namespace NativeSsh.Test.Herramientas
 
         // ssh_disconnect a mitad del export (que no termina): la sesión ya no existe y la próxima conexión empieza en $HOME.
         // El error lo dice; no afirma que el directorio siga siendo el anterior ni propone ssh_reset_shell (A-undecies, AU1;
-        // sonda Q02 de la auditoría del A-decies).
+        // caso Q02 de la revisión del A-decies).
         [Fact]
         public async Task DisconnectDuranteElExport_DiceQueLaSesionSeCerroYLaProximaEmpiezaEnHome()
         {
@@ -255,7 +255,7 @@ namespace NativeSsh.Test.Herramientas
             _ = DirectorioDeLaSesion().Should().BeNull();
         }
 
-        // Lo mismo al volver a $HOME (sonda Q10).
+        // Lo mismo al volver a $HOME (caso Q10).
         [Fact]
         public async Task DisconnectAlVolverAHome_DiceQueLaSesionSeCerroYLaProximaEmpiezaEnHome()
         {
@@ -538,7 +538,7 @@ namespace NativeSsh.Test.Herramientas
 
         // Interrumpida y terminada sin el comando enviado: no se ejecutó nada, con certeza (escrituras y ssh_set_cwd lo
         // afirman). ShellPerdido sin la señal no cuenta, porque la escritura del comando pudo quedarse a medias (I05 de la
-        // auditoría de la integración); tampoco una petición aún en ejecución (la sesión puede enviarlo todavía), ni una con
+        // revisión de la integración); tampoco una petición aún en ejecución (la sesión puede enviarlo todavía), ni una con
         // el comando enviado.
         [Theory]
         [InlineData(EstadoPeticionEnum.Cancelado, false, true, true)]

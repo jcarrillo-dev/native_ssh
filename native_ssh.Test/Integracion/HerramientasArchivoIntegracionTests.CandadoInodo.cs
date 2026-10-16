@@ -4,7 +4,7 @@ using NativeSsh.Herramientas;
 namespace NativeSsh.Test.Integracion
 {
     // Comprobación de que el candado quedó sobre el archivo que está en la ruta (mismo_inodo) y anexado por el mismo
-    // descriptor que lleva el candado (auditoría del A-septies, observaciones 2 y 3).
+    // descriptor que lleva el candado (revisión del A-septies, observaciones 2 y 3).
     public sealed partial class HerramientasArchivoIntegracionTests
     {
         // mismo_inodo aislado, con bash local y un PATH mínimo (con o sin /proc): 0 mismo archivo, 1 distinto, 2 no se

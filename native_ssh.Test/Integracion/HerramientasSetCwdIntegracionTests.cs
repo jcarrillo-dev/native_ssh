@@ -12,7 +12,7 @@ using NativeSsh.Test.Utilidades;
 namespace NativeSsh.Test.Integracion
 {
     // ssh_set_cwd contra un sshd real: lo que dice el error sobre el directorio de trabajo es lo que queda de verdad en el
-    // shell, en las herramientas de lectura y en C# (sondas Q01 y Q12 de la auditoría del A-decies; A-undecies, AU1 y AU2).
+    // shell, en las herramientas de lectura y en C# (casos Q01 y Q12 de la revisión del A-decies; A-undecies, AU1 y AU2).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
@@ -59,7 +59,7 @@ namespace NativeSsh.Test.Integracion
 
         // La validación de set_cwd(Y) espera en la cola detrás de un comando y ssh_disconnect la cancela: la sesión ya no
         // existe y la siguiente herramienta abre una conexión nueva en $HOME. El error lo dice y no afirma que el
-        // directorio siga siendo X (sonda Q01).
+        // directorio siga siendo X (caso Q01).
         [Fact]
         public async Task DisconnectDuranteLaValidacion_DiceQueLaSesionSeCerroYLaProximaEmpiezaEnHome()
         {
@@ -87,7 +87,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Volver a $HOME con __NS_CWD de solo lectura: 'unset' falla, así que el shell sigue en X. ssh_set_cwd no responde
-        // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (sonda Q12).
+        // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (caso Q12).
         [Fact]
         public async Task VolverAHomeConLaVariableDeSoloLectura_DiceQueSigueEnElAnteriorYCsYShellCoinciden()
         {

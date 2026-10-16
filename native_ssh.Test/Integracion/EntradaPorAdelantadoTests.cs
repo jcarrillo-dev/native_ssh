@@ -224,7 +224,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         // La petición que trae el aviso es la de una herramienta de archivo o de ssh_set_cwd (su envío llegó tras lo que el
-        // comando no leyó) y su respuesta no da avisos: el ssh_exec siguiente lo da sin citar el id de esa petición, que el LLM
+        // comando no leyó) y su respuesta no da avisos: el ssh_exec siguiente lo da sin citar el id de esa petición, que el cliente
         // no ha visto. ssh_set_cwd va por otro camino que la escritura (HerramientasSsh.EjecutarHerramientaAsync).
         [Theory]
         [InlineData(false)]
@@ -425,7 +425,7 @@ namespace NativeSsh.Test.Integracion
         }
 
         // Ctrl+D al principio de una línea es un EOF del terminal ('read' devuelve 1 sin leer nada): no corta la espera del
-        // centinela; cuenta como una línea (E01 de la auditoría del tramo 1-ter). En una llamada: EOF, línea vacía, dos
+        // centinela; cuenta como una línea (E01 de la revisión del tramo 1-ter). En una llamada: EOF, línea vacía, dos
         // órdenes y el salto final (4); en dos: EOF y su salto, y la orden (3).
         [Theory]
         [InlineData(true, "4 líneas")]
@@ -514,7 +514,7 @@ namespace NativeSsh.Test.Integracion
             _ = respuestas.Should().AllSatisfy(r => canarios.Should().AllSatisfy(c => r.Should().NotContain(c)));
         }
 
-        // Una función o un alias 'read' (R01 de la auditoría del tramo 1-ter) no cuelgan la espera: el comando siguiente
+        // Una función o un alias 'read' (R01 de la revisión del tramo 1-ter) no cuelgan la espera: el comando siguiente
         // termina enseguida y lo tecleado tampoco se ejecuta.
         [Theory]
         [InlineData("read() { return 0; }")]
@@ -602,7 +602,7 @@ namespace NativeSsh.Test.Integracion
         // el comando y este agota su plazo: Ctrl+C aborta la espera) o una línea del comando (que entonces no se ejecuta:
         // MarcadorFin.CodigoEnvioIncompleto). En ningún caso se ejecuta el comando a medias ni se da por completado sin
         // ejecutarse, el shell no se queda atascado (el comando de después funciona) y no se da por descartada ninguna línea:
-        // lo que leyó la cola era el comando del LLM. Antes, una línea descartada de verdad, para que un recuento viejo no se
+        // lo que leyó la cola era el comando del cliente. Antes, una línea descartada de verdad, para que un recuento viejo no se
         // cuele en el aviso del comando interrumpido.
         [Theory]
         [InlineData(1)]
@@ -707,7 +707,7 @@ namespace NativeSsh.Test.Integracion
         }
         // Un alias o una función 'base64'/'printf' que cambia lo que imprimen, o 'set -x' con BASH_XTRACEFD en la salida
         // estándar: ningún comando se ejecuta (997), tampoco el que intenta deshacerlo (unalias, unset -f, set +x; medido en
-        // la auditoría del tramo 1-septies). El mensaje no lo propone como remedio: remite a ssh_reset_shell, que sí lo arregla.
+        // la revisión del tramo 1-septies). El mensaje no lo propone como remedio: remite a ssh_reset_shell, que sí lo arregla.
         [Theory]
         [InlineData("alias base64='echo QUJD | command base64'", "unalias base64")]
         [InlineData("printf() { builtin printf \"$@\"; builtin printf 'QUJD'; }", "unset -f printf")]
@@ -745,7 +745,7 @@ namespace NativeSsh.Test.Integracion
                 await Task.Delay(20);
         }
 
-        // Más avisos pendientes que el tope de 16 (sonda Y01 de la auditoría del tramo 1-septies, adoptada): 20 escrituras,
+        // Más avisos pendientes que el tope de 16 (caso Y01 de la revisión del tramo 1-septies, adoptada): 20 escrituras,
         // cada una con la línea 'x' tecleada al comando anterior pendiente de avisar (la respuesta de ese ssh_input se cancela
         // en vuelo, así que no recorre la cadena). El ssh_exec siguiente detalla los 16 más recientes y resume los otros 4
         // con su número de líneas; el de después, ninguno. Antes no decía que hubo más.

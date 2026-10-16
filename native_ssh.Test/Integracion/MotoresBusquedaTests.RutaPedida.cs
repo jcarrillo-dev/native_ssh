@@ -42,7 +42,7 @@ namespace NativeSsh.Test.Integracion
 
         // Ruta relativa que find tomaría por una opción ('-d' es '-depth' en GNU) o un operador ('(', ')', '!', ','): se le
         // antepone './' en los cuatro caminos, así que find la recorre como una ruta y todos dan lo mismo, solo lo de dentro
-        // (Z04 de la auditoría del A-octies: con busybox, '-d' y '(' daban «sin coincidencias» y '!' buscaba en todo '.').
+        // (Z04 de la revisión del A-octies: con busybox, '-d' y '(' daban «sin coincidencias» y '!' buscaba en todo '.').
         // También un archivo cuyo nombre empieza por '-'.
         [Theory]
         [MemberData(nameof(CasosRutaQueFindTomaPorOpcion))]
@@ -297,7 +297,7 @@ namespace NativeSsh.Test.Integracion
 
         // Un subdirectorio que desaparece a mitad del recorrido: find avisa de que ya no existe (simulado con un find que
         // recibe además una ruta inexistente: el mismo mensaje y el mismo código 1). Como grep -rs y rg, no es un error:
-        // se busca en todo lo demás, sin stderr y con 0 (mutación M18 de la auditoría del A-nonies; A-decies, AD3).
+        // se busca en todo lo demás, sin stderr y con 0 (mutación M18 de la revisión del A-nonies; A-decies, AD3).
         // Cualquier otro error de find (aquí, de E/S) sale por stderr con 2 junto a los resultados del resto.
         [Theory]
         [InlineData("No such file or directory", 0)]

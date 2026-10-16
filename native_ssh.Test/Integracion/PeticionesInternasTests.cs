@@ -14,7 +14,7 @@ namespace NativeSsh.Test.Integracion
     // Las peticiones internas de las herramientas que van por el shell (lectura y escritura de ssh_replace_file_content,
     // escritura de ssh_write_file, validación, export y vuelta a $HOME de ssh_set_cwd) salen en ssh_status con su id (para
     // ssh_cancel), pero ninguna otra herramienta devuelve su salida (ni la propia, en su error, la de la lectura): la lectura
-    // de replace es el archivo entero en base64, que el modelo puede no haber leído nunca. ssh_output, ssh_input y ssh_cancel sobre ese id dicen de qué herramienta es y que su
+    // de replace es el archivo entero en base64, que el cliente puede no haber leído nunca. ssh_output, ssh_input y ssh_cancel sobre ese id dicen de qué herramienta es y que su
     // resultado lo da esa herramienta. Por el binario, con el sshd local.
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
@@ -162,7 +162,7 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(contenido.Replace('o', 'x'));
         }
 
-        // Los errores conocidos de la lectura previa dicen la causa con la ruta que pidió el modelo (native_ssh los construye a
+        // Los errores conocidos de la lectura previa dicen la causa con la ruta que pidió el cliente (native_ssh los construye a
         // partir del código de salida del script, sin texto de la salida): el archivo no existe (también con '__NS_B64_' en el
         // nombre), es un directorio, no es un archivo regular, sin permiso de lectura, sin acceso por un directorio, demasiado
         // grande o con el candado tomado por otro.

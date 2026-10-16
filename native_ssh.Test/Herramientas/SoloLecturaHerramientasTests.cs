@@ -228,7 +228,7 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("Si cambió con la sesión abierta (otro HostName, User, Port o IdentityFile), una escritura con ese alias usa la sesión que corresponde a la configuración nueva y su resultado puede ser otro: vale lo que responda la herramienta de escritura, que lo comprueba en cada llamada.");
         }
 
-        // Y le dice al LLM qué hacer entonces (imperativo): no fiarse de isSoloLectura y atenerse a la herramienta de escritura.
+        // Y le dice al cliente qué hacer entonces (imperativo): no fiarse de isSoloLectura y atenerse a la herramienta de escritura.
         [Fact]
         public void DescripcionDeSshStatus_DiceQueHacerSiLaConfiguracionPudoCambiar()
         {

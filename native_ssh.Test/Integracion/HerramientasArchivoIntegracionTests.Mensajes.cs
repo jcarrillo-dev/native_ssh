@@ -52,8 +52,8 @@ namespace NativeSsh.Test.Integracion
 
         // Sobrescribir sin sudo un archivo propio con escritura pero sin lectura (0200): no se puede copiar a un temporal ni
         // hacer la copia de seguridad para escribirlo en el sitio. El error lo explica con un mensaje propio, sin la línea
-        // cruda de cat («cat: …: Permiso denegado») delante; no se modifica nada ni quedan restos (auditoría del A-septies,
-        // sonda Y08).
+        // cruda de cat («cat: …: Permiso denegado») delante; no se modifica nada ni quedan restos (revisión del A-septies,
+        // caso Y08).
         [Fact]
         public async Task Sobrescribir_ArchivoSinPermisoDeLectura_ErrorPropioSinLaLineaDeCat()
         {

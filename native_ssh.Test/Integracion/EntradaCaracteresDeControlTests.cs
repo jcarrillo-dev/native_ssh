@@ -184,7 +184,7 @@ namespace NativeSsh.Test.Integracion
             _ = (fin.Salida + siguiente.Salida).Should().NotContain(canario);
         }
 
-        // (Q03 de la auditoría del tramo 1-quater) Ctrl+C con ssh_input, solo o con texto detrás, recién lanzado el comando o
+        // (Q03 de la revisión del tramo 1-quater) Ctrl+C con ssh_input, solo o con texto detrás, recién lanzado el comando o
         // con él ya en marcha: se rechaza sin enviar nada, el comando sigue y termina como siempre y nada se ejecuta como orden
         // (antes, Ctrl+C abortaba la línea del protocolo y lo de después se ejecutaba).
         [Theory]

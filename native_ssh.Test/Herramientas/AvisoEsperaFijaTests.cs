@@ -77,7 +77,7 @@ namespace NativeSsh.Test.Herramientas
         public void Texto_NombraLosDosBuclesSinWhileNegado() =>
             _ = AvisoEsperado.Should().Contain("'until <condición>; do sleep 2; done' para esperar a que algo empiece").And.Contain("'while <condición>; do sleep 2; done' para esperar a que algo deje de estar activo").And.Contain("ssh_output").And.NotContain("while !");
 
-        // Casos de la auditoría del tramo (95): subshells y grupos pegados, palabras reservadas (then, else, case, do), bucles
+        // Casos de la revisión del tramo (95): subshells y grupos pegados, palabras reservadas (then, else, case, do), bucles
         // anidados en una línea, comentarios, prefijos y rutas, duraciones que acepta sleep de GNU coreutils, separadores y
         // heredocs. true: avisa; false: no avisa de la espera (puede avisar de otra cosa).
         public static TheoryData<string, bool, string> CasosAuditoria => new()
@@ -204,7 +204,7 @@ namespace NativeSsh.Test.Herramientas
             _ = isAvisoDeEspera.Should().Be(isAvisa, nota);
         }
 
-        // Casos de la auditoría de la fusión (71): 'do' fuera de un bucle (patrón de case, entre comillas), esperas sin nada
+        // Casos de la revisión de la fusión (71): 'do' fuera de un bucle (patrón de case, entre comillas), esperas sin nada
         // detrás salvo cierres, sleep como condición, bucles con llaves, prefijos con opciones, duraciones y comillas.
         public static TheoryData<string, bool, string> CasosAuditoriaFusion => new()
         {

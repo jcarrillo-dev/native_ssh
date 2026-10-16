@@ -15,7 +15,7 @@ namespace NativeSsh.Test.Integracion
     // de la sesión y no remite a ssh_stat, ssh_read_file ni ssh_output, que no aportan nada (no se ejecutó nada) y en un
     // servidor sin bash tampoco funcionan (A-nonies, AN4). La causa es la de la sesión: el aviso de que el servidor no tiene
     // bash (RespuestaSinBash, E-nonies, EN4) o, si el shell de login sale por otra causa, sus últimas líneas (camino
-    // genérico de EN4; R08 de la auditoría de la integración).
+    // genérico de EN4; R08 de la revisión de la integración).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]

@@ -17,7 +17,7 @@ namespace NativeSsh.Test.Integracion
         private static void Escribible(string directorio) =>
             File.SetUnixFileMode(directorio, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 
-        // (M02 de la auditoría) ssh_reset_shell con el borrado fallido y después ssh_disconnect: el archivo sigue y
+        // (M02 de la revisión) ssh_reset_shell con el borrado fallido y después ssh_disconnect: el archivo sigue y
         // ssh_disconnect lo dice, con el número que queda.
         [Fact]
         public async Task ResetConBorradoFallido_DisconnectDiceLoQueQueda()
@@ -99,7 +99,7 @@ namespace NativeSsh.Test.Integracion
             _ = desconexion.Mensaje.Should().Contain("NO se pudieron borrar 1 de los 2").And.NotContain("(todos)");
         }
 
-        // (M06 de la auditoría) Con tope 1, un ssh_reset_shell cuyo borrado falla no saca el shell de la cuenta: el guardarSalida
+        // (M06 de la revisión) Con tope 1, un ssh_reset_shell cuyo borrado falla no saca el shell de la cuenta: el guardarSalida
         // del shell nuevo no se ejecuta, y el aviso habla de shells anteriores (no del actual) y de cómo salir. Con el directorio
         // otra vez escribible, el siguiente ssh_reset_shell lo borra y vuelve a funcionar.
         [Fact]
@@ -131,7 +131,7 @@ namespace NativeSsh.Test.Integracion
             _ = tres.Estado.Should().Be(EstadoPeticionEnum.Completado, tres.Aviso);
         }
 
-        // (O-b; M05 de la auditoría) ssh_disconnect cuenta solo las salidas del protocolo (<id>.out), no lo que el comando dejó
+        // (O-b; M05 de la revisión) ssh_disconnect cuenta solo las salidas del protocolo (<id>.out), no lo que el comando dejó
         // en el directorio del shell.
         [Fact]
         public async Task Disconnect_CuentaSoloLasSalidasDelProtocolo()

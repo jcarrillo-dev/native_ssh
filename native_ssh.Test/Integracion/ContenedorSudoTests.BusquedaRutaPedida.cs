@@ -42,7 +42,7 @@ namespace NativeSsh.Test.Integracion
             return $"{entorno.DirectorioUsuario}/arbol";
         }
 
-        // Z01 de la auditoría del A-octies (B1): ruta relativa (cwd fijado con ssh_set_cwd) que find tomaría por una opción
+        // Z01 de la revisión del A-octies (B1): ruta relativa (cwd fijado con ssh_set_cwd) que find tomaría por una opción
         // o un operador. Con busybox, '-d' y '(' daban «sin coincidencias» y '!' buscaba en todo el directorio actual.
         // Ahora lleva './' delante en todos los motores y solo sale lo de dentro, igual en las dos distros.
         [TheoryContenedor]
@@ -170,7 +170,7 @@ namespace NativeSsh.Test.Integracion
 
         private const string AvisoCodigoDosSinDetalle = "[Aviso: el motor terminó con código 2 sin mostrar el error (calla así los archivos o directorios que no puede leer, p. ej. por permisos), así que pueden faltar coincidencias.]";
 
-        // A-decies (AD2, sonda N03): un directorio que se llama como una exclusión de archivos (deps.lock/, src.map/,
+        // A-decies (AD2, caso N03): un directorio que se llama como una exclusión de archivos (deps.lock/, src.map/,
         // m.min.js/, package-lock.json/) se recorre, y los archivos con esos nombres se siguen excluyendo, también con el
         // filtro de extensión (las exclusiones pesan más). Con rg no se recorría; aquí, grep de GNU y busybox reales.
         [TheoryContenedor]

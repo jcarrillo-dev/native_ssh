@@ -110,7 +110,7 @@ namespace NativeSsh.Test.Integracion
             _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
         }
 
-        // R05/R06 de la auditoría del E-quater: con el servidor sin leer, una escritura grande al shell llena el envío TCP y
+        // R05/R06 de la revisión del E-quater: con el servidor sin leer, una escritura grande al shell llena el envío TCP y
         // el bucle se queda dentro de ella, con el candado de escritura de SSH.NET tomado (ssh_write_file como en R06, con
         // 512 KiB para no depender del tamaño del búfer TCP, que en esta máquina se llena con 200 KiB; ssh_exec de 1 MiB
         // como en R05). ssh_input no se cuelga, ssh_cancel avisa de la escritura atascada y

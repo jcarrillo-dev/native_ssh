@@ -66,7 +66,7 @@ namespace NativeSsh.Sesion
             ObtenerOCrear(ParsearDestino(destinoTexto)).DirectorioTrabajo = directorio;
         }
 
-        // id null: el SDK lo enlaza tal cual (ValidadorArgumentos.IsDelTipo); sin esto, el modelo solo vería el error genérico.
+        // id null: el SDK lo enlaza tal cual (ValidadorArgumentos.IsDelTipo); sin esto, el cliente solo vería el error genérico.
         public Peticion BuscarPeticion(string? id) =>
             id is null
                 ? throw new NativeSshException("'id' llegó como null: usa el id que devolvió ssh_exec (ssh_status lista los comandos recientes con el suyo).")

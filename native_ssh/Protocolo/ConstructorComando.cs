@@ -42,7 +42,7 @@ namespace NativeSsh.Protocolo
         // es byte de cola en ninguna de esas codificaciones ni en UTF-8, y lo evaluado es byte a byte el comando pedido, también
         // sus saltos de línea finales (la sustitución de órdenes de la decodificación quita los del final, y el final es el
         // nonce). Shift-JIS no está cubierto: con un shell en ja_JP.SJIS el primer comando se cuelga, también sin este
-        // separador (medido en la auditoría del tramo 1-septies; causa no verificada).
+        // separador (medido en la revisión del tramo 1-septies; causa no verificada).
         public static void EscribirComando(ReadOnlySpan<char> comando, Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             Guid nonce = IdentidadShell.NuevoTestigo();
@@ -274,7 +274,7 @@ namespace NativeSsh.Protocolo
         // Un Ctrl+C (interrupción: ssh_cancel o el plazo; ssh_input no lo envía) aborta la espera o el comando en curso, y el
         // núcleo vacía la entrada pendiente del terminal (sin 'stty noflsh'): lo tecleado tampoco se ejecuta. __ns_n solo se
         // fija si el centinela llegó; si Ctrl+C aborta la espera (el centinela se lo comió otro proceso que leía del terminal
-        // y la línea que la terminaría era la del comando del LLM), queda vacío y nada se da por descartado. Con 'noflsh' (si
+        // y la línea que la terminaría era la del comando del cliente), queda vacío y nada se da por descartado. Con 'noflsh' (si
         // el comando lo dejó así) el núcleo no la vacía y bash ejecutaría como órdenes las líneas pendientes antes de la línea
         // de recuperación: no se puede evitar desde aquí.
         // Ctrl+D al principio de una línea es un EOF del terminal: 'read' devuelve 1; se cuenta como una línea y se sigue

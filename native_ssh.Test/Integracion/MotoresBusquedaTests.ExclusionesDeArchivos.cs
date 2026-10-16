@@ -6,7 +6,7 @@ namespace NativeSsh.Test.Integracion
     // Las exclusiones de archivos (*.min.js, *.map, *.lock, package-lock.json...) son solo para archivos: un directorio
     // que se llama como una de ellas se recorre en los cuatro caminos, como en grep de GNU (--exclude no se aplica a los
     // directorios) y en el recorrido con find ('! -name' junto a '-type f'). rg omitía el directorio entero porque sus
-    // globs, sin barra final, casan también con directorios (sonda N03 de la auditoría del A-nonies; A-decies, AD2).
+    // globs, sin barra final, casan también con directorios (caso N03 de la revisión del A-nonies; A-decies, AD2).
     public sealed partial class MotoresBusquedaTests
     {
         private void CrearArbolConDirectoriosQueSeLlamanComoArchivosExcluidos()

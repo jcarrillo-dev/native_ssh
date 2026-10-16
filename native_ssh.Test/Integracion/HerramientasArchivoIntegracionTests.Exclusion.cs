@@ -20,7 +20,7 @@ namespace NativeSsh.Test.Integracion
         // termine no puede pisarla ni mezclarse con ella: falla al momento con un mensaje claro sin crear temporal ni copia,
         // con o sin sudo en cualquiera de las dos (el candado es del archivo, no del usuario). Al terminar la restauración
         // el archivo es el original y una escritura nueva funciona. Antes, la segunda se confirmaba como correcta y la
-        // restauración la pisaba después (auditoría del A-quinquies, sonda N01).
+        // restauración la pisaba después (revisión del A-quinquies, caso N01).
         [Theory]
         [InlineData("en_sitio", false, false)]
         [InlineData("atomica", false, false)]
@@ -307,7 +307,7 @@ namespace NativeSsh.Test.Integracion
         // truncarlo (flock no depende del modo de apertura), porque todavía se le puede anexar y, con sudo, escribir en el
         // sitio. Durante la restauración de una escritura en el sitio con sudo interrumpida, un anexado sin sudo (que no
         // puede leerlo) falla al momento sin tocarlo; con sudo, también. Antes, sin permiso de lectura no se tomaba el
-        // candado: el anexado se confirmaba como correcto y la restauración lo borraba (auditoría del A-sexies, sonda X01).
+        // candado: el anexado se confirmaba como correcto y la restauración lo borraba (revisión del A-sexies, caso X01).
         [Theory]
         [InlineData(false)]
         [InlineData(true)]

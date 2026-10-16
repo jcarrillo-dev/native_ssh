@@ -8,7 +8,7 @@ using NativeSsh.Sesion;
 
 namespace NativeSsh.Test.Integracion
 {
-    // ssh_search por el sshd local con el rg de la máquina (sonda N03 de la auditoría del A-nonies; A-decies, AD2): un
+    // ssh_search por el sshd local con el rg de la máquina (caso N03 de la revisión del A-nonies; A-decies, AD2): un
     // directorio que se llama como una exclusión de archivos se recorre. Sin rg en la máquina, no prueba nada. También el
     // aviso de un subdirectorio ilegible con el motor que haya (A-undecies, AU3).
     [Trait("Categoria", "Integracion")]

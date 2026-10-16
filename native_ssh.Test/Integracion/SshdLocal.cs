@@ -188,7 +188,7 @@ namespace NativeSsh.Test.Integracion
     }
 
     // sshd con un shell de login cuyo PATH no es el de los canales exec: una granja de /usr/bin sin 'timeout' ni 'rg',
-    // más un 'rg' falso y una sonda. Y MaxSessions 2: el shell y un único canal exec a la vez.
+    // más un 'rg' falso y un ejecutable de prueba (ns_sonda_path). Y MaxSessions 2: el shell y un único canal exec a la vez.
     [SupportedOSPlatform("linux")]
     public sealed class SshdLocalRestringido : IDisposable
     {

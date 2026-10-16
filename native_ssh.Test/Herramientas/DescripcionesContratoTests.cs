@@ -11,7 +11,7 @@ using NativeSsh.Herramientas;
 
 namespace NativeSsh.Test.Herramientas
 {
-    // La descripción de cada herramienta es su contrato completo (lo único que lee con seguridad un modelo sencillo): las
+    // La descripción de cada herramienta es su contrato completo (lo único que lee con seguridad un cliente sencillo): las
     // cifras, listas y campos que da salen del código y no pueden quedarse atrás si este cambia.
     public sealed partial class DescripcionesContratoTests
     {
@@ -49,7 +49,7 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("append=true").And.NotContain("rsync").And.NotContain("configuración por defecto");
         }
 
-        // Lo de 'ediciones' que el modelo malinterpretaba (rango por edición, referido al original) va al principio.
+        // Lo de 'ediciones' que el cliente malinterpretaba (rango por edición, referido al original) va al principio.
         [Fact]
         public void Replace_EdicionesSinRangoYSobreElResultadoDeLaAnteriorAlPrincipio()
         {

@@ -12,13 +12,13 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // V06 y V08 de la auditoría del E-quinquies: la escritura atascada en SSH.NET es la del propio ssh_input (servidor
+    // V06 y V08 de la revisión del E-quinquies: la escritura atascada en SSH.NET es la del propio ssh_input (servidor
     // congelado con el envío TCP lleno, o servidor sano con el terminal en modo raw y un proceso que no lee, que agota la
     // ventana del canal). ssh_cancel cancelaba en su propio hilo la continuación del bucle, que esperaba sin límite al
     // candado de escritura retenido por esa entrada: no volvía hasta un ssh_disconnect. Y la entrada, al fallar después,
     // decía que el comando «no admite entrada». Ahora ssh_cancel vuelve en unos segundos sin enviar Ctrl+C (diciendo que el
     // proceso sigue y que ssh_disconnect lo libera) y la entrada falla con su causa real.
-    // W01 y W07 de la auditoría del E-sexies: después, sin ssh_disconnect, el comando siguiente esperaba a que pasara la
+    // W01 y W07 de la revisión del E-sexies: después, sin ssh_disconnect, el comando siguiente esperaba a que pasara la
     // entrada y se escribía en la entrada del proceso cancelado (o se ejecutaba en el shell anidado en el que acababa ese
     // proceso). Ahora ese shell queda abandonado y el comando siguiente abre otro sobre la misma conexión.
     [Trait("Categoria", "Integracion")]
@@ -184,7 +184,7 @@ namespace NativeSsh.Test.Integracion
             _ = _sshd.Sshd.ConexionesAceptadas().Should().Be(aceptadas);
         }
 
-        // O1 de la auditoría del E-sexies (sonda W04 modo 1): con la ventana del canal agotada, SSH.NET esperaba a que el
+        // O1 de la revisión del E-sexies (caso W04 modo 1): con la ventana del canal agotada, SSH.NET esperaba a que el
         // servidor la ampliara y nadie despertaba esa espera al cerrarse el canal; sin ConnectionInfo.Timeout (ConexionSshNet),
         // ssh_input no volvía hasta ssh_disconnect. Corregido en externo/SSH.NET ("Stop waiting for the remote window when the
         // channel is closed"): la escritura falla en cuanto el servidor cierra el canal.

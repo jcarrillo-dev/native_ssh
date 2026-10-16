@@ -94,7 +94,7 @@ namespace NativeSsh.Test.Integracion
             _ = (despues - antesDeDesconectar).Should().Be(new RegistroSshd(Conexiones: 1, Shells: 1, Exec: 0));
         }
 
-        // Lo mismo que SinBash_ElErrorDiceQueFaltaBash…, visto por el LLM a través del binario (era un fallo conocido).
+        // Lo mismo que SinBash_ElErrorDiceQueFaltaBash…, visto por el cliente a través del binario (era un fallo conocido).
         [FactContenedor]
         public async Task SinBash_Binario_ElErrorDiceQueFaltaBashYQueNativeSshLoNecesita()
         {

@@ -227,7 +227,7 @@ namespace NativeSsh.Test.Comun
             _ = error.Should().Contain("espacios").And.NotContain(TokenValido);
         }
 
-        // Frontera del mínimo de 16 caracteres (mutación A04 de la auditoría del tramo 1).
+        // Frontera del mínimo de 16 caracteres (mutación A04 de la revisión del tramo 1).
         [Theory]
         [InlineData(15, false)]
         [InlineData(16, true)]

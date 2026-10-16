@@ -12,7 +12,7 @@ namespace NativeSsh.Test.Integracion
     // ssh_input sobre un comando cuyo shell todavía se está abriendo (el login de este sshd tarda 3 s): la petición ya está en
     // ejecución, pero el comando aún no se ha enviado al shell y la sesión rechaza la entrada. El error dice esa causa (el
     // shell se está abriendo; reintentar cuando ssh_status lo muestre activo) y no una lista cerrada de causas que no la
-    // incluye; con el shell abierto, la misma entrada llega (auditoría del A-septies, sondas Y01 e Y02).
+    // incluye; con el shell abierto, la misma entrada llega (revisión del A-septies, casos Y01 e Y02).
     // Con guardarSalida, el archivo va a un prefijo propio dentro de un directorio temporal de la prueba (no al
     // /tmp/native_ssh-<usuario> de la máquina), que se borra al terminar (IAsyncLifetime: xUnit 2 no llama a
     // IAsyncDisposable en las clases de prueba).
@@ -60,7 +60,7 @@ namespace NativeSsh.Test.Integracion
             $"No se envió la entrada al comando {id}, que sigue en ejecución: el shell de {_sshd.Destino.Clave} tiene el canal abierto, pero aún se está inicializando (primer comando del destino, tras ssh_reset_shell o con un inicio de sesión lento) y el comando todavía no se le ha enviado. {Reintento}";
 
         // Primer comando de un destino (conexión + login de 3 s) con esperarSegundos=0 y ssh_input al momento: el patrón
-        // habitual de un LLM con un comando interactivo. Según llegue, el canal aún no está abierto (conexión) o ya lo está
+        // habitual de un cliente con un comando interactivo. Según llegue, el canal aún no está abierto (conexión) o ya lo está
         // y el login sigue: el error dice una de las dos cosas, nunca una lista de causas que no incluye la real (C7: antes,
         // «no admite entrada: está en estado Ejecutando»). Igual con guardarSalida, cuyo envoltorio se compone al enviar.
         [Theory]

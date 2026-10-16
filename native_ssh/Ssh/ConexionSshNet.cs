@@ -30,7 +30,7 @@ namespace NativeSsh.Ssh
         // servidor (externo/SSH.NET, "Close a session channel whose open is confirmed after Open stopped waiting"), pero el
         // plazo sigue siendo infinito: con uno finito (medido con el de TimeoutConexion), un servidor congelado durante una
         // renegociación más que ese plazo hace fallar los envíos que esperan a que termine, la conexión se pierde y con ella
-        // el shell y sus variables (sonda R08 de la auditoría del E-quater), y una apertura que vence libera su plaza del
+        // el shell y sus variables (caso R08 de la revisión del E-quater), y una apertura que vence libera su plaza del
         // cupo mientras el servidor aún puede abrir el canal (ServidorCongeladoTests, cupo coherente de EQ1). Esperas
         // afectadas tras conectar:
         // - apertura de canal y peticiones pty-req, shell y exec (ChannelSession): SesionShell las hace fuera del bucle de
@@ -63,7 +63,7 @@ namespace NativeSsh.Ssh
         // servidor seguía contándolo en su MaxSessions. externo/SSH.NET ("Keep the session semaphore until the server
         // closes the channel") ya retiene su propio semáforo de MaxSessions hasta ese CLOSE cuando la espera vence, pero no
         // lo expone por canal (SshCommand no dice cuándo cierra el servidor), y el cupo de SesionShell lo necesita para no
-        // provocar rechazos del MaxSessions real del servidor: con el plazo de 1 s, fallan la sonda R10 de la auditoría del
+        // provocar rechazos del MaxSessions real del servidor: con el plazo de 1 s, fallan el caso R10 de la revisión del
         // E-quater y CupoCanalesExecTests (el cupo se liberaba antes que la sesión del servidor). Por eso sigue infinito.
         // Quien cierra el canal del shell no lo espera más de un segundo (SesionShell.CerrarCanal): un bash remoto que no
         // muere al perder el terminal no puede bloquear la cola.

@@ -1,7 +1,7 @@
 namespace NativeSsh.Herramientas
 {
     // Campo 'instructions' de la respuesta a 'initialize' (McpServerOptions.ServerInstructions): lo que el cliente MCP pone en
-    // el contexto del modelo antes de que abra la descripción de ninguna herramienta. Es el enrutamiento «tarea →
+    // el contexto del cliente antes de que abra la descripción de ninguna herramienta. Es el enrutamiento «tarea →
     // herramienta» y las reglas que cruzan varias herramientas; el contrato de cada una está en su [Description]. Texto
     // autocontenido (sin remitir a documentos ni a rutas de nadie), en el mismo tono imperativo que las descripciones y sin
     // nada que caduque (versiones, recuentos). Cada línea va con '\n' explícito: un literal multilínea arrastraría el fin de

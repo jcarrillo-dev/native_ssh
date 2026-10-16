@@ -38,7 +38,7 @@ namespace NativeSsh.Protocolo
         }
 
         // Quita secuencias CSI/OSC/charset, BEL y el CR de los CRLF. Un CR suelto se conserva, salvo con isComoTerminal (RC3,
-        // lo que ve el LLM de ssh_exec): entonces se trata como en un terminal, y lo que se escribe tras él en la misma línea
+        // lo que ve el cliente de ssh_exec): entonces se trata como en un terminal, y lo que se escribe tras él en la misma línea
         // sustituye a lo anterior (las barras de progreso de apt, dpkg o curl daban líneas de miles de caracteres). Un CR suelto
         // al final de los datos o seguido del salto de línea no borra nada (se quita): si lo que lo sigue llega en otro trozo,
         // no se puede deshacer lo ya entregado. No es un terminal completo: un texto más corto que el anterior no deja a la

@@ -456,7 +456,7 @@ namespace NativeSsh.Test.Herramientas
             _ = escrituraStaging.Estado.Should().Be(EstadoPeticionEnum.Completado, escrituraStaging.Aviso);
         }
 
-        // Al revés (la sonda de la auditoría con la garantía nueva): filtrado por el HostName de la entrada, ssh_status dice
+        // Al revés (el caso de la revisión con la garantía nueva): filtrado por el HostName de la entrada, ssh_status dice
         // true y la escritura a ese texto se rechaza.
         [Fact]
         public async Task Estado_FiltroPorElHostNameDeLaEntrada_DiceLoQueHaceLaEscritura()

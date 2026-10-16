@@ -16,7 +16,7 @@ namespace NativeSsh.Herramientas
     // segmento se miran el programa (tras sudo, env, time, nice, nohup, command, exec, stdbuf, timeout, builtin, las
     // asignaciones y las palabras reservadas then, else, do, if, elif, while y until), sus argumentos y sus redirecciones, y
     // los separadores de alrededor: una lectura cuya salida va a otra orden (|) o a un archivo no devuelve el contenido al
-    // LLM. Una palabra reservada solo lo es sin comillas ni '\' ('do' entre comillas es una orden) y los patrones de un case
+    // cliente. Una palabra reservada solo lo es sin comillas ni '\' ('do' entre comillas es una orden) y los patrones de un case
     // (lo que va de 'in' o ';;' hasta ')') no son órdenes.
     public sealed partial class HerramientasSsh
     {
@@ -199,7 +199,7 @@ namespace NativeSsh.Herramientas
             if (orden.Programa is null || orden.HasAyuda || (orden.Condicion is not null && orden.Programa != "sleep"))
                 return null;
 
-            // La salida llega al LLM: no va a otra orden ni a un archivo (2>&1, 2>/dev/null y >&2 no la desvían).
+            // La salida llega al cliente: no va a otra orden ni a un archivo (2>&1, 2>/dev/null y >&2 no la desvían).
             bool isSalidaAlLlm = !orden.IsTuberiaDeSalida && orden.DestinoSalida is null;
             string programa = orden.Programa;
             return programa switch
@@ -403,7 +403,7 @@ namespace NativeSsh.Herramientas
         }
 
         // cat: con heredoc o herestring y la salida a un archivo es una escritura (cat > f <<EOF); con archivos y la salida al
-        // LLM, una lectura. 'cat -' (o sin archivos) lee la entrada estándar: nada.
+        // cliente, una lectura. 'cat -' (o sin archivos) lee la entrada estándar: nada.
         private static string? AvisoCat(OrdenSimple orden, bool isSalidaAlLlm)
         {
             if (orden.HasDocumentoEnLinea)
@@ -435,7 +435,7 @@ namespace NativeSsh.Herramientas
         }
 
         // sed: -i (o --in-place) es una edición en el sitio; -n con un script que solo imprime líneas por su número y algún
-        // archivo, con la salida al LLM, es una lectura. Cualquier otro script (s///…) es una transformación: nada.
+        // archivo, con la salida al cliente, es una lectura. Cualquier otro script (s///…) es una transformación: nada.
         private static string? AvisoSed(OrdenSimple orden, bool isSalidaAlLlm)
         {
             if (IsEdicionEnSitio(orden.Argumentos, 'e', 'f', 'l') || Array.Exists(orden.Argumentos, static a => a.StartsWith("--in-place", StringComparison.Ordinal)))

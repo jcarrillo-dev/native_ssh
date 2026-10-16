@@ -7,7 +7,7 @@ using NativeSsh.Herramientas;
 
 namespace NativeSsh.Test.Herramientas
 {
-    // El parámetro 'destino' de todas las herramientas admite un alias de ~/.ssh/config: su descripción lo dice (el LLM
+    // El parámetro 'destino' de todas las herramientas admite un alias de ~/.ssh/config: su descripción lo dice (el cliente
     // solo ve la descripción).
     public sealed class DescripcionesDestinoTests
     {

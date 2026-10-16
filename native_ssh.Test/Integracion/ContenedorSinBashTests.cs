@@ -37,7 +37,7 @@ namespace NativeSsh.Test.Integracion
         // Límite de seguridad para que una llamada colgada no cuelgue la suite (falla la prueba con TimeoutException).
         private static readonly TimeSpan LimiteSeguridad = TimeSpan.FromSeconds(60);
 
-        // El texto que debe ver el LLM: que falta bash y que native_ssh lo necesita.
+        // El texto que debe ver el cliente: que falta bash y que native_ssh lo necesita.
         [GeneratedRegex(@"\bbash\b[\s\S]*\b(necesita|requiere)\b|\b(necesita|requiere)\b[\s\S]*\bbash\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
         private static partial Regex MensajeSinBash();
 
@@ -290,7 +290,7 @@ namespace NativeSsh.Test.Integracion
                 : mensaje.Should().Contain("con -c y sin login").And.NotContain("shell de login");
         }
 
-        // El texto que recibe el LLM de cada herramienta: el aviso de un comando en Error o el mensaje de la excepción.
+        // El texto que recibe el cliente de cada herramienta: el aviso de un comando en Error o el mensaje de la excepción.
         private async Task<string> MensajeAsync(HerramientasSsh herramientas, string herramienta, string archivo)
         {
             switch (herramienta)
@@ -372,7 +372,7 @@ namespace NativeSsh.Test.Integracion
                 salida.WriteLine($"{llamada.Duracion.TotalSeconds:0.00} s: {llamada}");
         }
 
-        // Contadores del log VERBOSE del sshd del contenedor (sshd -e, en 'podman logs'): conexiones autenticadas (la sonda
+        // Contadores del log VERBOSE del sshd del contenedor (sshd -e, en 'podman logs'): conexiones autenticadas (el caso
         // del banner de contenedor-sudo.sh no se autentica, así que no cuenta) y canales de sesión abiertos (shell o exec).
         private sealed record RegistroSshd(int Conexiones, int Shells, int Exec)
         {

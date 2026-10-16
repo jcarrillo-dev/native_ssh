@@ -15,7 +15,7 @@ namespace NativeSsh.Test.Utilidades
 
         // Los sshd de las colecciones con login lento, restringido y en español, si no se fijan con su variable, escuchan en
         // X222, X322 y X072 del bloque de la ejecución: fuera del rango manual y del X122 del HTTP de los humos y de las
-        // sondas. El de español estuvo en X422, dentro del rango manual: chocaba con el puerto que Libre() daba a otra prueba.
+        // pruebas a mano. El de español estuvo en X422, dentro del rango manual: chocaba con el puerto que Libre() daba a otra prueba.
         public const int DesplazamientoLento = 200;
         public const int DesplazamientoRestringido = 300;
         public const int DesplazamientoIdioma = 50;

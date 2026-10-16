@@ -10,14 +10,14 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // Z06 de la auditoría del E-septies (B1, preexistente): Ctrl+C (ssh_cancel o el plazo de ssh_exec) a un comando que
+    // Z06 de la revisión del E-septies (B1, preexistente): Ctrl+C (ssh_cancel o el plazo de ssh_exec) a un comando que
     // abrió un shell interactivo anidado (sudo -i, su -, ssh a otra máquina, bash -i). El anidado no muere, la línea de
     // recuperación se ejecutaba dentro de él y su marcador daba la cancelación por buena: los comandos siguientes corrían
     // dentro (como root o en otra máquina) y volvían Completado sin aviso. Ahora la línea comprueba $$, $PPID y el testigo
     // del canal contra los del shell de la sesión y, si no coinciden, se cierra el canal y se dice.
     // También lo que no debe detectarse como anidado: subshells, bash -c, tuberías, funciones, source, exec de
     // redirecciones, cancelaciones normales y ssh_reset_shell. Un exec que sustituye al shell de la sesión por otro programa
-    // (exec bash, exec sh, exec env … bash) sí se detecta (B1 de la auditoría del E-octies): ese programa no tiene el
+    // (exec bash, exec sh, exec env … bash) sí se detecta (B1 de la revisión del E-octies): ese programa no tiene el
     // testigo, y el mismo mecanismo cubre exec su, exec setpriv … bash, chroot o nsenter (otro usuario o mismo pid).
     [Collection(ColeccionSshd.Nombre)]
     [Trait("Categoria", "Integracion")]

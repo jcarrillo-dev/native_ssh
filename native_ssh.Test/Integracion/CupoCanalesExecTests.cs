@@ -95,7 +95,7 @@ namespace NativeSsh.Test.Integracion
             }
         }
 
-        // Q4c de la auditoría del E-quinquies: el adaptador de SSH.NET avisa de la confirmación de cada apertura; sin ese
+        // Q4c de la revisión del E-quinquies: el adaptador de SSH.NET avisa de la confirmación de cada apertura; sin ese
         // aviso, una lectura que espera cupo detrás de cuatro canales confirmados diría que hay aperturas sin confirmar.
         [Fact]
         public async Task CupoOcupadoPorCanalesConfirmados_ElMensajeNoAfirmaAperturasSinConfirmar()
@@ -113,7 +113,7 @@ namespace NativeSsh.Test.Integracion
             _ = mensaje.Should().Contain("siguen ocupados").And.NotContain("sin confirmar");
         }
 
-        // Q4d de la auditoría del E-quinquies: una lectura abandonada con la apertura sin confirmar (servidor congelado)
+        // Q4d de la revisión del E-quinquies: una lectura abandonada con la apertura sin confirmar (servidor congelado)
         // deja de contar como tal cuando su apertura termina sin confirmación (aquí, al caer la conexión). Si siguiera
         // contando, el mensaje de cupo de la misma sesión, ya sobre la conexión nueva, afirmaría una apertura inexistente.
         [Fact]

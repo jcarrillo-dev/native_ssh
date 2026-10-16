@@ -426,7 +426,7 @@ namespace NativeSsh.Test.Herramientas
         }
 
         // Los avisos que la compactación soltó por el tope los resume la respuesta: cuántos comandos y cuántas líneas, una
-        // sola vez, para que la respuesta siga diciendo exactamente cuántas líneas se descartaron (Y01 de la auditoría del
+        // sola vez, para que la respuesta siga diciendo exactamente cuántas líneas se descartaron (Y01 de la revisión del
         // tramo 1-septies: con más de 16 pendientes no decía que hubo más).
         [Fact]
         public void DescribirAvisosOmitidos_DiceCuantosComandosYLineasUnaSolaVez()
@@ -486,7 +486,7 @@ namespace NativeSsh.Test.Herramientas
 
         // Mientras el shell se abre (la conexión, o la apertura del canal del shell, retenidas) la petición ya está en
         // ejecución pero el comando aún no se ha enviado y la sesión rechaza la entrada: el error dice que el shell se está
-        // abriendo y que se reintente cuando ssh_status lo muestre activo, no una lista de causas que no la incluye (auditoría
+        // abriendo y que se reintente cuando ssh_status lo muestre activo, no una lista de causas que no la incluye (revisión
         // del A-septies, Y01/Y02). Con el shell ya abierto, la misma entrada llega.
         [Theory]
         [InlineData("conexion")]
@@ -522,8 +522,8 @@ namespace NativeSsh.Test.Herramientas
 
         // Con el canal del shell ya abierto pero el inicio de sesión todavía en curso (aquí tarda 1,5 s), la sesión sigue
         // rechazando la entrada: ssh_status muestra el shell activo, así que el error no dice que no lo esté, sino que aún se
-        // está inicializando: con la señal de la sesión (el comando no se ha enviado) es la única causa (auditoría del
-        // A-septies, sonda Y02; antes daba dos posibles, la otra un fallo de la escritura, que no rechaza sino que lanza su
+        // está inicializando: con la señal de la sesión (el comando no se ha enviado) es la única causa (revisión del
+        // A-septies, caso Y02; antes daba dos posibles, la otra un fallo de la escritura, que no rechaza sino que lanza su
         // propio error).
         [Fact]
         public async Task Input_ConElCanalAbiertoYLaInicializacionEnCurso_DiceQueAunSePuedeEstarInicializando()
@@ -854,7 +854,7 @@ namespace NativeSsh.Test.Herramientas
         // Una escritura en cola detrás de un comando colgado y cancelada con el token: no llega a ejecutarse, y la
         // El shell se pierde con el comando de la escritura ya enviado y sin ninguna salida: no es un comando que no llegó
         // al shell (pudo ejecutarse), así que el error no dice que no se ejecutó ni que el archivo no se modificó, sino que
-        // no consta y cómo comprobarlo (mutación M22 de la auditoría del A-nonies; A-decies, AD3).
+        // no consta y cómo comprobarlo (mutación M22 de la revisión del A-nonies; A-decies, AD3).
         [Fact]
         public async Task WriteFile_ShellPerdidoConElComandoEnviadoYSinSalida_NoDiceQueNoSeEjecuto()
         {

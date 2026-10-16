@@ -8,7 +8,7 @@ namespace NativeSsh.Test.Integracion
     // bash sobre /dev/fd/N lo resuelve en /proc/self/fd/N y sería siempre falso. La comprobación de que el candado quedó
     // sobre el archivo que sigue en la ruta se hace entonces comparando dispositivo e inodo con stat de GNU coreutils,
     // python3 o perl; si ninguno puede, se conserva el candado y la respuesta lo avisa, sin afirmar que el archivo se
-    // sustituyó (auditoría del A-sexies, sonda X02).
+    // sustituyó (revisión del A-sexies, caso X02).
     public sealed partial class HerramientasArchivoIntegracionTests
     {
         private const string AvisoCandadoSinComprobar = " El script tomó el candado del archivo (flock), pero no se pudo comprobar que quedara sobre el archivo que está en la ruta (en el servidor no hay /proc, ni stat de GNU coreutils, python3 o perl con que comparar los inodos, o no se pudo consultar la ruta): si otro proceso lo sustituyó justo mientras se tomaba, la escritura no estuvo protegida frente a otra simultánea sobre el mismo archivo.";

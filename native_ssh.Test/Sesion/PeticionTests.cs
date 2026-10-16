@@ -236,7 +236,7 @@ namespace NativeSsh.Test.Sesion
         }
 
         // La respuesta que ya recorrió la cadena suelta su enlace solo si sigue siendo el que recorrió: si entretanto la
-        // compactación lo cambió (la petición está en medio de la cadena), el nuevo no se pisa (mutación Q02 de la auditoría
+        // compactación lo cambió (la petición está en medio de la cadena), el nuevo no se pisa (mutación Q02 de la revisión
         // del tramo 1-septies: soltar sin comparar).
         [Fact]
         public void SoltarAnteriorConTecleadoDescartado_NoPisaUnEnlaceNuevo()

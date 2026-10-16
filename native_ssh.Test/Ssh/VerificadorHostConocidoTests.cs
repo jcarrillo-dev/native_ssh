@@ -347,7 +347,7 @@ namespace NativeSsh.Test.Ssh
             _ = VerificadorHostConocido.LongitudJuntada(["abc", "de"], 8192).Should().Be(5);
         }
 
-        // Host desconocido: el error pide al usuario que compruebe la huella y la guarde él, y dice al modelo que no la añada
+        // Host desconocido: el error pide al usuario que compruebe la huella y la guarde él, y dice al cliente que no la añada
         // nunca (tampoco si el usuario dice que ya la comprobó). Con varios known_hosts, el texto habla de «uno de ellos».
         [Fact]
         public void RechazoHostDesconocido_UnFichero_LaGuardaElUsuarioYNoElModelo()
@@ -383,7 +383,7 @@ namespace NativeSsh.Test.Ssh
                 .And.Contain("No la añadas tú");
         }
 
-        // Clave distinta: también la actualiza el usuario, no el modelo.
+        // Clave distinta: también la actualiza el usuario, no el cliente.
         [Fact]
         public void RechazoClaveDistinta_LaActualizaElUsuario()
         {

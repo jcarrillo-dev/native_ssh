@@ -9,7 +9,7 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // Z01 de la auditoría del E-septies: cada cancelación sin Ctrl+C (entrada atascada en un proceso con el terminal en
+    // Z01 de la revisión del E-septies: cada cancelación sin Ctrl+C (entrada atascada en un proceso con el terminal en
     // modo raw que no lee) deja un shell abandonado que vive hasta ssh_disconnect y ocupa una sesión del MaxSessions del
     // servidor. Al llenarlo, abrir el shell fallaba diciendo que las sesiones las ocupaban «canales de las herramientas de
     // lectura» y que se reintentara «cuando terminen las lecturas en curso», sin ninguna lectura y sin que reintentar
@@ -103,7 +103,7 @@ namespace NativeSsh.Test.Integracion
             _ = lecturaTras.Should().Be("sin error");
         }
 
-        // O3 de la auditoría del E-octies (EN3): con MaxSessions 1 el shell ocupa la única sesión y las lecturas se rechazan;
+        // O3 de la revisión del E-octies (EN3): con MaxSessions 1 el shell ocupa la única sesión y las lecturas se rechazan;
         // el mensaje nombra al shell como ocupante y no manda reintentar (no sirve mientras siga abierto). Tras
         // ssh_disconnect, la lectura sí se abre.
         [Fact]

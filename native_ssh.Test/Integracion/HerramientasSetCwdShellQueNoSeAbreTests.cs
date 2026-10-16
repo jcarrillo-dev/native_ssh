@@ -11,7 +11,7 @@ namespace NativeSsh.Test.Integracion
 {
     // ssh_set_cwd cuando el shell de ssh_exec deja de poder abrirse (como un servidor sin bash o uno que deja de aceptar el
     // login): el comando no llega al shell, el error dice que no se hizo y el directorio de trabajo de native_ssh, el que
-    // usan las herramientas de lectura, sigue siendo el anterior (sonda N01 de la auditoría del A-nonies; A-decies, AD1).
+    // usan las herramientas de lectura, sigue siendo el anterior (caso N01 de la revisión del A-nonies; A-decies, AD1).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]

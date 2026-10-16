@@ -177,7 +177,7 @@ namespace NativeSsh.Test.Buffers
         }
 
         // Escribe 'flujo' en trozos, lee lo nuevo tras cada escritura (como ssh_output con desdeByte = siguienteByte) y cierra:
-        // lo leído una vez ya no cambia, así que la concatenación es todo lo que llegó a ver el modelo.
+        // lo leído una vez ya no cambia, así que la concatenación es todo lo que llegó a ver el cliente.
         private static string EscribirYLeerPorTrozos(BufferSalida buffer, string flujo, IEnumerable<int> trozos)
         {
             byte[] datos = Utf8(flujo);

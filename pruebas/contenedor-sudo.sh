@@ -27,7 +27,7 @@
 # Distros: debian, alpine y sinbash (pruebas/contenedor/Containerfile.<distro>). sinbash es Alpine sin bash instalado,
 # con el ash de busybox como shell de login (S4: qué hace native_ssh en un servidor sin bash).
 # Deja en pruebas/.estado-contenedor-<distro>/ (o en NATIVE_SSH_DIR_ESTADO): cliente_ed25519, known_hosts, puerto,
-# contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 23000 y 25999, para que cada agente
+# contenedor, usuario y contrasena. Puerto: NATIVE_SSH_PUERTO_CONTENEDOR (entre 23000 y 25999, para que cada ejecución
 # en paralelo use su rango; por defecto 25352 para debian, 25362 para alpine y 25392 para sinbash: fuera del rango
 # X400-X999 de los sshd manuales de las pruebas con el puerto de pruebas por defecto y distintos de los gemelos, 25372 y
 # 25382).

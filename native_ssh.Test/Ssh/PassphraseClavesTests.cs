@@ -11,7 +11,7 @@ using Renci.SshNet;
 namespace NativeSsh.Test.Ssh
 {
     // CI3: claves privadas con passphrase. La passphrase sale de NATIVE_SSH_PASSPHRASE o de un fichero que solo pueda leer su
-    // dueño (NATIVE_SSH_PASSPHRASE_FICHERO), nunca del LLM; si falta, es incorrecta o el fichero no vale, el motivo lo dice
+    // dueño (NATIVE_SSH_PASSPHRASE_FICHERO), nunca del cliente; si falta, es incorrecta o el fichero no vale, el motivo lo dice
     // sin mostrarla, ni en los mensajes ni en el log. Claves generadas con ssh-keygen en un directorio temporal propio.
     [SupportedOSPlatform("linux")]
     public sealed class PassphraseClavesTests : IDisposable

@@ -268,7 +268,7 @@ namespace NativeSsh.Test.Ssh
             _ = Resolver(resolutor, "web").Servidor.Should().Be("127.0.0.1");
         }
 
-        // El destino lo escribe el LLM: nada que ssh -G pudiera tomar por una opción o una URI llega a ejecutarse.
+        // El destino lo escribe el cliente: nada que ssh -G pudiera tomar por una opción o una URI llega a ejecutarse.
         [Theory]
         [InlineData("-oProxyCommand=touch")]
         [InlineData("[ssh://h]")]

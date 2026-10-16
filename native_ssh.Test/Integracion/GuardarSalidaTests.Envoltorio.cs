@@ -5,7 +5,7 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // guardarSalida (O-a de la auditoría de la línea 1-ter): el resumen (recuento, «ya no estaba», estado y código) no depende
+    // guardarSalida (O-a de la revisión de la línea 1-ter): el resumen (recuento, «ya no estaba», estado y código) no depende
     // de variables del envoltorio que el comando pueda reasignar, quitar o hacer de solo lectura; y si algo del shell impide
     // preparar el archivo sin que el envoltorio diga por qué, la respuesta no es Completado.
     public sealed partial class GuardarSalidaTests

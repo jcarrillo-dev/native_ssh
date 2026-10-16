@@ -6,7 +6,7 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // EO2 (B1 de la auditoría del E-septies) con sudo real: Ctrl+C (ssh_cancel o el plazo de ssh_exec) a un shell de root
+    // EO2 (B1 de la revisión del E-septies) con sudo real: Ctrl+C (ssh_cancel o el plazo de ssh_exec) a un shell de root
     // ya autenticado ('sudo -i', 'su -'). El shell de root no muere con Ctrl+C y la línea de recuperación se ejecutaba
     // dentro de él: los comandos siguientes corrían como root y volvían Completado sin aviso. Ahora la línea comprueba que
     // la ejecuta el shell de la sesión ($$ y $PPID) y, si no, se cierra el canal (el shell de root recibe SIGHUP).

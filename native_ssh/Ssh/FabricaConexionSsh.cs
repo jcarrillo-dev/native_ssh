@@ -15,7 +15,7 @@ namespace NativeSsh.Ssh
     // Claves privadas (CI3): las de destino.Identidades (IdentityFile de la configuración de ssh) o, si no las hay, las de
     // NATIVE_SSH_IDENTIDADES. Una clave cifrada se abre con la passphrase de NATIVE_SSH_PASSPHRASE o del fichero de
     // NATIVE_SSH_PASSPHRASE_FICHERO (con las mismas comprobaciones que el del token HTTP: FicheroSecreto), nunca con algo que
-    // venga del LLM. La passphrase solo se lee cuando hace falta (una clave sin cifrar no la necesita), no se guarda y no
+    // venga del cliente. La passphrase solo se lee cuando hace falta (una clave sin cifrar no la necesita), no se guarda y no
     // aparece en ningún mensaje ni log. Cada clave abierta se guarda por su ruta y se reutiliza. La que no se pudo abrir se
     // reintenta cuando cambia su fichero o el de la passphrase (fecha, tamaño o permisos): arreglarla no exige reiniciar
     // native_ssh, y mientras nada cambie su motivo se repite sin volver a abrirla (bcrypt cuesta casi un segundo) ni a
@@ -336,8 +336,8 @@ namespace NativeSsh.Ssh
         private string DescribirRechazo(DestinoSsh destino, ResultadoHostEnum resultado, string tipo, string huella) =>
             DescribirRechazo(destino, resultado, tipo, huella, verificador.Rutas);
 
-        // La clave del host la guarda o la actualiza siempre el usuario, nunca el modelo: aunque diga que comprobó la huella, el
-        // modelo no puede saber si la comprobó contra la buena. Con varios known_hosts, la que falta no está en ninguno y basta
+        // La clave del host la guarda o la actualiza siempre el usuario, nunca el cliente: aunque diga que comprobó la huella, el
+        // cliente no puede saber si la comprobó contra la buena. Con varios known_hosts, la que falta no está en ninguno y basta
         // con guardarla en uno.
         internal static string DescribirRechazo(DestinoSsh destino, ResultadoHostEnum resultado, string tipo, string huella, string[] rutas)
         {

@@ -16,7 +16,7 @@ namespace NativeSsh.Ssh
     // reales, porque 'Host *' y Match se les aplican igual.
     // Decisiones:
     // - Lo explícito del destino manda: usuario@ se pasa con -l y :puerto con -p (así Match user y %r lo ven, como en ssh).
-    // - El destino lo escribe el LLM: servidor y usuario solo admiten [A-Za-z0-9._-] (y ':' el servidor, por IPv6), sin
+    // - El destino lo escribe el cliente: servidor y usuario solo admiten [A-Za-z0-9._-] (y ':' el servidor, por IPv6), sin
     //   empezar por '-', y el servidor va tras '--'. Sin esto, «ssh://u@h:p» (ssh -G entiende URIs) o «-oX=y» cambiarían la
     //   resolución.
     // - known_hosts y el limitador no cambian: se usan con el HostName y el Port resueltos (los de la conexión real).

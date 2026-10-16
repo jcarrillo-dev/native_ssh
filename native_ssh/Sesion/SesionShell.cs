@@ -1239,7 +1239,7 @@ namespace NativeSsh.Sesion
         // de órdenes lo quita). Medido también: una función 'printf' que no imprime nada rompe además el marcador (agota el
         // plazo) y una función 'eval' no llega aquí (da código 0 sin ejecutar nada). El único remedio es un shell nuevo: el
         // comando que intentara deshacer el cambio (set +x, unset -f, unalias) viaja por el mismo envío y tampoco se ejecuta
-        // (medido en la auditoría del tramo 1-septies), así que el mensaje no lo propone.
+        // (medido en la revisión del tramo 1-septies), así que el mensaje no lo propone.
         internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: el texto que recibió el shell no coincidió con el enviado y el shell no ejecuta un comando distinto del pedido. Causas posibles: otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte del envío; un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar; o hay una función o un alias 'base64' o 'printf' que cambia lo que imprimen. Mientras siga así, ningún comando se ejecutará, TAMPOCO uno que intente deshacer el cambio o terminar ese proceso: usa ssh_reset_shell (abre un shell nuevo y cierra el anterior con lo que dejó) y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
@@ -1382,7 +1382,7 @@ namespace NativeSsh.Sesion
             // atrapa Ctrl+C se comió las dos primeras líneas de la primera, la cola que esperaba consume sin ejecutarla su
             // tercera, que termina en el centinela, y la ejecuta el reenvío: ConstructorComando.EscribirRecuperacion).
             // Con un proceso que tiene el terminal en modo raw, Ctrl+C no es una señal sino un byte más de su entrada, y las dos
-            // líneas (la primera y el reenvío) acaban también en ella (Z05 de la auditoría del E-septies): desde aquí no se puede
+            // líneas (la primera y el reenvío) acaban también en ella (Z05 de la revisión del E-septies): desde aquí no se puede
             // saber si el terminal está en raw (un proceso que ignora SIGINT tampoco da el marcador), así que no se distingue;
             // ese proceso no termina y el canal se cierra al vencer la espera, como siempre.
             // Cada línea comprueba además que la ejecuta el shell de la sesión (IdentidadShell): si el comando dejó otro shell

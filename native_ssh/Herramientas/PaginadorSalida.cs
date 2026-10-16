@@ -9,7 +9,7 @@ namespace NativeSsh.Herramientas
     }
 
     // Convierte un tramo del BufferSalida en texto: sin caracteres UTF-8 partidos y sin secuencias ANSI. isComoTerminal: un
-    // '\r' suelto se trata como en un terminal (ConversorTexto.LimpiarAnsi), para lo que ve el LLM de ssh_exec, ssh_output,
+    // '\r' suelto se trata como en un terminal (ConversorTexto.LimpiarAnsi), para lo que ve el cliente de ssh_exec, ssh_output,
     // ssh_input y ssh_cancel; no para la salida de las herramientas por el shell, que se interpreta. Una línea partida entre
     // dos páginas no se colapsa entera: cada página trata lo suyo.
     public static class PaginadorSalida

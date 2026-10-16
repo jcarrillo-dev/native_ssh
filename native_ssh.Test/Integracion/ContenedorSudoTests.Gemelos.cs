@@ -7,7 +7,7 @@ using NativeSsh.Test.Utilidades;
 
 namespace NativeSsh.Test.Integracion
 {
-    // B1 de la auditoría del E-octies (EN1): la identidad $$/$PPID colisiona entre contenedores gemelos, así que un Ctrl+C a
+    // B1 de la revisión del E-octies (EN1): la identidad $$/$PPID colisiona entre contenedores gemelos, así que un Ctrl+C a
     // 'ssh -tt' hacia el gemelo no se detectaba y los comandos siguientes corrían en la otra máquina sin aviso. Con el testigo
     // del canal se detecta. EN2: un exec que cambia de usuario sin cambiar de proceso (setpriv) o con su también se detecta.
     public sealed partial class ContenedorSudoTests

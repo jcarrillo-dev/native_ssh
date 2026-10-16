@@ -6,7 +6,7 @@ using NativeSsh.Herramientas;
 
 namespace NativeSsh.Test.Herramientas
 {
-    // ssh_find (C13): la línea '[montajes_no_explorados: …]' y lo que dice la descripción (las usa el LLM para ir montaje por
+    // ssh_find (C13): la línea '[montajes_no_explorados: …]' y lo que dice la descripción (las usa el cliente para ir montaje por
     // montaje).
     public sealed class BusquedaNombreMontajesTests
     {

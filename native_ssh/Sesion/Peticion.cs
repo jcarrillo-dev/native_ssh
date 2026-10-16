@@ -56,7 +56,7 @@ namespace NativeSsh.Sesion
         public bool IsHerramienta => Herramienta is not null;
 
         // Con ssh_exec y guardarSalida=true: el nonce de las marcas que el envoltorio deja en el terminal (SalidaGuardada). La
-        // sesión envuelve el comando al enviarlo; Comando sigue siendo el que pidió el LLM (ssh_status, avisos de antipatrón).
+        // sesión envuelve el comando al enviarlo; Comando sigue siendo el que pidió el cliente (ssh_status, avisos de antipatrón).
         public Guid? MarcaGuardado { get; }
 
         // Con MarcaGuardado: el filtro que quita sus marcas del terminal antes del búfer y guarda lo que dicen (su Informe).
@@ -66,11 +66,11 @@ namespace NativeSsh.Sesion
         public string IdTexto { get; }
         public DestinoSsh Destino { get; }
 
-        // Lo que se envía al shell: el comando del LLM (ssh_exec) o el script interno de una herramienta, que lleva el
+        // Lo que se envía al shell: el comando del cliente (ssh_exec) o el script interno de una herramienta, que lleva el
         // contenido del archivo en base64 (ssh_write_file, ssh_replace_file_content). Nunca se muestra: ver Descripcion.
         public string Comando { get; }
 
-        // Lo que se muestra de la petición (ssh_status, el «comando en curso» de las pistas): el comando del LLM en ssh_exec y,
+        // Lo que se muestra de la petición (ssh_status, el «comando en curso» de las pistas): el comando del cliente en ssh_exec y,
         // en las herramientas, «[herramienta] ruta», sin el script ni el contenido (Bloque ST).
         public string Descripcion
         {

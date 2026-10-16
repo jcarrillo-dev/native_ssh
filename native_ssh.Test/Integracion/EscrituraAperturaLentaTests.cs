@@ -16,7 +16,7 @@ namespace NativeSsh.Test.Integracion
     // archivo no se toca, y el error lo afirma con certeza: «No se llegó a ejecutar: no se ha modificado», sin el «No consta
     // ninguna modificación… El script no confirmó cómo terminó… compruébalo con ssh_stat» de un script interrumpido, que
     // contradecía el aviso de la sesión («el comando no llegó a enviarse»). Antes se decidía con TiempoEjecucion > 0, que
-    // solo dice si la petición salió de la cola (R07 de la auditoría de la integración).
+    // solo dice si la petición salió de la cola (R07 de la revisión de la integración).
     [Trait("Categoria", "Integracion")]
     [SupportedOSPlatform("linux")]
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El sshd y el gestor se liberan en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]

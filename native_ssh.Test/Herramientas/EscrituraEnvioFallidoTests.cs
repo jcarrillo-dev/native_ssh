@@ -12,7 +12,7 @@ namespace NativeSsh.Test.Herramientas
 {
     // Escritura cuyo comando falla al escribirse en el canal del shell: la petición termina como ShellPerdido sin la señal de
     // comando enviado, pero la escritura pudo quedarse a medias (parte del script pudo llegar al shell), así que el error no
-    // puede afirmar que el archivo no se ha modificado ni que no se ejecutó nada (I04 de la auditoría de la integración). Es
+    // puede afirmar que el archivo no se ha modificado ni que no se ejecutó nada (I04 de la revisión de la integración). Es
     // lo que distingue IsInterrumpidaSinEnviar (Cancelado o TiempoAgotado sin la señal) de un «sin la señal» a secas.
     [SuppressMessage("Reliability", "CA1001:Types that own disposable fields should be disposable", Justification = "El gestor se libera en IAsyncLifetime.DisposeAsync (xUnit 2 no llama a IAsyncDisposable en las clases de prueba).")]
     public sealed class EscrituraEnvioFallidoTests : IAsyncLifetime

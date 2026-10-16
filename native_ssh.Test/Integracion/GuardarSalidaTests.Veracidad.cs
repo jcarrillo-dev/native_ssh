@@ -76,7 +76,7 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(r.Archivo!)).Should().Be("[x][x][x][x]");
         }
 
-        // (O1 de la auditoría) Un comando que intenta sacar el nonce de $__ns_k e imprimir marcas E, A o F por el terminal: se
+        // (O1 de la revisión) Un comando que intenta sacar el nonce de $__ns_k e imprimir marcas E, A o F por el terminal: se
         // ejecuta, termina Completado y el archivo y el recuento son los suyos.
         [Theory]
         [InlineData("E")]

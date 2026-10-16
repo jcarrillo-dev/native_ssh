@@ -1138,7 +1138,7 @@ namespace NativeSsh.Herramientas
 
         // Motor de búsqueda elegido en el servidor: rg si está instalado (regex de Rust), si no grep -P (PCRE) si el grep
         // lo admite, y como último recurso grep -E (ERE). Los tres con las mismas exclusiones, filtro de extensión y límite.
-        // La primera línea anuncia el motor para que el LLM sepa qué sintaxis de regex se aplicó. Las exclusiones y -I de
+        // La primera línea anuncia el motor para que el cliente sepa qué sintaxis de regex se aplicó. Las exclusiones y -I de
         // grep son de GNU (se comprueba que las admite, no la versión): con otro grep (p. ej. busybox, que las rechaza con
         // su ayuda; Bloque S, P2) el árbol se recorre con find (poda de los mismos directorios, mismas exclusiones de
         // archivos y los binarios por extensión) y cada archivo se busca con grep -E; una regex inválida se detecta antes
@@ -3105,7 +3105,7 @@ namespace NativeSsh.Herramientas
 
         // Respuesta de ssh_exec, ssh_output, ssh_input y ssh_cancel en dos bloques de texto MCP, siempre los dos y en este orden:
         // el control (ControlComando, JSON compacto en una línea) y la salida tal cual, sin escapar (vacía si no hay). Así el
-        // modelo ve saltos de línea reales y, si el cliente vuelca la respuesta a un archivo (agy lo hace por encima de unos
+        // cliente ve saltos de línea reales y, si el cliente vuelca la respuesta a un archivo (algún cliente lo hace por encima de unos
         // pocos KB), el archivo tiene líneas reales y empieza por el control. Solo tipos del SDK y el contexto JSON generado:
         // sin reflexión (Native AOT).
         internal static CallToolResult DosBloques(ResultadoComando resultado) => new()
