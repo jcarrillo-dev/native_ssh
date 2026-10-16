@@ -13,9 +13,9 @@ namespace NativeSsh.Herramientas
     // los nombres de las variables de un .env sin sus valores) no avisan.
     // El comando se parte en segmentos (órdenes simples separadas por ;, &, &&, ||, |, |& y saltos de línea) fuera de
     // comillas, de $(…), de `…` y de los comentarios; el cuerpo de un heredoc no se analiza (no son órdenes). De cada
-    // segmento se miran el programa (tras sudo, env, time, nice, nohup, command, exec, stdbuf, timeout y las asignaciones), sus
-    // argumentos y sus redirecciones, y los separadores de alrededor: una lectura cuya salida va a otra orden (|) o a un
-    // archivo no devuelve el contenido al LLM.
+    // segmento se miran el programa (tras sudo, env, time, nice, nohup, command, exec, stdbuf, timeout, builtin, las
+    // asignaciones y las palabras then, else y do), sus argumentos y sus redirecciones, y los separadores de alrededor: una
+    // lectura cuya salida va a otra orden (|) o a un archivo no devuelve el contenido al LLM.
     public sealed partial class HerramientasSsh
     {
         private static string AvisoBusquedaRg(string programa) => $"Sugerencia de rendimiento: Has ejecutado '{programa}' sobre el sistema de archivos vía ssh_exec. Utiliza la herramienta especializada 'ssh_search' (usa rg en el servidor si lo tiene) para excluir automáticamente binarios, directorios pesados (.git, node_modules, .venv) y acotar las coincidencias.";
@@ -25,8 +25,43 @@ namespace NativeSsh.Herramientas
         private static string AvisoEdicionEnSitio(string orden) => $"Sugerencia de seguridad: Has editado un archivo en el sitio con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_replace_file_content' (varias ediciones en una llamada con 'ediciones', sudo=true para archivos de root): escribe de forma atómica o con copia de seguridad, con candado y comprobando que nadie cambió el archivo entretanto.";
         private static string AvisoEscrituraArchivo(string orden) => $"Sugerencia de seguridad: Has escrito un archivo con '{orden}' vía ssh_exec. Utiliza la herramienta especializada 'ssh_write_file' (contenido sin problemas de comillas ni de expansión de variables, escritura atómica con candado, append=true para anexar y sudo=true para archivos de root).";
 
-        [GeneratedRegex(@"(?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b", RegexOptions.CultureInvariant)]
-        private static partial Regex RegexFlagsRecursivosGrep();
+        // Opción recursiva de grep en el texto de los argumentos: al principio o tras un espacio, '--recursive' o un grupo de
+        // opciones cortas ('-r', '-rn', '-iR'), seguido del final o de algo que no es letra, cifra ni '_'. Es lo mismo que la
+        // regex (?:^|\s)(?:--recursive|-[a-zA-Z]*[rR][a-zA-Z]*)\b, que es cuadrática ('-rrr…r_' de 25 000 caracteres tardaba
+        // 12 s) y esto corre en cada respuesta: aquí cada carácter se mira una vez (las letras de un grupo no empiezan otro).
+        internal static bool HasFlagRecursivoGrep(string texto)
+        {
+            int i = 0;
+            while (i < texto.Length)
+            {
+                bool isInicio = texto[i] == '-' && (i == 0 || char.IsWhiteSpace(texto[i - 1]));
+                if (!isInicio)
+                {
+                    i++;
+                    continue;
+                }
+
+                if (texto.AsSpan(i).StartsWith("--recursive", StringComparison.Ordinal) && IsFinDePalabra(texto, i + "--recursive".Length))
+                    return true;
+
+                int j = i + 1;
+                bool hasR = false;
+                for (; j < texto.Length && char.IsAsciiLetter(texto[j]); j++)
+                    hasR |= texto[j] is 'r' or 'R';
+                if (hasR && IsFinDePalabra(texto, j))
+                    return true;
+                i = j;
+            }
+
+            return false;
+        }
+
+        // \b tras una letra: el final del texto o un carácter que no es de palabra para \b de .NET (letra, cifra decimal, marca
+        // sin espacio, conector, y U+200C y U+200D).
+        private static bool IsFinDePalabra(string texto, int posicion) => posicion >= texto.Length || !IsCaracterDePalabra(texto[posicion]);
+
+        private static bool IsCaracterDePalabra(char c) =>
+            char.IsLetter(c) || c is '\u200C' or '\u200D' || char.GetUnicodeCategory(c) is UnicodeCategory.DecimalDigitNumber or UnicodeCategory.ConnectorPunctuation or UnicodeCategory.NonSpacingMark;
 
         // Script de sed que solo imprime líneas por su número ('5p', '10,20p', '$p', '1~2p', '3,+4p'; varios con ';'): es una
         // lectura. Cualquier otro (s///, y///, direcciones con regex...) es una transformación y no avisa.
@@ -45,8 +80,10 @@ namespace NativeSsh.Herramientas
             for (int i = 0; i < ordenes.Length; i++)
             {
                 OrdenSimple orden = ordenes[i];
-                // Bucles until/while/for/select: lo que va dentro (sleep entre comprobaciones) es el patrón bueno.
-                if (orden.Programa is "until" or "while" or "for" or "select")
+                // Cuerpos de bucle (de 'do' a 'done'; until, while, for y select): lo que va dentro (sleep entre
+                // comprobaciones) es el patrón bueno. Se cuenta por 'do' y no por la palabra del bucle: un for con el cuerpo
+                // entre llaves no lleva ni do ni done, y un bucle anidado en la misma línea ('do until x; do …') suma igual.
+                if (orden.HasDo)
                     profundidadBucles++;
                 else if (orden.Programa == "done" && profundidadBucles > 0)
                     profundidadBucles--;
@@ -100,7 +137,7 @@ namespace NativeSsh.Herramientas
             {
                 "cd" => orden.SeparadorSiguiente == "&&" ? AvisoCdEncadenado : null,
                 "find" => orden.IsTuberiaDeEntrada || !IsFindQueHaceSshFind(orden) ? null : AvisoFindDisco,
-                "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || RegexFlagsRecursivosGrep().IsMatch(orden.TextoArgumentos) ? AvisoGrepDisco : null,
+                "grep" or "egrep" or "fgrep" or "rgrep" => programa == "rgrep" || !orden.IsTuberiaDeEntrada || HasFlagRecursivoGrep(orden.TextoArgumentos) ? AvisoGrepDisco : null,
                 "rg" or "ag" or "ack" or "ack-grep" => orden.IsTuberiaDeEntrada ? null : AvisoBusquedaRg(programa),
                 "ls" or "tree" or "exa" or "eza" => isSalidaAlLlm ? AvisoListado(programa) : null,
                 "stat" => isSalidaAlLlm && orden.Operandos.Length > 0 ? AvisoMetadatos : null,
@@ -150,28 +187,96 @@ namespace NativeSsh.Herramientas
             return !(hasTamano && hasTipoDirectorio);
         }
 
-        // Segundos que espera 'sleep' con estos argumentos: la suma de todos (GNU), cada uno un número con sufijo s, m, h o d
-        // opcional, o infinity. Con un argumento que no se entiende ($VAR, una opción) o sin argumentos, 0: no se avisa.
+        // Segundos que espera 'sleep' con estos argumentos: la suma de los que se entienden, como los lee sleep de GNU coreutils
+        // (SegundosDeArgumento); el primer '--' es el fin de las opciones. Un argumento que no se entiende ($VAR, $((…)), NaN,
+        // 1m30s) no suma: sin ninguno, 0 y no se avisa.
         private static double SegundosDeSleep(string[] argumentos)
         {
             double total = 0;
+            bool isTrasFinDeOpciones = false;
             foreach (string argumento in argumentos)
             {
-                if (argumento is "inf" or "infinity")
-                    return double.PositiveInfinity;
+                if (argumento == "--" && !isTrasFinDeOpciones)
+                {
+                    isTrasFinDeOpciones = true;
+                    continue;
+                }
 
-                ReadOnlySpan<char> texto = argumento;
-                double factor = texto.Length > 0 ? texto[^1] switch { 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, _ => 0 } : 0;
-                if (factor > 0)
-                    texto = texto[..^1];
-                else
-                    factor = 1;
-                if (!double.TryParse(texto, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out double valor))
-                    return 0;
-                total += valor * factor;
+                if (SegundosDeArgumento(argumento) is { } segundos)
+                    total += segundos;
             }
 
             return total;
+        }
+
+        // Un argumento de sleep como lo lee GNU coreutils (un número de strtod y, como mucho, un sufijo s, m, h o d): decimal con
+        // parte fraccionaria y exponente (60, 60., .5, 1e2), hexadecimal entero (0x3c), con '+' delante, o inf/infinity con
+        // cualquier combinación de mayúsculas. null si no lo es (NaN, negativo, vacío, otro sufijo): sleep lo rechazaría.
+        private static double? SegundosDeArgumento(ReadOnlySpan<char> texto)
+        {
+            if (texto.Length > 0 && texto[0] == '+')
+                texto = texto[1..];
+            int longitud = LongitudNumero(texto, out double valor);
+            if (longitud == 0)
+                return null;
+
+            ReadOnlySpan<char> sufijo = texto[longitud..];
+            double factor = sufijo.Length switch
+            {
+                0 => 1,
+                1 => sufijo[0] switch { 's' => 1, 'm' => 60, 'h' => 3600, 'd' => 86400, _ => 0 },
+                _ => 0
+            };
+            return factor > 0 ? valor * factor : null;
+        }
+
+        // Caracteres del número al principio de 'texto' (0 si no hay) y su valor.
+        private static int LongitudNumero(ReadOnlySpan<char> texto, out double valor)
+        {
+            valor = double.PositiveInfinity;
+            if (texto.StartsWith("infinity", StringComparison.OrdinalIgnoreCase))
+                return "infinity".Length;
+            if (texto.StartsWith("inf", StringComparison.OrdinalIgnoreCase))
+                return "inf".Length;
+
+            bool isHexadecimal = texto.Length > 2 && texto[0] == '0' && texto[1] is 'x' or 'X' && char.IsAsciiHexDigit(texto[2]);
+            if (isHexadecimal)
+            {
+                valor = 0;
+                int j = 2;
+                for (; j < texto.Length && char.IsAsciiHexDigit(texto[j]); j++)
+                    valor = (valor * 16) + (char.IsAsciiDigit(texto[j]) ? texto[j] - '0' : (texto[j] | 0x20) - 'a' + 10);
+                return j;
+            }
+
+            int i = 0;
+            int digitos = 0;
+            for (; i < texto.Length && char.IsAsciiDigit(texto[i]); i++)
+                digitos++;
+            if (i < texto.Length && texto[i] == '.')
+                for (i++; i < texto.Length && char.IsAsciiDigit(texto[i]); i++)
+                    digitos++;
+            if (digitos == 0)
+                return 0;
+
+            // Exponente solo si lleva cifras ('1e' es 1 seguido de un sufijo que no vale).
+            if (i < texto.Length && texto[i] is 'e' or 'E')
+            {
+                int j = i + 1;
+                if (j < texto.Length && texto[j] is '+' or '-')
+                    j++;
+                if (j < texto.Length && char.IsAsciiDigit(texto[j]))
+                {
+                    for (; j < texto.Length && char.IsAsciiDigit(texto[j]); j++)
+                    {
+                    }
+
+                    i = j;
+                }
+            }
+
+            valor = double.Parse(texto[..i], NumberStyles.Float, CultureInfo.InvariantCulture);
+            return i;
         }
 
         // cat: con heredoc o herestring y la salida a un archivo es una escritura (cat > f <<EOF); con archivos y la salida al
@@ -304,6 +409,9 @@ namespace NativeSsh.Herramientas
             public bool HasDocumentoEnLinea { get; set; }
             public bool HasAyuda { get; set; }
 
+            // Empieza por 'do': abre el cuerpo de un bucle (ver DetectarAvisoAntipatron).
+            public bool HasDo { get; set; }
+
             // En una rama de respaldo ('a || cat log'): ver DetectarAvisoAntipatron.
             public bool IsRespaldo { get; set; }
             public string SeparadorPrevio { get; set; } = string.Empty;
@@ -366,10 +474,10 @@ namespace NativeSsh.Herramientas
 
                 if (c == '\\')
                 {
-                    // Continuación de línea: espacio; si no, el carácter escapado es literal.
+                    // Continuación de línea: bash la quita sin más (junta la palabra: 'sle\⏎ep' es sleep); si no, el carácter
+                    // escapado es literal.
                     if (siguiente == '\n')
                     {
-                        CerrarPalabra();
                         i += 2;
                         continue;
                     }
@@ -505,7 +613,8 @@ namespace NativeSsh.Herramientas
                 }
 
                 bool isFinDePalabra = siguiente is '\0' or ' ' or '\t' or '\n' or '\r' or ';' or '&' or '|' or ')';
-                bool isAgrupacion = !hasPalabra && (c is '(' or ')' || (c == '{' && siguiente is ' ' or '\t' or '\n') || (c == '}' && isFinDePalabra));
+                // ')' cierra aunque vaya pegado a una palabra ('(sleep 60)', 'done)', 'a)' de case), como en bash.
+                bool isAgrupacion = c == ')' || (!hasPalabra && (c == '(' || (c == '{' && siguiente is ' ' or '\t' or '\n') || (c == '}' && isFinDePalabra)));
                 if (isAgrupacion)
                 {
                     // Agrupación: separa órdenes como un ';' sin cambiar el separador previo de la primera.
@@ -649,8 +758,16 @@ namespace NativeSsh.Herramientas
                     if (IsAsignacion(valor))
                         continue;
 
+                    // Palabras reservadas que abren una lista de órdenes ('then sleep 60', 'else …', 'do …'): la orden es la
+                    // que sigue. 'do' abre además el cuerpo de un bucle.
+                    if (prefijo is null && valor is "then" or "else" or "do")
+                    {
+                        orden.HasDo |= valor == "do";
+                        continue;
+                    }
+
                     string nombre = valor.Contains('/', StringComparison.Ordinal) ? valor[(valor.LastIndexOf('/') + 1)..] : valor;
-                    if (nombre is "sudo" or "env" or "time" or "nice" or "nohup" or "command" or "exec" or "stdbuf" or "timeout" or "!")
+                    if (nombre is "sudo" or "env" or "time" or "nice" or "nohup" or "command" or "exec" or "stdbuf" or "timeout" or "builtin" or "!")
                     {
                         prefijo = nombre;
                         continue;

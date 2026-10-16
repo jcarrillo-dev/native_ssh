@@ -61,16 +61,17 @@
   <!-- Solo las pruebas pueden usar System.Linq (exentos, más abajo). La comprobación definitiva mira el ensamblado compilado
        (msbuild/ComprobarSystemLinqEnIL.cs, tarea de MSBuild con System.Reflection.Metadata, sin paquetes ni órdenes del shell:
        igual en Linux y en Windows). El SSH.NET del submódulo tiene su propio Directory.Build.props y no pasa por aquí.
-       La tarea se compila una vez en un ensamblado (target NativeSshCompilarTareaLinq, con el Csc del SDK) bajo obj/nslinq/
-       de cada proyecto que la usa, y se reutiliza mientras no cambien el fuente ni MSBuild: su nombre lleva la fecha del
-       fuente y la versión de MSBuild, así que un cambio compila otro (el viejo puede seguir cargado y bloqueado por un nodo de
-       MSBuild en Windows) y nunca se usa uno desfasado. Va en el obj de cada proyecto para que dos proyectos en paralelo no
-       escriban el mismo fichero. La ruta solo usa propiedades reservadas: ni un -p: ni un .csproj la cambian. Si el ensamblado
-       no existe o no carga, el build falla (MSB4062). Las referencias son las de RoslynCodeTaskFactory (el netstandard.dll y
-       las de MSBuild de su carpeta ref) y las builds para .NET Framework de System.Reflection.Metadata y
-       System.Collections.Immutable que trae el SDK: las del paquete de referencia de net10.0 no casan con netstandard; si
+       La tarea se compila en un ensamblado (target NativeSshCompilarTareaLinq, con el Csc del SDK) en obj/nslinq/ de cada
+       proyecto que la usa, en cada build y sin marca incremental (unos 0,1 s): así nunca se usa un ensamblado viejo, ni uno
+       con la fecha del fuente manipulada, ni uno plantado en su lugar. Se ejecuta en un proceso aparte (TaskHostFactory),
+       que termina al acabar el build: ningún nodo de MSBuild lo deja cargado ni bloqueado (Windows) para la siguiente
+       compilación, y cada build carga el recién compilado. Va en el obj de cada proyecto para que dos proyectos en paralelo
+       no escriban el mismo fichero; 'clean' lo borra. La ruta solo usa propiedades reservadas: ni un -p: ni un .csproj la
+       cambian. Si no compila o no carga, el build falla (CS…, MSB4062). Las referencias son las de RoslynCodeTaskFactory
+       (el netstandard.dll y las de MSBuild de su carpeta ref) y las builds para .NET Framework de System.Reflection.Metadata
+       y System.Collections.Immutable que trae el SDK: las del paquete de referencia de net10.0 no casan con netstandard; si
        faltan, la tarea no compila y el build falla. -->
-  <UsingTask TaskName="NativeSshComprobarSystemLinqEnIL" AssemblyFile="$(MSBuildProjectDirectory)/obj/nslinq/NativeSsh.ComprobarLinq.$([System.IO.File]::GetLastWriteTime('$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs').Ticks).$(MSBuildVersion).dll" />
+  <UsingTask TaskName="NativeSshComprobarSystemLinqEnIL" TaskFactory="TaskHostFactory" AssemblyFile="$(MSBuildProjectDirectory)/obj/nslinq/NativeSsh.ComprobarLinq.dll" />
 
   <!-- Exentos solo dos proyectos, y se decide únicamente con propiedades reservadas de MSBuild (nombre y ruta del proyecto
        y de este fichero), que ni un -p: ni un .csproj pueden cambiar: no hay ninguna propiedad que lo desactive.
@@ -112,13 +113,17 @@
        milisegundos, así que un ensamblado que cambió o una marca con fecha futura no la saltan). Si falla, el build se para antes
        de copiar el ensamblado a bin. No corre en los builds de diseño del IDE ni cuando el compilador no escribe el ensamblado
        (SkipCompilerExecution, solo el de referencia). -->
-  <Target Name="NativeSshCompilarTareaLinq" Inputs="$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs" Outputs="$(MSBuildProjectDirectory)/obj/nslinq/NativeSsh.ComprobarLinq.$([System.IO.File]::GetLastWriteTime('$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs').Ticks).$(MSBuildVersion).dll">
+  <Target Name="NativeSshCompilarTareaLinq">
     <MakeDir Directories="$(MSBuildProjectDirectory)/obj/nslinq" />
     <Csc Sources="$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs"
          References="$(MSBuildToolsPath)/ref/mscorlib.dll;$(MSBuildToolsPath)/ref/netstandard.dll;$(MSBuildToolsPath)/ref/Microsoft.Build.Framework.dll;$(MSBuildToolsPath)/ref/Microsoft.Build.Utilities.Core.dll;$(MSBuildSDKsPath)/Microsoft.NET.Sdk/tools/net472/System.Reflection.Metadata.dll;$(MSBuildSDKsPath)/Microsoft.NET.Sdk/tools/net472/System.Collections.Immutable.dll"
-         OutputAssembly="$(MSBuildProjectDirectory)/obj/nslinq/NativeSsh.ComprobarLinq.$([System.IO.File]::GetLastWriteTime('$(MSBuildThisFileDirectory)msbuild/ComprobarSystemLinqEnIL.cs').Ticks).$(MSBuildVersion).dll"
+         OutputAssembly="$(MSBuildProjectDirectory)/obj/nslinq/NativeSsh.ComprobarLinq.dll"
          TargetType="Library" NoStandardLib="true" NoConfig="true" Deterministic="true" Optimize="true" LangVersion="latest"
          TreatWarningsAsErrors="true" UseSharedCompilation="$(UseSharedCompilation)" />
+  </Target>
+
+  <Target Name="NativeSshLimpiarTareaLinq" AfterTargets="Clean">
+    <RemoveDir Directories="$(MSBuildProjectDirectory)/obj/nslinq" />
   </Target>
 
   <Target Name="NativeSshProhibirSystemLinq" AfterTargets="CoreCompile" DependsOnTargets="NativeSshCompilarTareaLinq" Condition="'@(_NativeSshSinLinq)' != '' and '$(DesignTimeBuild)' != 'true' and '$(SkipCompilerExecution)' != 'true' and '$(ProduceOnlyReferenceAssembly)' != 'true'">
