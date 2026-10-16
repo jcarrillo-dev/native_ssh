@@ -51,7 +51,7 @@ La primera línea es la respuesta a `initialize` (con `instructions`) y la segun
   - `ResultadoEscritura`: `ruta`, `bytes` (los escritos o anexados; en `ssh_replace_file_content`, el tamaño final del archivo), `reemplazos` (solo `ssh_replace_file_content`), `isAtomica`, `mensaje`.
   - `ResultadoMetadatos`: `ruta`, `existe`, `mensaje`, `tipo`, `tamanoBytes`, `tamanoHumano`, `permisos` (octal), `ultimaModificacion`, `propietario`, `grupo`, `destinoEnlace`.
 
-Los errores de cualquier herramienta llegan como resultado con `isError: true` y un bloque de texto `An error occurred invoking '<herramienta>': <mensaje>` (el prefijo lo pone el SDK de MCP). Los argumentos que no casan con el esquema (un tipo distinto, un argumento desconocido) se rechazan antes de ejecutar nada, sin ese prefijo: `Argumentos no válidos para ssh_exec: no se ha ejecutado nada. 'timeoutSegundos' llegó como texto ("abc") y debe ser un entero (p. ej. 30). Admitidos: …`.
+Los errores de cualquier herramienta llegan como resultado con `isError: true` y un bloque de texto `An error occurred invoking '<herramienta>': <mensaje>` (el prefijo lo pone el SDK de MCP). Los argumentos que no casan con el esquema (un tipo distinto, un `null` en un entero o un booleano, un argumento desconocido o con otras mayúsculas) se rechazan antes de ejecutar nada, sin ese prefijo: `Argumentos no válidos para ssh_exec: no se ha ejecutado nada. 'timeoutSegundos' llegó como texto ("abc") y debe ser un entero (p. ej. 30). Admitidos: …`.
 
 ### Arquitectura de ejecución
 
@@ -65,7 +65,7 @@ Cada destino (`usuario@servidor[:puerto]`, o un alias de la configuración de ss
 
 ### Respuesta en dos bloques (`ssh_exec`, `ssh_output`, `ssh_input` y `ssh_cancel`)
 
-Estas cuatro herramientas responden siempre con **dos bloques de texto MCP**, en este orden:
+Estas cuatro herramientas responden con **dos bloques de texto MCP**, en este orden (la excepción: `ssh_input` y `ssh_cancel` sobre el `id` de una petición interna de otra herramienta responden con un solo bloque que dice de qué herramienta es y que su resultado lo da ella; `ssh_output` sobre ese `id` da error):
 
 1. **Control:** JSON compacto en una sola línea con `id`, `destino`, `estado`, `codigoSalida`, `desdeByte`, `siguienteByte`, `hasMasSalida`, `hasSalidaDescartada`, `segundosEjecucion`, `segundosSinSalida` y `aviso`; con `guardarSalida=true`, también `archivo`, `lineas` y `bytes`. Los campos sin valor no se escriben.
 2. **Salida:** el texto del comando tal cual, sin escapar y sin las secuencias de escape ANSI (vacío si no hay salida).
@@ -160,7 +160,7 @@ El directorio de trabajo de cada sesión lo guarda **native_ssh**, no el shell. 
 ### Búsqueda de archivos por nombre o tamaño (`ssh_find`)
 
 - **Patrón:** glob sobre el **nombre**, no la ruta, distinguiendo mayúsculas (como `find -name`). `tipo`: `file` (por defecto, también vacío), `dir` o `directory`, o `all`, sin distinguir mayúsculas; cualquier otro valor, también con blancos alrededor, es un error.
-- **Tamaño:** `tamanoMin` y `tamanoMax` (inclusivos; bytes o con `k`, `M`, `G` en potencias de 1024, como `find -size`), solo con `tipo='file'`. Con ellos cada resultado sale como `<tamaño><tabulador><ruta>`, de mayor a menor (con el tope, los más grandes).
+- **Tamaño:** `tamanoMin` y `tamanoMax` (inclusivos; un entero de bytes o con la unidad pegada `k`, `M` o `G`, en potencias de 1024 y con esas mayúsculas exactas: `K`, `m`, `MB` o decimales dan error), solo con `tipo='file'`. Con ellos cada resultado sale como `<tamaño><tabulador><ruta>`, de mayor a menor (con el tope, los más grandes).
 - **Poda:** no entra en `.git`, `node_modules`, `.venv`, `venv`, `__pycache__`, `dist`, `build`, `.next`, `bin`, `obj` ni `.cache`, pero los devuelve si su nombre casa con el patrón (`patron='.git'` con `tipo='dir'` localiza los repositorios).
 - **Enlaces:** sigue los enlaces simbólicos a directorios; lo que hay debajo sale también por la ruta del enlace (si el destino del enlace está también dentro de `ruta`, lo de debajo sale dos veces).
 - **Salida:** rutas relativas a `ruta`, sin `./`, en orden alfabético (por tamaño con `tamanoMin`/`tamanoMax`), como mucho `maxResultados` (1–200) y la línea `[Límite alcanzado: …]`.
@@ -378,7 +378,7 @@ NativeSsh [--http | --http-unsecure] [--puerto N]
 - **Filtro de `Host` (`--http`):** solo se admiten `localhost`, `127.0.0.1`, `[::1]` y `::1`; cualquier otro recibe `400 Bad Request: Host no permitido.` antes de mirar el token (frente a un *DNS rebinding* desde un navegador).
 - **Sin estado:** se usa el transporte Streamable HTTP del SDK de MCP para C# 2.2.0 tal cual; la respuesta a `initialize` no lleva cabecera `Mcp-Session-Id`.
 - **Un solo estado para todos los clientes:** todos los clientes HTTP comparten las mismas sesiones SSH, y con ellas el shell de cada destino, sus variables, su cola, su directorio de trabajo (`ssh_set_cwd`), el historial de `ssh_status` y el cupo de conexiones: un `ssh_set_cwd` o un `export` de un cliente lo ven los demás, y un comando largo de uno retiene la cola de los otros en ese destino.
-- **Windows:** el modo HTTP no existe: `El modo HTTP solo está disponible en Linux y macOS (el fichero del token se comprueba con permisos Unix).` (código 2).
+- **Windows:** el modo HTTP no existe: `El modo HTTP solo está disponible en Linux y macOS (el fichero del token se comprueba con permisos Unix).` (código 2). En macOS, el token solo con `NATIVE_SSH_TOKEN_HTTP`: `NATIVE_SSH_TOKEN_HTTP_FICHERO` es solo de Linux.
 
 > [!WARNING]
 > `--http-unsecure` expone en la red, por HTTP sin cifrar, un servicio que ejecuta comandos en los servidores configurados: el token y todo lo enviado (comandos, archivos, contraseñas de `ssh_input`) viajan en claro. Solo para redes de total confianza o detrás de un proxy inverso con TLS.
@@ -488,7 +488,7 @@ dotnet test
   ```bash
   NATIVE_SSH_ESTRES=1 taskset -c 0-7 dotnet test native_ssh.Test --filter Categoria=Estres
   ```
-- **Puertos:** `NATIVE_SSH_PUERTO_PRUEBAS` (por defecto 22022) fija el bloque de mil puertos de una ejecución y debe acabar en `0nn` (X000–X099) y estar por debajo de 65000; de él salen los demás: X050 el sshd en español (`NATIVE_SSH_PUERTO_PRUEBAS_IDIOMA`), X222 el de login lento (`NATIVE_SSH_PUERTO_PRUEBAS_LENTO`), X322 el de `PATH` de login restringido (`NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO`) y X400–X999 los que arranca cada prueba. Una variable vacía equivale a no definida. El humo HTTP escucha en `NATIVE_SSH_PUERTO_HTTP_PRUEBAS` (18722 por defecto). Para dos ejecuciones en paralelo (p. ej. dos copias del repositorio), bloques distintos; los contenedores usan `NATIVE_SSH_PUERTO_CONTENEDOR_<DISTRO>` y `NATIVE_SSH_PUERTO_GEMELO_A`/`_B`.
+- **Puertos:** `NATIVE_SSH_PUERTO_PRUEBAS` (por defecto 22022) fija el bloque de mil puertos de una ejecución y debe acabar en `0nn` (X000–X099) y estar por debajo de 65000; de él salen los demás: X050 el sshd en español (`NATIVE_SSH_PUERTO_PRUEBAS_IDIOMA`), X222 el de login lento (`NATIVE_SSH_PUERTO_PRUEBAS_LENTO`), X322 el de `PATH` de login restringido (`NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO`) y X400–X999 los que arranca cada prueba. Una variable vacía equivale a no definida. El humo HTTP escucha en `NATIVE_SSH_PUERTO_HTTP_PRUEBAS` (18722 por defecto). Para dos ejecuciones en paralelo (p. ej. dos copias del repositorio), bloques distintos. Los contenedores de las pruebas usan `NATIVE_SSH_PUERTO_CONTENEDOR_<DISTRO>` (`DEBIAN`, `ALPINE`, `SINBASH`) y `NATIVE_SSH_PUERTO_GEMELO_A`/`_B`; `pruebas/contenedor-sudo.sh` lanzado a mano usa `NATIVE_SSH_PUERTO_CONTENEDOR`.
 - **Fuera de Linux**, `dotnet test` excluye la categoría `SoloLinux` (bash, `/proc`, modos Unix, `cksum` o un `sshd` local); con un `--filter` propio, añádele `&Categoria!=SoloLinux`.
 - **Duración de referencia:** en Linux, 2967 pruebas y 2 omitidas (las de estrés) en unos 10 minutos.
 
