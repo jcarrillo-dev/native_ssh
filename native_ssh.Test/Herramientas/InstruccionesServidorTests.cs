@@ -74,6 +74,29 @@ namespace NativeSsh.Test.Herramientas
         public void Enrutamiento_DiceLaHerramientaYLoQueSustituye(string esperado) =>
             _ = Texto.Should().Contain(esperado);
 
+        // Editar parte de un archivo: la misma excepción que ssh_replace_file_content y ssh_exec para los archivos mayores que el
+        // límite fijo, sin quitar la prohibición.
+        [Fact]
+        public void EditarParte_ConLaExcepcionDelLimiteDeReplace()
+        {
+            // Arrange
+            string replace = DescripcionDe("ssh_replace_file_content");
+            string exec = DescripcionDe("ssh_exec");
+
+            // Assert
+            _ = replace.Should().Contain("NUNCA uses sed -i, perl -i ni heredocs por ssh_exec (salvo en archivos mayores que su límite").And.Contain("escríbelo entero por partes con ssh_write_file");
+            _ = Texto.Should().Contain("editar parte de un archivo: ssh_replace_file_content (nunca sed -i, echo > ni heredocs, salvo en un archivo mayor que su límite fijo: entonces escríbelo entero por partes con ssh_write_file o edítalo con herramientas del servidor por ssh_exec)");
+            _ = exec.Should().Contain("ni para editar (usa ssh_replace_file_content / ssh_write_file; salvo un archivo mayor que el límite fijo de ssh_replace_file_content)");
+        }
+
+        private static string DescripcionDe(string herramienta)
+        {
+            foreach (MethodInfo metodo in typeof(HerramientasSsh).GetMethods())
+                if (metodo.GetCustomAttribute<McpServerToolAttribute>()?.Name == herramienta)
+                    return metodo.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()!.Description;
+            throw new InvalidOperationException(herramienta);
+        }
+
         // La espera con los mismos bucles, con el mismo texto, que el aviso de espera fija de ssh_exec.
         [Theory]
         [InlineData("'until <condición>; do sleep 2; done'")]

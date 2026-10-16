@@ -13,7 +13,7 @@ namespace NativeSsh.Herramientas
             "Usa la herramienta de cada tarea; NUNCA uses ssh_exec para lo que tiene herramienta propia:\n" +
             "- buscar texto en archivos: ssh_search (nunca grep -r ni rg); leer un archivo o sus últimas líneas: ssh_read_file (nunca cat, head, tail -n ni sed -n);\n" +
             "- localizar archivos por nombre o por tamaño: ssh_find (nunca find para eso; find por ssh_exec solo para lo que ssh_find no hace: sin distinguir mayúsculas (-iname), por ruta (-path), fecha (-mtime, -newer), dueño (-user), permisos (-perm) o actuando sobre lo encontrado (-exec, -delete)); ver la estructura de carpetas: ssh_list_dir (nunca ls ni tree); tipo, tamaño, permisos o dueño: ssh_stat (nunca stat ni ls -l);\n" +
-            "- crear o sobrescribir un archivo: ssh_write_file; editar parte de un archivo: ssh_replace_file_content (nunca sed -i, echo > ni heredocs);\n" +
+            "- crear o sobrescribir un archivo: ssh_write_file; editar parte de un archivo: ssh_replace_file_content (nunca sed -i, echo > ni heredocs, salvo en un archivo mayor que su límite fijo: entonces escríbelo entero por partes con ssh_write_file o edítalo con herramientas del servidor por ssh_exec);\n" +
             "- fijar el directorio de trabajo: ssh_set_cwd (nunca cd … &&); los comandos y las rutas relativas parten de él;\n" +
             "- servicios, procesos, paquetes, git, docker, compilaciones y lo demás: ssh_exec; grep solo para filtrar en una tubería la salida de otro comando.\n" +
             "Archivo con secretos (.env, credenciales) del que solo necesitas nombres o recuentos: sácalos con ssh_exec filtrando en el servidor (p. ej. los nombres de las variables), NUNCA con ssh_read_file ni ssh_search, que devolverían los valores.\n" +
