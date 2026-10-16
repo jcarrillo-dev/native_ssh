@@ -46,7 +46,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = descripcion.Should().Contain($"de hasta {limite.ToString(CultureInfo.InvariantCulture)} bytes").And.Contain("límite fijo, no configurable")
-                .And.Contain("append=true").And.Contain("rsync o sftp").And.NotContain("configuración por defecto");
+                .And.Contain("append=true").And.NotContain("rsync").And.NotContain("configuración por defecto");
         }
 
         // Lo de 'ediciones' que el modelo malinterpretaba (rango por edición, referido al original) va al principio.

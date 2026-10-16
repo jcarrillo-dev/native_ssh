@@ -84,11 +84,11 @@ namespace NativeSsh.Test.Herramientas
             string exec = DescripcionDe("ssh_exec");
 
             // Assert
-            _ = replace.Should().Contain("NUNCA uses sed -i, perl -i ni heredocs por ssh_exec (salvo en archivos mayores que su límite").And.Contain("escríbelo entero por partes con ssh_write_file");
+            _ = replace.Should().Contain("Herramienta canónica y obligatoria para editar parte de un archivo: NUNCA uses sed -i, perl -i, echo >, tee ni heredocs por ssh_exec (solo un archivo mayor que su límite fijo se edita de otra forma, ver abajo).").And.Contain("Para un archivo mayor, solo hay dos vías: escribirlo entero por partes con ssh_write_file (la primera con overwrite=true y las demás con append=true, sin atomicidad) o editarlo con herramientas del servidor por ssh_exec (como sed -i), nunca con echo >, tee ni heredocs.").And.NotContain("rsync");
             // La excepción nombra solo las dos vías permitidas: echo >, tee y los heredocs siguen prohibidos (como en ssh_write_file).
             _ = Texto.Should().Contain("editar parte de un archivo: ssh_replace_file_content (nunca sed -i, echo > ni heredocs); un archivo mayor que su límite fijo solo se edita escribiéndolo entero por partes con ssh_write_file o con herramientas del servidor por ssh_exec (como sed -i), nunca con echo >, tee ni heredocs;")
                 .And.NotContain("salvo en un archivo mayor");
-            _ = exec.Should().Contain("ni para editar (usa ssh_replace_file_content / ssh_write_file; un archivo mayor que el límite fijo de ssh_replace_file_content sí se edita aquí con herramientas del servidor como sed -i, nunca con echo >, tee ni heredocs)");
+            _ = exec.Should().Contain("ni para editar (usa ssh_replace_file_content / ssh_write_file; un archivo mayor que el límite fijo de ssh_replace_file_content solo se edita escribiéndolo entero por partes con ssh_write_file o aquí con herramientas del servidor como sed -i, nunca con echo >, tee ni heredocs)");
             _ = DescripcionDe("ssh_write_file").Should().Contain("NUNCA uses echo >, tee ni heredocs por ssh_exec para escribir un archivo");
         }
 
