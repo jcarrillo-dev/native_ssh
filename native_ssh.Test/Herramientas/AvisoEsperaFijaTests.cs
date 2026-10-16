@@ -203,5 +203,237 @@ namespace NativeSsh.Test.Herramientas
             bool isAvisoDeEspera = aviso is not null && aviso.Contains("Has esperado un tiempo fijo con 'sleep'", StringComparison.Ordinal);
             _ = isAvisoDeEspera.Should().Be(isAvisa, nota);
         }
+
+        // Casos de la auditoría de la fusión (71): 'do' fuera de un bucle (patrón de case, entre comillas), esperas sin nada
+        // detrás salvo cierres, sleep como condición, bucles con llaves, prefijos con opciones, duraciones y comillas.
+        public static TheoryData<string, bool, string> CasosAuditoriaFusion => new()
+        {
+            // Palabra 'do' fuera de un bucle
+            { "case x in do) echo a;; esac; sleep 60; uptime", true, "'do' como patrón de case: ¿profundidad colgada?" },
+            { "case x in\n  do) echo a ;;\nesac\nsleep 60\nuptime", true, "'do' como patrón de case en varias líneas" },
+            { "echo do; sleep 60; uptime", true, "do como argumento" },
+            { "d\\o=1; sleep 60; uptime", true, "asignación rara" },
+            { "'do' 2>/dev/null; sleep 60; uptime", true, "'do' entre comillas es una orden (bash: do: orden no encontrada)" },
+            // Espera sin nada detrás salvo cierres
+            { "if x; then sleep 60; fi", false, "then sleep sin nada detrás del fi" },
+            { "if x; then\n  sleep 60\nfi", false, "then sleep en varias líneas sin nada detrás" },
+            { "if x; then y; else sleep 60; fi", false, "else sleep sin nada detrás" },
+            { "{ sleep 60; }", false, "grupo solo" },
+            { "(sleep 60)", false, "subshell sola" },
+            { "case a in a) sleep 60;; esac", false, "case solo" },
+            { "f() { sleep 60; }", false, "solo definir la función" },
+            // Condición del if/elif/while
+            { "if sleep 60; then uptime; fi", true, "sleep como condición del if" },
+            { "if x; then y; elif sleep 60; then uptime; fi", true, "sleep como condición del elif" },
+            { "sleep 60; if x; then y; fi", true, "espera antes de un if" },
+            // Bucles con llaves / anidados / redirecciones
+            { "for i in 1 2; { sleep 60; uptime; }", false, "for con cuerpo entre llaves (cuerpo de bucle)" },
+            { "for i in 1 2; { sleep 2; }; sleep 60; uptime", true, "tras un for con llaves" },
+            { "while x; do sleep 15; done</dev/null; sleep 60; uptime", true, "done con redirección pegada" },
+            { "while x; do sleep 15; done 2>&1 | tee l; sleep 60; uptime", true, "done en tubería" },
+            { "while x; do sleep 15; done & sleep 60; uptime", true, "bucle en segundo plano" },
+            { "while x\ndo\n  sleep 60\n  y\ndone", false, "do solo en su línea" },
+            { "for i in 1 2 3\ndo sleep 60; y; done", false, "for en dos líneas" },
+            { "while x; do if y; then sleep 60; fi; z; done", false, "then dentro de un bucle" },
+            { "while x; do case $a in b) sleep 60;; esac; z; done", false, "case dentro de un bucle" },
+            { "if x; then\n  while y; do sleep 60; z; done\nfi", false, "bucle dentro de then" },
+            { "while x; do y; done; done; sleep 60; z", true, "done de más" },
+            { "time while x; do sleep 2; done; sleep 60; y", true, "time delante del bucle" },
+            { "x=$(for i in 1; do echo; done); sleep 60; uptime", true, "bucle dentro de $( )" },
+            { "select x in a; do break; done; sleep 60; y", true, "tras select" },
+            { "until x; do sleep 2; done && sleep 30 && curl x", true, "tras until con &&" },
+            // Prefijos con opciones
+            { "time -p sleep 60; uptime", true, "time -p" },
+            { "sudo -- sleep 60; uptime", true, "sudo --" },
+            { "env -i sleep 60; uptime", true, "env -i" },
+            { "env FOO=1 sleep 60; uptime", true, "env con asignación" },
+            { "timeout --foreground 70 sleep 60; uptime", true, "timeout --foreground" },
+            { "timeout 1m sleep 60; uptime", true, "timeout con sufijo" },
+            { "nice -10 sleep 60; uptime", true, "nice -10" },
+            { "stdbuf -oL sleep 60; uptime", true, "stdbuf" },
+            { "builtin command sleep 60; uptime", true, "builtin command" },
+            { "coproc sleep 60; uptime", false, "coproc (asíncrono)" },
+            // Duraciones
+            { "sleep 1E2; uptime", true, "1E2" },
+            { "sleep 1e+2; uptime", true, "1e+2" },
+            { "sleep 1.5e1; uptime", true, "1.5e1 = 15" },
+            { "sleep .1e2; uptime", true, ".1e2 = 10" },
+            { "sleep 1e-1; uptime", false, "1e-1" },
+            { "sleep 0X3C; uptime", true, "0X3C" },
+            { "sleep 0x3cs; uptime", true, "0x3cs" },
+            { "sleep 0x3c.8; uptime", true, "0x3c.8 (strtod: 60,5)" },
+            { "sleep 0x1p6; uptime", true, "0x1p6 (strtod: 64)" },
+            { "sleep infinitys; uptime", true, "infinitys" },
+            { "sleep infinit; uptime", false, "infinit (GNU lo rechaza)" },
+            { "sleep ' 60'; uptime", true, "' 60' (strtod salta el espacio)" },
+            { "sleep '60 '; uptime", false, "'60 ' (GNU lo rechaza)" },
+            { "sleep 60e; uptime", false, "60e (GNU lo rechaza)" },
+            { "sleep 1e400; uptime", true, "1e400" },
+            { "sleep 0.0000000000000000000001e23; uptime", true, "exponente que compensa" },
+            { "sleep 5 5; uptime", true, "5+5" },
+            { "sleep -- -- 60; uptime", false, "segundo -- (GNU: argumento inválido)" },
+            { "sleep $T; uptime", false, "variable" },
+            // Comillas y escapes
+            { "s'le'ep 60; uptime", true, "comillas partidas" },
+            { "sleep 6\"0\"; uptime", true, "duración partida" },
+            { "sleep 60 \\; uptime", false, "';' escapado: es un argumento" },
+            { "sleep 60 ';' uptime", false, "';' entre comillas" },
+            { "echo \"$(sleep 1 ')' )\"; sleep 60; uptime", true, "comillas desalineadas por $( ')' )" },
+            { "echo \"$(echo '\"')\"; sleep 60; uptime", true, "$( '\"' ) dentro de comillas dobles" },
+            { "echo `echo \\`date\\``; sleep 60; uptime", true, "comillas invertidas anidadas" },
+            { "echo $'a\\'b'; sleep 60; uptime", true, "$'…' con comilla escapada" },
+            { "echo ${x:-}}; sleep 60; uptime", true, "llave de cierre suelta" },
+            { "arr=(a b); sleep 60; uptime", true, "asignación de array" },
+            { "[[ $a == b ]]; sleep 60; uptime", true, "[[ ]]" },
+            { "(( i++ )); sleep 60; uptime", true, "(( ))" },
+        };
+
+        [Theory]
+        [MemberData(nameof(CasosAuditoriaFusion))]
+        public void CasosDeLaAuditoriaDeLaFusion_AvisanComoSeEspera(string comando, bool isAvisa, string nota) =>
+            _ = IsAvisoDeEspera(comando).Should().Be(isAvisa, nota);
+
+        // Lo que se ejecuta después de la espera: los cierres (fi, esac, done) no son una comprobación; tras el final de una rama
+        // (else, elif, la siguiente cláusula de un case) lo siguiente es lo que va detrás del cierre; las palabras reservadas
+        // entre comillas son órdenes (bash: «orden no encontrada») y no abren ni cierran nada.
+        public static TheoryData<string, bool, string> CasosBloques => new()
+        {
+            { "if x; then sleep 60; else y; fi", false, "then que termina en la espera: el else no se ejecuta" },
+            { "if x; then sleep 60; else y; fi; uptime", true, "y después del fi, una orden" },
+            { "if x; then sleep 60; elif y; then z; fi", false, "el elif no se ejecuta tras la rama then" },
+            { "if x; then sleep 60; elif y; then z; fi; uptime", true, "tras el fi" },
+            { "if x; then\n  sleep 60\nelse\n  y\nfi", false, "else en su línea" },
+            { "if x; then if y; then sleep 60; fi; else z; fi", false, "if anidado: el else es del de fuera" },
+            { "if x; then if y; then sleep 60; fi; uptime; fi", true, "if anidado con una orden detrás del fi de dentro" },
+            { "if x; then sleep 60; fi && uptime", true, "fi && orden" },
+            { "if x; then sleep 60; 'fi'; fi", true, "'fi' entre comillas es una orden" },
+            { "case a in a) sleep 60;; b) uptime;; esac", false, "la cláusula siguiente no se ejecuta" },
+            { "case a in a) sleep 60;; b) y;; esac; uptime", true, "tras el esac" },
+            { "case a in\n  a) sleep 60\n  ;;\n  b) uptime\n  ;;\nesac", false, "';;' en su línea" },
+            { "case a in a) sleep 60;& b) uptime;; esac", true, "';&' sigue en la cláusula siguiente" },
+            { "case a in a) sleep 60;;& b) uptime;; esac", false, "';;&' prueba los patrones siguientes: puede no ejecutarse" },
+            { "case x in (do) echo a;; esac\nsleep 60\nuptime", true, "patrón con '(' delante" },
+            { "case x in a|do) echo a;; esac; sleep 60; uptime", true, "do como alternativa de un patrón" },
+            { "case x in\n  do|a) echo a ;;\nesac\nsleep 60\nuptime", true, "do como primera alternativa, en varias líneas" },
+            { "case x in esac; sleep 60; uptime", true, "case vacío" },
+            { "case x in a) case y in do) z;; esac;; esac; sleep 60; uptime", true, "case anidado" },
+            { "while x; do 'done'; sleep 60; y; done", false, "'done' entre comillas no cierra el bucle" },
+            { "\"do\"; sleep 60; uptime", true, "\"do\" entre comillas dobles" },
+            { "d\\o; sleep 60; uptime", true, "d\\o es una orden" },
+            { "while sleep 60; do y; done", false, "sleep como condición de while: es el bucle" },
+            { "until sleep 60; do y; done", false, "sleep como condición de until" },
+            { "if ! sleep 60; then y; fi", true, "if ! sleep" },
+            { "if sleep 60\nthen\n  uptime\nfi", true, "then en su línea" },
+            { "sleep 60; done", false, "done suelto: no es una comprobación" },
+            // for y select con el cuerpo entre llaves (bash los acepta: el cuerpo se ejecuta en cada vuelta, como con do … done)
+            { "select x in a; { sleep 60; y; }", false, "select con llaves" },
+            { "for i in 1 2\n{\n  sleep 60\n  y\n}", false, "for con llaves en varias líneas" },
+            { "for i in 1 2; { for j in 3; { sleep 2; }; }; sleep 60; z", true, "llaves anidadas: la profundidad vuelve a 0" },
+            { "for i in 1 2; { { sleep 60; y; }; }", false, "grupo dentro del cuerpo" },
+            { "f() { for i in 1; { sleep 2; }; }; sleep 60; z", true, "for con llaves dentro de una función" },
+            // Duraciones
+            { "sleep 0x.4p6; uptime", true, "0x.4p6 = 16" },
+            { "sleep 0x1P-3; uptime", false, "0x1P-3 = 0,125" },
+            { "sleep 0x1p; uptime", false, "0x1p (GNU lo rechaza)" },
+            { "sleep 0x.p6; uptime", false, "0x.p6 (GNU lo rechaza)" },
+            { "sleep '\t60'; uptime", true, "tabulador delante (strtod lo salta)" },
+            { "sleep -- 60 --; uptime", false, "'--' detrás de la duración (GNU: argumento inválido)" },
+            // Comillas
+            { "echo \"$(echo ')')\"; sleep 60; uptime", true, "$( ')' ) dentro de comillas dobles" },
+            { "echo \"`echo '\"'`\"; sleep 60; uptime", true, "`…` con '\"' dentro de comillas dobles" },
+            { "echo $'\\''; sleep 60; uptime", true, "$'\\''" },
+            { "echo $'do'; sleep 60; uptime", true, "$'do' como argumento" },
+        };
+
+        [Theory]
+        [MemberData(nameof(CasosBloques))]
+        public void CierresRamasYPalabrasEntreComillas_AvisanComoBash(string comando, bool isAvisa, string nota) =>
+            _ = IsAvisoDeEspera(comando).Should().Be(isAvisa, nota);
+
+        private static bool IsAvisoDeEspera(string comando) =>
+            HerramientasSsh.DetectarAvisoAntipatron(comando) is { } aviso && aviso.Contains("Has esperado un tiempo fijo con 'sleep'", StringComparison.Ordinal);
+
+        // Los demás avisos dentro de bucles y ramas (then, else y do abren una lista de órdenes): los mismos que antes, salvo
+        // 'cd <ruta> &&' dentro de un bucle, que no tiene alternativa (ssh_set_cwd no sirve para un directorio que cambia en
+        // cada vuelta). Las condiciones de if, elif, while y until no avisan de nada salvo de la espera.
+        public static TheoryData<string, string[]> CasosOtrosAvisos => new()
+        {
+            { "for f in *.log; do cat $f; done", ["Has leído un archivo con 'cat' vía ssh_exec"] },
+            { "for d in a b; do cd $d && make; cd ..; done", [] },
+            { "if [ -d x ]; then cd x && make; fi", ["Has encadenado 'cd <ruta> &&' en ssh_exec"] },
+            { "for h in a b; do ls /srv/$h; done", ["Has ejecutado 'ls' vía ssh_exec"] },
+            { "for f in $(ls); do grep -q x $f && echo $f; done", ["Has ejecutado 'grep' sobre el sistema de archivos vía ssh_exec"] },
+            { "while read f; do stat $f; done < lista", ["Has ejecutado 'stat' vía ssh_exec"] },
+            { "for f in a b; do sed -i 's/a/b/' $f; done", ["Has editado un archivo en el sitio con 'sed -i' vía ssh_exec"] },
+            { "for i in 1 2; do echo x > f$i; done", [] },
+            { "if [ -f log ]; then tail -n 20 log; fi", ["Has leído un archivo con 'tail' vía ssh_exec"] },
+            { "if x; then head -5 f; else cat g; fi", ["Has leído un archivo con 'head' vía ssh_exec", "Has leído un archivo con 'cat' vía ssh_exec"] },
+            { "for f in *.conf; do sed -n '1,5p' $f; done", ["Has leído un archivo con 'sed -n' vía ssh_exec"] },
+            { "while true; do tail -f log; done", [] },
+            { "for p in a b; do find /srv/$p -name '*.log'; done", ["Has ejecutado 'find' vía ssh_exec"] },
+            { "until curl -s x; do sleep 2; done", [] },
+            { "for f in a b; do cat > $f <<EOF\nx\nEOF\ndone", ["Has escrito un archivo con 'cat > archivo <<' vía ssh_exec"] },
+            { "for f in a b; do echo $f; done | grep a", [] },
+            { "if grep -q x f; then echo si; fi", [] },
+            { "for f in *.c; do grep -rn TODO $f; done", ["Has ejecutado 'grep' sobre el sistema de archivos vía ssh_exec"] },
+            { "for s in a b; do systemctl status $s; done", [] },
+            { "do cat f", ["Has leído un archivo con 'cat' vía ssh_exec"] },
+            { "then cat f", ["Has leído un archivo con 'cat' vía ssh_exec"] },
+            { "else ls", ["Has ejecutado 'ls' vía ssh_exec"] },
+            { "echo do cat f", [] },
+            { "for i in 1 2; do tree /srv; done", ["Has ejecutado 'tree' vía ssh_exec"] },
+            { "for f in a b; do printf x >> $f; done", [] },
+            { "for f in a b; do tee $f < x; done", [] },
+            { "for f in a b; do rg x $f; done", ["Has ejecutado 'rg' sobre el sistema de archivos vía ssh_exec"] },
+            { "if true; then cat f | wc -l; fi", [] },
+            { "for d in a b\ndo\n  cd $d && make\ndone", [] },
+            { "for d in a b; { cd $d && make; }", [] },
+            { "while x; do y; done; cd /srv && make", ["Has encadenado 'cd <ruta> &&' en ssh_exec"] },
+            { "if cat f; then y; fi", [] },
+            { "while cat f; do y; done", [] },
+            { "if x; then y; elif ls; then z; fi", [] },
+            { "case $c in\n  ls) echo listar;;\nesac", [] },
+        };
+
+        [Theory]
+        [MemberData(nameof(CasosOtrosAvisos))]
+        public void OtrosAvisosEnBuclesYRamas_SonLosEsperados(string comando, string[] esperados)
+        {
+            // Act
+            string? aviso = HerramientasSsh.DetectarAvisoAntipatron(comando);
+
+            // Assert
+            if (esperados.Length == 0)
+            {
+                _ = aviso.Should().BeNull();
+                return;
+            }
+
+            _ = aviso.Should().NotBeNull();
+            _ = aviso!.Split("Sugerencia de ").Length.Should().Be(esperados.Length + 1);
+            foreach (string esperado in esperados)
+                _ = aviso.Should().Contain(esperado);
+        }
+
+        // Tiempo lineal: 5 MB de 'done)' repetido (y de otras construcciones que abren o cierran bloques) en mucho menos de lo
+        // que tardaría un recorrido cuadrático.
+        [Theory]
+        [InlineData("done)")]
+        [InlineData("if x; then sleep 60; else ")]
+        [InlineData("case a in a) sleep 60;; ")]
+        [InlineData("for i in 1; { sleep 60; ")]
+        [InlineData("sleep 60; fi; ")]
+        public void TextoDe5MB_TardaPoco(string trozo)
+        {
+            // Arrange
+            string comando = new System.Text.StringBuilder(5_000_000 + trozo.Length).Insert(0, trozo, 5_000_000 / trozo.Length).ToString();
+            System.Diagnostics.Stopwatch reloj = System.Diagnostics.Stopwatch.StartNew();
+
+            // Act
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando);
+
+            // Assert
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(10));
+        }
     }
 }
