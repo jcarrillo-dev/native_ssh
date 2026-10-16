@@ -228,6 +228,8 @@ namespace NativeSsh.Herramientas
         // imprimir y las opciones de enlaces (-L, -H, -P). Con cualquier otro predicado (fechas, dueño, permisos, -iname,
         // -path, -regex, -empty), acción (-exec, -delete, -printf, -ls) u operador (-o, -a, -not, !, paréntesis), no hay
         // herramienta que lo sustituya y no se avisa (el aviso disuadía de usar 'find -newer' o 'find -size' cuando no había alternativa).
+        // Es la misma regla que dicen ssh_exec, ssh_find y las instrucciones ("find por ssh_exec solo para lo que ssh_find no
+        // hace: …"); DescripcionesContratoTests comprueba que cada opción que nombran no avisa.
         // El tamaño solo con archivos: ssh_find rechaza tamanoMin y tamanoMax con tipo='dir', así que -size con -type d no avisa.
         private static bool IsFindQueHaceSshFind(OrdenSimple orden)
         {

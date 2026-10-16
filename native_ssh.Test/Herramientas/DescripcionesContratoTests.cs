@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using ModelContextProtocol.Server;
 using NativeSsh.Comun;
@@ -12,7 +13,7 @@ namespace NativeSsh.Test.Herramientas
 {
     // La descripción de cada herramienta es su contrato completo (lo único que lee con seguridad un modelo sencillo): las
     // cifras, listas y campos que da salen del código y no pueden quedarse atrás si este cambia.
-    public sealed class DescripcionesContratoTests
+    public sealed partial class DescripcionesContratoTests
     {
         private static MethodInfo Metodo(string herramienta) =>
             typeof(HerramientasSsh).GetMethods().Single(m => m.GetCustomAttribute<McpServerToolAttribute>()?.Name == herramienta);
@@ -86,6 +87,40 @@ namespace NativeSsh.Test.Herramientas
             foreach (string campo in campos)
                 _ = descripcion.Should().Contain(campo);
             _ = descripcion.Should().Contain($"como mucho {opciones.MaxBytesPorRespuesta / 1024} KiB de salida").And.Contain($"como mucho {opciones.MaxBytesSalidaPorPeticion / (1024 * 1024)} MiB de salida");
+        }
+
+        // Una sola regla para find, la misma en ssh_exec, ssh_find y las instrucciones, y la que sigue el aviso de antipatrón:
+        // por ssh_exec solo lo que ssh_find no hace (cada opción que nombra la regla no avisa); por nombre, tipo o tamaño, ssh_find.
+        [GeneratedRegex(@"-[a-z]+")]
+        private static partial Regex OpcionFind();
+
+        private const string ReglaFind = "find por ssh_exec solo para lo que ssh_find no hace: sin distinguir mayúsculas (-iname), por ruta (-path), fecha (-mtime, -newer), dueño (-user), permisos (-perm) o actuando sobre lo encontrado (-exec, -delete)";
+
+        [Fact]
+        public void Find_UnaSolaReglaEnDescripcionesInstruccionesYAviso()
+        {
+            // Arrange
+            string[] opciones = [.. OpcionFind().Matches(ReglaFind).Select(m => m.Value)];
+
+            // Assert
+            _ = Descripcion("ssh_exec").Should().Contain(ReglaFind).And.Contain("NO USAR para buscar patrones o cadenas en archivos (usa ssh_search), para localizar archivos por nombre, patrón o tamaño (usa ssh_find;");
+            _ = Descripcion("ssh_find").Should().Contain(ReglaFind).And.Contain("distingue mayúsculas");
+            _ = InstruccionesServidor.Texto.Should().Contain("ssh_find (nunca find para eso; " + ReglaFind + ")");
+            _ = opciones.Should().HaveCount(8);
+            foreach (string opcion in opciones)
+                _ = HerramientasSsh.DetectarAvisoAntipatron($"find /srv -name a {opcion} b").Should().BeNull(opcion);
+            foreach (string comando in (string[])["find /srv -name '*.log'", "find . -type f -size +10M", "find /srv -maxdepth 2 -type d -name x"])
+                _ = HerramientasSsh.DetectarAvisoAntipatron(comando).Should().Contain("'ssh_find'", comando);
+        }
+
+        // ssh_exec admite la excepción de los archivos con secretos que dan las instrucciones, ssh_read_file y ssh_search, con un
+        // ejemplo que no dispara ningún aviso.
+        [Fact]
+        public void Exec_ExcepcionDeLosArchivosConSecretos()
+        {
+            // Assert
+            _ = Descripcion("ssh_exec").Should().Contain("para leer archivos (usa ssh_read_file; salvo un archivo con secretos, como un .env, del que solo necesitas nombres o recuentos: sácalos con ssh_exec filtrando en el servidor, p. ej. 'cut -d= -f1 .env')");
+            _ = HerramientasSsh.DetectarAvisoAntipatron("cut -d= -f1 .env").Should().BeNull();
         }
 
         // ssh_stat no se pide antes de cada lectura: ssh_read_file ya acota.

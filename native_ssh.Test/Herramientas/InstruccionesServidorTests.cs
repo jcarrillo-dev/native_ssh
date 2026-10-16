@@ -63,7 +63,7 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData("ssh_search (nunca grep -r")]
         [InlineData("ssh_read_file (nunca cat")]
-        [InlineData("ssh_find (nunca find para eso; por fecha, dueño, permisos o con -exec, find por ssh_exec)")]
+        [InlineData("ssh_find (nunca find para eso; find por ssh_exec solo para lo que ssh_find no hace:")]
         [InlineData("ssh_list_dir (nunca ls ni tree)")]
         [InlineData("ssh_stat (nunca stat ni ls -l)")]
         [InlineData("ssh_set_cwd (nunca cd … &&)")]
