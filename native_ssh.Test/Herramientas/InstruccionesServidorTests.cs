@@ -42,7 +42,7 @@ namespace NativeSsh.Test.Herramientas
         public void EsAutocontenida_NoRemiteADocumentosNiARutasLocales()
         {
             // Assert
-            foreach (string prohibido in new[] { "skill", "README", "/home/", "~/", "SKILL", ".md" })
+            foreach (string prohibido in new[] { "README", "/home/", "~/", ".md" })
                 _ = Texto.Should().NotContain(prohibido);
         }
 
@@ -63,7 +63,7 @@ namespace NativeSsh.Test.Herramientas
         [Theory]
         [InlineData("ssh_search (nunca grep -r")]
         [InlineData("ssh_read_file (nunca cat")]
-        [InlineData("ssh_find (nunca find)")]
+        [InlineData("ssh_find (nunca find para eso; por fecha, dueño, permisos o con -exec, find por ssh_exec)")]
         [InlineData("ssh_list_dir (nunca ls ni tree)")]
         [InlineData("ssh_stat (nunca stat ni ls -l)")]
         [InlineData("ssh_set_cwd (nunca cd … &&)")]
@@ -95,7 +95,7 @@ namespace NativeSsh.Test.Herramientas
         {
             // Assert
             _ = Texto.Should().Contain("native_ssh no acepta claves de host nuevas")
-                .And.Contain("se conecte una vez a mano con ssh")
+                .And.Contain("la guarde él en el known_hosts que nombra el error")
                 .And.Contain("NUNCA propongas desactivar la comprobación de la clave del host");
             _ = Texto.Should().NotContain("ssh-keyscan").And.NotContain("StrictHostKeyChecking");
         }

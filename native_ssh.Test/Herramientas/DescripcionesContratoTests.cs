@@ -136,7 +136,7 @@ namespace NativeSsh.Test.Herramientas
         public void Ninguna_RemiteADocumentos()
         {
             foreach (string herramienta in Todas())
-                _ = Descripcion(herramienta).Should().NotContain("skill").And.NotContain("README");
+                _ = Descripcion(herramienta).Should().NotContain("README").And.NotContain(".md");
         }
     }
 }

@@ -214,7 +214,7 @@ namespace NativeSsh.Test.Integracion
             NativeSshException error = (await FluentActions.Awaiting(() => fabrica.ConectarAsync(sshd.Destino, CancellationToken.None)).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain("native_ssh no acepta claves de host nuevas").And.Contain($"se conecte una vez a mano con 'ssh -p {sshd.Puerto} ")
+            _ = error.Message.Should().Contain("native_ssh no acepta claves de host nuevas").And.Contain($"conectándose una vez a mano con 'ssh -p {sshd.Puerto} ")
                 .And.Contain("no desactives la comprobación de la clave del host").And.NotContain("ssh-keyscan");
             _ = error.Message.Should().Contain("SHA256:");
         }
