@@ -130,6 +130,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = Descripcion("ssh_exec").Should().Contain("Si no termina en esperarSegundos, la respuesta llega con estado 'Ejecutando' (o 'Encolado' si aún espera su turno en la cola del shell)");
             _ = Parametro("ssh_exec", "esperarSegundos").Should().Contain("responde con estado 'Ejecutando' (o 'Encolado' si aún espera su turno en la cola del shell)");
+            _ = Descripcion("ssh_output").Should().Contain("Si sigue en ejecución o aún espera su turno en la cola del shell (estado 'Ejecutando' o 'Encolado'), espera hasta 'esperarSegundos' a que termine");
         }
 
         // ssh_stat no se pide antes de cada lectura: ssh_read_file ya acota.
