@@ -577,18 +577,10 @@ namespace NativeSsh.Herramientas
         private static bool IsPalabraReservadaInicial(Palabra palabra) =>
             !palabra.IsCitada && !palabra.IsRedireccion && palabra.Texto is "then" or "else" or "do" or "if" or "elif" or "while" or "until" or "!";
 
-        // 'case <palabra> in' al principio de la orden (tras palabras reservadas): lo que sigue son patrones hasta ')'.
-        private static bool IsCabeceraCase(ReadOnlySpan<Palabra> palabras)
-        {
-            if (palabras.Length < 3 || palabras[^1] is not { Texto: "in", IsCitada: false } || palabras[^3] is not { Texto: "case", IsCitada: false })
-                return false;
-
-            foreach (Palabra palabra in palabras[..^3])
-                if (!IsPalabraReservadaInicial(palabra))
-                    return false;
-
-            return true;
-        }
+        // 'case <palabra> in' al principio de la orden, tras las palabras reservadas iniciales (reservadasIniciales, que lleva
+        // la cuenta SepararOrdenes): lo que sigue son patrones hasta ')'. En tiempo constante: se mira en cada palabra.
+        private static bool IsCabeceraCase(ReadOnlySpan<Palabra> palabras, int reservadasIniciales) =>
+            palabras.Length == reservadasIniciales + 3 && palabras[^1] is { Texto: "in", IsCitada: false } && palabras[^3] is { Texto: "case", IsCitada: false };
 
         // Analizador léxico mínimo de bash para los avisos: comillas simples y dobles, barra invertida, $(…) y `…` opacos
         // (su contenido no cuenta como órdenes), comentarios, continuación de línea, redirecciones y heredocs (su cuerpo se
@@ -612,6 +604,8 @@ namespace NativeSsh.Herramientas
             int indicePatron = 0;
             // La siguiente orden empieza otra cláusula del case (tras ';;' o ';;&', aunque haya saltos de línea en medio).
             bool isClausulaCase = false;
+            // Palabras reservadas seguidas al principio de la orden actual ('! if …'), para IsCabeceraCase.
+            int reservadasIniciales = 0;
             int llavesPendientes = 0;
             int i = 0;
             int longitud = comando.Length;
@@ -631,8 +625,11 @@ namespace NativeSsh.Herramientas
                 // 'esac' donde iría un patrón cierra el case.
                 if (isPatronCase && !isCitada && texto == "esac" && palabras.Count == indicePatron)
                     isPatronCase = false;
-                palabras.Add(new Palabra(texto, false, isCitada));
-                if (IsCabeceraCase(CollectionsMarshal.AsSpan(palabras)))
+                Palabra palabra = new(texto, false, isCitada);
+                if (palabras.Count == reservadasIniciales && IsPalabraReservadaInicial(palabra))
+                    reservadasIniciales++;
+                palabras.Add(palabra);
+                if (IsCabeceraCase(CollectionsMarshal.AsSpan(palabras), reservadasIniciales))
                 {
                     isPatronCase = true;
                     indicePatron = palabras.Count;
@@ -657,6 +654,7 @@ namespace NativeSsh.Herramientas
                 }
 
                 palabras.Clear();
+                reservadasIniciales = 0;
                 indicePatron = 0;
                 separadorPrevio = separador;
             }
@@ -796,6 +794,7 @@ namespace NativeSsh.Herramientas
                     CerrarPalabra();
                     int inicioPatron = Math.Min(indicePatron, palabras.Count);
                     palabras.RemoveRange(inicioPatron, palabras.Count - inicioPatron);
+                    reservadasIniciales = Math.Min(reservadasIniciales, palabras.Count);
                     isPatronCase = false;
                     if (palabras.Count > 0)
                         CerrarOrden(";");

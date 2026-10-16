@@ -415,6 +415,31 @@ namespace NativeSsh.Test.Herramientas
                 _ = aviso.Should().Contain(esperado);
         }
 
+        // Tiempo lineal con una orden que empieza por muchas palabras reservadas y sigue con 'case x in' repetido: la cabecera
+        // de case se reconoce sin volver a recorrer las palabras de delante (con 200 000 caracteres, un recorrido cuadrático
+        // tardaba unos 12 s).
+        [Theory]
+        [InlineData("! ")]
+        [InlineData("if ")]
+        [InlineData("then ")]
+        public void PalabrasReservadasYCaseRepetido_TardaPoco(string prefijo)
+        {
+            // Arrange
+            System.Text.StringBuilder texto = new(200_100);
+            while (texto.Length < 100_000)
+                _ = texto.Append(prefijo);
+            while (texto.Length < 200_000)
+                _ = texto.Append("case x in ");
+            string comando = texto.ToString();
+            System.Diagnostics.Stopwatch reloj = System.Diagnostics.Stopwatch.StartNew();
+
+            // Act
+            _ = HerramientasSsh.DetectarAvisoAntipatron(comando);
+
+            // Assert
+            _ = reloj.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(3));
+        }
+
         // Tiempo lineal: 5 MB de 'done)' repetido (y de otras construcciones que abren o cierran bloques) en mucho menos de lo
         // que tardaría un recorrido cuadrático.
         [Theory]
