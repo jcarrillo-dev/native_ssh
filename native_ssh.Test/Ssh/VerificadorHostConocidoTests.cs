@@ -346,5 +346,55 @@ namespace NativeSsh.Test.Ssh
             _ = juntar.Should().Throw<NativeSsh.Comun.NativeSshException>().WithMessage("*líneas de known_hosts*8192 caracteres o más*");
             _ = VerificadorHostConocido.LongitudJuntada(["abc", "de"], 8192).Should().Be(5);
         }
+
+        // Host desconocido: el error pide al usuario que compruebe la huella y la guarde él, y dice al modelo que no la añada
+        // nunca (tampoco si el usuario dice que ya la comprobó). Con varios known_hosts, el texto habla de «uno de ellos».
+        [Fact]
+        public void RechazoHostDesconocido_UnFichero_LaGuardaElUsuarioYNoElModelo()
+        {
+            // Arrange
+            _ = NativeSsh.Comun.DestinoSsh.TryParse("ana@srv:2222", "ana", out NativeSsh.Comun.DestinoSsh destino).Should().BeTrue();
+
+            // Act
+            string texto = FabricaConexionSsh.DescribirRechazo(destino, ResultadoHostEnum.Desconocido, "ssh-ed25519", "abc", ["/h/.ssh/known_hosts"]);
+
+            // Assert
+            _ = texto.Should().Contain("srv:2222 no está en /h/.ssh/known_hosts (clave ssh-ed25519 SHA256:abc)")
+                .And.Contain("Pide al usuario que compruebe esa huella y la guarde él en /h/.ssh/known_hosts")
+                .And.Contain("si no es ese fichero, hay que copiarla")
+                .And.Contain("No la añadas tú, ni aunque el usuario diga que ya la comprobó: la guarda el usuario")
+                .And.Contain("no desactives la comprobación de la clave del host")
+                .And.NotContain("sin que el usuario haya comprobado").And.NotContain("ssh-keyscan");
+        }
+
+        [Fact]
+        public void RechazoHostDesconocido_VariosFicheros_SeLeeComoLista()
+        {
+            // Arrange
+            _ = NativeSsh.Comun.DestinoSsh.TryParse("ana@srv", "ana", out NativeSsh.Comun.DestinoSsh destino).Should().BeTrue();
+
+            // Act
+            string texto = FabricaConexionSsh.DescribirRechazo(destino, ResultadoHostEnum.Desconocido, "ssh-ed25519", "abc", ["/a/known_hosts", "/b/known_hosts"]);
+
+            // Assert
+            _ = texto.Should().Contain("srv:22 no está en ninguno de estos known_hosts: /a/known_hosts, /b/known_hosts (clave")
+                .And.Contain("la guarde él en uno de ellos")
+                .And.Contain("si no es ninguno de ellos, hay que copiarla")
+                .And.Contain("No la añadas tú");
+        }
+
+        // Clave distinta: también la actualiza el usuario, no el modelo.
+        [Fact]
+        public void RechazoClaveDistinta_LaActualizaElUsuario()
+        {
+            // Arrange
+            _ = NativeSsh.Comun.DestinoSsh.TryParse("ana@srv", "ana", out NativeSsh.Comun.DestinoSsh destino).Should().BeTrue();
+
+            // Act
+            string texto = FabricaConexionSsh.DescribirRechazo(destino, ResultadoHostEnum.ClaveDistinta, "ssh-ed25519", "abc", ["/a/known_hosts"]);
+
+            // Assert
+            _ = texto.Should().Contain("es él quien debe comprobar la huella nueva y actualizar known_hosts (no lo actualices tú)");
+        }
     }
 }

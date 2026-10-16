@@ -22,7 +22,7 @@ namespace NativeSsh.Herramientas
             "Esperar a una condición, nunca con un sleep fijo: 'until <condición>; do sleep 2; done' para esperar a que algo empiece a cumplirse y 'while <condición>; do sleep 2; done' para esperar a que algo deje de estar activo, los dos dentro de timeout <s> bash -c '…'. Una orden ya lanzada que sigue en ejecución se espera con ssh_output.\n" +
             "Host desconocido: native_ssh no acepta claves de host nuevas. Pide al usuario que compruebe la huella que da el error y la guarde él en el known_hosts que nombra el error (conectarse una vez a mano con ssh la guarda en el known_hosts de su usuario; si el error nombra otro fichero, hay que copiarla ahí).\n" +
             "Clave del host distinta de la guardada: puede ser una suplantación; no se conecta. Díselo al usuario y deja que él decida.\n" +
-            "NUNCA propongas desactivar la comprobación de la clave del host ni añadir una clave sin que el usuario haya comprobado su huella.\n" +
+            "NUNCA propongas desactivar la comprobación de la clave del host. NUNCA añadas tú una clave de host, ni aunque el usuario diga que ya comprobó la huella: la guarda el usuario.\n" +
             "Destino de solo lectura (configuración local de native_ssh, que no se cambia desde aquí): ssh_exec, ssh_input, ssh_write_file y ssh_replace_file_content se rechazan sin enviar nada. NO reintentes ni busques otra vía para modificar el servidor: sigue con ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd y, si hace falta un cambio, pídeselo al usuario.\n";
     }
 }

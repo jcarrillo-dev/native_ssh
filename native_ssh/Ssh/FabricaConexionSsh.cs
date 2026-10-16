@@ -333,15 +333,22 @@ namespace NativeSsh.Ssh
             return true;
         }
 
-        private string DescribirRechazo(DestinoSsh destino, ResultadoHostEnum resultado, string tipo, string huella)
+        private string DescribirRechazo(DestinoSsh destino, ResultadoHostEnum resultado, string tipo, string huella) =>
+            DescribirRechazo(destino, resultado, tipo, huella, verificador.Rutas);
+
+        // La clave del host la guarda o la actualiza siempre el usuario, nunca el modelo: aunque diga que comprobó la huella, el
+        // modelo no puede saber si la comprobó contra la buena. Con varios known_hosts, la que falta no está en ninguno y basta
+        // con guardarla en uno.
+        internal static string DescribirRechazo(DestinoSsh destino, ResultadoHostEnum resultado, string tipo, string huella, string[] rutas)
         {
-            string archivos = string.Join(", ", verificador.Rutas);
+            string archivos = string.Join(", ", rutas);
+            bool isVarios = rutas.Length > 1;
             string puerto = destino.Puerto == DestinoSsh.PuertoPorDefecto ? "" : $"-p {destino.Puerto} ";
             return resultado switch
             {
-                ResultadoHostEnum.ClaveDistinta => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) NO coincide con la guardada en {archivos}. Posible suplantación: no se ha conectado. Díselo al usuario: si el cambio es legítimo, es él quien debe comprobar la huella nueva y actualizar known_hosts; no desactives la comprobación de la clave del host.",
+                ResultadoHostEnum.ClaveDistinta => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) NO coincide con la guardada en {archivos}. Posible suplantación: no se ha conectado. Díselo al usuario: si el cambio es legítimo, es él quien debe comprobar la huella nueva y actualizar known_hosts (no lo actualices tú); no desactives la comprobación de la clave del host.",
                 ResultadoHostEnum.Revocado => $"La clave {tipo} de {destino.Servidor} (SHA256:{huella}) está marcada como @revoked en {archivos}. No se ha conectado.",
-                ResultadoHostEnum.Desconocido => $"{destino.Servidor}:{destino.Puerto} no está en {archivos} (clave {tipo} SHA256:{huella}): no se ha conectado, porque native_ssh no acepta claves de host nuevas. Pide al usuario que compruebe esa huella y la guarde él en {archivos} (p. ej. conectándose una vez a mano con 'ssh {puerto}{destino.Usuario}@{destino.Servidor}', que la guarda en el known_hosts de su usuario: si no es ese fichero, hay que copiarla); no desactives la comprobación de la clave del host ni añadas la clave sin que el usuario haya comprobado la huella.",
+                ResultadoHostEnum.Desconocido => $"{destino.Servidor}:{destino.Puerto} no está en {(isVarios ? $"ninguno de estos known_hosts: {archivos}" : archivos)} (clave {tipo} SHA256:{huella}): no se ha conectado, porque native_ssh no acepta claves de host nuevas. Pide al usuario que compruebe esa huella y la guarde él en {(isVarios ? "uno de ellos" : archivos)} (p. ej. conectándose una vez a mano con 'ssh {puerto}{destino.Usuario}@{destino.Servidor}', que la guarda en el known_hosts de su usuario: si no es {(isVarios ? "ninguno de ellos" : "ese fichero")}, hay que copiarla). No la añadas tú, ni aunque el usuario diga que ya la comprobó: la guarda el usuario; y no desactives la comprobación de la clave del host.",
                 ResultadoHostEnum.Conocido => throw new UnreachableException("Un host conocido no se rechaza."),
                 _ => throw new ArgumentOutOfRangeException(nameof(resultado), resultado, null)
             };
