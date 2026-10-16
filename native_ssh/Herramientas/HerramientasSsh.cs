@@ -1111,8 +1111,19 @@ namespace NativeSsh.Herramientas
             string rutaEfectiva = string.IsNullOrEmpty(ruta) ? "." : ruta;
             string comando = ConstruirComandoBusqueda(patron, rutaEfectiva, extension, limite);
             SalidaLectura lectura = await EjecutarLecturaAsync(destino, comando, TimeoutBusquedaSegundos, "Probablemente hay líneas muy largas (p. ej. archivos minificados): refina el patrón, la extensión o la ruta.", cancellationToken).ConfigureAwait(false);
-            return InterpretarBusqueda(lectura, patron, rutaEfectiva, limite);
+            return InterpretarBusqueda(lectura, patron, rutaEfectiva, limite, AvisoBinariosEnSalidasGuardadas(rutaEfectiva, opciones.PrefijoGuardado));
         }
+
+        internal const string AvisoBinariosOmitidos = "[Aviso: en el directorio de las salidas guardadas, un .out con algún byte NUL (salida binaria) se omite sin decir cuál: si una salida puede ser binaria, búscala por la ruta de su .out o léela con ssh_read_file.]";
+
+        // Buscar en el directorio de las salidas de guardarSalida (o por debajo del directorio base, sin llegar a un .out
+        // concreto): los motores tratan como binario un archivo con un byte NUL y, recorriendo un directorio, lo saltan en
+        // silencio (rg y grep -I). No se sabe desde aquí si había alguno, así que
+        // se dice siempre en ese caso; buscando el .out por su ruta, rg y grep dicen que casa un binario.
+        internal static string AvisoBinariosEnSalidasGuardadas(string rutaEfectiva, string prefijoGuardado) =>
+            rutaEfectiva.StartsWith(prefijoGuardado + "-", StringComparison.Ordinal) && !rutaEfectiva.EndsWith(".out", StringComparison.Ordinal)
+                ? AvisoBinariosOmitidos + "\n"
+                : string.Empty;
 
         private const string PrefijoMotor = "__NS_MOTOR:";
         private const string ExclusionDirectorios = ".git,node_modules,.venv,venv,__pycache__,dist,build,.next,.cache,bin,obj";
@@ -1262,7 +1273,7 @@ namespace NativeSsh.Herramientas
         }
 
         // Códigos de rg y grep: 0 = coincidencias, 1 = ninguna, 2 = error (con -s/--no-messages, archivos ilegibles o regex inválida).
-        private static string InterpretarBusqueda(SalidaLectura lectura, string patron, string rutaEfectiva, int limite)
+        private static string InterpretarBusqueda(SalidaLectura lectura, string patron, string rutaEfectiva, int limite, string avisoBinarios)
         {
             int codigo = lectura.Codigo;
             string salida = lectura.Salida;
@@ -1290,9 +1301,9 @@ namespace NativeSsh.Herramientas
             // sin grep de GNU). Los resultados valen, pero pueden faltar coincidencias: se dice, con el error. Un 2 sin
             // stderr (con o sin resultados) es un error que -s/--no-messages calla, como un archivo o directorio ilegible:
             // también pueden faltar, y se dice sin detalle (A-undecies, AU3).
-            string avisoErrores = codigo != 2 ? string.Empty
+            string avisoErrores = (codigo != 2 ? string.Empty
                 : hasErrores ? $"[Aviso: la búsqueda terminó con errores, así que pueden faltar coincidencias: {AcotarErrores(errores)}]\n"
-                : AvisoCodigoDosSinDetalle + "\n";
+                : AvisoCodigoDosSinDetalle + "\n") + avisoBinarios;
 
             // 0 sin resultados: el recorrido con find sin grep de GNU, que no da un código de «sin coincidencias».
             if (codigo is 0 or 1 or 2 && isVacio)
