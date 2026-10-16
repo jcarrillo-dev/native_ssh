@@ -121,7 +121,8 @@ namespace NativeSsh.Test.Herramientas
         {
             // Assert
             _ = Texto.Should().Contain("native_ssh no acepta claves de host nuevas")
-                .And.Contain("la guarde él en el known_hosts que nombra el error")
+                .And.Contain("la guarde él en el known_hosts que nombra el error (en uno de ellos si nombra varios;")
+                .And.Contain("si no es ninguno de los que nombra el error, hay que copiarla a uno de ellos")
                 .And.Contain("NUNCA propongas desactivar la comprobación de la clave del host")
                 .And.Contain("NUNCA añadas tú una clave de host, ni aunque el usuario diga que ya comprobó la huella: la guarda el usuario");
             _ = Texto.Should().NotContain("ssh-keyscan").And.NotContain("StrictHostKeyChecking").And.NotContain("sin que el usuario haya comprobado");
