@@ -91,6 +91,28 @@ namespace NativeSsh.Test.Ssh
             _ = sinOtro.Puerto.Should().Be(22);
         }
 
+        // Un nombre que ssh -G sí leyó, con su HostName igual al nombre (no es un alias), queda marcado como leído: la pista
+        // «si es un alias, no se pudo leer» no sale para él. Sin el programa ssh, el destino sigue sin marcar.
+        [Fact]
+        public void NombreLeidoConHostNameIgual_QuedaLeidoSinAlias()
+        {
+            // Arrange
+            ResolutorConfiguracionSsh resolutor = Resolutor(Configuracion("Host web\n  HostName web\n"));
+            ResolutorConfiguracionSsh sinSsh = Resolutor(Configuracion("Host web\n  HostName 127.0.0.1\n"), binario: Path.Combine(_directorio, "no_existe_ssh"));
+
+            // Act
+            DestinoSsh conEntrada = Resolver(resolutor, "web");
+            DestinoSsh sinEntrada = Resolver(resolutor, "otro.example");
+            DestinoSsh sinPrograma = Resolver(sinSsh, "web");
+
+            // Assert
+            _ = conEntrada.Alias.Should().BeNull();
+            _ = conEntrada.IsLeidoConConfiguracion.Should().BeTrue();
+            _ = sinEntrada.IsLeidoConConfiguracion.Should().BeTrue();
+            _ = sinPrograma.IsLeidoConConfiguracion.Should().BeFalse();
+            _ = sinPrograma.Servidor.Should().Be("web");
+        }
+
         // Host * y Match se aplican también a una IP o a un nombre que no es un alias.
         [Fact]
         public void DestinoQueNoEsAlias_TambienRecibeLaConfiguracionGeneral()

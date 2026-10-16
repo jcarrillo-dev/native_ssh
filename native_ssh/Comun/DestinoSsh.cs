@@ -23,6 +23,9 @@ namespace NativeSsh.Comun
         // el destino ya era el servidor real.
         public string? Alias { get; private init; }
 
+        // Resuelto con la configuración de ssh (ssh -G la leyó), aunque su HostName sea el mismo nombre y no haya Alias.
+        public bool IsLeidoConConfiguracion { get; private init; }
+
         public string Usuario { get; }
         public string Servidor { get; }
         public int Puerto { get; }
@@ -39,7 +42,7 @@ namespace NativeSsh.Comun
 
         // Destino ya resuelto con la configuración de ssh (ssh -G).
         public static DestinoSsh Resuelto(string usuario, string servidor, int puerto, string[]? identidades, string? alias) =>
-            new(usuario, servidor, puerto) { Identidades = identidades, Alias = alias };
+            new(usuario, servidor, puerto) { Identidades = identidades, Alias = alias, IsLeidoConConfiguracion = true };
 
         public static bool TryParse(ReadOnlySpan<char> entrada, string usuarioPorDefecto, out DestinoSsh destino) =>
             TryParse(entrada, usuarioPorDefecto, out destino, out _, out _);

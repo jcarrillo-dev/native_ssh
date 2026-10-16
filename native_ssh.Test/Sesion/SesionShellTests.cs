@@ -1942,6 +1942,24 @@ namespace NativeSsh.Test.Sesion
                 : peticion.Aviso.Should().NotContain("alias");
         }
 
+        // Un nombre que la configuración de ssh sí leyó (con su HostName igual al nombre, sin alias) y que no se resuelve: la
+        // pista diría algo falso («native_ssh no la pudo leer»), así que no sale.
+        [Fact]
+        public async Task NombreNoResuelto_LeidoConLaConfiguracion_SinPistaDeAlias()
+        {
+            // Arrange
+            FabricaFalsa fabrica = new(Guion) { ErrorAlConectar = new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.HostNotFound) };
+            OpcionesNativeSsh opciones = Opciones() with { ConfiguracionSsh = "" };
+            DestinoSsh leido = DestinoSsh.Resuelto(Destino.Usuario, Destino.Servidor, Destino.Puerto, null, null);
+            await using SesionShell sesion = new(leido, fabrica, new LimitadorConexiones(opciones, TimeProvider.System), opciones, NullLogger.Instance);
+
+            // Act
+            Peticion peticion = await EjecutarAsync(sesion, "hola");
+
+            // Assert
+            _ = peticion.Aviso.Should().Contain("No se pudo conectar a prueba@servidor:22").And.NotContain("alias");
+        }
+
         [Fact]
         public async Task ErrorAlConectar_PenalizaElSiguienteIntento()
         {

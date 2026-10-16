@@ -123,6 +123,15 @@ namespace NativeSsh.Test.Herramientas
             _ = HerramientasSsh.DetectarAvisoAntipatron("cut -d= -f1 .env").Should().BeNull();
         }
 
+        // Un comando que aún espera su turno en la cola del shell responde con estado 'Encolado', no 'Ejecutando'.
+        [Fact]
+        public void Exec_SinTerminarEsEjecutandoOEncolado()
+        {
+            // Assert
+            _ = Descripcion("ssh_exec").Should().Contain("Si no termina en esperarSegundos, la respuesta llega con estado 'Ejecutando' (o 'Encolado' si aún espera su turno en la cola del shell)");
+            _ = Parametro("ssh_exec", "esperarSegundos").Should().Contain("responde con estado 'Ejecutando' (o 'Encolado' si aún espera su turno en la cola del shell)");
+        }
+
         // ssh_stat no se pide antes de cada lectura: ssh_read_file ya acota.
         [Fact]
         public void Stat_NoSeRecomiendaAntesDeLeer() =>

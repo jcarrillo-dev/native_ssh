@@ -1627,11 +1627,12 @@ namespace NativeSsh.Sesion
             }
         }
 
-        // Un nombre que no se resuelve y que no llegó como alias resuelto: si es un alias de la configuración de ssh, esta no se
-        // pudo leer (p. ej. sin el programa ssh en el PATH de native_ssh, que solo lo dice en su log) y se usó tal cual. Sin
-        // configuración de ssh (NATIVE_SSH_CONFIG_SSH=none) los alias no existen: nada que añadir.
+        // Un nombre que no se resuelve y que la configuración de ssh no leyó: si es un alias, esta no se pudo leer (p. ej. sin el
+        // programa ssh en el PATH de native_ssh, que solo lo dice en su log) y se usó tal cual. Si ssh -G sí lo leyó (también con
+        // un HostName igual al nombre, que no deja Alias), la pista sería falsa. Sin configuración de ssh
+        // (NATIVE_SSH_CONFIG_SSH=none) los alias no existen: nada que añadir.
         private string PistaNombreNoResuelto(Exception ex) =>
-            ex is SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain } && Destino.Alias is null && _opciones.ConfiguracionSsh is not null && !IPAddress.TryParse(Destino.Servidor, out _)
+            ex is SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain } && !Destino.IsLeidoConConfiguracion && _opciones.ConfiguracionSsh is not null && !IPAddress.TryParse(Destino.Servidor, out _)
                 ? $" No se encontró la dirección de '{Destino.Servidor}'. Si es un alias de la configuración de ssh, native_ssh no la pudo leer con 'ssh -G' (p. ej. el programa ssh no está en su PATH; su log lo dice) y lo usó tal cual como nombre."
                 : string.Empty;
 

@@ -139,5 +139,18 @@ namespace NativeSsh.Test.Herramientas
                 .And.Contain("ssh_read_file, ssh_search, ssh_find, ssh_list_dir, ssh_stat y ssh_set_cwd")
                 .And.Contain("NO reintentes ni busques otra vía");
         }
+
+        // El rechazo por no poder comprobarlo con demasiadas resoluciones a la vez sí pide repetir la llamada: las instrucciones
+        // distinguen ese caso del destino de solo lectura, que no se reintenta.
+        [Fact]
+        public void SoloLectura_ElRechazoPorCupoLlenoSiSeReintenta()
+        {
+            // Arrange
+            string cupo = DestinosSoloLectura.MensajeNoComprobado("ana@prod:22", "ssh_exec", "prod", isCupoLleno: true);
+
+            // Assert
+            _ = cupo.Should().Contain("no se pudo comprobar si es de solo lectura").And.Contain("demasiadas resoluciones a la vez").And.Contain("vuelve a intentarlo en unos segundos");
+            _ = Texto.Should().Contain("Si el rechazo dice que no se pudo comprobar si es de solo lectura, sigue lo que diga el mensaje: con demasiadas resoluciones a la vez, repite la misma llamada en unos segundos.");
+        }
     }
 }
