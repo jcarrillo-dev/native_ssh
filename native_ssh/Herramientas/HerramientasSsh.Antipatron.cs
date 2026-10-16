@@ -696,12 +696,19 @@ namespace NativeSsh.Herramientas
 
                 if (c == '$' && siguiente == '\'')
                 {
-                    // $'…' (comillas de ANSI C): '\' escapa el carácter siguiente, también una comilla simple.
-                    for (i += 2; i < longitud && comando[i] != '\''; i++)
+                    // $'…' (comillas de ANSI C): los escapes se decodifican como en bash (AnadirEscapeAnsi), también una
+                    // comilla simple escapada.
+                    i += 2;
+                    while (i < longitud && comando[i] != '\'')
                     {
-                        if (comando[i] == '\\' && i + 1 < longitud)
-                            i++;
+                        if (comando[i] == '\\')
+                        {
+                            i = AnadirEscapeAnsi(comando, i, actual);
+                            continue;
+                        }
+
                         _ = actual.Append(comando[i]);
+                        i++;
                     }
 
                     hasPalabra = true;
@@ -903,6 +910,57 @@ namespace NativeSsh.Herramientas
 
             CerrarOrden(string.Empty);
             return ordenes;
+        }
+
+        // Escape de $'…' que empieza en 'inicio' (la barra), como lo decodifica bash: \a \b \e \E \f \n \r \t \v \\ \' \" \?,
+        // octal \nnn (de 1 a 3 cifras) y hexadecimal \xHH (1 o 2 cifras). Los demás (\u, \U, \c…) quedan tal cual, con la
+        // barra (una duración con ellos no es válida para sleep). Devuelve la posición siguiente al escape.
+        private static int AnadirEscapeAnsi(string comando, int inicio, StringBuilder actual)
+        {
+            int i = inicio + 1;
+            if (i >= comando.Length)
+            {
+                _ = actual.Append('\\');
+                return i;
+            }
+
+            char c = comando[i];
+            char? simple = c switch
+            {
+                'a' => '\a',
+                'b' => '\b',
+                'e' or 'E' => '\u001B',
+                'f' => '\f',
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                'v' => '\v',
+                '\\' or '\'' or '"' or '?' => c,
+                _ => null
+            };
+            if (simple is { } caracter)
+            {
+                _ = actual.Append(caracter);
+                return i + 1;
+            }
+
+            bool isOctal = c is >= '0' and <= '7';
+            bool isHexadecimal = c == 'x' && i + 1 < comando.Length && char.IsAsciiHexDigit(comando[i + 1]);
+            if (!isOctal && !isHexadecimal)
+            {
+                _ = actual.Append('\\').Append(c);
+                return i + 1;
+            }
+
+            int baseNumerica = isOctal ? 8 : 16;
+            int inicioCifras = isOctal ? i : i + 1;
+            int maximo = isOctal ? 3 : 2;
+            int valor = 0;
+            int j = inicioCifras;
+            for (; j < comando.Length && j < inicioCifras + maximo && (isOctal ? comando[j] is >= '0' and <= '7' : char.IsAsciiHexDigit(comando[j])); j++)
+                valor = (valor * baseNumerica) + (char.IsAsciiDigit(comando[j]) ? comando[j] - '0' : (comando[j] | 0x20) - 'a' + 10);
+            _ = actual.Append((char)(valor & 0xFF));
+            return j;
         }
 
         private static bool IsSoloDigitos(StringBuilder texto)

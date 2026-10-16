@@ -344,6 +344,12 @@ namespace NativeSsh.Test.Herramientas
             { "echo \"`echo '\"'`\"; sleep 60; uptime", true, "`…` con '\"' dentro de comillas dobles" },
             { "echo $'\\''; sleep 60; uptime", true, "$'\\''" },
             { "echo $'do'; sleep 60; uptime", true, "$'do' como argumento" },
+            // $'…' decodifica los escapes de bash: la duración es la que recibe sleep.
+            { "sleep $'\\t60'; uptime", true, "$'\\t60' = tabulador + 60" },
+            { "sleep $'\\n60'; uptime", true, "$'\\n60' = salto de línea + 60" },
+            { "sleep $'6\\x30'; uptime", true, "$'6\\x30' = 60" },
+            { "sleep $'\\0660'; uptime", true, "$'\\0660' = 60 (octal)" },
+            { "sleep $'6\\q0'; uptime", false, "$'6\\q0' = 6\\q0 (GNU lo rechaza)" },
         };
 
         [Theory]
