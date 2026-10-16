@@ -533,7 +533,7 @@ Medido con un AMD Ryzen 9 3950X, Linux, .NET SDK 10.0.201 y BenchmarkDotNet 0.15
 La solución comparte la configuración de `JCarrillo.AOT.Core` (.NET 10, C# 14, `Directory.Build.props` y `.editorconfig`):
 
 - Tipado explícito (`var` deshabilitado), sin llaves en bloques de una sola sentencia, operador de rango en lugar de `Slice`, prefijos `Is`/`Has` en booleanos y sufijo `Enum` en los enumerados.
-- Advertencias como errores y estilo comprobado al compilar (`EnforceCodeStyleInBuild`); auditoría de NuGet estricta.
+- Advertencias como errores y estilo comprobado al compilar (`EnforceCodeStyleInBuild`); comprobación estricta de vulnerabilidades de los paquetes NuGet (`NuGetAudit`).
 - **Sin `System.Linq`** fuera de `native_ssh.Test` (y del proyecto que BenchmarkDotNet genera bajo `native_ssh.Benchmarks/bin/`): las colecciones usan `JCarrillo.AOT.Core` (`PooledListRef`, ValueLINQ). Se comprueba de dos formas: el analizador BannedApiAnalyzers (RS0030 como error) avisa en el editor, y la comprobación definitiva mira el **ensamblado compilado** (`msbuild/ComprobarSystemLinqEnIL.cs`, con System.Reflection.Metadata): cualquier referencia a un tipo de `System.Linq` o de un espacio de nombres bajo él, la escriba quien la escriba (también la que genera el compilador, como `[.. hashSet]` → `Enumerable.ToArray`), hace fallar el build con el método y, si hay PDB, el fichero y la línea. La tarea se compila en cada build en `obj/nslinq/` y corre en un proceso aparte; `dotnet clean` la borra. Necesita las `System.Reflection.Metadata.dll` y `System.Collections.Immutable.dll` de la carpeta `Sdks/Microsoft.NET.Sdk/tools/net472` del SDK: si faltan, el build falla.
 - Código dependiente del sistema en ficheros `*.Linux.cs`, `*.Unix.cs` y `*.Windows.cs`, elegidos al compilar (`-p:NativeSshSistema=windows|unix|linux` para compilar en Linux lo de otro sistema).
 - Fines de línea CRLF en el código C# y LF en los `.sh`.
@@ -590,7 +590,7 @@ No deben aplicarse correcciones automáticas globales de `dotnet format` para `I
 - `ssh_status` no dice si el `User` o el `Port` de un alias cambió con la sesión abierta.
 - Una sesión que ya no recuerda su alias solo se cierra con su `usuario@servidor:puerto` (que cierra también las de otros alias a ese servidor); no siempre se puede cerrar solo la vieja.
 - `ProxyJump`, `ProxyCommand`, `HostKeyAlias`, `UserKnownHostsFile`, `CertificateFile`, `IdentitiesOnly` e `IdentityAgent` de la configuración no se usan; los destinos con salto se rechazan.
-- Sin agente (`ssh-agent`) ni reenvío de puertos.
+- Sin `ssh-agent` ni reenvío de puertos.
 
 **Del modo solo lectura**
 
