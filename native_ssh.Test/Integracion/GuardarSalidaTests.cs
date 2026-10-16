@@ -92,7 +92,7 @@ namespace NativeSsh.Test.Integracion
             _ = r.Bytes.Should().BeGreaterThan(1024 * 1024);
             _ = (Modo(Base), Modo(Path.GetDirectoryName(r.Archivo!)!), Modo(r.Archivo!)).Should().Be(("700", "700", "600"));
             _ = r.Aviso.Should().Contain(r.Archivo).And.Contain("ssh_read_file").And.Contain("ssh_search");
-            _ = r.Aviso.Should().Contain("o su directorio para buscar en todas las salidas guardadas de este shell").And.Contain("Ese directorio es de native_ssh: no lo borres a mano.");
+            _ = r.Aviso.Should().Contain("o su directorio para buscar en todas las salidas guardadas de este shell").And.Contain("Ese directorio es de native_ssh: no lo borres a mano mientras la sesión siga abierta.");
         }
 
         // RC8: con varios avisos, primero el de guardarSalida (la ruta y cómo leerla) y después las sugerencias de rendimiento.

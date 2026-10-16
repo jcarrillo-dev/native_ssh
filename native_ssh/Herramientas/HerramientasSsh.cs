@@ -3170,7 +3170,7 @@ namespace NativeSsh.Herramientas
                 long lineas = informe.Lineas ?? 0;
                 bool isSinVista = isSecreto || (lineas > 0 && informe.VistaPrevia is null);
                 string cuenta = $"{lineas} líneas, {informe.Bytes} bytes; aquí solo {(isSinVista ? "el control" : $"sus {Math.Min(lineas, SalidaGuardada.LineasVistaPrevia)} primeras líneas")}";
-                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo, o su directorio para buscar en todas las salidas guardadas de este shell); NO la vuelques entera con cat. {ReglaBorradoGuardado} Ese directorio es de native_ssh: no lo borres a mano.";
+                aviso = $"Salida completa guardada en {informe.Archivo} ({cuenta}). Léela por tramos con ssh_read_file (lineaInicio/lineaFin) o busca en ella con ssh_search (ruta = el archivo, o su directorio para buscar en todas las salidas guardadas de este shell); NO la vuelques entera con cat. {ReglaBorradoGuardado} Ese directorio es de native_ssh: no lo borres a mano mientras la sesión siga abierta.";
                 if (isSecreto)
                     aviso += " Sin vista previa: se envió un secreto con ssh_input y el archivo no pasa por el enmascarado (tiene lo que imprimió el programa).";
                 else if (isSinVista)
