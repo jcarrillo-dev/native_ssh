@@ -1055,6 +1055,33 @@ namespace NativeSsh.Test.Herramientas
             _ = _herramientas.Estado().Sesiones.Single().ConexionesAbiertas.Should().Be(1);
         }
 
+        // El aviso de shell recreado llega en la respuesta de la primera herramienta que usa el shell nuevo, también si es una
+        // escritura, una edición o ssh_set_cwd que terminan bien (antes se perdía: ni esa respuesta ni el ssh_exec siguiente lo
+        // llevaban), y solo en esa.
+        [Theory]
+        [InlineData("ssh_write_file")]
+        [InlineData("ssh_replace_file_content")]
+        [InlineData("ssh_set_cwd")]
+        public async Task HerramientaDelShellTrasRecrearlo_LlevaElAvisoDeShellRecreado(string herramienta)
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
+            _fabrica.Ultima!.CaerSinCerrarCanal();
+
+            // Act
+            string mensaje = herramienta switch
+            {
+                "ssh_write_file" => (await _herramientas.EscribirArchivoAsync("servidor", "nuevo.txt", "x", overwrite: true)).Mensaje,
+                "ssh_replace_file_content" => (await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", "otra")).Mensaje,
+                _ => (await _herramientas.FijarDirectorioAsync("servidor", "/var/www/proyecto")).Mensaje
+            };
+            ResultadoComando siguiente = await _herramientas.EjecutarAsync("servidor", "b").ComoComando();
+
+            // Assert
+            _ = mensaje.Should().Contain("Shell remoto recreado: las variables exportadas en comandos anteriores se han perdido.");
+            _ = siguiente.Aviso.Should().BeNull();
+        }
+
         [Fact]
         public async Task Lectura_TrasCaidaQueNoCierraElCanal_ElSiguienteExecRecreaElShellEnLaNuevaConexion()
         {

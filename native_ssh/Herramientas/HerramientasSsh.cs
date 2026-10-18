@@ -1092,8 +1092,8 @@ namespace NativeSsh.Herramientas
                 : peticion.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Fallo al escribir en {ruta} (código {peticion.CodigoSalida}).", ruta, peticion.CodigoSalida, peticion.IdTexto))
                 : append
-                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}{informe.AvisoVerificacion()}")
-                    : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}");
+                    ? new ResultadoEscritura(ruta, bytesUtf8.Length, null, false, $"Contenido anexado correctamente a: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoSinCandado()}{informe.AvisoVerificacion()}{AvisoDelShell(peticion.Aviso)}")
+                    : new ResultadoEscritura(ruta, bytesUtf8.Length, null, informe.IsAtomica, $"Archivo escrito correctamente: {ruta} ({bytesUtf8.Length} bytes).{informe.AvisoExito()}{AvisoDelShell(peticion.Aviso)}");
         }
 
         [McpServerTool(Name = "ssh_search", ReadOnly = true, Idempotent = true)]
@@ -1990,7 +1990,7 @@ namespace NativeSsh.Herramientas
 
                 // Solo ahora, con el shell ya en $HOME: si el comando no llegó o no terminó, C# no cambia (A-decies, AD1).
                 gestor.FijarDirectorioTrabajo(destino, null);
-                return new ResultadoDirectorioTrabajo(clave, null, "Directorio de trabajo persistente restablecido a $HOME (~).");
+                return new ResultadoDirectorioTrabajo(clave, null, $"Directorio de trabajo persistente restablecido a $HOME (~).{AvisoDelShell(peticionReset.Aviso)}");
             }
 
             ExigirValorLiteral(ruta, "La ruta");
@@ -2050,7 +2050,7 @@ namespace NativeSsh.Herramientas
             // el shell ya lo ha exportado: si el comando no llegó o no terminó, las herramientas de lectura y un shell
             // nuevo siguen en el anterior y el error lo dice (A-decies, AD1).
             gestor.FijarDirectorioTrabajo(destino, pwdReal);
-            return new ResultadoDirectorioTrabajo(clave, pwdReal, $"Directorio de trabajo persistente fijado a: {pwdReal}");
+            return new ResultadoDirectorioTrabajo(clave, pwdReal, Unir(peticionValidacion.Aviso, peticionExport.Aviso) is { } avisoShell ? $"Directorio de trabajo persistente fijado a: {pwdReal}. {avisoShell}" : $"Directorio de trabajo persistente fijado a: {pwdReal}");
         }
 
         private const string DirectorioHome = "$HOME (~)";
@@ -2276,7 +2276,7 @@ namespace NativeSsh.Herramientas
             string cuantas = hasEdiciones ? $"{ediciones!.Length} ediciones, " : string.Empty;
             return peticionEscritura.CodigoSalida != 0
                 ? throw new NativeSshException(informe.MensajeError($"Error al escribir el archivo modificado en {ruta} (código {peticionEscritura.CodigoSalida}).", ruta, peticionEscritura.CodigoSalida, peticionEscritura.IdTexto))
-                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({cuantas}{ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}");
+                : new ResultadoEscritura(ruta, bytesModificados.Length, ocurrencias, informe.IsAtomica, $"Archivo modificado quirúrgicamente con éxito: {ruta} ({cuantas}{ocurrencias} reemplazo(s) realizado(s)).{informe.AvisoExito()}{AvisoDelShell(Unir(peticionLectura.Aviso, peticionEscritura.Aviso))}");
         }
 
         // El salto de línea del archivo: CRLF si todos sus saltos lo son, LF si ninguno lo es (también sin saltos). Un '\r'
@@ -3241,6 +3241,11 @@ namespace NativeSsh.Herramientas
                 Bytes = informe.Bytes
             };
         }
+
+        // El aviso con que termina bien una petición interna de una herramienta de archivo o de ssh_set_cwd es el del shell
+        // (recreado, sin perfil: SesionShell.AbrirShellAsync), que lleva el primer envío a un shell nuevo: va en la respuesta
+        // de la herramienta, porque es la que lo consume (un ssh_exec posterior ya no lo lleva).
+        private static string AvisoDelShell(string? aviso) => aviso is null ? string.Empty : " " + aviso;
 
         private static string? Unir(string? primero, string? segundo) =>
             primero is null ? segundo : segundo is null ? primero : $"{primero} {segundo}";
