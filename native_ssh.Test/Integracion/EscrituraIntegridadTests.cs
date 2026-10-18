@@ -116,7 +116,7 @@ namespace NativeSsh.Test.Integracion
 
             // Assert
             _ = isError.Should().BeTrue(respuesta);
-            _ = respuesta.Should().Contain("bash no llegó a ejecutar el script").And.Contain($"'{archivo}'").And.NotContain("4711").And.NotContain("orden interna especial: ");
+            _ = respuesta.Should().Contain("terminó con el código 2 sin empezar a trabajar").And.Contain($"'{archivo}'").And.NotContain("4711").And.NotContain("orden interna especial: ");
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
         }
 

@@ -2459,6 +2459,22 @@ namespace NativeSsh.Test.Herramientas
             _ = descripcion.Should().Contain("'directory'").And.Contain("sin distinguir mayúsculas").And.Contain("Por defecto (o vacío), 'file'").And.Contain("Otro valor").And.Contain("da error");
         }
 
+        // El código 2 sin anuncios no dice por qué bash no empezó el script: el mensaje da las causas conocidas como posibles
+        // (una función exportada con el nombre de una orden interna especial, o una función 'command' que hace fallar la
+        // tubería), sin afirmar ninguna, y dice que no se hizo nada.
+        [Theory]
+        [InlineData(false, "No se ha modificado 'a.txt'.")]
+        [InlineData(true, "No se ha anexado nada a 'a.txt'.")]
+        public void MensajeBashNoArranco_DaLasCausasComoPosiblesSinAfirmarNinguna(bool isAnexar, string nadaHecho)
+        {
+            // Act
+            string mensaje = HerramientasSsh.MensajeBashNoArranco("a.txt", isAnexar);
+
+            // Assert
+            _ = mensaje.Should().Contain("Causas posibles").And.Contain("orden interna especial").And.Contain("una función 'command'").And.Contain(nadaHecho)
+                .And.NotContain("lo habitual es").And.NotContain("bash no llegó a ejecutar");
+        }
+
         // Un NUL no puede viajar en un argumento ni sobrevive a '$(... | base64 -d)' (bash lo descarta): la ruta llegaría
         // sin él, a otro archivo. Se rechaza antes de enviar nada.
         [Fact]

@@ -2668,9 +2668,12 @@ namespace NativeSsh.Herramientas
         // escritura y de lectura no salen nunca con él por su cuenta.
         internal const int CodigoBashNoArranco = 2;
 
-        // El error de una escritura (o de la lectura previa de replace) que bash no llegó a ejecutar: no se hizo nada.
+        // El error de una escritura (o de la lectura previa de replace) que terminó con el código 2 sin ningún anuncio: el
+        // script no llegó a hacer nada. El código no dice la causa, así que el mensaje da las conocidas como posibles: una
+        // función exportada con el nombre de una orden interna especial (bash en modo POSIX no arranca) o una función
+        // 'command' del shell de la sesión que hace fallar la tubería con ese código (medido).
         internal static string MensajeBashNoArranco(string ruta, bool isAnexar) =>
-            $"Error: bash no llegó a ejecutar el script de native_ssh (salió con el código 2 sin empezarlo): lo habitual es que el shell de la sesión exporte una función con el nombre de una orden interna especial de bash (set, unset, export, exec, eval, trap, times...), con la que bash en modo POSIX no arranca. {(isAnexar ? $"No se ha anexado nada a '{ruta}'." : $"No se ha modificado '{ruta}'.")} Quítala (unset -f y export -n con su nombre) o usa ssh_reset_shell, y vuelve a intentarlo.";
+            $"Error: el script de native_ssh terminó con el código 2 sin empezar a trabajar, así que no hizo nada. {(isAnexar ? $"No se ha anexado nada a '{ruta}'." : $"No se ha modificado '{ruta}'.")} Causas posibles: que el shell de la sesión exporte una función con el nombre de una orden interna especial de bash (set, unset, export, exec, eval, trap, times...), con la que bash en modo POSIX no arranca; o una función 'command' en el shell de la sesión que hace fallar la tubería con ese código. Quita la función (unset -f y export -n con su nombre) o usa ssh_reset_shell, y vuelve a intentarlo.";
 
         // El error de una escritura que no pudo comprobar lo decodificado porque el servidor no tiene wc: no se hizo nada.
         internal static string MensajeSinVerificador(string ruta, bool isAnexar) =>
