@@ -560,7 +560,7 @@ No deben aplicarse correcciones automáticas globales de `dotnet format` para `I
 - **Caída silenciosa de la red** (sin FIN ni RST): no se detecta hasta el plazo del comando; `ssh_cancel` o `ssh_disconnect` la cortan antes. Establecer la conexión puede tardar hasta 15 s sin atender a una cancelación.
 - **Esperas con `timeout … bash -c '…'`:** el bash nuevo no ve las variables del shell que no estén exportadas.
 - **El shell persistente frente a un comando hostil:** un comando solo puede engañar a su propio shell. Con `set -x`, `trap … DEBUG`, `trap … CHLD` o el historial activo se pueden leer los valores aleatorios del protocolo; funciones o alias con el nombre de `eval`, `exit`, `command`, `builtin` o `base64`, variables `readonly` con los nombres internos (`__ns_rc`, `__ns_k`…) o `set -e`/`set -T` pueden hacer que los comandos siguientes fallen o agoten su plazo (una función `command` lo cuelga). El remedio es `ssh_reset_shell`. El bash de login guarda en el `~/.bash_history` del servidor la línea `exec bash --noediting --norc --noprofile` cada vez que se abre un shell.
-- **Un aviso del shell** que llega con la respuesta de una herramienta de archivo (no de `ssh_exec`) se pierde si a continuación se cierra la sesión con `ssh_disconnect`.
+- **El aviso de líneas tecleadas descartadas** que queda pendiente tras una herramienta de archivo o `ssh_set_cwd` que terminó bien (lo lleva la siguiente respuesta de `ssh_exec`, `ssh_input`, `ssh_output` o `ssh_cancel`) se pierde si antes se cierra la sesión con `ssh_disconnect`. El aviso de shell recreado o sin perfil no: va en el `mensaje` de esa misma herramienta.
 
 **De la entrada por terminal:** ver las excepciones de «Entrada por terminal».
 
