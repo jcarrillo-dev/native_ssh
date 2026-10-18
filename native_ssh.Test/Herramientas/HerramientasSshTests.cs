@@ -2276,7 +2276,8 @@ namespace NativeSsh.Test.Herramientas
             NativeSshException error = (await FluentActions.Awaiting(llamada).Should().ThrowAsync<NativeSshException>()).Which;
 
             // Assert
-            _ = error.Message.Should().Contain("'archivo_mixto.txt'").And.Contain("CRLF (1)").And.Contain("LF (4)").And.Contain("ssh_write_file").And.EndWith("No se ha escrito nada.");
+            _ = error.Message.Should().Contain("'archivo_mixto.txt'").And.Contain("CRLF (1)").And.Contain("LF (4)").And.Contain("No se ha escrito nada.")
+                .And.Contain("reescribirlo entero con ssh_write_file").And.Contain("por ssh_exec").And.Contain("cambia los saltos de todo el archivo").And.NotContain("sed -i 's");
             _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
         }
 
