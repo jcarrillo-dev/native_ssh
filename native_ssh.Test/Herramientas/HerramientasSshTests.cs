@@ -2373,6 +2373,7 @@ namespace NativeSsh.Test.Herramientas
                 () => _herramientas.EscribirArchivoAsync("servidor", "a\0b", "c", append: true),
                 () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "a\0b", "linea 3", "otra"),
                 () => _herramientas.FijarDirectorioAsync("servidor", "a\0b"),
+                () => _herramientas.EjecutarAsync("servidor", "echo a\0b"),
             ];
 
             // Act & Assert
@@ -2403,6 +2404,7 @@ namespace NativeSsh.Test.Herramientas
                 () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", Suelto, "otra"),
                 () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_prueba.txt", "linea 3", Suelto),
                 () => _herramientas.FijarDirectorioAsync("servidor", Suelto),
+                () => _herramientas.EjecutarAsync("servidor", "echo " + Suelto),
             ];
 
             // Act & Assert

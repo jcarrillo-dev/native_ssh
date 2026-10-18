@@ -292,6 +292,11 @@ namespace NativeSsh.Herramientas
             [Description(DescripcionGuardarSalida)] bool guardarSalida = false,
             CancellationToken cancellationToken = default)
         {
+            if (string.IsNullOrWhiteSpace(comando))
+                throw new NativeSshException("El comando está vacío.");
+
+            // El comando viaja dentro del script en base64 y bash descarta el NUL al decodificarlo: se ejecutaría otro.
+            ExigirValorLiteral(comando, "El comando", "de un comando: bash lo descartaría y ejecutaría otro distinto. No se ha enviado nada.");
             await ExigirEscrituraPermitidaAsync(gestor.ParsearDestino(destino), "ssh_exec", cancellationToken).ConfigureAwait(false);
             Peticion peticion = gestor.Ejecutar(destino, comando, TimeSpan.FromSeconds(timeoutSegundos), isGuardarSalida: guardarSalida, herramientaEscritura: "ssh_exec");
             await EsperarAsync(peticion.Finalizacion, esperarSegundos, cancellationToken).ConfigureAwait(false);
@@ -1402,10 +1407,10 @@ namespace NativeSsh.Herramientas
         // Un valor que va dentro del script debe llegar al servidor tal cual. Un NUL no cabe en un argumento y bash lo
         // descarta al decodificar el script con '$(... | base64 -d)': la ruta o el patrón serían otros. Se rechaza antes de
         // enviar nada, igual que un texto que no es UTF-16 válido (ExigirUtf16Valido).
-        private static void ExigirValorLiteral(string valor, string nombre)
+        private static void ExigirValorLiteral(string valor, string nombre, string queNoPuedeSer = "de una ruta ni de un patrón.")
         {
             if (valor.Contains('\0', StringComparison.Ordinal))
-                throw new NativeSshException($"{nombre} contiene un carácter NUL (\\0), que no puede formar parte de una ruta ni de un patrón.");
+                throw new NativeSshException($"{nombre} contiene un carácter NUL (\\0), que no puede formar parte {queNoPuedeSer}");
 
             ExigirUtf16Valido(valor, nombre);
         }
