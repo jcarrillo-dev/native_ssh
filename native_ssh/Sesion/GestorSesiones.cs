@@ -190,8 +190,8 @@ namespace NativeSsh.Sesion
             return pistas;
         }
 
-        // usuario@servidor:puerto escrito como destino (servidor IPv6 entre corchetes): DestinoSsh.Clave no lleva corchetes.
-        private static string TextoServidorReal(DestinoSsh destino) => $"{destino.Usuario}@{ConCorchetes(destino.Servidor)}:{destino.Puerto}";
+        // usuario@servidor:puerto escrito como destino (DestinoSsh.Clave ya pone una IPv6 entre corchetes).
+        private static string TextoServidorReal(DestinoSsh destino) => destino.Clave;
 
         private static string ConCorchetes(string servidor) => servidor.Contains(':', StringComparison.Ordinal) ? $"[{servidor}]" : servidor;
 

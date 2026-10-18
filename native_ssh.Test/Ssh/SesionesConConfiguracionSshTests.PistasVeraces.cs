@@ -130,7 +130,7 @@ namespace NativeSsh.Test.Ssh
         }
 
         // Una sesión llena en un servidor IPv6 que olvidó el alias: su servidor real va entre corchetes en la pista (como
-        // destino escrito; DestinoSsh.Clave no los lleva), y seguirla la cierra.
+        // destino escrito; DestinoSsh.Clave también los lleva), y seguirla la cierra.
         [Fact]
         public async Task SesionEnElTopeConServidorIpv6_LaPistaLoPoneEntreCorchetes()
         {
@@ -146,7 +146,7 @@ namespace NativeSsh.Test.Ssh
             ResultadoAccion siguiendo = await Herramientas.DesconectarAsync("deploy@[::1]:2222");
 
             // Assert
-            _ = pista.Mensaje.Should().Contain("deploy@::1:2222, que se cierra con deploy@[::1]:2222");
+            _ = pista.Mensaje.Should().Contain("deploy@[::1]:2222, que se cierra con deploy@[::1]:2222");
             _ = siguiendo.IsHecho.Should().BeTrue(siguiendo.Mensaje);
             _ = _gestor.ListarSesiones().Should().BeEmpty();
         }

@@ -137,7 +137,7 @@ namespace NativeSsh.Test.Ssh
             DestinoSsh destino = Resolver(resolutor, "[::1]:2022");
 
             // Assert
-            _ = destino.Clave.Should().Be("seis@::1:2022");
+            _ = destino.Clave.Should().Be("seis@[::1]:2022");
         }
 
         // [ipv6] sin puerto no es un puerto explícito: no se pasa -p 22 y vale el Port de la configuración, como en ssh.
@@ -151,7 +151,7 @@ namespace NativeSsh.Test.Ssh
             DestinoSsh destino = Resolver(resolutor, "[::1]");
 
             // Assert
-            _ = destino.Clave.Should().Be("seis@::1:2222");
+            _ = destino.Clave.Should().Be("seis@[::1]:2222");
         }
 
         // Sin IdentityFile en la configuración, ssh -G lista sus claves por defecto (~/.ssh/id_*): se reconocen y se dejan las

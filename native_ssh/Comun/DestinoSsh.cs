@@ -12,7 +12,7 @@ namespace NativeSsh.Comun
             Usuario = usuario;
             Servidor = servidor;
             Puerto = puerto;
-            Clave = $"{usuario}@{servidor}:{puerto}";
+            Clave = servidor.Contains(':', StringComparison.Ordinal) ? $"{usuario}@[{servidor}]:{puerto}" : $"{usuario}@{servidor}:{puerto}";
         }
 
         // Claves de los IdentityFile de la configuración de ssh (ResolutorConfiguracionSsh), ya expandidas; null: las de
@@ -30,7 +30,8 @@ namespace NativeSsh.Comun
         public string Servidor { get; }
         public int Puerto { get; }
 
-        // usuario@servidor:puerto: lo que se muestra en mensajes, logs y ssh_status.
+        // usuario@servidor:puerto: lo que se muestra en mensajes, logs y ssh_status. Una IPv6 va entre corchetes
+        // (usuario@[::1]:22), para que el texto se pueda volver a usar como destino.
         public string Clave { get; }
 
         // Clave interna de la sesión: el destino y las claves con las que se autentica, en orden (como en ssh, cada alias con
