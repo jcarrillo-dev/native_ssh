@@ -2002,20 +2002,20 @@ namespace NativeSsh.Herramientas
                 {{DefinicionSinAcceso}}
                 ruta={{Escapar(ruta)}}
                 if [ ! -e "$ruta" ]; then
-                  sin_acceso "$ruta" || printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
+                  sin_acceso "$ruta" || command printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 if [ ! -d "$ruta" ]; then
-                  printf 'Error: la ruta no es un directorio: %s\n' "$ruta" >&2
+                  command printf 'Error: la ruta no es un directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 if [ ! -x "$ruta" ]; then
-                  printf 'Error: sin permiso para entrar en el directorio: %s\n' "$ruta" >&2
+                  command printf 'Error: sin permiso para entrar en el directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
                 command cd -- "$ruta" || exit 1
                 {{SustitucionLiteral("real", "command pwd -P")}}
-                printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(printf '%s' "$real" | base64 | tr -d '\n')"
+                command printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(command printf '%s' "$real" | base64 | tr -d '\n')"
                 )
                 """);
 
@@ -2875,7 +2875,7 @@ namespace NativeSsh.Herramientas
         // acabaría en "victima"). Se añade un centinela 'x' tras la salida y se quita después junto con el único '\n' que
         // añade el propio comando. Requiere bash ($'\n'): los scripts se ejecutan siempre con EnvolverEnBash.
         private static string SustitucionLiteral(string variable, string comando) =>
-            $"{variable}=$({comando}; printf x); {variable}=${{{variable}%x}}; {variable}=${{{variable}%$'\\n'}}";
+            $"{variable}=$({comando}; command printf x); {variable}=${{{variable}%x}}; {variable}=${{{variable}%$'\\n'}}";
 
         // Ejecuta 'script' con bash ("$1", "$2"... = 'argumentos', ya escapados), con 'sudo bash' si sudo=true, de modo
         // que todas sus comprobaciones (test -e/-d/-L, readlink, stat...) usan el mismo privilegio que la escritura.

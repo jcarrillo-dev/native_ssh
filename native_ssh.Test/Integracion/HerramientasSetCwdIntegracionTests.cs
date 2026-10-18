@@ -86,11 +86,12 @@ namespace NativeSsh.Test.Integracion
             _ = DirectorioDeLaSesion(destino).Should().BeNull();
         }
 
-        // Una función 'pwd' o 'cd' del usuario no cambia el directorio que fija ssh_set_cwd: la validación usa 'command cd' y
-        // 'command pwd -P'. Antes, con 'pwd() { echo /etc; }', respondía «fijado a /etc».
+        // Una función 'pwd', 'cd' o 'printf' del usuario no cambia el directorio que fija ssh_set_cwd: la validación usa
+        // 'command cd', 'command pwd -P' y 'command printf'. Antes, con 'pwd() { echo /etc; }', respondía «fijado a /etc».
         [Theory]
         [InlineData("pwd() { echo /etc; }")]
         [InlineData("cd() { :; }")]
+        [InlineData("printf() { :; }")]
         public async Task FuncionDelUsuario_NoCambiaElDirectorioFijado(string definicion)
         {
             // Arrange
