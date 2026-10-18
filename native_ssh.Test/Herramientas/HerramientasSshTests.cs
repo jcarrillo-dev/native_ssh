@@ -1164,8 +1164,8 @@ namespace NativeSsh.Test.Herramientas
             string sinDirectorio = ScriptExec.Decodificar(_fabrica.Ultima!.ComandosExec.Last());
 
             // Assert
-            _ = conDirectorio.Should().StartWith("export __NS_CWD='/var/www/proyecto'\ncd \"${__NS_CWD:-$HOME}\"");
-            _ = sinDirectorio.Should().StartWith("cd \"${__NS_CWD:-$HOME}\"");
+            _ = conDirectorio.Should().StartWith("export __NS_CWD='/var/www/proyecto'\ncommand cd \"${__NS_CWD:-$HOME}\"");
+            _ = sinDirectorio.Should().StartWith("command cd \"${__NS_CWD:-$HOME}\"");
             _ = _gestor.ListarSesiones().Single().DirectorioTrabajo.Should().BeNull();
         }
 
@@ -1202,7 +1202,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             ConexionFalsa conexion = _fabrica.Ultima!;
             _ = conexion.ShellsAbiertos.Should().Be(2);
-            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
+            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; command cd \"${{__NS_CWD:-$HOME}}\"");
         }
 
         [Fact]

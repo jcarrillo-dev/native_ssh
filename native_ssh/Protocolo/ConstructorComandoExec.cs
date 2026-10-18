@@ -60,7 +60,7 @@ namespace NativeSsh.Protocolo
             StringBuilder completo = new(script.Length + 128);
             if (!string.IsNullOrEmpty(directorioTrabajo))
                 _ = completo.Append("export __NS_CWD='").Append(directorioTrabajo.Replace("'", "'\\''", StringComparison.Ordinal)).Append("'\n");
-            _ = completo.Append("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~\n").Append(script);
+            _ = completo.Append("command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~\n").Append(script);
 
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(completo.ToString()));
             long segundos = Math.Max(1, (long)Math.Ceiling(timeout.TotalSeconds));

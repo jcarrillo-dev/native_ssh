@@ -108,6 +108,30 @@ namespace NativeSsh.Test.Integracion
             _ = DirectorioDeLaSesion(destino).Should().Be(x);
         }
 
+        // Una función 'cd' del usuario tampoco cambia dónde empieza el comando siguiente: el cd al directorio de trabajo que
+        // precede a cada comando, el de la captura, el de la recuperación y el de los scripts de escritura usan 'command cd'.
+        // Antes, con 'cd() { builtin cd /; }', ssh_set_cwd decía «fijado a X» y C# guardaba X, pero el comando siguiente se
+        // ejecutaba en '/'.
+        [Fact]
+        public async Task FuncionCdDelUsuario_ElComandoSiguienteEmpiezaEnElDirectorioFijado()
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string x = Directory.CreateDirectory(Path.Combine(_directorio, "cd_usuario")).FullName;
+            ResultadoComando define = await herramientas.EjecutarAsync(destino, "cd() { builtin cd /; }", 30, 30).ComoComando();
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+
+            // Act
+            ResultadoDirectorioTrabajo fijado = await herramientas.FijarDirectorioAsync(destino, x);
+            string pwd = await PwdDelShellAsync(herramientas, destino);
+            _ = await herramientas.EscribirArchivoAsync(destino, "relativo.txt", "x\n", overwrite: true);
+
+            // Assert
+            _ = fijado.Directorio.Should().Be(x);
+            _ = pwd.Should().Be(x);
+            _ = File.Exists(Path.Combine(x, "relativo.txt")).Should().BeTrue("la escritura con ruta relativa parte del directorio fijado");
+        }
+
         // Volver a $HOME con __NS_CWD de solo lectura: 'unset' falla, así que el shell sigue en X. ssh_set_cwd no responde
         // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (caso Q12).
         [Fact]

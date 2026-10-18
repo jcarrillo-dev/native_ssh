@@ -78,7 +78,7 @@ namespace NativeSsh.Protocolo
             escritor.Advance(escritasCifras);
             escritor.Write("' ] && { __ns_b=$(command printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
             EscribirTestigo(nonce, escritor);
-            escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write("\n"u8);
         }
@@ -180,7 +180,7 @@ namespace NativeSsh.Protocolo
                 escritor.Write("' | base64 -d)\"; "u8);
             }
 
-            escritor.Write("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; eval \"declare -r -a "u8);
+            escritor.Write("command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; eval \"declare -r -a "u8);
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("=('"u8);
             EscribirTestigo(testigo, escritor);
@@ -217,7 +217,7 @@ namespace NativeSsh.Protocolo
         public static void EscribirRecuperacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             EscribirPrefijoCentinela(centinela, escritor);
-            escritor.Write("__ns_rc=130; unset __ns_b __ns_k __ns_d; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
+            escritor.Write("__ns_rc=130; unset __ns_b __ns_k __ns_d; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write(" #"u8);
             EscribirTestigo(centinela, escritor);

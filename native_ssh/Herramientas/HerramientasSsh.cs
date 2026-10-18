@@ -1481,7 +1481,7 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso para listar el directorio: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                cd -- {{rutaEscapada}} && \
+                command cd -- {{rutaEscapada}} && \
                 find -L . -maxdepth {{profundidad}} -mindepth 1 \
                   \( -name __pycache__ -o -name .cache \) -prune \
                   -o \( -name .git -o -name node_modules -o -name .venv -o -name venv -o -name dist -o -name build -o -name .next -o -name bin -o -name obj \) -print0 -prune \
@@ -1757,7 +1757,7 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso para recorrer la ruta de búsqueda: %s\n' {{rutaEscapada}} >&2
                   exit 1
                 fi
-                cd -- {{rutaEscapada}} || exit 1
+                command cd -- {{rutaEscapada}} || exit 1
                 {{SustitucionLiteral("raiz", "pwd -P")}}
                 {{DefinicionMontajes}}
                 explorar_montajes {{(isCruzarMontajes ? 1 : 0)}} {{profundidad}}
@@ -2961,7 +2961,7 @@ namespace NativeSsh.Herramientas
             string programa = sudo ? "command env -u SHELLOPTS -u BASHOPTS -u PS4 sudo bash --posix" : "command env -u SHELLOPTS -u BASHOPTS -u PS4 bash --posix";
             return PlantillaBash.Crear($$"""
                 (
-                cd "${__NS_CWD:-$HOME}" 2>/dev/null || cd ~
+                command cd "${__NS_CWD:-$HOME}" 2>/dev/null || command cd ~
                 set -o pipefail
                 {{entrada}}{{programa}} -c {{Escapar(PrologoSinFunciones.ReplaceLineEndings("\n") + script)}} ns {{argumentos}}
                 )

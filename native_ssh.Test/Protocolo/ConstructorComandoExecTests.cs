@@ -17,7 +17,7 @@ namespace NativeSsh.Test.Protocolo
             string comando = ConstructorComandoExec.Construir("echo 'hola' \"$HOME\"\nexit 3", null, TimeSpan.FromSeconds(30));
 
             // Assert
-            _ = ScriptExec.Decodificar(comando).Should().Be("cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~\necho 'hola' \"$HOME\"\nexit 3");
+            _ = ScriptExec.Decodificar(comando).Should().Be("command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~\necho 'hola' \"$HOME\"\nexit 3");
         }
 
         [Fact]
@@ -27,7 +27,7 @@ namespace NativeSsh.Test.Protocolo
             string comando = ConstructorComandoExec.Construir("pwd", "/srv/it's here", TimeSpan.FromSeconds(30));
 
             // Assert
-            _ = ScriptExec.Decodificar(comando).Should().Be("export __NS_CWD='/srv/it'\\''s here'\ncd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~\npwd");
+            _ = ScriptExec.Decodificar(comando).Should().Be("export __NS_CWD='/srv/it'\\''s here'\ncommand cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~\npwd");
         }
 
         [Theory]

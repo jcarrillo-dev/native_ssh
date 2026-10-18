@@ -102,7 +102,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Act & Assert
             _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_b='");
-            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '48' ] && {{ __ns_b=$(command printf '%s' \"$__ns_b\" | base64 -d); }} 2>/dev/null && __ns_k=${{__ns_b%$'\\n{Nonce(texto)}'}} && command [ \"${{#__ns_k}}\" -lt \"${{#__ns_b}}\" ] && {{ eval \"$__ns_k\"; __ns_rc=$?; }}; unset __ns_b __ns_k; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Split('\n')[^2].Should().StartWith($"__ns_rc={MarcadorFin.CodigoEnvioIncompleto}; __ns_b=${{__ns_b-}}; command [ \"${{#__ns_b}}\" = '48' ] && {{ __ns_b=$(command printf '%s' \"$__ns_b\" | base64 -d); }} 2>/dev/null && __ns_k=${{__ns_b%$'\\n{Nonce(texto)}'}} && command [ \"${{#__ns_k}}\" -lt \"${{#__ns_b}}\" ] && {{ eval \"$__ns_k\"; __ns_rc=$?; }}; unset __ns_b __ns_k; command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; {MarcadorDeLaCola}");
             _ = texto.Should().EndWith(FinDeLaCola + "\n");
             _ = texto.Should().NotContain($"__NSX_{Id:N}_").And.NotContain("trap");
             _ = MarcadorFin.CodigoEnvioIncompleto.Should().BeInRange(256, 999).And.NotBe(MarcadorFin.CodigoShellAnidado);
@@ -195,7 +195,7 @@ namespace NativeSsh.Test.Protocolo
             string texto = Componer(w => ConstructorComando.EscribirRecuperacion(Id, Centinela, w));
 
             // Act & Assert
-            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_rc=130; unset __ns_b __ns_k __ns_d; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {MarcadorDeLaCola}");
+            _ = texto.Should().StartWith($"{PrefijoCentinela}__ns_rc=130; unset __ns_b __ns_k __ns_d; command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; {MarcadorDeLaCola}");
             _ = texto.Should().EndWith($"{FinDeLaCola} #{Centinela:N}\n", "termina en el centinela: una cola que la lea fuera de sitio la reconoce y no la cuenta");
             _ = texto.Should().NotContain("\u0003");
         }
@@ -227,7 +227,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Assert
             string base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes("/srv/it's"));
-            _ = captura.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; eval ");
+            _ = captura.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; eval ");
             _ = captura.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(2, "el centinela y una sola línea");
         }
 
@@ -239,7 +239,7 @@ namespace NativeSsh.Test.Protocolo
 
             // Assert: el centinela termina la espera de la cola anterior; los marcadores no aparecen en el texto. El testigo se
             // guarda en un array de solo lectura y la cabecera de la identidad solo sale entera si quedó guardado.
-            _ = texto.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; command printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; command printf '%s_%s_\\n' '__NSP' '{Id:N}'; command printf '%s' \"$PATH\" | base64 | tr -d '\\n'; command printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; {MarcadorDeLaCola}");
+            _ = texto.Should().StartWith($"{LineaCentinela}__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; {{ mesg n || chmod g-w -- \"$(tty)\"; }} 2>/dev/null; command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; eval \"declare -r -a __NS_TESTIGO=('{Testigo:N}')\"; __ns_t=${{__NS_TESTIGO-x}}; __ns_t=${{__ns_t#'{Testigo:N}'}}; command printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '{Id:N}' \"$$\" \"$PPID\"; command printf '%s_%s_\\n' '__NSP' '{Id:N}'; command printf '%s' \"$PATH\" | base64 | tr -d '\\n'; command printf '\\n%s_%s_\\n' '__NSQ' '{Id:N}'; {MarcadorDeLaCola}");
             _ = texto.Should().NotContain($"__NSP_{Id:N}").And.NotContain($"__NSQ_{Id:N}").And.NotContain($"__NSI_{Id:N}");
         }
 
@@ -256,8 +256,8 @@ namespace NativeSsh.Test.Protocolo
             string sinIdentidad = Componer(w => ConstructorComando.EscribirComando("ls", Id, Centinela, w));
 
             // Assert: la comprobación va después del eval (y del cd), así que la ejecuta el shell que ejecuta la cola.
-            _ = comando.Should().Contain($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {comprobacion}{MarcadorDeLaCola}");
-            _ = recuperacion.Should().Contain($"cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || cd ~; {comprobacion}{MarcadorDeLaCola}");
+            _ = comando.Should().Contain($"command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; {comprobacion}{MarcadorDeLaCola}");
+            _ = recuperacion.Should().Contain($"command cd \"${{__NS_CWD:-$HOME}}\" 2>/dev/null || command cd ~; {comprobacion}{MarcadorDeLaCola}");
             _ = sinIdentidad.Should().NotContain("$PPID").And.NotContain("__NS_TESTIGO");
             _ = MarcadorFin.CodigoShellAnidado.Should().BeInRange(256, 999, "ningún código de salida (0-255) puede coincidir y cabe en los 3 dígitos del marcador");
         }
@@ -266,7 +266,7 @@ namespace NativeSsh.Test.Protocolo
         public void ClausulaFallback_PresenteEnTodosLosComandos()
         {
             // Arrange
-            const string clausulaEsperada = "cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; ";
+            const string clausulaEsperada = "command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; ";
 
             // Act
             string comando = Componer(w => ConstructorComando.EscribirComando("ls", Id, Centinela, w));
