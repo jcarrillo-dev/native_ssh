@@ -401,7 +401,7 @@ NATIVE_SSH_TOKEN_HTTP_FICHERO=~/.config/native_ssh_token /ruta/NativeSsh --http
 claude mcp add --transport http native_ssh http://localhost:8722/mcp --header "Authorization: Bearer $(cat ~/.config/native_ssh_token)"
 ```
 
-Con este registro el token queda en claro en la configuración que guarda el cliente y, mientras dura la orden, en su línea de órdenes (visible para otros procesos del mismo usuario): protege ese fichero de configuración como el propio token.
+Con este registro el token queda en claro en la configuración que guarda el cliente y, mientras dura la orden, en su línea de órdenes (visible para cualquier usuario local mientras `/proc` no se monte con `hidepid`): protege ese fichero de configuración como el propio token.
 
 Otros clientes MCP se configuran con un JSON `mcpServers` como este (p. ej. un `.mcp.json` de proyecto); el formato de una entrada HTTP varía de un cliente a otro:
 
@@ -467,7 +467,7 @@ native_ssh se compila y se prueba también para Windows (x64). Diferencias con L
 
 Requisitos: SDK de .NET 10 y el submódulo `externo/SSH.NET` inicializado. Para Native AOT en Linux, `clang` y las bibliotecas de desarrollo que pide .NET (`zlib`).
 
-**El submódulo es un fork propio de SSH.NET** (rama `native-ssh-ws`) que **no está publicado**: `.gitmodules` apunta al repositorio oficial, que no tiene ese commit, así que `git submodule update --init` contra ese `.gitmodules` falla: el commit no está en el repositorio oficial. Lleva, sobre el SSH.NET oficial, una veintena de correcciones de cierre de canales y sesiones, la regla de *strict-kex* solo en el intercambio inicial, cancelación durante el handshake, exec con pseudoterminal y fallo inmediato (con su excepción) cuando el servidor rechaza una petición `exec` o la apertura de un canal. Con un bundle de git de ese fork, el submódulo se inicializa apuntando su URL al bundle (`protocol.file.allow=always` porque es un fichero local):
+**El submódulo es un fork propio de SSH.NET** (rama `native-ssh-ws`) que **no está publicado**: `.gitmodules` apunta al repositorio oficial, que no tiene ese commit, así que `git submodule update --init` contra ese `.gitmodules` falla. Lleva, sobre el SSH.NET oficial, unas diez correcciones de cierre de canales y sesiones, la regla de *strict-kex* solo en el intercambio inicial, cancelación durante el handshake, exec con pseudoterminal, fallo inmediato cuando el servidor rechaza una petición `exec` y una excepción propia cuando rechaza la apertura de un canal. Con un bundle de git de ese fork, el submódulo se inicializa apuntando su URL al bundle (`protocol.file.allow=always` porque es un fichero local):
 
 ```bash
 git config submodule.externo/SSH.NET.url /ruta/al/sshnet-native-ssh.bundle
