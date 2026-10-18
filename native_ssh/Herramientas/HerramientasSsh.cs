@@ -3388,11 +3388,10 @@ namespace NativeSsh.Herramientas
         // IsUtf8Valido: stdout era UTF-8 válido (si no, Salida lleva U+FFFD en lugar de los bytes inválidos).
         private readonly record struct SalidaLectura(int Codigo, string Salida, string Errores, bool IsUtf8Valido = true)
         {
-            // Mensaje de error: stderr del script ("Error: ..."), o stdout si no lo hubo, o el código.
+            // Mensaje de error: stderr del script ("Error: ..."), o el código. Nunca stdout: puede ser contenido del archivo, y
+            // el mensaje de error de una herramienta también va al log.
             public string Error(string contexto) =>
-                !string.IsNullOrWhiteSpace(Errores) ? Errores.Trim()
-                : !string.IsNullOrWhiteSpace(Salida) ? Salida.Trim()
-                : $"{contexto} (código {Codigo}).";
+                !string.IsNullOrWhiteSpace(Errores) ? Errores.Trim() : $"{contexto} (código {Codigo}).";
         }
 
         // Herramientas de solo lectura: canal exec sobre la conexión de la sesión, sin cola, sin PTY ni limpieza ANSI

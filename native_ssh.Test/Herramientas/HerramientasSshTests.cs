@@ -31,6 +31,7 @@ namespace NativeSsh.Test.Herramientas
         private static RespuestaFalsa Guion(string comando) =>
             comando.Contains("perdido_mudo") ? new(string.Empty, 0, ComportamientoFalsoEnum.Salir) :
             comando.Contains("colgado_") ? new("parcial\n", 0, ComportamientoFalsoEnum.Colgado) :
+            comando.Contains("fallo_sin_stderr.txt") ? new("CONTENIDO_DEL_ARCHIVO\n", 3) :
             comando.Contains("crlf.txt") ? new("[Líneas 1-2 de 2]\nuno\r\ndos\r\n", 0) :
             comando.Contains("latin1_lectura.txt") ? new("", 0, ComportamientoFalsoEnum.Normal, [.. "[Líneas 1-1 de 1]\na"u8, 0xF1, .. "o\n"u8]) :
             comando.Contains("enorme") ? SimularSalidaEnorme(comando) :
@@ -2457,6 +2458,18 @@ namespace NativeSsh.Test.Herramientas
                 ? comando.Should().NotContain("-type ")
                 : comando.Should().Contain(filtro);
             _ = descripcion.Should().Contain("'directory'").And.Contain("sin distinguir mayúsculas").And.Contain("Por defecto (o vacío), 'file'").And.Contain("Otro valor").And.Contain("da error");
+        }
+
+        // Un fallo de una herramienta de lectura sin nada en stderr: el error (que va también al log) no lleva la salida del
+        // script, que puede ser contenido del archivo, sino el código. Antes, sin stderr, el mensaje era el stdout.
+        [Fact]
+        public async Task LecturaQueFallaSinStderr_ElErrorNoLlevaLaSalida()
+        {
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(() => _herramientas.LeerArchivoAsync("servidor", "fallo_sin_stderr.txt")).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().NotContain("CONTENIDO_DEL_ARCHIVO").And.Contain("(código 3)");
         }
 
         // El código 2 sin anuncios no dice por qué bash no empezó el script: el mensaje da las causas conocidas como posibles

@@ -450,7 +450,7 @@ native_ssh se compila y se prueba también para Windows (x64). Diferencias con L
 
 ## 9. Seguridad y logs
 
-- **Logs solo por `stderr`** (stdout es el canal MCP en stdio). Nivel con `NATIVE_SSH_NIVEL_LOG`. native_ssh no escribe en el log comandos, salidas, contenidos de archivo ni el texto de `ssh_input`; las categorías del SDK de MCP (`ModelContextProtocol.*`) nunca bajan de `Debug`, aunque se pida `Trace`, porque en `Trace` escribirían cada mensaje JSON-RPC completo.
+- **Logs solo por `stderr`** (stdout es el canal MCP en stdio). Nivel con `NATIVE_SSH_NIVEL_LOG`. native_ssh no escribe en el log comandos, salidas, contenidos de archivo ni el texto de `ssh_input`. Sí van al log, con nivel `Error`, los errores de las herramientas (el SDK de MCP registra cada uno con su mensaje y su traza): llevan rutas remotas y, en `ssh_set_cwd` y las escrituras, la salida del script de native_ssh, acotada (sus mensajes de error, no el contenido); nunca la salida estándar de una lectura; las categorías del SDK de MCP (`ModelContextProtocol.*`) nunca bajan de `Debug`, aunque se pida `Trace`, porque en `Trace` escribirían cada mensaje JSON-RPC completo.
 - **Secretos.** `NATIVE_SSH_PASSWORD`, `NATIVE_SSH_PASSPHRASE` y `NATIVE_SSH_TOKEN_HTTP` no pasan al entorno de `ssh -G` (un `Match exec` los vería) ni se expanden en un `IdentityFile`. Con `secreto=true`, el texto de `ssh_input` se enmascara en la salida (solo su forma literal). La passphrase y el token nunca salen en respuestas ni logs.
 - **Identidad del servidor.** `known_hosts` estricto, sin aceptar claves nuevas (ver «Verificación de identidad»).
 - **Terminal.** `mesg n` en el shell persistente: otro usuario del servidor no puede escribir en su terminal (`write`, `wall`) para falsificar líneas de la salida.
