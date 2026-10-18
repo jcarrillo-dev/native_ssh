@@ -681,7 +681,8 @@ namespace NativeSsh.Test.Integracion
             _ = siguiente.Salida.Should().Be("siguiente\n");
         }
 
-        // El salto final no cuenta: con enter=false, un '\n' o un '\r' al final del secreto se admite y llega al comando.
+        // El salto final no cuenta: con enter=false, un '\n' o un '\r' al final del secreto se admite y llega al comando, y
+        // lo que se enmascara es el secreto sin ese salto (antes se registraba con él y el eco del programa salía en claro).
         [Theory]
         [InlineData("\n")]
         [InlineData("\r")]
@@ -692,7 +693,7 @@ namespace NativeSsh.Test.Integracion
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
             string canario = Canario();
-            ResultadoComando lector = await h.EjecutarAsync(destino, "read -r x; echo \"longitud:${#x}\"", esperarSegundos: 1).ComoComando();
+            ResultadoComando lector = await h.EjecutarAsync(destino, "read -r x; echo \"longitud:${#x} eco:$x\"", esperarSegundos: 1).ComoComando();
             await Task.Delay(500);
 
             // Act
@@ -702,7 +703,7 @@ namespace NativeSsh.Test.Integracion
             // Assert
             salida.WriteLine($"entrada {entrada.Estado} '{entrada.Salida}' aviso '{entrada.Aviso}'");
             _ = entrada.Estado.Should().Be(EstadoPeticionEnum.Completado);
-            _ = entrada.Salida.Should().Contain("longitud:20");
+            _ = entrada.Salida.Should().Contain("longitud:20").And.Contain("eco:*").And.NotContain(canario);
             _ = siguiente.Aviso.Should().BeNull("el comando leyó toda la entrada");
         }
         // Un alias o una función 'base64' que cambia lo que imprime, o 'set -x' con BASH_XTRACEFD en la salida

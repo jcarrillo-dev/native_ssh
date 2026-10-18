@@ -116,7 +116,7 @@ Para salidas grandes (consultas SQL, logs, volcados): la salida completa del com
 | NUL, Ctrl+H (retroceso, no es VERASE) | Nada (VEOL sin definir); llegan tal cual (el `read` de bash quita NUL) | Se envía | `a`, el carácter, `b` |
 | Línea a medias de 4095 bytes o más | El núcleo guarda 4095 por línea y tira el resto, pero acepta el salto | Se envía | — |
 
-Con `secreto=true` se rechaza cualquier control (0x00–0x1F, 0x7F). El recuento de lo descartado cuenta líneas tal como las deja el terminal (una línea borrada entera con Ctrl+U no cuenta; un Ctrl+D al principio de una línea cuenta como una).
+Con `secreto=true` se rechaza cualquier control (0x00–0x1F, 0x7F), salvo, con `enter=false`, un `\n` o un `\r` al final: es el salto de la línea, se envía y no forma parte del secreto que se enmascara. El recuento de lo descartado cuenta líneas tal como las deja el terminal (una línea borrada entera con Ctrl+U no cuenta; un Ctrl+D al principio de una línea cuenta como una).
 
 Excepciones conocidas (fuera de lo que native_ssh puede garantizar):
 

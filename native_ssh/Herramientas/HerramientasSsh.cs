@@ -351,9 +351,13 @@ namespace NativeSsh.Herramientas
             await ExigirEscrituraPermitidaAsync(peticion.Destino, "ssh_input", cancellationToken).ConfigureAwait(false);
             // El secreto se registra antes de enviarlo: su eco llega después. Si la entrada se rechaza, queda registrado
             // (inocuo: solo enmascara). Nada de este método ni de la sesión pone el texto en un mensaje de error.
+            // Con enter=false, el '\n' o '\r' final que admite IsSecretoNoAdmitido es el salto, no parte del secreto: se
+            // registra sin él (con él, el eco del programa, que no lo lleva o lleva otro salto, salía en claro).
             if (secreto)
             {
-                byte[] bytesSecreto = Encoding.UTF8.GetBytes(texto);
+                ReadOnlySpan<char> sinSalto = !enter && texto.Length > 0 && texto[^1] is '\n' or '\r' ? texto.AsSpan(..^1) : texto;
+                byte[] bytesSecreto = new byte[Encoding.UTF8.GetByteCount(sinSalto)];
+                _ = Encoding.UTF8.GetBytes(sinSalto, bytesSecreto);
                 try
                 {
                     peticion.Salida.RegistrarSecreto(bytesSecreto);
