@@ -1013,6 +1013,30 @@ namespace NativeSsh.Test.Herramientas
             _ = valido.Should().NotContain("[aviso:");
         }
 
+        // ssh_disconnect dice cuántos canales exec en curso corta el cierre (ssh_status los cuenta en canalesExecActivos);
+        // sin ninguno, no lo menciona. Antes no lo decía nunca.
+        [Fact]
+        public async Task Disconnect_ConCanalesExecEnCurso_DiceCuantosCorta()
+        {
+            // Arrange
+            _ = await _herramientas.EjecutarAsync("servidor", "a").ComoComando();
+            ResultadoAccion sinCanales = await _herramientas.DesconectarAsync("servidor");
+            using SemaphoreSlim bloqueo = new(0);
+            _fabrica.BloqueoExec = bloqueo;
+            Task<string>[] lecturas = [_herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3), _herramientas.LeerArchivoAsync("servidor", "archivo.txt", 1, 3)];
+            await EsperasPrueba.EsperarHastaAsync(() => _fabrica.Ultima?.ExecActivos == 2);
+
+            // Act
+            ResultadoAccion desconexion = await _herramientas.DesconectarAsync("servidor");
+            _ = bloqueo.Release(2);
+            Exception?[] errores = [await Record.ExceptionAsync(() => lecturas[0].WaitAsync(TimeSpan.FromSeconds(5))), await Record.ExceptionAsync(() => lecturas[1].WaitAsync(TimeSpan.FromSeconds(5)))];
+
+            // Assert
+            _ = errores.Should().AllSatisfy(e => e.Should().BeOfType<NativeSshException>());
+            _ = sinCanales.Mensaje.Should().NotContain("canal");
+            _ = desconexion.Mensaje.Should().StartWith("Conexión cerrada: ana@servidor:22").And.Contain("El cierre cortó 2 canales exec en curso");
+        }
+
         [Fact]
         public async Task LecturasSimultaneas_RespetanElLimiteDeCanalesExecPorConexion()
         {

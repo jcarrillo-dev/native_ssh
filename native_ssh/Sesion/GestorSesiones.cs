@@ -272,8 +272,9 @@ namespace NativeSsh.Sesion
             for (int i = 0; i < cerradas.Length; i++)
             {
                 SesionShell sesion = cerradas[i];
+                int canalesExec = sesion.CanalesExecActivos;
                 await sesion.DisposeAsync().ConfigureAwait(false);
-                resultado[i] = new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado);
+                resultado[i] = new SesionCerrada(sesion.Destino, sesion.LimpiezaAlCerrar, !sesion.HasConectado, canalesExec);
             }
 
             return resultado;
@@ -428,7 +429,8 @@ namespace NativeSsh.Sesion
 
     // Una sesión cerrada por ssh_disconnect y lo que pasó con sus archivos de guardarSalida.
     // IsSinConectar: la sesión no llegó a conectarse (SesionShell.HasConectado): no se cerró ninguna conexión.
-    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza, bool IsSinConectar = false);
+    // CanalesExec: los canales exec que estaban en curso al cerrarla (SesionShell.CanalesExecActivos), que el cierre corta.
+    public sealed record SesionCerrada(DestinoSsh Destino, LimpiezaGuardados Limpieza, bool IsSinConectar = false, int CanalesExec = 0);
 
     // Ver GestorSesiones.BuscarPistasAlias. Viejas: las sesiones del alias que la pista nombra (no vacía); IsEnElTope: las
     // de una sesión llena que no guardó el alias (si no, abiertas con él para otro usuario o puerto).

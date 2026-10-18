@@ -569,8 +569,23 @@ namespace NativeSsh.Herramientas
             };
             // Las cerradas ya no están en el gestor: las pistas son de las que siguen abiertas.
             string? pistas = TextoPistas(resuelto, gestor.BuscarPistasAlias(resuelto), gestor);
-            mensaje += DescribirBorradoAlDesconectar(cerradasConLimpieza);
+            mensaje += DescribirCanalesCortados(cerradasConLimpieza) + DescribirBorradoAlDesconectar(cerradasConLimpieza);
             return new ResultadoAccion(cerradas.Length == 1 ? cerradas[0].Clave : resuelto.Clave, cerradas.Length > 0, pistas is null ? mensaje : $"{mensaje} {pistas}");
+        }
+
+        // ssh_disconnect: cuántos canales exec en curso (los de canalesExecActivos en ssh_status) cortó el cierre, en total;
+        // nada si ninguno.
+        private static string DescribirCanalesCortados(ReadOnlySpan<SesionCerrada> cerradas)
+        {
+            int total = 0;
+            foreach (SesionCerrada cerrada in cerradas)
+                total += cerrada.CanalesExec;
+            return total switch
+            {
+                0 => string.Empty,
+                1 => " El cierre cortó 1 canal exec en curso (una lectura por canal aparte o una tarea de native_ssh): esa herramienta termina con error.",
+                _ => $" El cierre cortó {total} canales exec en curso (lecturas por canal aparte o tareas de native_ssh): esas herramientas terminan con error."
+            };
         }
 
         // ssh_disconnect: con una sesión cerrada, lo que pasó con sus archivos de guardarSalida; con varias, lo de cada una
