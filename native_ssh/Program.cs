@@ -32,9 +32,9 @@ if (!arranque.IsHttp)
 }
 
 // Sin token no se arranca el modo HTTP (TokenHttp); el modo stdio no lo lee. En Windows no se puede comprobar que el fichero
-// sea solo de su dueño: allí el modo HTTP no arranca.
+// sea solo de su dueño y el modo HTTP no se ofrece en ninguna de sus formas: no arranca, tampoco con el token en la variable.
 TokenHttp? token = null;
-string? errorToken = "El modo HTTP solo está disponible en Linux y macOS (el fichero del token se comprueba con permisos Unix).";
+string? errorToken = "El modo HTTP solo está disponible en Linux y macOS: en Windows no arranca, venga el token de NATIVE_SSH_TOKEN_HTTP o de un fichero.";
 if (!OperatingSystem.IsWindows() && !TokenHttp.TryCargar(Environment.GetEnvironmentVariable, out token, out errorToken))
     token = null;
 
