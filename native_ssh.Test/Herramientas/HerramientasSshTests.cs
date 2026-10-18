@@ -1147,7 +1147,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             ConexionFalsa conexion = _fabrica.Ultima!;
             _ = conexion.ShellsAbiertos.Should().Be(2);
-            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
+            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; cd \"${{__NS_CWD:-$HOME}}\"");
         }
 
         [Fact]

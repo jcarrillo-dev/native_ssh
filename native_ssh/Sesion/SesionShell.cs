@@ -1234,13 +1234,13 @@ namespace NativeSsh.Sesion
 
         // El 997 solo dice que lo decodificado no era lo enviado (ConstructorComando.EscribirComando), no por qué, así que el
         // mensaje no afirma una causa: enumera las medidas. Un lector del terminal que se come parte del envío; 'set -x' con
-        // BASH_XTRACEFD en la salida estándar, que mete la traza en la decodificación; una función o un alias 'base64' o
-        // 'printf' que cambia lo que imprimen (una función 'base64' que solo añade un salto final no rompe nada: la sustitución
-        // de órdenes lo quita). Medido también: una función 'printf' que no imprime nada rompe además el marcador (agota el
-        // plazo) y una función 'eval' no llega aquí (da código 0 sin ejecutar nada). El único remedio es un shell nuevo: el
+        // BASH_XTRACEFD en la salida estándar, que mete la traza en la decodificación; una función o un alias 'base64' que
+        // cambia lo que imprime (una función 'base64' que solo añade un salto final no rompe nada: la sustitución de órdenes
+        // lo quita). Una función o un alias 'printf' no llegan aquí: el protocolo usa 'command printf'. Medido también: una
+        // función 'eval' no llega aquí (da código 0 sin ejecutar nada). El único remedio es un shell nuevo: el
         // comando que intentara deshacer el cambio (set +x, unset -f, unalias) viaja por el mismo envío y tampoco se ejecuta
         // (medido en la revisión del tramo 1-septies), así que el mensaje no lo propone.
-        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: el texto que recibió el shell no coincidió con el enviado y el shell no ejecuta un comando distinto del pedido. Causas posibles: otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte del envío; un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar; o hay una función o un alias 'base64' o 'printf' que cambia lo que imprimen. Mientras siga así, ningún comando se ejecutará, TAMPOCO uno que intente deshacer el cambio o terminar ese proceso: usa ssh_reset_shell (abre un shell nuevo y cierra el anterior con lo que dejó) y vuelve a lanzar el comando.";
+        internal const string MensajeEnvioIncompleto = "El comando NO se ejecutó: el texto que recibió el shell no coincidió con el enviado y el shell no ejecuta un comando distinto del pedido. Causas posibles: otro proceso que lee del terminal (p. ej. uno lanzado en segundo plano con '&' que lee la entrada) se comió parte del envío; un comando anterior dejó 'set -x' con BASH_XTRACEFD apuntando a la salida estándar; o hay una función o un alias 'base64' que cambia lo que imprime. Mientras siga así, ningún comando se ejecutará, TAMPOCO uno que intente deshacer el cambio o terminar ese proceso: usa ssh_reset_shell (abre un shell nuevo y cierra el anterior con lo que dejó) y vuelve a lanzar el comando.";
 
         // Las líneas que la cola anterior descartó al llegar el envío de este comando (EscanerMarcador.LineasDescartadas desde
         // que se envió) se fijan en la petición antes de su estado final. Su aviso no va en el aviso del estado final: lo añade

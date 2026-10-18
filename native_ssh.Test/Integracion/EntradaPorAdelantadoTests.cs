@@ -705,12 +705,12 @@ namespace NativeSsh.Test.Integracion
             _ = entrada.Salida.Should().Contain("longitud:20");
             _ = siguiente.Aviso.Should().BeNull("el comando leyó toda la entrada");
         }
-        // Un alias o una función 'base64'/'printf' que cambia lo que imprimen, o 'set -x' con BASH_XTRACEFD en la salida
+        // Un alias o una función 'base64' que cambia lo que imprime, o 'set -x' con BASH_XTRACEFD en la salida
         // estándar: ningún comando se ejecuta (997), tampoco el que intenta deshacerlo (unalias, unset -f, set +x; medido en
         // la revisión del tramo 1-septies). El mensaje no lo propone como remedio: remite a ssh_reset_shell, que sí lo arregla.
         [Theory]
         [InlineData("alias base64='echo QUJD | command base64'", "unalias base64")]
-        [InlineData("printf() { builtin printf \"$@\"; builtin printf 'QUJD'; }", "unset -f printf")]
+        [InlineData("base64() { command base64 \"$@\"; command printf 'QUJD'; }", "unset -f base64")]
         [InlineData("BASH_XTRACEFD=1; set -x", "set +x")]
         public async Task EnvioQueNoCoincide_ElRemedioQueProponeElMensajeFunciona(string preparacion, string deshacer)
         {

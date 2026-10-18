@@ -86,6 +86,27 @@ namespace NativeSsh.Test.Integracion
             _ = DirectorioDeLaSesion(destino).Should().BeNull();
         }
 
+        // Una función 'pwd' o 'cd' del usuario no cambia el directorio que fija ssh_set_cwd: la validación usa 'command cd' y
+        // 'command pwd -P'. Antes, con 'pwd() { echo /etc; }', respondía «fijado a /etc».
+        [Theory]
+        [InlineData("pwd() { echo /etc; }")]
+        [InlineData("cd() { :; }")]
+        public async Task FuncionDelUsuario_NoCambiaElDirectorioFijado(string definicion)
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string x = Directory.CreateDirectory(Path.Combine(_directorio, "funcion")).FullName;
+            ResultadoComando define = await herramientas.EjecutarAsync(destino, definicion, 30, 30).ComoComando();
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+
+            // Act
+            ResultadoDirectorioTrabajo fijado = await herramientas.FijarDirectorioAsync(destino, x);
+
+            // Assert
+            _ = fijado.Directorio.Should().Be(x);
+            _ = DirectorioDeLaSesion(destino).Should().Be(x);
+        }
+
         // Volver a $HOME con __NS_CWD de solo lectura: 'unset' falla, así que el shell sigue en X. ssh_set_cwd no responde
         // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (caso Q12).
         [Fact]

@@ -2013,8 +2013,8 @@ namespace NativeSsh.Herramientas
                   printf 'Error: sin permiso para entrar en el directorio: %s\n' "$ruta" >&2
                   exit 1
                 fi
-                cd -- "$ruta" || exit 1
-                {{SustitucionLiteral("real", "pwd -P")}}
+                command cd -- "$ruta" || exit 1
+                {{SustitucionLiteral("real", "command pwd -P")}}
                 printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(printf '%s' "$real" | base64 | tr -d '\n')"
                 )
                 """);

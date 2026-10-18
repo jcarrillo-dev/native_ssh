@@ -76,7 +76,7 @@ namespace NativeSsh.Protocolo
             Span<byte> cifras = escritor.GetSpan(11);
             _ = longitudBase64.TryFormat(cifras, out int escritasCifras, provider: CultureInfo.InvariantCulture);
             escritor.Advance(escritasCifras);
-            escritor.Write("' ] && { __ns_b=$(printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
+            escritor.Write("' ] && { __ns_b=$(command printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
             EscribirTestigo(nonce, escritor);
             escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
@@ -112,7 +112,7 @@ namespace NativeSsh.Protocolo
         // comando espera hasta su plazo) y Ctrl+Q desaparece de lo tecleado; con él, los dos son caracteres normales.
         public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor)
         {
-            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; stty -echo -onlcr -ixon; __ns_rc=0; printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
+            escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; stty -echo -onlcr -ixon; __ns_rc=0; command printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; unset __ns_rc; command read -r __ns_d; unset __ns_d\n"u8);
         }
@@ -175,7 +175,7 @@ namespace NativeSsh.Protocolo
             escritor.Write("__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null; "u8);
             if (!string.IsNullOrEmpty(directorioTrabajo))
             {
-                escritor.Write("export __NS_CWD=\"$(printf '%s' '"u8);
+                escritor.Write("export __NS_CWD=\"$(command printf '%s' '"u8);
                 EscribirBase64(directorioTrabajo, escritor);
                 escritor.Write("' | base64 -d)\"; "u8);
             }
@@ -188,11 +188,11 @@ namespace NativeSsh.Protocolo
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("-x}; __ns_t=${__ns_t#'"u8);
             EscribirTestigo(testigo, escritor);
-            escritor.Write("'}; printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '"u8);
+            escritor.Write("'}; command printf '%s%s_%s_%d_%d__\\n' '__NSI' \"$__ns_t\" '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("' \"$$\" \"$PPID\"; printf '%s_%s_\\n' '__NSP' '"u8);
+            escritor.Write("' \"$$\" \"$PPID\"; command printf '%s_%s_\\n' '__NSP' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("'; printf '%s' \"$PATH\" | base64 | tr -d '\\n'; printf '\\n%s_%s_\\n' '__NSQ' '"u8);
+            escritor.Write("'; command printf '%s' \"$PATH\" | base64 | tr -d '\\n'; command printf '\\n%s_%s_\\n' '__NSQ' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("'; "u8);
             EscribirCola(id, centinela, escritor);
@@ -309,7 +309,7 @@ namespace NativeSsh.Protocolo
                 escritor.Write("'}; __ns_t=${__ns_t:+999}; __ns_rc=${__ns_t:-${__ns_rc-997}}; "u8);
             }
 
-            escritor.Write("printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
+            escritor.Write("command printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             // 1000 = MaxEofSeguidos; 129 = CodigoSalidaTopeEof; 999999 = MarcadorFin.MaxLineasDescartadas.
             escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; unset __ns_rc; __ns_n=; __ns_c=0; __ns_v=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { TMOUT= IFS= command read -r __ns_d; __ns_s=$?; { command [ \"$__ns_s\" -ne 1 ] && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ] || command exit 129; }; do __ns_x=${__ns_d%'#"u8);

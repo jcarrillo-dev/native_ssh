@@ -1735,7 +1735,7 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = mensaje.Should().StartWith("El comando NO se ejecutó").And.NotContain("no llegó entero");
             _ = mensaje.Should().Contain("no coincidió con el enviado");
-            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.Contain("'base64' o 'printf'").And.Contain("ssh_reset_shell");
+            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.Contain("'base64' que cambia").And.Contain("ssh_reset_shell");
             _ = mensaje.Should().NotContainAny(["set +x", "unset -f", "unalias"], "deshacerlo con ssh_exec no se ejecuta: solo sirve ssh_reset_shell");
         }
 

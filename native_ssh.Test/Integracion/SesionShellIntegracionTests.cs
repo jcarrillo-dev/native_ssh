@@ -49,6 +49,29 @@ namespace NativeSsh.Test.Integracion
             _ = Texto(falla).Should().Be("error\n");
         }
 
+        // Una función o un alias 'printf' del usuario no alcanza al protocolo: el marcador de fin, la decodificación del
+        // comando y la cola usan 'command printf'. Antes, el comando que la definía se quedaba en Ejecutando hasta su plazo
+        // (sin marcador) y todo lo siguiente esperaba en la cola.
+        [Theory]
+        [InlineData("printf() { :; }")]
+        [InlineData("printf() { echo x; }; export -f printf")]
+        [InlineData("alias printf=:")]
+        public async Task PrintfDelUsuario_NoDejaAlShellSinMarcador(string definicion)
+        {
+            // Arrange
+            await using SesionShell sesion = sshd.Sesion();
+
+            // Act
+            Peticion define = await EjecutarAsync(sesion, definicion, timeoutSegundos: 8);
+            Peticion siguiente = await EjecutarAsync(sesion, "echo sigue", timeoutSegundos: 8);
+
+            // Assert
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+            _ = define.CodigoSalida.Should().Be(0);
+            _ = siguiente.Estado.Should().Be(EstadoPeticionEnum.Completado, siguiente.Aviso);
+            _ = Texto(siguiente).Should().Be("sigue\n");
+        }
+
         [Fact]
         public async Task Variables_Persisten_YLaCarpetaVuelveAHome()
         {
