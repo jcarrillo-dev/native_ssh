@@ -1067,10 +1067,9 @@ namespace NativeSsh.Test.Comun
             // Act
             Task<ComprobacionSoloLectura> comoDestino = destinos.ComprobarAsync(Destino("root@host.ejemplo"), CancellationToken.None);
             await destinoLlamado.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            Task<ComprobacionSoloLectura> comoEntrada = destinos.ComprobarAsync(Destino("deploy@[2001:db8::5]"), CancellationToken.None);
-            await Task.Delay(100);
+            // La entrada termina sin esperar al destino (con la resolución compartida no podía: esperaba la del destino).
+            ComprobacionSoloLectura entrada = await destinos.ComprobarAsync(Destino("deploy@[2001:db8::5]"), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
             _ = soltarDestino.TrySetResult(new ResultadoResolucion([IPAddress.Parse("10.0.0.5")]));
-            ComprobacionSoloLectura entrada = await comoEntrada.WaitAsync(TimeSpan.FromSeconds(10));
             ComprobacionSoloLectura destino = await comoDestino.WaitAsync(TimeSpan.FromSeconds(10));
 
             // Assert
