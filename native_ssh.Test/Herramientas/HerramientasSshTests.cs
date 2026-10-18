@@ -60,6 +60,8 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("archivo_binario.bin", StringComparison.Ordinal) ? EnmarcarBase64(comando, [.. "linea 1\n"u8, 0x00, 0x01, .. "\n"u8]) :
             comando.Contains("archivo_bom.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, [0xEF, 0xBB, 0xBF, .. "linea 1\nlinea 2\n"u8]) :
             comando.Contains("archivo_windows.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes(ContenidoCrlf)) :
+            comando.Contains("archivo_mixto.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes(ContenidoMixto)) :
+            comando.Contains("archivo_crlf_cr.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes("uno\r\ndos\rmas\r\ntres\r\n")) :
             comando.Contains("archivo_separadores.txt", StringComparison.Ordinal) ? EnmarcarBase64(comando, Encoding.UTF8.GetBytes(ContenidoConSeparadores)) :
             comando.Contains("archivo_inexistente.txt", StringComparison.Ordinal)
                 ? new("Error: el archivo no existe: archivo_inexistente.txt\n", 1)
@@ -70,6 +72,7 @@ namespace NativeSsh.Test.Herramientas
                         : EnmarcarBase64(comando, Encoding.UTF8.GetBytes("linea 1\nlinea 2\nlinea 3\nlinea 4\nlinea 5\n"));
 
         private const string ContenidoCrlf = "uno\r\ndos\r\ntres\r\n";
+        private const string ContenidoMixto = "a\nb\nc\r\nd\ne\n";
         private const string ContenidoConSeparadores = "uno\fdos\u0085tres\u2028cuatro\u2029cinco\rseis\nsiete\n";
         private const string SeparadoresExoticos = "\f\u0085\u2028\u2029\r";
 
@@ -2171,6 +2174,58 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = resultado.Reemplazos.Should().Be(1);
             _ = PayloadUltimaEscritura().Should().Be($"x{SeparadoresExoticos}y\r\nz\r\nw\r\ntres\r\n");
+        }
+
+        [Fact]
+        public async Task ReplaceFileContent_ArchivoCrlf_ConRangoYConEdiciones_UsaCrlf()
+        {
+            // Act
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_windows.txt", "dos", "x\ny", lineaInicio: 2, lineaFin: 2);
+            string conRango = PayloadUltimaEscritura();
+            _ = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_windows.txt", ediciones: [new EdicionTexto("uno\ndos", "a\nb"), new EdicionTexto("tres", "c\nd")]);
+            string conEdiciones = PayloadUltimaEscritura();
+
+            // Assert
+            _ = conRango.Should().Be("uno\r\nx\r\ny\r\ntres\r\n");
+            _ = conEdiciones.Should().Be("a\r\nb\r\nc\r\nd\r\n");
+        }
+
+        // Un '\r' suelto es contenido, no un salto: un archivo con todos sus saltos en CRLF y un '\r' suelto sigue siendo CRLF.
+        [Fact]
+        public async Task ReplaceFileContent_ArchivoCrlfConUnCrSuelto_SigueSiendoCrlf()
+        {
+            // Act
+            ResultadoEscritura resultado = await _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_crlf_cr.txt", "uno\ndos", "a\nb");
+
+            // Assert
+            _ = resultado.Reemplazos.Should().Be(1);
+            _ = PayloadUltimaEscritura().Should().Be("a\r\nb\rmas\r\ntres\r\n");
+        }
+
+        // Un archivo que mezcla saltos CRLF y LF no se edita, en ninguno de los tres modos: no se sabe qué salto debe llevar lo
+        // sustituido y las líneas no se numerarían como en ssh_read_file. Antes, un solo CRLF hacía CRLF todo el archivo: el
+        // reemplazo metía '\r\n' en la zona LF sin avisar, un objetivo de varias líneas no se encontraba y el rango contaba
+        // otras líneas.
+        [Theory]
+        [InlineData("target")]
+        [InlineData("rango")]
+        [InlineData("ediciones")]
+        public async Task ReplaceFileContent_ArchivoConSaltosMixtos_LanzaSinEscribir(string modo)
+        {
+            // Arrange
+            Func<Task> llamada = modo switch
+            {
+                "target" => () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_mixto.txt", "a\nb", "x\ny"),
+                "rango" => () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_mixto.txt", "d", "x\ny", lineaInicio: 4, lineaFin: 4),
+                _ => () => _herramientas.ReemplazarContenidoArchivoAsync("servidor", "archivo_mixto.txt", ediciones: [new EdicionTexto("b", "x\ny")])
+            };
+
+            // Act
+            NativeSshException error = (await FluentActions.Awaiting(llamada).Should().ThrowAsync<NativeSshException>()).Which;
+
+            // Assert
+            _ = error.Message.Should().Contain("'archivo_mixto.txt'").And.Contain("CRLF (1)").And.Contain("LF (4)").And.Contain("ssh_write_file").And.EndWith("No se ha escrito nada.");
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.Contains("base64 -d", StringComparison.Ordinal));
         }
 
         [Theory]
