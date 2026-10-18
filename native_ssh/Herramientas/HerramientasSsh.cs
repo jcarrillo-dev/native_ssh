@@ -61,9 +61,9 @@ namespace NativeSsh.Herramientas
               local ruta=$1 saltos=${2:-0} pedida=${3:-$1} padre destino bloqueo
               [ "$saltos" -gt 40 ] && return 1
               [ -e "$ruta" ] && return 1
-              padre=$(dirname -- "$ruta"; printf x); padre=${padre%x}; padre=${padre%$'\n'}
+              padre=$(dirname -- "$ruta"; command printf x); padre=${padre%x}; padre=${padre%$'\n'}
               if [ -L "$ruta" ]; then
-                destino=$(readlink -- "$ruta"; printf x); destino=${destino%x}; destino=${destino%$'\n'}
+                destino=$(readlink -- "$ruta"; command printf x); destino=${destino%x}; destino=${destino%$'\n'}
                 case $destino in
                   /*) ;;
                   *) destino=$padre/$destino ;;
@@ -74,8 +74,8 @@ namespace NativeSsh.Herramientas
               [ "$padre" = "$ruta" ] && return 1
               if [ -d "$padre" ]; then
                 [ -x "$padre" ] && return 1
-                bloqueo=$(readlink -f -- "$padre" 2>/dev/null; printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
-                printf 'Error: sin permiso para acceder a la ruta: %s (el directorio %s no se puede atravesar).\n' "$pedida" "${bloqueo:-$padre}" >&2
+                bloqueo=$(readlink -f -- "$padre" 2>/dev/null; command printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
+                command printf 'Error: sin permiso para acceder a la ruta: %s (el directorio %s no se puede atravesar).\n' "$pedida" "${bloqueo:-$padre}" >&2
                 return 0
               fi
               sin_acceso "$padre" $(( saltos + 1 )) "$pedida"
@@ -239,21 +239,21 @@ namespace NativeSsh.Herramientas
                     esac ;;
                   75)
                     estado_candado=ocupado
-                    printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
+                    command printf 'Error: hay otra escritura, reemplazo o restauración en curso sobre %s (otro proceso tiene tomado su candado, flock: otra operación sobre el archivo o un programa que lo tiene abierto con candado, como una aplicación .NET). No se ha modificado: reintenta cuando termine.\n' "$ruta" >&2
                     return 1 ;;
                   *) estado_candado=ninguno; return 0 ;;
                 esac
                 exec {candado}<&-
               done
               estado_candado=sustituido
-              printf 'Error: %s se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.\n' "$ruta" >&2
+              command printf 'Error: %s se sustituyó por otro archivo cada vez que se tomaba su candado. No se ha modificado: reintenta.\n' "$ruta" >&2
               return 1
             }
             """.ReplaceLineEndings("\n");
 
         // Una FIFO, un socket o un dispositivo no se sustituyen por un archivo regular ni se abren: una FIFO sin lector
         // bloquearía hasta el timeout, /dev/zero no se acaba y en /dev/null se "escribiría" sin guardar nada.
-        private const string ErrorNoRegular = """printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
+        private const string ErrorNoRegular = """command printf 'Error: %s no es un archivo regular (es una FIFO, un socket o un dispositivo): no se lee ni se escribe en él. No se ha modificado.\n' "$ruta" >&2; exit 1""";
         private static readonly UTF8Encoding Utf8Estricto = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
         // ssh_replace_file_content lee el archivo con 'base64', que parte en líneas de 76 caracteres + '\n':
@@ -1997,7 +1997,7 @@ namespace NativeSsh.Herramientas
             {
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
-                const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && pwd";
+                const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && command pwd";
                 Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", DirectorioHome), Guid.NewGuid(), TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 

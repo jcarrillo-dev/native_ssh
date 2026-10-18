@@ -132,6 +132,33 @@ namespace NativeSsh.Test.Integracion
             _ = File.Exists(Path.Combine(x, "relativo.txt")).Should().BeTrue("la escritura con ruta relativa parte del directorio fijado");
         }
 
+        // Con una función 'printf' del usuario que no imprime nada, el error de una ruta bajo un directorio que no se puede
+        // atravesar sigue diciendo cuál es: sin_acceso usa 'command printf'. Antes el error perdía su texto.
+        [Fact]
+        public async Task FuncionPrintfDelUsuario_ElErrorDeDirectorioNoAtravesableConservaSuTexto()
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string bloqueado = Directory.CreateDirectory(Path.Combine(_directorio, "bloqueado")).FullName;
+            string sub = Directory.CreateDirectory(Path.Combine(bloqueado, "sub")).FullName;
+            File.SetUnixFileMode(bloqueado, UnixFileMode.UserRead);
+            ResultadoComando define = await herramientas.EjecutarAsync(destino, "printf() { :; }", 30, 30).ComoComando();
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+
+            try
+            {
+                // Act
+                Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, sub));
+
+                // Assert
+                _ = error.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain($"sin permiso para acceder a la ruta: {sub}");
+            }
+            finally
+            {
+                File.SetUnixFileMode(bloqueado, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+
         // Volver a $HOME con __NS_CWD de solo lectura: 'unset' falla, así que el shell sigue en X. ssh_set_cwd no responde
         // «restablecido»: dice que sigue siendo X, y C# y el shell coinciden (caso Q12).
         [Fact]

@@ -292,7 +292,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = error.Message.Should().Be($"bash: unset: __NS_CWD: cannot unset: readonly variable El directorio de trabajo sigue siendo {Anterior}.");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
-            _ = _fabrica.Ultima!.Comandos.Should().Contain("unset __NS_CWD && export __NS_CWD=\"\" && pwd");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain("unset __NS_CWD && export __NS_CWD=\"\" && command pwd");
         }
 
         // La validación falla (la ruta no existe): el error dice también qué directorio sigue (A-undecies, AU3).
