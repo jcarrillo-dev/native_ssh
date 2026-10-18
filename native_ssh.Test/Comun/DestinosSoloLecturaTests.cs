@@ -1038,5 +1038,45 @@ namespace NativeSsh.Test.Comun
             // Act & Assert
             _ = (await destinos.IsSoloLecturaAsync(Destino("ana@127.0.0.1:22042"), CancellationToken.None)).Should().BeTrue();
         }
+
+
+        // Un mismo nombre resuelto a la vez como destino (tolerante: las dos familias juntas) y como entrada (falla cerrado si
+        // una familia falla) no comparte la resolución en curso: la entrada no toma lo del destino. Antes, una escritura a la
+        // IPv6 de una entrada cuya consulta AAAA fallaba pasaba el modo solo lectura si llegaba mientras se resolvía ese
+        // nombre como destino de otra llamada.
+        [Fact]
+        public async Task MismoNombreComoDestinoYComoEntradaALaVez_LaEntradaNoTomaLaResolucionDelDestino()
+        {
+            // Arrange
+            TaskCompletionSource destinoLlamado = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<ResultadoResolucion> soltarDestino = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Task<ResultadoResolucion> ResolverDestino(string nombre, CancellationToken plazo)
+            {
+                if (nombre != "host.ejemplo")
+                    return Task.FromResult(new ResultadoResolucion([IPAddress.Parse("192.0.2.1")]));
+                _ = destinoLlamado.TrySetResult();
+                return soltarDestino.Task;
+            }
+
+            static Task<DireccionesPorFamilia> ResolverEntrada(string nombre, CancellationToken plazo) => Task.FromResult(nombre == "host.ejemplo"
+                ? new DireccionesPorFamilia([IPAddress.Parse("10.0.0.5")], null)
+                : new DireccionesPorFamilia([IPAddress.Parse("192.0.2.1")], [IPAddress.Parse("2001:db8::99")]));
+
+            DestinosSoloLectura destinos = DestinosSoloLectura.ConResolutores("deploy@host.ejemplo, otro.ejemplo", ResolverDestino, ResolverEntrada, () => []);
+
+            // Act
+            Task<ComprobacionSoloLectura> comoDestino = destinos.ComprobarAsync(Destino("root@host.ejemplo"), CancellationToken.None);
+            await destinoLlamado.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Task<ComprobacionSoloLectura> comoEntrada = destinos.ComprobarAsync(Destino("deploy@[2001:db8::5]"), CancellationToken.None);
+            await Task.Delay(100);
+            _ = soltarDestino.TrySetResult(new ResultadoResolucion([IPAddress.Parse("10.0.0.5")]));
+            ComprobacionSoloLectura entrada = await comoEntrada.WaitAsync(TimeSpan.FromSeconds(10));
+            ComprobacionSoloLectura destino = await comoDestino.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // Assert
+            _ = entrada.IsSoloLectura.Should().BeTrue(entrada.ToString());
+            _ = entrada.NoResuelto.Should().Be("host.ejemplo");
+            _ = destino.IsSoloLectura.Should().BeFalse(destino.ToString());
+        }
     }
 }

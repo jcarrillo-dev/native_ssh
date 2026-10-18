@@ -61,7 +61,8 @@ namespace NativeSsh.Comun
     // sesión se abre o se reabre después de la comprobación y el nombre resuelve entonces a una máquina protegida, la
     // escritura tampoco se envía. Lo que queda: el nombre de una entrada que pase a apuntar a otra máquina se ve, como
     // tarde, a los 5 minutos. La zona de una IPv6 ('%1', '%lo') no cuenta al comparar.
-    // Por nombre hay como mucho una resolución en curso (las comprobaciones a la vez del mismo nombre la comparten), y como
+    // Por nombre hay como mucho una resolución en curso como destino y otra como entrada (las comprobaciones a la vez del
+    // mismo nombre y del mismo tipo la comparten; una entrada nunca toma la del destino, que tolera una familia fallida), y como
     // mucho MaxResolucionesEnCurso nombres a la vez: las demás esperan turno (EsperaRanura) y solo si no lo tienen dentro
     // del plazo no se resuelven (IsCupoLleno; el rechazo lo dice). Una resolución termina siempre dentro de su plazo (más
     // la recogida del proceso en Linux) aunque el resolver del sistema siga bloqueado: deja de estar en curso y libera su
@@ -91,7 +92,7 @@ namespace NativeSsh.Comun
         private static readonly TimeSpan EsperaRanura = PlazoResolucion - TimeSpan.FromMilliseconds(500);
         private static readonly TimeSpan DuracionRecuerdo = TimeSpan.FromMinutes(5);
         private readonly ConcurrentDictionary<string, (long Caduca, HashSet<IPAddress> Direcciones)> _resueltos = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, Task<Resolucion>> _enCurso = new(StringComparer.Ordinal);
+        private readonly Dictionary<(string Nombre, bool IsDestino), Task<Resolucion>> _enCurso = [];
         private readonly Queue<TaskCompletionSource<bool>> _esperandoRanura = new();
         private int _ranurasLibres = MaxResolucionesEnCurso;
         private readonly Lock _candadoEnCurso = new();
@@ -553,16 +554,19 @@ namespace NativeSsh.Comun
         }
 
         // Direcciones de un nombre (o la propia IP), o sin ellas si no se pudo resolver: fallo, plazo de 3 s vencido o sin
-        // turno dentro del plazo (IsCupoLleno). Si ya hay una en curso para ese nombre, se espera esa misma (también si la
-        // pidió otra llamada: está en curso, así que es igual de reciente; termina dentro de su límite).
+        // turno dentro del plazo (IsCupoLleno). Si ya hay una en curso para ese nombre y del mismo tipo (destino o entrada),
+        // se espera esa misma (también si la pidió otra llamada: está en curso, así que es igual de reciente; termina dentro
+        // de su límite). Nunca la de otro tipo: la del destino tolera que falle una familia y la de una entrada no, así que
+        // una entrada que tomara la del destino dejaría pasar lo que debe rechazar.
         private async Task<Resolucion> ResolverAsync(string servidor, bool isDestino, CancellationToken cancellationToken)
         {
             if (TryDireccionesSinRed(servidor, isDestino, out HashSet<IPAddress>? conocidas))
                 return new Resolucion(conocidas, IsCupoLleno: false);
 
             Task<Resolucion>? resolucion;
+            (string, bool) clave = (servidor, isDestino);
             lock (_candadoEnCurso)
-                if (!_enCurso.TryGetValue(servidor, out resolucion))
+                if (!_enCurso.TryGetValue(clave, out resolucion))
                 {
                     // En el grupo de hilos (getaddrinfo puede bloquear el hilo que lo llama) y fuera de este candado: su
                     // 'finally' lo necesita para quitarse de _enCurso, así que no puede terminar antes de anotarla.
@@ -571,7 +575,7 @@ namespace NativeSsh.Comun
                     if (hasRanura)
                         _ranurasLibres--;
                     resolucion = Task.Run(() => ResolverEnCursoAsync(servidor, isRecordar: !isDestino, hasRanura));
-                    _enCurso[servidor] = resolucion;
+                    _enCurso[clave] = resolucion;
                 }
 
             try
@@ -619,7 +623,7 @@ namespace NativeSsh.Comun
             {
                 lock (_candadoEnCurso)
                 {
-                    _ = _enCurso.Remove(servidor);
+                    _ = _enCurso.Remove((servidor, !isRecordar));
                     if (hasRanura)
                         SoltarRanura();
                 }
