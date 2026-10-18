@@ -1,6 +1,6 @@
 # native_ssh
 
-Servidor MCP (*Model Context Protocol*) en .NET 10 compilado con Native AOT para trabajar en servidores Linux por SSH: un shell bash persistente por destino para los comandos y las escrituras, y canales `exec` aparte para las lecturas. Transporte stdio o HTTP (Streamable HTTP). El cliente SSH es la biblioteca SSH.NET, compilada desde el submódulo `externo/SSH.NET` (ver «Limitaciones conocidas»); no hace falta el cliente `ssh` de OpenSSH, aunque si está instalado se usa para leer su configuración.
+Servidor MCP (*Model Context Protocol*) en .NET 10 compilado con Native AOT para trabajar en servidores Linux por SSH: un shell bash persistente por destino para los comandos y las escrituras, y canales `exec` aparte para las lecturas. Transporte stdio o HTTP (Streamable HTTP). El cliente SSH es la biblioteca SSH.NET, compilada desde el submódulo `externo/SSH.NET`, un fork propio no publicado (ver «Compilar y publicar» y «Limitaciones conocidas»); no hace falta el cliente `ssh` de OpenSSH, aunque si está instalado se usa para leer su configuración.
 
 native_ssh corre en Linux y en Windows (ver «native_ssh en Windows»); el modo HTTP, solo en Linux y macOS. Los destinos son servidores Linux con bash: un servidor Windows como destino no está soportado y se rechaza con un mensaje que lo dice (ver «Requisitos del servidor remoto»).
 
@@ -463,10 +463,13 @@ native_ssh se compila y se prueba también para Windows (x64). Diferencias con L
 
 ### Compilar y publicar
 
-Requisitos: SDK de .NET 10 y, para el submódulo de SSH.NET, `git submodule update --init`. Para Native AOT en Linux, `clang` y las bibliotecas de desarrollo que pide .NET (`zlib`).
+Requisitos: SDK de .NET 10 y el submódulo `externo/SSH.NET` inicializado. Para Native AOT en Linux, `clang` y las bibliotecas de desarrollo que pide .NET (`zlib`).
+
+**El submódulo es un fork propio de SSH.NET** (rama `native-ssh-ws`) que **no está publicado**: `.gitmodules` apunta al repositorio oficial, que no tiene ese commit, así que `git submodule update --init` falla («No se pudo clonar…» o «not our ref»). Lleva, sobre el SSH.NET oficial, una veintena de correcciones de cierre de canales y sesiones, la regla de *strict-kex* solo en el intercambio inicial, cancelación durante el handshake, exec con pseudoterminal y fallo inmediato (con su excepción) cuando el servidor rechaza una petición `exec` o la apertura de un canal. Con un bundle de git de ese fork, el submódulo se inicializa apuntando su URL al bundle (`protocol.file.allow=always` porque es un fichero local):
 
 ```bash
-git submodule update --init
+git config submodule.externo/SSH.NET.url /ruta/al/sshnet-native-ssh.bundle
+git -c protocol.file.allow=always submodule update --init
 dotnet build native_ssh.slnx
 dotnet publish native_ssh/native_ssh.csproj -c Release -r linux-x64 -o artefactos
 ```
@@ -602,7 +605,7 @@ No deben aplicarse correcciones automáticas globales de `dotnet format` para `I
 
 **De SSH.NET**
 
-- Renegociación de claves con *strict-kex*: SSH.NET 2026.0.0 aplica la regla estricta («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, §1.9, que remite al borrador `draft-miller-sshm-strict-kex`) la limita al intercambio inicial; OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar y SSH.NET cortaba la conexión (medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s). native_ssh compila SSH.NET desde el submódulo `externo/SSH.NET`, que lo corrige (la regla estricta solo en el intercambio inicial). Es una limitación del paquete NuGet de SSH.NET mientras la corrección no llegue al proyecto original.
+- Renegociación de claves con *strict-kex*: SSH.NET 2026.0.0 aplica la regla estricta («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, §1.9, que remite al borrador `draft-miller-sshm-strict-kex`) la limita al intercambio inicial; OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar y SSH.NET cortaba la conexión (medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s). native_ssh compila SSH.NET desde el submódulo `externo/SSH.NET`, un fork propio no publicado que lo corrige (la regla estricta solo en el intercambio inicial). Es una limitación del paquete NuGet de SSH.NET mientras la corrección no llegue al proyecto original.
 - El submódulo también falla al momento cuando el servidor rechaza una petición `exec` (el paquete esperaba indefinidamente).
 - Queda una carrera residual de SSH.NET en el canal del shell al cerrarse mientras llega salida.
 
