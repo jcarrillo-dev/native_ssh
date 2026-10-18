@@ -382,6 +382,20 @@ namespace NativeSsh.Test.Ssh
             _ = texto.Should().Contain("ni certificados de host: una línea @cert-authority no cuenta");
         }
 
+        // Con un servidor IPv6, el host:puerto del error va entre corchetes, como un destino que se puede volver a usar.
+        [Fact]
+        public void RechazoHostDesconocido_Ipv6_EntreCorchetes()
+        {
+            // Arrange
+            _ = NativeSsh.Comun.DestinoSsh.TryParse("ana@[::1]:2222", "ana", out NativeSsh.Comun.DestinoSsh destino).Should().BeTrue();
+
+            // Act
+            string texto = FabricaConexionSsh.DescribirRechazo(destino, ResultadoHostEnum.Desconocido, "ssh-ed25519", "abc", ["/h/.ssh/known_hosts"]);
+
+            // Assert
+            _ = texto.Should().StartWith("[::1]:2222 no está en /h/.ssh/known_hosts");
+        }
+
         [Fact]
         public void RechazoHostDesconocido_VariosFicheros_SeLeeComoLista()
         {

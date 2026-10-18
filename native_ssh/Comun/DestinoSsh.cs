@@ -12,7 +12,8 @@ namespace NativeSsh.Comun
             Usuario = usuario;
             Servidor = servidor;
             Puerto = puerto;
-            Clave = servidor.Contains(':', StringComparison.Ordinal) ? $"{usuario}@[{servidor}]:{puerto}" : $"{usuario}@{servidor}:{puerto}";
+            ServidorEscrito = servidor.Contains(':', StringComparison.Ordinal) ? $"[{servidor}]" : servidor;
+            Clave = $"{usuario}@{ServidorEscrito}:{puerto}";
         }
 
         // Claves de los IdentityFile de la configuración de ssh (ResolutorConfiguracionSsh), ya expandidas; null: las de
@@ -28,6 +29,9 @@ namespace NativeSsh.Comun
 
         public string Usuario { get; }
         public string Servidor { get; }
+
+        // El servidor como se escribe delante de ':puerto' en un texto que se puede copiar: una IPv6 entre corchetes.
+        public string ServidorEscrito { get; }
         public int Puerto { get; }
 
         // usuario@servidor:puerto: lo que se muestra en mensajes, logs y ssh_status. Una IPv6 va entre corchetes
