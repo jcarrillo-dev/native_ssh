@@ -367,6 +367,21 @@ namespace NativeSsh.Test.Ssh
                 .And.NotContain("sin que el usuario haya comprobado").And.NotContain("ssh-keyscan");
         }
 
+        // Una línea @cert-authority no cuenta (native_ssh no admite certificados de host): el error de host desconocido lo
+        // dice, para que quien confía en una autoridad de certificación sepa por qué no basta.
+        [Fact]
+        public void RechazoHostDesconocido_DiceQueLosCertificadosDeHostNoSeAdmiten()
+        {
+            // Arrange
+            _ = NativeSsh.Comun.DestinoSsh.TryParse("ana@srv", "ana", out NativeSsh.Comun.DestinoSsh destino).Should().BeTrue();
+
+            // Act
+            string texto = FabricaConexionSsh.DescribirRechazo(destino, ResultadoHostEnum.Desconocido, "ssh-ed25519", "abc", ["/h/.ssh/known_hosts"]);
+
+            // Assert
+            _ = texto.Should().Contain("ni certificados de host: una línea @cert-authority no cuenta");
+        }
+
         [Fact]
         public void RechazoHostDesconocido_VariosFicheros_SeLeeComoLista()
         {
