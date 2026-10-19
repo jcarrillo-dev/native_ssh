@@ -16,12 +16,12 @@ native_ssh está pensado para servidores Linux con bash.
 
 **native_ssh como cliente** (la máquina donde corre el MCP):
 - **Linux:** Arch (CachyOS) y contenedores Debian 13.
-- **Windows:** Windows 11 y Windows Server 2025, con el cliente OpenSSH del sistema y también con Git for Windows (bash y su ssh) instalado, en los dos órdenes del `PATH`. Tiene sus particularidades: ver [«native_ssh en Windows»](#7-native_ssh-en-windows).
+- **Windows:** Windows 11, con el cliente OpenSSH del sistema y también con Git for Windows (bash y su ssh) instalado, en los dos órdenes del `PATH`. Tiene sus particularidades: ver [«native_ssh en Windows»](#7-native_ssh-en-windows).
 - **macOS:** nunca se ha ejecutado, porque no hay hardware para probarlo; solo se comprueba que compila (`osx-arm64`). Puede tener fallos y no hay paquete.
 
 **Servidores destino:** Debian (contenedores y un servidor Debian 13), Ubuntu, Alpine (busybox) y Arch.
 
-**Servidores Windows como destino:** aún no están soportados, tengan el shell que tengan (cmd, PowerShell o Git Bash): native_ssh los detecta y falla rápido sin ejecutar nada (ver [«Windows como destino: no soportado»](#windows-como-destino-no-soportado)). Está previsto para una versión futura (ver [«Hoja de ruta»](#14-hoja-de-ruta)).
+**Servidores Windows como destino:** aún no están soportados, tengan el shell que tengan (cmd, PowerShell o Git Bash): native_ssh los detecta y falla rápido sin ejecutar nada (comprobado contra Windows Server 2025 y Windows 11 con OpenSSH; ver [«Windows como destino: no soportado»](#windows-como-destino-no-soportado)). Está previsto para una versión futura (ver [«Hoja de ruta»](#14-hoja-de-ruta)).
 
 ## Descargas
 
