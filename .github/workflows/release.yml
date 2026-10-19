@@ -1,0 +1,229 @@
+# Release automática al crear una etiqueta v* (por ejemplo v2.5.0). La versión de la etiqueta tiene que coincidir con la
+# que imprime `NativeSsh --version` (IdentidadServidor.cs); si no, el humo falla y no se publica nada.
+# - Linux: contenedor Debian 12 fijado por digest (glibc genérica: nota ELF x86-64-baseline y suelo GLIBC_2.34) con el
+#   SDK oficial comprobado por sha512. Windows: windows-latest con el SDK oficial comprobado por sha512.
+# - Variantes normal, x86-64-v3 y x86-64-v4 de cada sistema; humo de cada binario que la CPU del runner pueda ejecutar.
+# - SHA256SUMS, atestación de procedencia (actions/attest-build-provenance) y Release con gh y GITHUB_TOKEN.
+# Las acciones van fijadas por SHA de commit (la etiqueta, en el comentario). Sin más secretos que GITHUB_TOKEN.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SDK_VERSION: "10.0.201"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+
+jobs:
+  linux:
+    name: Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    container:
+      # debian:12-slim
+      image: docker.io/library/debian@sha256:a4672c0cb26fbdde88e38fa2dfb6c681942306680e41e4378b28770b6e79ee91
+    env:
+      # sha512 de dotnet-sdk-10.0.201-linux-x64.tar.gz, de releases.json del canal 10.0
+      SDK_SHA512: a33354e3291aa21ea5e1983733f001d45264c31ee3c0dc4a85509d4cb6d4896cfec57fd2143a7b54c93bc42b328e059b16802b4085257a367ef2652f1c8fa424
+    steps:
+      - name: Paquetes del sistema
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            clang zlib1g-dev git ca-certificates libicu72 binutils curl python3
+          git config --global --add safe.directory '*'
+
+      - name: Código y submódulo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          # Historia completa: Nerdbank.GitVersioning calcula la versión de SSH.NET con ella.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: SDK de .NET
+        run: bash empaquetado/instalar-sdk-linux.sh
+
+      - name: Versión de la etiqueta
+        id: version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          echo "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "etiqueta no válida: $GITHUB_REF_NAME"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar (normal, v3 y v4)
+        run: bash empaquetado/publicar-linux.sh bin normal v3 v4
+
+      - name: Humo
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p humo
+          grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'avx2|avx512(f|bw|cd|dq|vl)' | sort -u | tr '\n' ' '; echo
+          for v in normal v3 v4; do
+            python3 empaquetado/humo.py "bin/$v/NativeSsh" --version "$VERSION" --variante "$v" --estado "humo/linux-$v.json"
+          done
+
+      - name: Empaquetar
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          herramientas="$(python3 -c 'import json; print(json.load(open("humo/linux-normal.json"))["herramientas"])')"
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" python3 empaquetado/empaquetar.py \
+            --sistema linux --version "$VERSION" --binarios bin --salida paquetes --herramientas "$herramientas"
+
+      - name: Subir paquetes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux
+          path: |
+            paquetes/
+            humo/
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # sha512 de dotnet-sdk-10.0.201-win-x64.zip, de releases.json del canal 10.0
+      SDK_SHA512: 15f511296c0ea28a61bafcc2efbc66cd4d22d15a2db44597b9b2254a9eafb57047bbe2feca8106a17ba7ae8af19a3a6847a375b6740e0bf6ab0874ade8af0bca
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Código y submódulo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: SDK de .NET
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fichero = "dotnet-sdk-$env:SDK_VERSION-win-x64.zip"
+          $zip = Join-Path $env:RUNNER_TEMP $fichero
+          Invoke-WebRequest -Uri "https://builds.dotnet.microsoft.com/dotnet/Sdk/$env:SDK_VERSION/$fichero" -OutFile $zip
+          $hash = (Get-FileHash -Algorithm SHA512 $zip).Hash.ToLowerInvariant()
+          if ($hash -ne $env:SDK_SHA512) { throw "sha512 distinto: $hash" }
+          $destino = Join-Path $env:RUNNER_TEMP 'dotnet'
+          Expand-Archive -Path $zip -DestinationPath $destino
+          & (Join-Path $destino 'dotnet.exe') --version
+          $destino | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "DOTNET_ROOT=$destino" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "DOTNET_MULTILEVEL_LOOKUP=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Versión de la etiqueta
+        id: version
+        run: |
+          $v = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($v -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "etiqueta no válida: $env:GITHUB_REF_NAME" }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Compilar (normal, v3 y v4)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($v in 'normal', 'v3', 'v4') {
+            $ilc = @{ normal = ''; v3 = 'x86-64-v3'; v4 = 'x86-64-v4' }[$v]
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue native_ssh/obj/Release/net10.0/win-x64, native_ssh/bin/Release/net10.0/win-x64
+            $extra = @()
+            if ($ilc) { $extra = @("-p:IlcInstructionSet=$ilc") }
+            dotnet publish native_ssh/native_ssh.csproj -c Release -r win-x64 @extra -o "bin/$v"
+            if ($LASTEXITCODE -ne 0) { throw "dotnet publish $v falló" }
+            Get-ChildItem "bin/$v" -Exclude NativeSsh.exe | Remove-Item -Recurse -Force
+            if (-not (Test-Path "bin/$v/NativeSsh.exe")) { throw "no se generó bin/$v/NativeSsh.exe" }
+            Get-FileHash -Algorithm SHA256 "bin/$v/NativeSsh.exe" | Format-List
+          }
+
+      - name: Humo
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force humo | Out-Null
+          foreach ($v in 'normal', 'v3', 'v4') {
+            python empaquetado/humo.py "bin/$v/NativeSsh.exe" --version $env:VERSION --variante $v --estado "humo/windows-$v.json"
+            if ($LASTEXITCODE -ne 0) { throw "humo de $v falló" }
+          }
+
+      - name: Empaquetar
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $herramientas = (Get-Content humo/windows-normal.json -Raw | ConvertFrom-Json).herramientas
+          $env:SOURCE_DATE_EPOCH = (git log -1 --format=%ct)
+          python empaquetado/empaquetar.py --sistema windows --version $env:VERSION --binarios bin --salida paquetes --herramientas $herramientas
+          if ($LASTEXITCODE -ne 0) { throw "empaquetar falló" }
+
+      - name: Subir paquetes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: |
+            paquetes/
+            humo/
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publicar la Release
+    needs: [linux, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Código (para las notas)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bajar los paquetes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: descargas
+
+      - name: Reunir y SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p dist humo
+          cp descargas/linux/paquetes/* descargas/windows/paquetes/* dist/
+          cp descargas/linux/humo/*.json descargas/windows/humo/*.json humo/
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 6
+          (cd dist && sha256sum -- *.tar.gz *.zip > SHA256SUMS && cat SHA256SUMS)
+
+      - name: Atestación de procedencia
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+      - name: Publicar
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          python3 empaquetado/notas-release.py --version "$v" --humo humo --repo "$GITHUB_REPOSITORY" > notas.md
+          cat notas.md
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "native_ssh $v" --notes-file notas.md
