@@ -1,3 +1,4 @@
 [submodule "externo/SSH.NET"]
 	path = externo/SSH.NET
-	url = https://github.com/sshnet/SSH.NET.git
+	url = https://github.com/jcarrillo-dev/SSH.NET.git
+	branch = native-ssh-ws
