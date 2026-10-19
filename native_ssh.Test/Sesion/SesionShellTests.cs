@@ -1724,8 +1724,7 @@ namespace NativeSsh.Test.Sesion
             _ = Texto(siguiente).Should().Be("eco:siguiente\n");
         }
 
-        // El mensaje del 997 no afirma como hecho que el envío no llegó entero (con BASH_XTRACEFD o una función 'base64' sí
-        // llega): dice que lo recibido no coincidió con lo enviado y enumera las causas medidas, con ssh_reset_shell.
+        // El mensaje del 997 no afirma como hecho que el envío no llegó entero (con BASH_XTRACEFD sí llega): dice que lo recibido no coincidió con lo enviado y enumera las causas medidas, con ssh_reset_shell.
         [Fact]
         public void MensajeEnvioIncompleto_DiceQueNoCoincidioYEnumeraLasCausas()
         {
@@ -1735,7 +1734,7 @@ namespace NativeSsh.Test.Sesion
             // Assert
             _ = mensaje.Should().StartWith("El comando NO se ejecutó").And.NotContain("no llegó entero");
             _ = mensaje.Should().Contain("no coincidió con el enviado");
-            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.Contain("'base64' que cambia").And.Contain("ssh_reset_shell");
+            _ = mensaje.Should().Contain("segundo plano").And.Contain("BASH_XTRACEFD").And.NotContain("base64").And.Contain("ssh_reset_shell");
             _ = mensaje.Should().NotContainAny(["set +x", "unset -f", "unalias"], "deshacerlo con ssh_exec no se ejecuta: solo sirve ssh_reset_shell");
         }
 

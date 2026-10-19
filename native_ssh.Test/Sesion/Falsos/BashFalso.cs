@@ -801,7 +801,7 @@ namespace NativeSsh.Test.Sesion.Falsos
                 _ = Interlocked.Increment(ref _marcadoresInicializacion);
                 EmitirConMarcador("", ExtraerId(linea), 0, isLecturaUnica: true);
             }
-            else if (linea.Contains("\"$PATH\" | base64", StringComparison.Ordinal))
+            else if (linea.Contains("\"$PATH\" | command base64", StringComparison.Ordinal))
             {
                 // Lo que bash imprime para la línea: el base64 entre los marcadores de la captura, o a secas si la línea
                 // no los pide (formato anterior).

@@ -457,36 +457,18 @@ namespace NativeSsh.Test.Protocolo
             _ = marcadores[2].Salida.Should().Be("B\n");
         }
 
-        // Una función o un alias 'base64' del usuario cambia la decodificación: lo decodificado no termina en el nonce y el
-        // comando no se ejecuta (997; SesionShell.MensajeEnvioIncompleto la nombra entre las causas). Medido aparte: una
-        // función 'eval' da código 0 sin ejecutar nada (preexistente, para la documentación): no llega a este mensaje.
-        [Theory]
-        [InlineData("base64() { :; }")]
-        [InlineData("alias base64=:")]
-        public async Task DecodificacionCambiadaPorElUsuario_NoSeEjecuta(string redefinicion)
-        {
-            // Arrange
-            string testigo = Testigo("cambiada");
-            _ = Comando("shopt -s expand_aliases");
-            _ = Comando(redefinicion);
-            _ = Comando($"touch {testigo}; (exit 5)");
-
-            // Act (cada envío da su marcador: EjecutarAsync lo comprueba)
-            _ = await EjecutarAsync();
-
-            // Assert
-            _ = File.Exists(testigo).Should().BeFalse();
-            _ = _codigos.Should().Equal(0, 0, MarcadorFin.CodigoEnvioIncompleto);
-        }
-
-        // Una función o un alias 'printf' del usuario no cambia la decodificación ni el marcador: el protocolo usa 'command
-        // printf'. Antes, la primera daba 997 y una función que no imprime nada dejaba el comando sin marcador (agotaba su
-        // plazo).
+        // Una función o un alias 'printf', 'base64', 'eval' o 'unset' del usuario no cambia la decodificación ni el marcador:
+        // el protocolo los llama con 'command'. Antes, un 'printf' o un 'base64' que cambiaba lo que imprime daba 997, un
+        // 'printf' que no imprime nada dejaba el comando sin marcador (agotaba su plazo) y un 'eval' vacío daba 0 sin ejecutar.
         [Theory]
         [InlineData("printf() { builtin printf \"$@\"; builtin printf 'QUJD'; }")]
         [InlineData("printf() { :; }")]
         [InlineData("alias printf=:")]
-        public async Task PrintfDelUsuario_NoCambiaLaDecodificacionNiElMarcador(string redefinicion)
+        [InlineData("base64() { :; }")]
+        [InlineData("alias base64=:")]
+        [InlineData("eval() { :; }")]
+        [InlineData("unset() { :; }")]
+        public async Task OrdenesDelUsuario_NoCambianLaDecodificacionNiElMarcador(string redefinicion)
         {
             // Arrange
             string testigo = Testigo("printf");

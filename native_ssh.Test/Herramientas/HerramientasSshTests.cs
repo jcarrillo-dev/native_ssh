@@ -45,7 +45,7 @@ namespace NativeSsh.Test.Herramientas
             comando.Contains("stat -c") ? SimularStat(comando) :
             comando.Contains("pwd -P") ? SimularValidacionCwd(comando) :
             comando.Contains("unset __NS_CWD") ? new("/home/ana\n", 0) :
-            comando.StartsWith("export __NS_CWD=", StringComparison.Ordinal) ? new("", 0) :
+            comando.StartsWith("command export __NS_CWD=", StringComparison.Ordinal) ? new("", 0) :
             comando.Contains("cat -- \"$ruta\" | base64", StringComparison.Ordinal) ? SimularLecturaBase64(comando) :
             comando switch
             {
@@ -1202,7 +1202,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             ConexionFalsa conexion = _fabrica.Ultima!;
             _ = conexion.ShellsAbiertos.Should().Be(2);
-            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"export __NS_CWD=\"$(command printf '%s' '{base64}' | base64 -d)\"; command cd \"${{__NS_CWD:-$HOME}}\"");
+            _ = conexion.CanalActual!.Capturas.Should().ContainSingle().Which.Should().Contain($"command export __NS_CWD=\"$(command printf '%s' '{base64}' | command base64 -d)\"; command cd \"${{__NS_CWD:-$HOME}}\"");
         }
 
         [Fact]
@@ -2053,7 +2053,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = resultado.Should().Be(new ResultadoDirectorioTrabajo("ana@servidor:22", "/var/www/proyecto", "Directorio de trabajo persistente fijado a: /var/www/proyecto"));
-            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("export __NS_CWD='/var/www/proyecto'"));
+            _ = _fabrica.Ultima!.Comandos.Should().Contain(c => c.Contains("command export __NS_CWD='/var/www/proyecto'"));
         }
 
         [Theory]

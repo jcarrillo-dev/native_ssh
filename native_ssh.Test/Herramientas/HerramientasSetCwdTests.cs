@@ -74,9 +74,9 @@ namespace NativeSsh.Test.Herramientas
                 return MarcarDirectorio(comando, directorio);
             }
 
-            return comando.StartsWith("export __NS_CWD='/srv/perdido'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Salir)
-                : comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Colgado)
-                : comando.StartsWith("export __NS_CWD='/srv/export_falla'", StringComparison.Ordinal) ? new("bash: __NS_CWD: variable de sólo lectura\n", 1)
+            return comando.StartsWith("command export __NS_CWD='/srv/perdido'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Salir)
+                : comando.StartsWith("command export __NS_CWD='/srv/colgado'", StringComparison.Ordinal) ? new("", 0, ComportamientoFalsoEnum.Colgado)
+                : comando.StartsWith("command export __NS_CWD='/srv/export_falla'", StringComparison.Ordinal) ? new("bash: __NS_CWD: variable de sólo lectura\n", 1)
                 : comando.Contains("unset __NS_CWD", StringComparison.Ordinal) ? _respuestaVolverAHome
                 : comando == Bloqueo ? new(string.Empty, 0, ComportamientoFalsoEnum.Colgado)
                 : new(string.Empty, 0);
@@ -227,7 +227,7 @@ namespace NativeSsh.Test.Herramientas
 
             // Assert
             _ = error.Message.Should().Be($"La ruta del directorio de trabajo supera 1024 bytes. El directorio de trabajo sigue siendo {Anterior}.");
-            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("export __NS_CWD='/srv/larga", StringComparison.Ordinal));
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("command export __NS_CWD='/srv/larga", StringComparison.Ordinal));
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
 
@@ -240,7 +240,7 @@ namespace NativeSsh.Test.Herramientas
             // Arrange
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
             Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "/srv/colgado");
-            await EsperarEjecutandoAsync("export __NS_CWD='/srv/colgado'");
+            await EsperarEjecutandoAsync("command export __NS_CWD='/srv/colgado'");
 
             // Act
             _ = await _herramientas.DesconectarAsync("servidor");
@@ -263,7 +263,7 @@ namespace NativeSsh.Test.Herramientas
             _respuestaVolverAHome = new(string.Empty, 0, ComportamientoFalsoEnum.Colgado);
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
             Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "");
-            await EsperarEjecutandoAsync("unset __NS_CWD");
+            await EsperarEjecutandoAsync("command unset __NS_CWD");
 
             // Act
             _ = await _herramientas.DesconectarAsync("servidor");
@@ -292,7 +292,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = error.Message.Should().Be($"bash: unset: __NS_CWD: cannot unset: readonly variable El directorio de trabajo sigue siendo {Anterior}.");
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
-            _ = _fabrica.Ultima!.Comandos.Should().Contain("unset __NS_CWD && export __NS_CWD=\"\" && command pwd");
+            _ = _fabrica.Ultima!.Comandos.Should().Contain("command unset __NS_CWD && command export __NS_CWD=\"\" && command pwd");
         }
 
         // La validación falla (la ruta no existe): el error dice también qué directorio sigue (A-undecies, AU3).
@@ -328,7 +328,7 @@ namespace NativeSsh.Test.Herramientas
             _ = error.Message.Should().Contain("(estado: Encolado)")
                 .And.EndWith($"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {Anterior}.")
                 .And.NotContain("puede haber pasado");
-            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("export __NS_CWD='/srv/en_cola'", StringComparison.Ordinal));
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("command export __NS_CWD='/srv/en_cola'", StringComparison.Ordinal));
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
 
@@ -347,7 +347,7 @@ namespace NativeSsh.Test.Herramientas
             // Assert
             _ = error.Message.Should().EndWith($"El comando no llegó a enviarse al shell (seguía en la cola): el directorio de trabajo sigue siendo {Anterior}.")
                 .And.NotContain("puede haber pasado");
-            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("export __NS_CWD='/srv/en_cola'", StringComparison.Ordinal));
+            _ = _fabrica.Ultima!.Comandos.Should().NotContain(c => c.StartsWith("command export __NS_CWD='/srv/en_cola'", StringComparison.Ordinal));
             _ = DirectorioDeLaSesion().Should().Be(Anterior);
         }
 
@@ -360,7 +360,7 @@ namespace NativeSsh.Test.Herramientas
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
             using CancellationTokenSource cancelacion = new();
             Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "/srv/colgado", cancelacion.Token);
-            await EsperarEjecutandoAsync("export __NS_CWD='/srv/colgado'");
+            await EsperarEjecutandoAsync("command export __NS_CWD='/srv/colgado'");
             _gestor.FijarDirectorioTrabajo("servidor", "/srv/otro");
 
             // Act
@@ -416,8 +416,8 @@ namespace NativeSsh.Test.Herramientas
             // Arrange
             _ = await _herramientas.FijarDirectorioAsync("servidor", Anterior);
             Task<ResultadoDirectorioTrabajo> fijar = _herramientas.FijarDirectorioAsync("servidor", "/srv/colgado");
-            await EsperarEjecutandoAsync("export __NS_CWD='/srv/colgado'");
-            Peticion export = _gestor.ListarPeticiones().Single(p => p.Comando.StartsWith("export __NS_CWD='/srv/colgado'", StringComparison.Ordinal));
+            await EsperarEjecutandoAsync("command export __NS_CWD='/srv/colgado'");
+            Peticion export = _gestor.ListarPeticiones().Single(p => p.Comando.StartsWith("command export __NS_CWD='/srv/colgado'", StringComparison.Ordinal));
 
             // Act
             _ = await _herramientas.CancelarAsync(export.IdTexto);
@@ -434,7 +434,7 @@ namespace NativeSsh.Test.Herramientas
         private static Peticion PeticionExport(EstadoPeticionEnum estado, string? aviso, bool isEnviado, bool isEmpezada = true)
         {
             _ = DestinoSsh.TryParse(Destino, "ana", out DestinoSsh destino);
-            Peticion peticion = new(destino, "export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
+            Peticion peticion = new(destino, "command export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
             if (isEmpezada)
                 _ = peticion.TryMarcarEjecutando();
             if (isEnviado)
@@ -565,7 +565,7 @@ namespace NativeSsh.Test.Herramientas
         {
             // Arrange
             _ = DestinoSsh.TryParse(Destino, "ana", out DestinoSsh destino);
-            Peticion peticion = new(destino, "export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
+            Peticion peticion = new(destino, "command export __NS_CWD='/srv/nuevo'", TimeSpan.FromSeconds(10), 1024, TimeProvider.System);
             _ = peticion.TryMarcarEjecutando();
             _ = peticion.SolicitarCancelacion();
 

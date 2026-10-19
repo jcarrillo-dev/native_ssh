@@ -76,9 +76,9 @@ namespace NativeSsh.Protocolo
             Span<byte> cifras = escritor.GetSpan(11);
             _ = longitudBase64.TryFormat(cifras, out int escritasCifras, provider: CultureInfo.InvariantCulture);
             escritor.Advance(escritasCifras);
-            escritor.Write("' ] && { __ns_b=$(command printf '%s' \"$__ns_b\" | base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
+            escritor.Write("' ] && { __ns_b=$(command printf '%s' \"$__ns_b\" | command base64 -d); } 2>/dev/null && __ns_k=${__ns_b%$'\\n"u8);
             EscribirTestigo(nonce, escritor);
-            escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { eval \"$__ns_k\"; __ns_rc=$?; }; unset __ns_b __ns_k; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
+            escritor.Write("'} && command [ \"${#__ns_k}\" -lt \"${#__ns_b}\" ] && { command eval \"$__ns_k\"; __ns_rc=$?; }; command unset __ns_b __ns_k; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write("\n"u8);
         }
@@ -110,6 +110,8 @@ namespace NativeSsh.Protocolo
         // llega junto con otras (EscribirCapturaPath); con el directorio de trabajo aquí, una ruta larga bastaba para colgarla.
         // '-ixon': sin él, un Ctrl+S tecleado con ssh_input detiene la salida del terminal (medido: el marcador no llega y el
         // comando espera hasta su plazo) y Ctrl+Q desaparece de lo tecleado; con él, los dos son caracteres normales.
+        // Sin 'command' en unset, set y stty: la línea corre en el bash recién abierto (solo le llegan las funciones que el
+        // usuario exporte) y cada palabra de más cuenta contra el límite de arriba.
         public static void EscribirLineaInicializacion(Guid id, IBufferWriter<byte> escritor)
         {
             escritor.Write("PS1=; PS2=; PS4=; unset HISTFILE MAILCHECK PROMPT_COMMAND; set +o history +m; stty -echo -onlcr -ixon; __ns_rc=0; command printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
@@ -172,15 +174,15 @@ namespace NativeSsh.Protocolo
         public static void EscribirCapturaPath(Guid id, Guid testigo, Guid centinela, IBufferWriter<byte> escritor, string? directorioTrabajo = null)
         {
             EscribirLineaCentinela(centinela, escritor);
-            escritor.Write("__ns_rc=0; export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; { mesg n || chmod g-w -- \"$(tty)\"; } 2>/dev/null; "u8);
+            escritor.Write("__ns_rc=0; command export TERM=dumb PAGER=cat GIT_PAGER=cat SYSTEMD_PAGER=cat MANPAGER=cat; { command mesg n || command chmod g-w -- \"$(command tty)\"; } 2>/dev/null; "u8);
             if (!string.IsNullOrEmpty(directorioTrabajo))
             {
-                escritor.Write("export __NS_CWD=\"$(command printf '%s' '"u8);
+                escritor.Write("command export __NS_CWD=\"$(command printf '%s' '"u8);
                 EscribirBase64(directorioTrabajo, escritor);
-                escritor.Write("' | base64 -d)\"; "u8);
+                escritor.Write("' | command base64 -d)\"; "u8);
             }
 
-            escritor.Write("command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; eval \"declare -r -a "u8);
+            escritor.Write("command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; command eval \"declare -r -a "u8);
             escritor.Write(VariableTestigoUtf8);
             escritor.Write("=('"u8);
             EscribirTestigo(testigo, escritor);
@@ -192,7 +194,7 @@ namespace NativeSsh.Protocolo
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("' \"$$\" \"$PPID\"; command printf '%s_%s_\\n' '__NSP' '"u8);
             MarcadorFin.EscribirId(id, escritor);
-            escritor.Write("'; command printf '%s' \"$PATH\" | base64 | tr -d '\\n'; command printf '\\n%s_%s_\\n' '__NSQ' '"u8);
+            escritor.Write("'; command printf '%s' \"$PATH\" | command base64 | command tr -d '\\n'; command printf '\\n%s_%s_\\n' '__NSQ' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             escritor.Write("'; "u8);
             EscribirCola(id, centinela, escritor);
@@ -217,7 +219,7 @@ namespace NativeSsh.Protocolo
         public static void EscribirRecuperacion(Guid id, Guid centinela, IBufferWriter<byte> escritor, IdentidadShell? identidad = null)
         {
             EscribirPrefijoCentinela(centinela, escritor);
-            escritor.Write("__ns_rc=130; unset __ns_b __ns_k __ns_d; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
+            escritor.Write("__ns_rc=130; command unset __ns_b __ns_k __ns_d; command cd \"${__NS_CWD:-$HOME}\" 2>/dev/null || command cd ~; "u8);
             EscribirCola(id, centinela, escritor, identidad);
             escritor.Write(" #"u8);
             EscribirTestigo(centinela, escritor);
@@ -312,9 +314,9 @@ namespace NativeSsh.Protocolo
             escritor.Write("command printf '%s_%s_%d%s__\\n' '__NSX' '"u8);
             MarcadorFin.EscribirId(id, escritor);
             // 1000 = MaxEofSeguidos; 129 = CodigoSalidaTopeEof; 999999 = MarcadorFin.MaxLineasDescartadas.
-            escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; unset __ns_rc; __ns_n=; __ns_c=0; __ns_v=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { TMOUT= IFS= command read -r __ns_d; __ns_s=$?; { command [ \"$__ns_s\" -ne 1 ] && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ] || command exit 129; }; do __ns_x=${__ns_d%'#"u8);
+            escritor.Write("' \"${__ns_rc-997}\" \"${__ns_n:+_$__ns_n}\"; command unset __ns_rc; __ns_n=; __ns_c=0; __ns_v=0; __ns_e=0; __ns_f=0; while command [ \"$__ns_f\" -eq 0 ] && { TMOUT= IFS= command read -r __ns_d; __ns_s=$?; { command [ \"$__ns_s\" -ne 1 ] && __ns_e=0; } || command [ \"$((__ns_e+=1))\" -lt 1000 ] || command exit 129; }; do __ns_x=${__ns_d%'#"u8);
             EscribirTestigo(centinela, escritor);
-            escritor.Write("'}; __ns_f=$(( ${#__ns_x} < ${#__ns_d} )); __ns_g=$(( __ns_f == 0 && __ns_s <= 128 )); __ns_c=$(( __ns_c + __ns_g * (__ns_v + (${#__ns_d} > 0)) )); __ns_c=$(( __ns_c < 999999 ? __ns_c : 999999 )); __ns_v=$(( __ns_g ? ${#__ns_d} == 0 : __ns_v * (__ns_s > 128) )); __ns_d=; __ns_x=; done 2>/dev/null; __ns_n=${__ns_c#0}; unset __ns_d __ns_x __ns_c __ns_e __ns_f __ns_g __ns_s __ns_v"u8);
+            escritor.Write("'}; __ns_f=$(( ${#__ns_x} < ${#__ns_d} )); __ns_g=$(( __ns_f == 0 && __ns_s <= 128 )); __ns_c=$(( __ns_c + __ns_g * (__ns_v + (${#__ns_d} > 0)) )); __ns_c=$(( __ns_c < 999999 ? __ns_c : 999999 )); __ns_v=$(( __ns_g ? ${#__ns_d} == 0 : __ns_v * (__ns_s > 128) )); __ns_d=; __ns_x=; done 2>/dev/null; __ns_n=${__ns_c#0}; command unset __ns_d __ns_x __ns_c __ns_e __ns_f __ns_g __ns_s __ns_v"u8);
         }
     }
 }

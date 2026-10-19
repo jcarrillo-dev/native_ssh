@@ -59,11 +59,11 @@ namespace NativeSsh.Herramientas
         internal static readonly string DefinicionSinAcceso = """
             sin_acceso() {
               local ruta=$1 saltos=${2:-0} pedida=${3:-$1} padre destino bloqueo
-              [ "$saltos" -gt 40 ] && return 1
-              [ -e "$ruta" ] && return 1
-              padre=$(dirname -- "$ruta"; command printf x); padre=${padre%x}; padre=${padre%$'\n'}
-              if [ -L "$ruta" ]; then
-                destino=$(readlink -- "$ruta"; command printf x); destino=${destino%x}; destino=${destino%$'\n'}
+              command [ "$saltos" -gt 40 ] && return 1
+              command [ -e "$ruta" ] && return 1
+              padre=$(command dirname -- "$ruta"; command printf x); padre=${padre%x}; padre=${padre%$'\n'}
+              if command [ -L "$ruta" ]; then
+                destino=$(command readlink -- "$ruta"; command printf x); destino=${destino%x}; destino=${destino%$'\n'}
                 case $destino in
                   /*) ;;
                   *) destino=$padre/$destino ;;
@@ -71,10 +71,10 @@ namespace NativeSsh.Herramientas
                 sin_acceso "$destino" $(( saltos + 1 )) "$pedida"
                 return
               fi
-              [ "$padre" = "$ruta" ] && return 1
-              if [ -d "$padre" ]; then
-                [ -x "$padre" ] && return 1
-                bloqueo=$(readlink -f -- "$padre" 2>/dev/null; command printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
+              command [ "$padre" = "$ruta" ] && return 1
+              if command [ -d "$padre" ]; then
+                command [ -x "$padre" ] && return 1
+                bloqueo=$(command readlink -f -- "$padre" 2>/dev/null; command printf x); bloqueo=${bloqueo%x}; bloqueo=${bloqueo%$'\n'}
                 command printf 'Error: sin permiso para acceder a la ruta: %s (el directorio %s no se puede atravesar).\n' "$pedida" "${bloqueo:-$padre}" >&2
                 return 0
               fi
@@ -1997,7 +1997,7 @@ namespace NativeSsh.Herramientas
             {
                 // Con '&&': si 'unset' falla (p. ej. __NS_CWD de solo lectura), el shell sigue en el anterior y el código
                 // no es el de 'pwd' (A-undecies, AU2).
-                const string ComandoReset = "unset __NS_CWD && export __NS_CWD=\"\" && command pwd";
+                const string ComandoReset = "command unset __NS_CWD && command export __NS_CWD=\"\" && command pwd";
                 Peticion peticionReset = await EjecutarHerramientaAsync(destino, ComandoReset, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", DirectorioHome), Guid.NewGuid(), TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion), cancellationToken).ConfigureAwait(false);
                 ExigirCompletada(peticionReset, p => ConsecuenciaCwd(clave, sesionInicial, guardado, p, DirectorioHome, claveSesion));
 
@@ -2020,21 +2020,21 @@ namespace NativeSsh.Herramientas
                 (
                 {{DefinicionSinAcceso}}
                 ruta={{Escapar(ruta)}}
-                if [ ! -e "$ruta" ]; then
+                if command [ ! -e "$ruta" ]; then
                   sin_acceso "$ruta" || command printf 'Error: la ruta no existe: %s\n' "$ruta" >&2
-                  exit 1
+                  command exit 1
                 fi
-                if [ ! -d "$ruta" ]; then
+                if command [ ! -d "$ruta" ]; then
                   command printf 'Error: la ruta no es un directorio: %s\n' "$ruta" >&2
-                  exit 1
+                  command exit 1
                 fi
-                if [ ! -x "$ruta" ]; then
+                if command [ ! -x "$ruta" ]; then
                   command printf 'Error: sin permiso para entrar en el directorio: %s\n' "$ruta" >&2
-                  exit 1
+                  command exit 1
                 fi
-                command cd -- "$ruta" || exit 1
+                command cd -- "$ruta" || command exit 1
                 {{SustitucionLiteral("real", "command pwd -P")}}
-                command printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(command printf '%s' "$real" | base64 | tr -d '\n')"
+                command printf '{{PrefijoMarcaDirectorio}}%s__ %s\n' {{idMarca}} "$(command printf '%s' "$real" | command base64 | command tr -d '\n')"
                 )
                 """);
 
@@ -2055,7 +2055,7 @@ namespace NativeSsh.Herramientas
 
             // La sesión que validó: si al fallar el export ya hay otra, la primera se cerró entre medias.
             SesionShell? sesionValidacion = SesionDe(claveSesion);
-            string comandoExport = $"export __NS_CWD={Escapar(pwdReal)}";
+            string comandoExport = $"command export __NS_CWD={Escapar(pwdReal)}";
             Peticion peticionExport = await EjecutarHerramientaAsync(destino, comandoExport, "ssh_set_cwd", DescribirHerramienta("ssh_set_cwd", ruta, "export"), grupo, TimeoutMetadatosSegundos, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion), cancellationToken).ConfigureAwait(false);
             ExigirCompletada(peticionExport, p => ConsecuenciaCwd(clave, sesionValidacion, guardado, p, pwdReal, claveSesion));
 

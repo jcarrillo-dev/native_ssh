@@ -52,7 +52,7 @@ namespace NativeSsh.Test.Integracion
 
         private static async Task<string> PwdDelShellAsync(HerramientasSsh herramientas, string destino)
         {
-            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "printf '%s' \"$PWD\" | base64 -w0", 30, 30).ComoComando();
+            ResultadoComando resultado = await herramientas.EjecutarAsync(destino, "printf '%s' \"$PWD\" | command base64 -w0", 30, 30).ComoComando();
             _ = resultado.Estado.Should().Be(EstadoPeticionEnum.Completado, resultado.Aviso);
             return Encoding.UTF8.GetString(Convert.FromBase64String(resultado.Salida.Trim()));
         }
@@ -152,6 +152,66 @@ namespace NativeSsh.Test.Integracion
 
                 // Assert
                 _ = error.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain($"sin permiso para acceder a la ruta: {sub}");
+            }
+            finally
+            {
+                File.SetUnixFileMode(bloqueado, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+
+        // Órdenes que ssh_set_cwd ejecuta en el shell de la sesión (export, unset, '[', base64, tr): una función del usuario con
+        // ese nombre no hace que C# y el shell difieran. Antes, con 'export() { :; }', respondía «fijado a X» y el shell seguía
+        // en $HOME; con un 'tr' que imprime otra ruta, fijaba esa otra; con '[' que devuelve 1, la validación fallaba.
+        [Theory]
+        [InlineData("export() { :; }")]
+        [InlineData("unset() { :; }")]
+        [InlineData("tr() { builtin printf '%s' L3RtcA==; }")]
+        [InlineData("base64() { builtin printf '%s' L3RtcA==; }")]
+        [InlineData("[() { return 1; }")]
+        [InlineData("eval() { :; }")]
+        public async Task OrdenesDelShellRedefinidas_SetCwdYElShellCoinciden(string definicion)
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string x = Directory.CreateDirectory(Path.Combine(_directorio, "ordenes")).FullName;
+            ResultadoComando define = await herramientas.EjecutarAsync(destino, definicion + "; true", 30, 30).ComoComando();
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+
+            // Act
+            ResultadoDirectorioTrabajo fijado = await herramientas.FijarDirectorioAsync(destino, x);
+            string pwdFijado = await PwdDelShellAsync(herramientas, destino);
+            ResultadoDirectorioTrabajo enHome = await herramientas.FijarDirectorioAsync(destino, "");
+            string pwdHome = await PwdDelShellAsync(herramientas, destino);
+
+            // Assert
+            _ = fijado.Directorio.Should().Be(x);
+            _ = pwdFijado.Should().Be(x);
+            _ = enHome.Directorio.Should().BeNull();
+            _ = pwdHome.Should().Be(Environment.GetEnvironmentVariable("HOME"));
+            _ = DirectorioDeLaSesion(destino).Should().BeNull();
+        }
+
+        // Con 'dirname' o 'readlink' del usuario, el error de una ruta bajo un directorio no atravesable sigue nombrándolo.
+        [Theory]
+        [InlineData("dirname() { builtin echo /; }")]
+        [InlineData("readlink() { builtin echo /; }")]
+        public async Task DirnameOReadlinkDelUsuario_ElErrorDeDirectorioNoAtravesableEsCorrecto(string definicion)
+        {
+            // Arrange
+            (HerramientasSsh herramientas, string destino) = Crear();
+            string bloqueado = Directory.CreateDirectory(Path.Combine(_directorio, "bloq_dn")).FullName;
+            string sub = Directory.CreateDirectory(Path.Combine(bloqueado, "sub")).FullName;
+            File.SetUnixFileMode(bloqueado, UnixFileMode.UserRead);
+            ResultadoComando define = await herramientas.EjecutarAsync(destino, definicion + "; true", 30, 30).ComoComando();
+            _ = define.Estado.Should().Be(EstadoPeticionEnum.Completado, define.Aviso);
+
+            try
+            {
+                // Act
+                Exception? error = await Record.ExceptionAsync(() => herramientas.FijarDirectorioAsync(destino, sub));
+
+                // Assert
+                _ = error.Should().BeOfType<NativeSshException>().Which.Message.Should().Contain($"sin permiso para acceder a la ruta: {sub} (el directorio {bloqueado} no se puede atravesar)");
             }
             finally
             {

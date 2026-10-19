@@ -287,7 +287,8 @@ namespace NativeSsh.Test.Integracion
         }
 
         // (M07) La herramienta de archivo cuya petición trae el aviso no termina: su error lo da (con el id de la petición).
-        // Una función '[' del usuario deja colgada la validación de ssh_set_cwd.
+        // Una función 'local' del usuario deja colgada la validación de ssh_set_cwd de una ruta que no existe (sin_acceso
+        // llama a local sin 'command'; '[' ya va con él).
         [Fact]
         public async Task HerramientaQueNoTermina_SuErrorDaElAviso()
         {
@@ -295,7 +296,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            _ = await h.EjecutarAsync(destino, "[() { sleep 30; }", esperarSegundos: 15).ComoComando();
+            _ = await h.EjecutarAsync(destino, "local() { sleep 30; }", esperarSegundos: 15).ComoComando();
             ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0).ComoComando();
             await Task.Delay(300);
             _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0).ComoComando();
@@ -303,9 +304,9 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh corta = new(_gestor!, _sshd.Sshd.Opciones()) { TimeoutForzado = TimeSpan.FromSeconds(2) };
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, _testigos))
+            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, Path.Combine(_testigos, "no_existe")))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f [; echo siguiente", esperarSegundos: 15).ComoComando();
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f local; echo siguiente", esperarSegundos: 15).ComoComando();
 
             // Assert
             salida.WriteLine($"error '{error.Message}'; siguiente '{siguiente.Aviso}'");
@@ -324,7 +325,7 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh h = Herramientas();
             string destino = _sshd.Sshd.Destino.Clave;
             await CalentarAsync(h, destino);
-            _ = await h.EjecutarAsync(destino, "[() { sleep 30; }", esperarSegundos: 15).ComoComando();
+            _ = await h.EjecutarAsync(destino, "local() { sleep 30; }", esperarSegundos: 15).ComoComando();
             ResultadoComando lento = await h.EjecutarAsync(destino, "sleep 1", esperarSegundos: 0).ComoComando();
             await Task.Delay(300);
             _ = await h.EnviarEntradaAsync(lento.Id, "uno\ndos", esperarSegundos: 0).ComoComando();
@@ -336,9 +337,9 @@ namespace NativeSsh.Test.Integracion
             HerramientasSsh corta = new(_gestor!, _sshd.Sshd.Opciones()) { TimeoutForzado = TimeSpan.FromSeconds(2) };
 
             // Act
-            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, _testigos))
+            NativeSshException error = (await FluentActions.Awaiting(() => corta.FijarDirectorioAsync(destino, Path.Combine(_testigos, "no_existe")))
                 .Should().ThrowAsync<NativeSshException>()).Which;
-            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f [; echo siguiente", esperarSegundos: 15).ComoComando();
+            ResultadoComando siguiente = await h.EjecutarAsync(destino, "unset -f local; echo siguiente", esperarSegundos: 15).ComoComando();
             ResultadoComando otro = await h.EjecutarAsync(destino, "echo otro", esperarSegundos: 15).ComoComando();
 
             // Assert
@@ -706,12 +707,10 @@ namespace NativeSsh.Test.Integracion
             _ = entrada.Salida.Should().Contain("longitud:20").And.Contain("eco:*").And.NotContain(canario);
             _ = siguiente.Aviso.Should().BeNull("el comando leyó toda la entrada");
         }
-        // Un alias o una función 'base64' que cambia lo que imprime, o 'set -x' con BASH_XTRACEFD en la salida
+        // 'set -x' con BASH_XTRACEFD en la salida
         // estándar: ningún comando se ejecuta (997), tampoco el que intenta deshacerlo (unalias, unset -f, set +x; medido en
         // la revisión del tramo 1-septies). El mensaje no lo propone como remedio: remite a ssh_reset_shell, que sí lo arregla.
         [Theory]
-        [InlineData("alias base64='echo QUJD | command base64'", "unalias base64")]
-        [InlineData("base64() { command base64 \"$@\"; command printf 'QUJD'; }", "unset -f base64")]
         [InlineData("BASH_XTRACEFD=1; set -x", "set +x")]
         public async Task EnvioQueNoCoincide_ElRemedioQueProponeElMensajeFunciona(string preparacion, string deshacer)
         {
