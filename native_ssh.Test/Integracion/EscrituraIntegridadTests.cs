@@ -144,6 +144,32 @@ namespace NativeSsh.Test.Integracion
             _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Original);
         }
 
+        // Lo que se expande en el shell de la sesión antes de entrar en bash --posix (los permisos de un archivo nuevo por la
+        // umask) usa 'command printf', 'command umask' y 'command set': una función, un alias o una función exportada con esos
+        // nombres no cambian nada. Antes, con un printf del usuario, crear un archivo fallaba con «chmod: modo inválido: «»»,
+        // y con 'umask() { echo 0; }' el archivo nuevo quedaba 0666.
+        [Theory]
+        [InlineData("printf() { :; }", "unset -f printf")]
+        [InlineData("shopt -s expand_aliases; alias printf=:", "unalias printf")]
+        [InlineData("printf() { :; }; export -f printf", "unset -f printf; export -n printf")]
+        [InlineData("umask() { echo 0; }", "unset -f umask")]
+        [InlineData("set() { :; }", "unset -f set")]
+        public async Task CrearArchivo_ConFuncionesDelUsuario_NoCambianNada(string preparar, string deshacer)
+        {
+            // Arrange
+            string archivo = Path.Combine(_directorio, $"nuevo_{Guid.NewGuid():N}.txt");
+            await ExecAsync($"umask 022; {preparar}; true");
+
+            // Act
+            (bool isError, string respuesta) = await _cliente!.LlamarAsync("ssh_write_file", new JsonObject { ["destino"] = Destino, ["ruta"] = archivo, ["contenido"] = Nuevo });
+            await ExecAsync($"{deshacer}; true");
+
+            // Assert
+            _ = isError.Should().BeFalse(respuesta);
+            _ = (await File.ReadAllTextAsync(archivo)).Should().Be(Nuevo);
+            _ = File.GetUnixFileMode(archivo).Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
         // Opciones del shell de la sesión exportadas en SHELLOPTS y BASHOPTS (noclobber, xtrace con un PS4 que ejecuta algo,
         // failglob) no pasan al script: la escritura sale bien y el PS4 no se ejecuta en el script ($0 = ns; en el shell de la
         // sesión sí, que es del usuario).

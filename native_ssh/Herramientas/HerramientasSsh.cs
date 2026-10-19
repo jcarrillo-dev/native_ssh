@@ -2563,7 +2563,7 @@ namespace NativeSsh.Herramientas
                 {{colocar}}
                 """);
             // La umask se toma del shell del usuario: bajo sudo sería la unión con la de sudoers.
-            const string ModoPorUmask = "\"$(printf '%o' $(( 0666 & ~0$(umask) )))\"";
+            const string ModoPorUmask = "\"$(command printf '%o' $(( 0666 & ~0$(command umask) )))\"";
             string huella = contenidoLeido is null
                 ? "'' ''"
                 : $"{Convert.ToHexStringLower(SHA256.HashData(contenidoLeido))} '{CksumPosix.Calcular(contenidoLeido).ToString(CultureInfo.InvariantCulture)} {contenidoLeido.Length.ToString(CultureInfo.InvariantCulture)}'";
@@ -2962,7 +2962,7 @@ namespace NativeSsh.Herramientas
             return PlantillaBash.Crear($$"""
                 (
                 command cd "${__NS_CWD:-$HOME}" 2>/dev/null || command cd ~
-                set -o pipefail
+                command set -o pipefail
                 {{entrada}}{{programa}} -c {{Escapar(PrologoSinFunciones.ReplaceLineEndings("\n") + script)}} ns {{argumentos}}
                 )
                 """);
