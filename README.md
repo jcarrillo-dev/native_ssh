@@ -1,8 +1,86 @@
 # native_ssh
 
-Servidor MCP (*Model Context Protocol*) en .NET 10 compilado con Native AOT para trabajar en servidores Linux por SSH: un shell bash persistente por destino para los comandos y las escrituras, y canales `exec` aparte para las lecturas. Transporte stdio o HTTP (Streamable HTTP). El cliente SSH es la biblioteca SSH.NET, compilada desde el submódulo `externo/SSH.NET`, un fork propio no publicado (ver «Compilar y publicar» y «Limitaciones conocidas»); no hace falta el cliente `ssh` de OpenSSH, aunque si está instalado se usa para leer su configuración.
+Servidor MCP (*Model Context Protocol*) en .NET 10 compilado con Native AOT para trabajar en servidores Linux por SSH: un shell bash persistente por destino para los comandos y las escrituras, y canales `exec` aparte para las lecturas. Transporte stdio o HTTP (Streamable HTTP). El cliente SSH es la biblioteca SSH.NET, compilada desde el submódulo `externo/SSH.NET`, un fork propio publicado en [jcarrillo-dev/SSH.NET](https://github.com/jcarrillo-dev/SSH.NET) (ver [«Por qué un fork de SSH.NET»](#por-qué-un-fork-de-sshnet)); no hace falta el cliente `ssh` de OpenSSH, aunque si está instalado se usa para leer su configuración.
 
 native_ssh corre en Linux y en Windows (ver «native_ssh en Windows»); el modo HTTP, solo en Linux y macOS. Los destinos son servidores Linux con bash: un servidor Windows como destino no está soportado y se rechaza con un mensaje que lo dice (ver «Requisitos del servidor remoto»).
+
+## Cómo se ha hecho este proyecto
+
+El código de native_ssh está escrito con IA. La arquitectura, las decisiones de diseño y de seguridad y la revisión son humanas: cada cambio se decide, se revisa y se prueba (la suite pasa de 3000 pruebas en Linux, más contenedores y máquinas virtuales) antes de entrar.
+
+Es distinto de las bibliotecas [JCarrillo.AOT.*](https://github.com/jcarrillo-dev/JCarrillo.AOT.Core), donde el código lo escribe el autor. native_ssh es una herramienta: existe para facilitar el mantenimiento y el despliegue diarios de servidores asistidos por IA, y se publica por si le sirve a alguien más.
+
+## Plataformas probadas
+
+native_ssh está pensado para servidores Linux con bash.
+
+**native_ssh como cliente** (la máquina donde corre el MCP):
+- **Linux:** Arch (CachyOS) y contenedores Debian 13.
+- **Windows:** Windows 11 y Windows Server 2025, con el cliente OpenSSH del sistema y también con Git for Windows (bash y su ssh) instalado, en los dos órdenes del `PATH`. Tiene sus particularidades: ver [«native_ssh en Windows»](#7-native_ssh-en-windows).
+- **macOS:** nunca se ha ejecutado, porque no hay hardware para probarlo; solo se comprueba que compila (`osx-arm64`). Puede tener fallos y no hay paquete.
+
+**Servidores destino:** Debian (contenedores y un servidor Debian 13), Ubuntu, Alpine (busybox) y Arch.
+
+**Servidores Windows como destino:** aún no están soportados, tengan el shell que tengan (cmd, PowerShell o Git Bash): native_ssh los detecta y falla rápido sin ejecutar nada (ver [«Windows como destino: no soportado»](#windows-como-destino-no-soportado)). Está previsto para una versión futura (ver [«Hoja de ruta»](#14-hoja-de-ruta)).
+
+## Descargas
+
+Cada versión se publica en [Releases](https://github.com/jcarrillo-dev/native_ssh/releases) con seis paquetes, compilados por el workflow `.github/workflows/release.yml` al crear la etiqueta:
+
+| Sistema | Normal (x86-64 base) | x86-64-v3 | x86-64-v4 |
+|---|---|---|---|
+| Linux x64 (glibc 2.34 o posterior) | `native_ssh-X.Y.Z-linux-x64.tar.gz` | `…-linux-x64-v3.tar.gz` | `…-linux-x64-v4.tar.gz` |
+| Windows x64 | `native_ssh-X.Y.Z-win-x64.zip` | `…-win-x64-v3.zip` | `…-win-x64-v4.zip` |
+
+Cada paquete lleva el binario, la skill (`skill-native-ssh/`), un `README.md` con la instalación y el registro en el cliente MCP paso a paso, `LICENSE` y `THIRD-PARTY-NOTICES.md`.
+
+**Cómo elegir.** Las tres variantes son el mismo programa; solo cambia el juego de instrucciones de la CPU para el que se compiló:
+- **normal:** cualquier CPU x64 y cualquier máquina virtual. Es el de reserva y, ante la duda, el que conviene.
+- **`-v3`:** AVX2, BMI1, BMI2, FMA, LZCNT, MOVBE y F16C: Intel desde Haswell (2013), AMD desde Excavator y todos los Zen.
+- **`-v4`:** lo de v3 más AVX-512 (F, BW, CD, DQ y VL): AMD desde Zen 4 e Intel con AVX-512 (Xeon desde Skylake-SP, Ice Lake, Tiger Lake, Rocket Lake…; no los Core de 12.ª a 14.ª generación, que lo traen desactivado).
+
+La ganancia de v3 y v4 es pequeña, porque native_ssh pasa casi todo el tiempo esperando a la red. En Linux, `/lib64/ld-linux-x86-64.so.2 --help | grep -E 'x86-64-v[34]'` dice qué niveles admite la CPU (`supported`). En cualquier sistema, basta con probar `NativeSsh --version`: si arranca, vale.
+
+**Si la CPU no tiene las instrucciones**, el binario termina nada más arrancar (en Linux con SIGABRT, código 134; en Windows con `0xC0000602`) y escribe:
+
+```
+The required instruction sets are not supported by the current CPU.
+```
+
+En el cliente MCP solo se ve que el servidor no conecta. Se arregla cambiándolo por el de un nivel inferior, con la misma configuración. Las notas de cada Release dicen qué variantes se ejecutaron en el humo del runner y cuáles solo se compilaron, porque la CPU del runner no tenía sus instrucciones.
+
+**Verificar la descarga.** Cada Release trae `SHA256SUMS` y una atestación de procedencia de GitHub (qué workflow y qué commit produjeron cada paquete):
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+gh attestation verify native_ssh-X.Y.Z-linux-x64.tar.gz --repo jcarrillo-dev/native_ssh
+```
+
+En Windows, `Get-FileHash -Algorithm SHA256 .\native_ssh-X.Y.Z-win-x64.zip` da el hash que hay que comparar con su línea de `SHA256SUMS`; `gh attestation verify` funciona igual.
+
+### Compilar para tu CPU
+
+Desde el código fuente (ver [«Compilar y publicar»](#compilar-y-publicar)) se puede compilar para las instrucciones exactas de la CPU de la máquina que compila:
+
+```bash
+dotnet publish native_ssh/native_ssh.csproj -c Release -r linux-x64 -p:IlcInstructionSet=native -o artefactos
+```
+
+(en Windows, `-r win-x64`). **Ese binario solo sirve en esa CPU o en otra que tenga todas sus instrucciones**; en cualquier otra aborta al arrancar con «The required instruction sets are not supported by the current CPU.». No lo repartas a otras máquinas: para eso están los paquetes normal, `-v3` y `-v4`.
+
+## Instalar la skill
+
+La carpeta [`skill/native-ssh/`](skill/native-ssh/SKILL.md) es una skill que enseña al modelo a combinar las herramientas: qué lanzar en paralelo, cómo tratar salidas grandes, cómo esperar y qué hacer ante los rechazos. No sustituye a las descripciones de las herramientas, que siguen siendo su contrato. Los paquetes de las Releases la llevan como `skill-native-ssh/`.
+
+- **Claude Code:** cópiala como `native-ssh` en la carpeta de skills del usuario o de un proyecto:
+  ```bash
+  cp -r skill/native-ssh ~/.claude/skills/native-ssh        # para todos los proyectos
+  cp -r skill/native-ssh .claude/skills/native-ssh          # solo para un proyecto
+  ```
+- **Gemini CLI:** `gemini skills install ./skill/native-ssh` (con `--scope workspace`, solo para el proyecto actual), o directamente desde el repositorio: `gemini skills install https://github.com/jcarrillo-dev/native_ssh.git --path skill/native-ssh`.
+- **agy:** `cp -r skill/native-ssh ~/.gemini/config/skills/native-ssh`.
+
+Después, reinicia el cliente o abre una sesión nueva para que la descubra.
 
 ---
 
@@ -472,16 +550,34 @@ native_ssh se compila y se prueba también para Windows (x64). Diferencias con L
 
 Requisitos: SDK de .NET 10 y el submódulo `externo/SSH.NET` inicializado. Para Native AOT en Linux, `clang` y las bibliotecas de desarrollo que pide .NET (`zlib`).
 
-**El submódulo es un fork propio de SSH.NET** (rama `native-ssh-ws`) que **no está publicado**: `.gitmodules` apunta al repositorio oficial, que no tiene ese commit, así que `git submodule update --init` contra ese `.gitmodules` falla. Lleva, sobre el SSH.NET oficial, unas diez correcciones de cierre de canales y sesiones, la regla de *strict-kex* solo en el intercambio inicial, cancelación durante el handshake, exec con pseudoterminal, fallo inmediato cuando el servidor rechaza una petición `exec` y una excepción propia cuando rechaza la apertura de un canal. Con un bundle de git de ese fork, el submódulo se inicializa apuntando su URL al bundle (`protocol.file.allow=always` porque es un fichero local):
+**El submódulo es un fork propio de SSH.NET**, publicado en [jcarrillo-dev/SSH.NET](https://github.com/jcarrillo-dev/SSH.NET) (rama `native-ssh-ws`; ver [«Por qué un fork de SSH.NET»](#por-qué-un-fork-de-sshnet)). `.gitmodules` apunta a él, así que basta con clonar con `--recurse-submodules` o inicializar el submódulo después. Necesita la historia completa del submódulo (no un clon superficial), porque SSH.NET calcula su versión con Nerdbank.GitVersioning a partir de ella. El SDK está fijado en `global.json` (10.0.201 o una banda posterior de 10.0).
 
 ```bash
-git config submodule.externo/SSH.NET.url /ruta/al/sshnet-native-ssh.bundle
-git -c protocol.file.allow=always submodule update --init
+git clone --recurse-submodules https://github.com/jcarrillo-dev/native_ssh.git
+cd native_ssh
+# o, en un clon ya hecho: git submodule update --init
 dotnet build native_ssh.slnx
 dotnet publish native_ssh/native_ssh.csproj -c Release -r linux-x64 -o artefactos
 ```
 
 `artefactos/NativeSsh` es el binario (unos 23 MB). Para Windows, `-r win-x64` (en una máquina Windows: Native AOT no compila de un sistema a otro). El build trata las advertencias como errores, comprueba el estilo del `.editorconfig` y falla si el ensamblado de un proyecto que no es de pruebas usa `System.Linq` (ver «Estándar de código»).
+
+### Por qué un fork de SSH.NET
+
+El fork no busca quitarle mérito a [SSH.NET](https://github.com/sshnet/SSH.NET): es la base que hizo posible native_ssh, que gracias a ella no tuvo que escribir un cliente SSH desde cero.
+
+Existe porque native_ssh usa la biblioteca de una forma poco habitual, que lleva a casos límite que un uso típico (conectar, ejecutar y desconectar) casi nunca toca: sesiones persistentes durante horas, muchos canales abiertos y cerrados en paralelo, cancelaciones frecuentes a mitad de operación, renegociación de claves bajo carga y servidores mínimos.
+
+Lo que corrige o añade el fork sobre SSH.NET 2026.0.0 (rama `native-ssh-ws`, con una prueba por cambio):
+- **Renegociación de claves:** la regla estricta de *strict-kex* solo en el intercambio inicial, como dice la especificación de OpenSSH (OpenSSH manda `SSH_MSG_IGNORE` al renegociar y SSH.NET cortaba la conexión); y no enviar mensajes que no sean del intercambio de claves una vez empezada una renegociación.
+- **Cierre de canales:** nada después de `SSH_MSG_CHANNEL_CLOSE` (ni mensajes ni datos); dejar de esperar la ventana remota cuando el canal está cerrado; cerrar un canal cuya apertura se confirma después de que `Open` dejara de esperar; conservar el cupo de canales de la sesión hasta que el servidor cierra el canal.
+- **Cierres que no se bloquean:** `Session.Dispose` no se queda esperando un envío que el servidor no acepta, el mensaje de desconexión se envía con un plazo, el canal se cierra fuera del cerrojo de `ShellStream` en `Dispose`, y `ShellStream` se cierra cuando se pierde la sesión.
+- **Cancelación y rechazos:** `ConnectAsync` atiende su cancelación durante el *handshake*; una petición `exec` rechazada falla al momento (antes se esperaba indefinidamente), con excepciones propias para el `exec` rechazado y para un canal que no se pudo abrir.
+- **`exec` con pseudoterminal.**
+
+Para la próxima versión, el fork tiene además SFTP sobre la sesión de un cliente ya conectado y una excepción propia para un subsistema rechazado (rama `native-ssh-trans`, aún no publicada).
+
+Estas correcciones se propondrán a SSH.NET, para que entren en el paquete oficial y el fork deje de ser necesario mientras native_ssh use SSH.NET (ver [«Hoja de ruta»](#14-hoja-de-ruta)).
 
 ### Suite de pruebas
 
@@ -615,7 +711,7 @@ No deben aplicarse correcciones automáticas globales de `dotnet format` para `I
 
 **De SSH.NET**
 
-- Renegociación de claves con *strict-kex*: SSH.NET 2026.0.0 aplica la regla estricta («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, §1.9, que remite al borrador `draft-miller-sshm-strict-kex`) la limita al intercambio inicial; OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar y SSH.NET cortaba la conexión (medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s). native_ssh compila SSH.NET desde el submódulo `externo/SSH.NET`, un fork propio no publicado que lo corrige (la regla estricta solo en el intercambio inicial). Es una limitación del paquete NuGet de SSH.NET mientras la corrección no llegue al proyecto original.
+- Renegociación de claves con *strict-kex*: SSH.NET 2026.0.0 aplica la regla estricta («cortar ante cualquier mensaje inesperado») también a las renegociaciones, aunque la especificación de OpenSSH (`PROTOCOL`, §1.9, que remite al borrador `draft-miller-sshm-strict-kex`) la limita al intercambio inicial; OpenSSH 10.5 envía `SSH_MSG_IGNORE` entre `KEXINIT` y `NEWKEYS` al renegociar y SSH.NET cortaba la conexión (medido con `RekeyLimit 64K 2s`: 25 cortes en 56 renegociaciones en 60 s). native_ssh compila SSH.NET desde el submódulo `externo/SSH.NET`, un fork propio que lo corrige (la regla estricta solo en el intercambio inicial; ver «Por qué un fork de SSH.NET»). Es una limitación del paquete NuGet de SSH.NET mientras la corrección no llegue al proyecto original.
 - El submódulo también falla al momento cuando el servidor rechaza una petición `exec` (el paquete esperaba indefinidamente).
 - Queda una carrera residual de SSH.NET en el canal del shell al cerrarse mientras llega salida.
 
@@ -626,3 +722,24 @@ No deben aplicarse correcciones automáticas globales de `dotnet format` para `I
 - **Asignaciones por comando:** la `Peticion`, su `TaskCompletionSource`, los `CancellationTokenSource` y el `string` de cada página de salida.
 - **`ConversorTexto.LimpiarAnsi`:** recorre byte a byte; se podría vectorizar.
 - **AOT frente a JIT:** sin PGO dinámico, algunos caminos (`LimpiarAnsi`) son algo más lentos en Native AOT (ver la tabla de benchmarks).
+
+---
+
+## 14. Hoja de ruta
+
+Son planes, no compromisos: el orden y el contenido pueden cambiar.
+
+**v2.5 (en curso)**
+- Transferencia de ficheros (`ssh_upload_file` y `ssh_download_file`) por SFTP o, en servidores mínimos sin SFTP, por canales `exec`, con reanudación por trozos, progreso y bandejas locales.
+- `ssh_logs`, para consultar journalctl y pm2 en destinos de solo lectura.
+- Secretos sin copias en memoria.
+- Escrituras grandes sin el límite actual.
+- Mejoras de `ssh_search`, `ssh_stat` y el detector de antipatrones.
+- Solo lectura activable por el propio cliente.
+- Releases automáticas con las variantes normal, v3 y v4.
+
+**v3: cliente SSH y SFTP propio, mínimo, en sustitución de SSH.NET.** Native AOT, solo con lo que usa native_ssh (y ampliable cuando haga falta), criptografía de bibliotecas contrastadas, asignaciones mínimas y secretos borrados de memoria. Para quien usa native_ssh no cambia nada.
+
+No se sustituye porque SSH.NET no guste, al contrario: gracias a SSH.NET, native_ssh pudo existir sin escribir un cliente SSH desde cero. Se sustituye porque native_ssh necesita una parte pequeña de sus funciones, y un cliente reducido es más fácil de auditar, de parchear ante un problema de seguridad y de ampliar con lo que necesite. Mientras native_ssh use SSH.NET (hasta la v3), las correcciones y mejoras que se hagan en su fork, sobre todo las de seguridad, se propondrán a SSH.NET, para que entren en el paquete oficial y native_ssh pueda dejar de depender de un fork. A partir de la v3, con un cliente propio de código distinto, ya no será posible trasladarlas de forma directa.
+
+**v4: Windows como servidor destino, con Git Bash** como shell de OpenSSH (ConPTY, rutas, límites de la línea de órdenes). cmd y PowerShell como shell del servidor seguirán sin soporte, porque native_ssh está pensado para bash. Va después de la v3 porque esas particularidades son más fáciles de manejar con un cliente propio.
