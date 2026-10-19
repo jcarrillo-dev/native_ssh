@@ -49,7 +49,7 @@ namespace NativeSsh
             return servicios
                 .AddMcpServer(o =>
                 {
-                    o.ServerInfo = new() { Name = "native_ssh", Version = "2.0.0" };
+                    o.ServerInfo = new() { Name = IdentidadServidor.Nombre, Version = IdentidadServidor.Version };
                     o.ServerInstructions = InstruccionesServidor.Texto;
                 })
                 .WithTools<HerramientasSsh>(ContextoJsonNativeSsh.OpcionesHerramientas)

@@ -32,6 +32,8 @@ namespace NativeSsh.Test.Comun
         [InlineData(new[] { "--http", "--puerto", "0" }, null, "Puerto no válido")]
         [InlineData(new[] { "--http", "--puerto", "70000" }, null, "Puerto no válido")]
         [InlineData(new[] { "--http" }, "abc", "Puerto no válido")]
+        [InlineData(new[] { "--version", "--http" }, null, "--version va sola")]
+        [InlineData(new[] { "--http", "--version" }, null, "--version va sola")]
         public void Invalidos(string[] args, string? entorno, string fragmento)
         {
             // Arrange
@@ -39,6 +41,18 @@ namespace NativeSsh.Test.Comun
 
             // Act & Assert
             _ = error.Should().Contain(fragmento);
+        }
+
+        // El error de un argumento desconocido da el uso completo, con '--version'.
+        [Fact]
+        public void ArgumentoDesconocido_ElUsoIncluyeVersion()
+        {
+            // Act
+            bool isValido = OpcionesArranque.TryParsear(["--otro"], null, out _, out string? error);
+
+            // Assert
+            _ = isValido.Should().BeFalse();
+            _ = error.Should().Be("Argumento no reconocido: '--otro'. Uso: native_ssh [--http | --http-unsecure] [--puerto N] | native_ssh --version");
         }
 
         // El puerto llega por '--puerto' o por NATIVE_SSH_PUERTO_HTTP y se valida igual: entre 1 y 65535.

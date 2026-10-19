@@ -9,12 +9,18 @@ namespace NativeSsh.Comun
         HttpTodasLasInterfaces
     }
 
-    // Argumentos de línea de comandos: [--http | --http-unsecure] [--puerto N].
+    // Argumentos de línea de comandos: [--http | --http-unsecure] [--puerto N], o '--version' sola (IsPeticionVersion, que
+    // Program.cs mira antes que nada más).
     public readonly record struct OpcionesArranque(ModoTransporteEnum Modo, int Puerto)
     {
         public const int PuertoPorDefecto = 8722;
 
+        public const string Uso = "Uso: native_ssh [--http | --http-unsecure] [--puerto N] | native_ssh --version";
+
         public bool IsHttp => Modo != ModoTransporteEnum.Stdio;
+
+        // '--version' como único argumento: se imprime IdentidadServidor.TextoVersion y se sale con 0, sin arrancar.
+        public static bool IsPeticionVersion(ReadOnlySpan<string> args) => args is ["--version"];
 
         public static bool TryParsear(ReadOnlySpan<string> args, string? puertoEntorno, out OpcionesArranque opciones, out string? error)
         {
@@ -36,11 +42,14 @@ namespace NativeSsh.Comun
                     case "--http" or "--http-unsecure":
                         error = "Usa solo uno de --http o --http-unsecure.";
                         return false;
+                    case "--version":
+                        error = $"--version va sola, sin más argumentos. {Uso}";
+                        return false;
                     case "--puerto" when i + 1 < args.Length:
                         puertoTexto = args[++i];
                         break;
                     default:
-                        error = $"Argumento no reconocido: '{args[i]}'. Uso: native_ssh [--http | --http-unsecure] [--puerto N]";
+                        error = $"Argumento no reconocido: '{args[i]}'. {Uso}";
                         return false;
                 }
             }

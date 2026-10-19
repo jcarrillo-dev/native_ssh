@@ -5,6 +5,13 @@ using NativeSsh.Comun;
 if (ResolucionPorFamilia.TryEjecutarModoInterno(args, out int codigoInterno))
     return codigoInterno;
 
+// '--version' sola: el nombre y la versión de serverInfo, sin arrancar el servidor ni leer nada más (ni las variables).
+if (OpcionesArranque.IsPeticionVersion(args))
+{
+    Console.Out.WriteLine(IdentidadServidor.TextoVersion);
+    return 0;
+}
+
 Arranque.PrepararSalidaDeErrores();
 
 if (!OpcionesArranque.TryParsear(args, Environment.GetEnvironmentVariable("NATIVE_SSH_PUERTO_HTTP"), out OpcionesArranque arranque, out string? error))

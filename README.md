@@ -368,6 +368,7 @@ Configuración local de quien arranca native_ssh: ninguna herramienta ni paráme
 
 ```bash
 NativeSsh [--http | --http-unsecure] [--puerto N]
+NativeSsh --version
 ```
 
 | Modo | Escucha | Autenticación | Log al arrancar |
@@ -376,6 +377,7 @@ NativeSsh [--http | --http-unsecure] [--puerto N]
 | `--http` | `127.0.0.1` y `[::1]` (`ListenLocalhost`), con filtro de la cabecera `Host` | Token obligatorio (`Authorization: Bearer <token>`) | `MCP escuchando en http://localhost:<puerto>/mcp (solo loopback, con token).` |
 | `--http-unsecure` | Todas las interfaces (`ListenAnyIP`) | Token obligatorio, **sin cifrar** | `Warning: --http-unsecure: MCP escuchando en todas las interfaces … SIN cifrar …` |
 
+- **Versión:** `--version`, como único argumento, imprime en stdout `native_ssh 2.0.0` (el mismo nombre y versión que `serverInfo` en la respuesta a `initialize`) y sale con 0, sin arrancar el servidor ni leer ninguna variable de entorno. Junto a otros argumentos es un error de uso (código 2).
 - **Puerto:** `--puerto N` o `NATIVE_SSH_PUERTO_HTTP` (por defecto 8722; `--puerto` manda). Una variable vacía equivale a no definida. Un puerto no válido (`Puerto no válido: 'abc'.`), un argumento desconocido o `--http` junto con `--http-unsecure` impiden arrancar con código 2, **también en stdio**. Si el puerto está ocupado, el servidor sale con código 1 y, tras la traza de Kestrel en el log, `Error al iniciar el servidor HTTP en el puerto N: … address already in use.`
 - **Token:** obligatorio en los dos modos HTTP, de `NATIVE_SSH_TOKEN_HTTP` o de `NATIVE_SSH_TOKEN_HTTP_FICHERO` (nunca las dos), de al menos 16 caracteres; sin él, o con un fichero que no cumple los requisitos, no arranca (código 2 y el motivo en `stderr`). Cada petición (POST, el GET del flujo SSE, el DELETE) debe llevar `Authorization: Bearer <token>` exacto; si no, `401` con `Unauthorized: falta la cabecera 'Authorization: Bearer <token>' …` o `Unauthorized: el token de la cabecera Authorization no es el configurado en el servidor.` El token se compara en tiempo constante (por su SHA-256) y nunca se escribe en los logs. Los rechazos se anotan en el log como mucho 10 veces por minuto (ventana fija que empieza con el primer rechazo tras la anterior: en el cambio de ventana pueden salir hasta 20 seguidos); los omitidos se cuentan en el siguiente aviso que se anote.
 - **Filtro de `Host` (`--http`):** solo se admiten `localhost`, `127.0.0.1`, `[::1]` y `::1`; cualquier otro recibe `400 Bad Request: Host no permitido.` antes de mirar el token (frente a un *DNS rebinding* desde un navegador).
@@ -498,7 +500,7 @@ dotnet test
   ```
 - **Puertos:** `NATIVE_SSH_PUERTO_PRUEBAS` (por defecto 22022) fija el bloque de mil puertos de una ejecución y debe acabar en `0nn` (X000–X099) y estar por debajo de 65000; de él salen los demás: +50 el sshd en español (`NATIVE_SSH_PUERTO_PRUEBAS_IDIOMA`), +200 el de login lento (`NATIVE_SSH_PUERTO_PRUEBAS_LENTO`) y +300 el de `PATH` de login restringido (`NATIVE_SSH_PUERTO_PRUEBAS_RESTRINGIDO`) —con el valor por defecto, 22072, 22222 y 22322—, y X400–X999 los que arranca cada prueba. Una variable vacía equivale a no definida. El humo HTTP escucha en `NATIVE_SSH_PUERTO_HTTP_PRUEBAS` (18722 por defecto). Para dos ejecuciones en paralelo (p. ej. dos copias del repositorio), bloques distintos. Los contenedores de las pruebas usan `NATIVE_SSH_PUERTO_CONTENEDOR_<DISTRO>` (`DEBIAN`, `ALPINE`, `SINBASH`) y `NATIVE_SSH_PUERTO_GEMELO_A`/`_B`; `pruebas/contenedor-sudo.sh` lanzado a mano usa `NATIVE_SSH_PUERTO_CONTENEDOR`.
 - **Fuera de Linux**, `dotnet test` excluye la categoría `SoloLinux` (bash, `/proc`, modos Unix, `cksum` o un `sshd` local); con un `--filter` propio, añádele `&Categoria!=SoloLinux`.
-- **Duración de referencia:** en Linux, 3017 pruebas y 2 omitidas (las de estrés) en unos 10 minutos.
+- **Duración de referencia:** en Linux, 3024 pruebas y 2 omitidas (las de estrés) en unos 10 minutos.
 
 > [!WARNING]
 > **ananicy-cpp y otros gestores de prioridad.** ananicy-cpp marca los procesos `sshd-session` como `BG_CPUIO` (nice 16, planificación *idle*): bajo carga, el sshd de pruebas se queda sin CPU y salen plazos agotados que no son del producto. Para una suite fiable, para el servicio mientras dura (`systemctl stop ananicy-cpp`) o excluye `sshd-session` de sus reglas. Además, `pruebas/sshd-local.sh iniciar` lanza sshd con `taskset` sobre todas las CPU, para que no herede el confinamiento de quien lo arranca (las pruebas de estrés).
