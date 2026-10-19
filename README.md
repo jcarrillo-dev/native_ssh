@@ -6,9 +6,11 @@ native_ssh corre en Linux y en Windows (ver «native_ssh en Windows»); el modo 
 
 ## Cómo se ha hecho este proyecto
 
-El código de native_ssh está escrito con IA. La arquitectura, las decisiones de diseño y de seguridad y la revisión son humanas: cada cambio se decide, se revisa y se prueba (la suite pasa de 3000 pruebas en Linux, más contenedores y máquinas virtuales) antes de entrar.
+La primera versión (v1) la escribió a mano el autor: la estructura de carpetas y el código base. A partir de ahí, el código de native_ssh se ha escrito con IA, mejorándolo por iteraciones sobre esa base. La arquitectura, las decisiones de diseño y de seguridad y la revisión son humanas: cada cambio se decide, se revisa y se prueba (la suite pasa de 3000 pruebas en Linux, más contenedores y máquinas virtuales) antes de entrar.
 
 Es distinto de las bibliotecas [JCarrillo.AOT.*](https://github.com/jcarrillo-dev/JCarrillo.AOT.Core), donde el código lo escribe el autor. native_ssh es una herramienta: existe para facilitar el mantenimiento y el despliegue diarios de servidores asistidos por IA, y se publica por si le sirve a alguien más.
+
+Los cambios de cada versión están en [CHANGELOG.md](CHANGELOG.md).
 
 ## Plataformas probadas
 
